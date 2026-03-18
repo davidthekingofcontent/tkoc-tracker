@@ -1,38 +1,49 @@
 'use client'
 
 import { useState } from 'react'
-import { Search, RotateCcw, Compass, Instagram, ExternalLink } from 'lucide-react'
+import {
+  Search,
+  RotateCcw,
+  Compass,
+  Instagram,
+  ExternalLink,
+  ListPlus,
+  Loader2,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from '@/components/ui/table'
+import { Avatar } from '@/components/ui/avatar'
 import { useI18n } from '@/i18n/context'
+import { formatNumber } from '@/lib/utils'
 
-interface DiscoveredInfluencer {
-  id: string
+interface DiscoverResult {
   username: string
   displayName: string | null
-  platform: string
+  avatarUrl: string | null
   followers: number
   engagementRate: number
-  bio: string | null
-  country: string | null
-  city: string | null
+  avgLikes: number
+  avgComments: number
+  avgViews: number
   email: string | null
-  avatarUrl: string | null
-  _count: { campaigns: number; media: number }
-}
-
-function formatNumber(num: number): string {
-  if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M'
-  if (num >= 1000) return (num / 1000).toFixed(1) + 'K'
-  return num.toString()
+  platform: string
+  source: 'apify' | 'database'
 }
 
 function PlatformIcon({ platform }: { platform: string }) {
   switch (platform.toUpperCase()) {
-    case 'INSTAGRAM': return <Instagram className="h-4 w-4" />
-    case 'TIKTOK': return <span className="text-xs font-bold">TT</span>
-    case 'YOUTUBE': return <span className="text-xs font-bold">YT</span>
+    case 'INSTAGRAM': return <Instagram className="h-4 w-4 text-pink-400" />
+    case 'TIKTOK': return <span className="text-xs font-bold text-cyan-400">TT</span>
+    case 'YOUTUBE': return <span className="text-xs font-bold text-red-400">YT</span>
     default: return null
   }
 }
@@ -58,10 +69,11 @@ export default function DiscoverPage() {
     language: '',
     bioKeyword: '',
   })
-  const [results, setResults] = useState<DiscoveredInfluencer[]>([])
+  const [results, setResults] = useState<DiscoverResult[]>([])
   const [searching, setSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
   const [total, setTotal] = useState(0)
+  const [source, setSource] = useState<'apify' | 'database'>('database')
 
   const updateFilter = (key: string, value: string) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
@@ -84,41 +96,36 @@ export default function DiscoverPage() {
   }
 
   const handleSearch = async () => {
+    if (!filters.search.trim()) return
+
     setSearching(true)
     setHasSearched(true)
 
     try {
-      const params = new URLSearchParams()
-      if (filters.search) params.set('search', filters.search)
-      if (filters.platform) params.set('platform', filters.platform.toUpperCase())
-      params.set('limit', '50')
+      const res = await fetch('/api/influencers/discover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: filters.search,
+          platform: filters.platform || 'instagram',
+          minFollowers: filters.followersMin ? parseInt(filters.followersMin, 10) : undefined,
+          maxFollowers: filters.followersMax ? parseInt(filters.followersMax, 10) : undefined,
+        }),
+      })
 
-      const res = await fetch(`/api/influencers?${params.toString()}`)
       if (res.ok) {
         const data = await res.json()
-        let filtered = data.influencers || []
+        let filtered: DiscoverResult[] = data.results || []
 
-        // Client-side filtering for fields the API doesn't support yet
+        // Client-side filtering for engagement minimum
         if (filters.engagement) {
           const minEng = parseFloat(filters.engagement)
-          filtered = filtered.filter((i: DiscoveredInfluencer) => (i.engagementRate || 0) >= minEng)
-        }
-        if (filters.location) {
-          const loc = filters.location.toLowerCase()
-          filtered = filtered.filter((i: DiscoveredInfluencer) =>
-            (i.country || '').toLowerCase().includes(loc) ||
-            (i.city || '').toLowerCase().includes(loc)
-          )
-        }
-        if (filters.bioKeyword) {
-          const kw = filters.bioKeyword.toLowerCase()
-          filtered = filtered.filter((i: DiscoveredInfluencer) =>
-            (i.bio || '').toLowerCase().includes(kw)
-          )
+          filtered = filtered.filter((i) => (i.engagementRate || 0) >= minEng)
         }
 
         setResults(filtered)
         setTotal(filtered.length)
+        setSource(data.source || 'database')
       } else {
         setResults([])
         setTotal(0)
@@ -173,6 +180,7 @@ export default function DiscoverPage() {
             placeholder={t.discover.searchPlaceholder}
             value={filters.search}
             onChange={(e) => updateFilter('search', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
           />
 
           <div>
@@ -226,9 +234,18 @@ export default function DiscoverPage() {
 
           {/* Action Buttons */}
           <div className="flex flex-col gap-2 border-t border-gray-200 pt-5">
-            <Button onClick={handleSearch} disabled={searching} className="w-full">
-              <Search className="h-4 w-4" />
-              {searching ? t.common.loading : t.common.search}
+            <Button onClick={handleSearch} disabled={searching || !filters.search.trim()} className="w-full">
+              {searching ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t.common.loading}
+                </>
+              ) : (
+                <>
+                  <Search className="h-4 w-4" />
+                  {t.common.search}
+                </>
+              )}
             </Button>
             <Button variant="ghost" onClick={resetFilters} className="w-full">
               <RotateCcw className="h-4 w-4" />
@@ -238,13 +255,17 @@ export default function DiscoverPage() {
         </div>
 
         {/* Right Content Area */}
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
+          {/* Loading spinner */}
           {searching && (
-            <div className="flex items-center justify-center py-32">
-              <div className="h-8 w-8 animate-spin rounded-full border-4 border-purple-200 border-t-purple-600" />
+            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 bg-white shadow-sm py-32">
+              <Loader2 className="h-10 w-10 animate-spin text-purple-500 mb-4" />
+              <p className="text-sm font-medium text-gray-700">{t.common.loading}...</p>
+              <p className="text-xs text-gray-400 mt-1">{t.discover.subtitle}</p>
             </div>
           )}
 
+          {/* Empty state before search */}
           {!hasSearched && !searching && (
             <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 bg-white shadow-sm py-32">
               <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gray-100 text-gray-400">
@@ -256,63 +277,103 @@ export default function DiscoverPage() {
             </div>
           )}
 
+          {/* No results state */}
           {hasSearched && !searching && results.length === 0 && (
             <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 bg-white shadow-sm py-32">
               <p className="text-sm text-gray-500">{t.common.noResults}</p>
             </div>
           )}
 
+          {/* Results table */}
           {hasSearched && !searching && results.length > 0 && (
             <div className="space-y-4">
-              <p className="text-sm text-gray-500">
-                {total} {t.listDetail.results}
-              </p>
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {results.map((inf) => (
-                  <div
-                    key={inf.id}
-                    className="rounded-xl border border-gray-200 bg-white p-5 hover:shadow-md transition-shadow"
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-purple-100 text-purple-700 font-semibold text-sm">
-                          {(inf.displayName || inf.username)[0]?.toUpperCase()}
-                        </div>
-                        <div>
-                          <p className="font-medium text-gray-900">@{inf.username}</p>
-                          <p className="text-xs text-gray-500">{inf.displayName}</p>
-                        </div>
-                      </div>
-                      <a
-                        href={getProfileUrl(inf.username, inf.platform)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-gray-400 hover:text-purple-600 transition-colors"
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                      </a>
-                    </div>
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-gray-500">
+                  {total} {t.listDetail.results}
+                </p>
+                <span className="inline-flex items-center rounded-full bg-purple-50 px-2.5 py-0.5 text-xs font-medium text-purple-700">
+                  {source === 'apify' ? 'External Search' : 'Internal Database'}
+                </span>
+              </div>
 
-                    {inf.bio && (
-                      <p className="mt-3 text-xs text-gray-500 line-clamp-2">{inf.bio}</p>
-                    )}
-
-                    <div className="mt-3 flex items-center gap-3 text-sm">
-                      <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-                        <PlatformIcon platform={inf.platform} />
-                        {inf.platform.charAt(0) + inf.platform.slice(1).toLowerCase()}
-                      </span>
-                      <span className="text-gray-600">{formatNumber(inf.followers)}</span>
-                      <span className="text-purple-600 font-medium">{inf.engagementRate || 0}%</span>
-                    </div>
-
-                    {(inf.country || inf.city) && (
-                      <p className="mt-2 text-xs text-gray-400">
-                        📍 {[inf.city, inf.country].filter(Boolean).join(', ')}
-                      </p>
-                    )}
-                  </div>
-                ))}
+              <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>{t.analyze.username}</TableHead>
+                      <TableHead>{t.campaigns.followers}</TableHead>
+                      <TableHead>Eng. Rate</TableHead>
+                      <TableHead>Mdn. Likes</TableHead>
+                      <TableHead>Mdn. Comments</TableHead>
+                      <TableHead>Mdn. Views</TableHead>
+                      <TableHead>{t.common.email}</TableHead>
+                      <TableHead className="text-right"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {results.map((item) => (
+                      <TableRow key={`${item.platform}-${item.username}`} className="group">
+                        <TableCell>
+                          <div className="flex items-center gap-3">
+                            <Avatar
+                              name={item.displayName || item.username}
+                              size="sm"
+                              src={item.avatarUrl || undefined}
+                            />
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                <a
+                                  href={getProfileUrl(item.username, item.platform)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="font-medium text-gray-900 hover:text-purple-600 transition-colors inline-flex items-center gap-1"
+                                >
+                                  @{item.username}
+                                  <ExternalLink className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </a>
+                                <PlatformIcon platform={item.platform} />
+                              </div>
+                              {item.displayName && item.displayName !== item.username && (
+                                <span className="text-xs text-gray-400">{item.displayName}</span>
+                              )}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-medium">{formatNumber(item.followers)}</TableCell>
+                        <TableCell>
+                          <span className={
+                            item.engagementRate >= 5
+                              ? 'text-emerald-500 font-medium'
+                              : item.engagementRate >= 3
+                                ? 'text-purple-600 font-medium'
+                                : 'text-gray-600'
+                          }>
+                            {item.engagementRate}%
+                          </span>
+                        </TableCell>
+                        <TableCell>{formatNumber(item.avgLikes)}</TableCell>
+                        <TableCell>{formatNumber(item.avgComments)}</TableCell>
+                        <TableCell>{formatNumber(item.avgViews)}</TableCell>
+                        <TableCell>
+                          <span className="text-xs text-gray-500 max-w-[180px] truncate block">
+                            {item.email || 'Not Provided'}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center justify-end">
+                            <Button
+                              size="sm"
+                              className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <ListPlus className="h-3 w-3" />
+                              Add to...
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
             </div>
           )}
