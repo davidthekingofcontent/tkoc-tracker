@@ -22,6 +22,19 @@ import {
   Mail,
   X,
   Play,
+  Lightbulb,
+  UserSearch,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Calendar,
+  Clock,
+  Hash,
+  Star,
+  ArrowLeft,
+  Sparkles,
+  Target,
+  Shield,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
@@ -90,6 +103,67 @@ interface RecentAnalysis {
   lastScraped: string | null
 }
 
+// Insights types
+interface InsightsData {
+  contentBreakdown: {
+    type: string
+    count: number
+    avgLikes: number
+    avgComments: number
+    avgViews: number
+    avgEngagement: number
+  }[]
+  topPosts: {
+    id: string
+    caption: string | null
+    thumbnailUrl: string | null
+    permalink: string | null
+    mediaType: string
+    likes: number
+    comments: number
+    views: number
+    engagementRate: number
+    postedAt: string | null
+  }[]
+  topHashtags: {
+    tag: string
+    count: number
+    avgLikes: number
+    avgEngagement: number
+  }[]
+  postingFrequency: {
+    postsPerWeek: number
+    avgDaysBetweenPosts: number
+    mostActiveDay: string | null
+  }
+  engagementAnalysis: {
+    likeToFollowerRatio: number
+    commentToLikeRatio: number
+    viewToFollowerRatio: number
+    estimatedReach: number
+    engagementTrend: 'rising' | 'stable' | 'declining'
+  }
+  bestContentType: string | null
+  bestPostingTime: string | null
+  audienceQuality: 'high' | 'medium' | 'low'
+}
+
+// Lookalikes types
+interface LookalikeEntry {
+  id: string
+  username: string
+  displayName: string | null
+  avatarUrl: string | null
+  platform: string
+  followers: number
+  engagementRate: number
+  avgLikes: number
+  avgComments: number
+  avgViews: number
+  email: string | null
+  matchScore: number
+}
+
 const PlatformIcon = ({ platform }: { platform: string }) => {
   switch (platform.toLowerCase()) {
     case 'instagram':
@@ -117,6 +191,8 @@ function getProfileUrl(username: string, platform: string) {
   }
 }
 
+type ViewMode = 'profile' | 'insights' | 'lookalikes'
+
 export default function AnalyzePage() {
   const { t } = useI18n()
   const [query, setQuery] = useState('')
@@ -132,6 +208,13 @@ export default function AnalyzePage() {
     influencerId: string
     influencerName: string
   }>({ open: false, influencerId: '', influencerName: '' })
+
+  // Insights & Lookalikes state
+  const [viewMode, setViewMode] = useState<ViewMode>('profile')
+  const [insights, setInsights] = useState<InsightsData | null>(null)
+  const [lookalikes, setLookalikes] = useState<LookalikeEntry[]>([])
+  const [loadingInsights, setLoadingInsights] = useState(false)
+  const [loadingLookalikes, setLoadingLookalikes] = useState(false)
 
   useEffect(() => {
     fetchRecentSearches()
@@ -173,6 +256,9 @@ export default function AnalyzePage() {
     setError('')
     setSuccessMsg('')
     setProfile(null)
+    setViewMode('profile')
+    setInsights(null)
+    setLookalikes([])
 
     try {
       const res = await fetch('/api/influencers/analyze', {
@@ -210,6 +296,9 @@ export default function AnalyzePage() {
     setAnalyzing(true)
     setError('')
     setSuccessMsg('')
+    setViewMode('profile')
+    setInsights(null)
+    setLookalikes([])
 
     try {
       const res = await fetch('/api/influencers/analyze', {
@@ -235,6 +324,50 @@ export default function AnalyzePage() {
     }
   }
 
+  async function handleGetInsights() {
+    if (!profile) return
+    setLoadingInsights(true)
+    setError('')
+
+    try {
+      const res = await fetch(`/api/influencers/${profile.id}/insights`)
+      if (res.ok) {
+        const data = await res.json()
+        setInsights(data)
+        setViewMode('insights')
+      } else {
+        const data = await res.json()
+        setError(data.error || 'Error getting insights')
+      }
+    } catch {
+      setError('Error connecting to server')
+    } finally {
+      setLoadingInsights(false)
+    }
+  }
+
+  async function handleFindLookalikes() {
+    if (!profile) return
+    setLoadingLookalikes(true)
+    setError('')
+
+    try {
+      const res = await fetch(`/api/influencers/${profile.id}/lookalikes`)
+      if (res.ok) {
+        const data = await res.json()
+        setLookalikes(data.lookalikes || [])
+        setViewMode('lookalikes')
+      } else {
+        const data = await res.json()
+        setError(data.error || 'Error finding lookalikes')
+      }
+    } catch {
+      setError('Error connecting to server')
+    } finally {
+      setLoadingLookalikes(false)
+    }
+  }
+
   function handleRemoveFromList(id: string) {
     setRecentSearches((prev) => prev.filter((item) => item.id !== id))
   }
@@ -242,6 +375,38 @@ export default function AnalyzePage() {
   const commentLikeRatio = profile && profile.avgLikes > 0
     ? `1:${Math.round(profile.avgLikes / Math.max(profile.avgComments, 1))}`
     : null
+
+  const trendIcon = (trend: string) => {
+    switch (trend) {
+      case 'rising': return <TrendingUp className="h-4 w-4 text-emerald-500" />
+      case 'declining': return <TrendingDown className="h-4 w-4 text-red-500" />
+      default: return <Minus className="h-4 w-4 text-gray-400" />
+    }
+  }
+
+  const trendLabel = (trend: string) => {
+    switch (trend) {
+      case 'rising': return t.analyze.rising
+      case 'declining': return t.analyze.declining
+      default: return t.analyze.stable
+    }
+  }
+
+  const qualityColor = (q: string) => {
+    switch (q) {
+      case 'high': return 'text-emerald-600 bg-emerald-50'
+      case 'medium': return 'text-amber-600 bg-amber-50'
+      default: return 'text-red-600 bg-red-50'
+    }
+  }
+
+  const qualityLabel = (q: string) => {
+    switch (q) {
+      case 'high': return t.analyze.high
+      case 'medium': return t.analyze.medium
+      default: return t.analyze.low
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -321,8 +486,10 @@ export default function AnalyzePage() {
         </div>
       )}
 
-      {/* Profile Detail View */}
-      {profile && !analyzing && (
+      {/* ═══════════════════════════════════════════ */}
+      {/* PROFILE VIEW */}
+      {/* ═══════════════════════════════════════════ */}
+      {profile && !analyzing && viewMode === 'profile' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
             {/* Left panel */}
@@ -448,7 +615,8 @@ export default function AnalyzePage() {
                   )}
                 </div>
 
-                <div className="mt-5">
+                {/* Action buttons: Add to list, Get Insights, Find Lookalikes */}
+                <div className="mt-5 space-y-2">
                   <button
                     className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-purple-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500/50"
                     onClick={() => setAddToModal({
@@ -460,6 +628,34 @@ export default function AnalyzePage() {
                     <ListPlus className="h-4 w-4" />
                     {t.analyze.addToList}
                   </button>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handleGetInsights}
+                      disabled={loadingInsights}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg border-2 border-amber-400 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700 shadow-sm transition-colors hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-400/50 disabled:opacity-50"
+                    >
+                      {loadingInsights ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Lightbulb className="h-4 w-4" />
+                      )}
+                      {loadingInsights ? '...' : t.analyze.getInsights}
+                    </button>
+
+                    <button
+                      onClick={handleFindLookalikes}
+                      disabled={loadingLookalikes}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg border-2 border-cyan-400 bg-cyan-50 px-4 py-2.5 text-sm font-medium text-cyan-700 shadow-sm transition-colors hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 disabled:opacity-50"
+                    >
+                      {loadingLookalikes ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <UserSearch className="h-4 w-4" />
+                      )}
+                      {loadingLookalikes ? '...' : t.analyze.findLookalikes}
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -554,6 +750,360 @@ export default function AnalyzePage() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════ */}
+      {/* INSIGHTS VIEW */}
+      {/* ═══════════════════════════════════════════ */}
+      {profile && !analyzing && viewMode === 'insights' && insights && (
+        <div className="space-y-6">
+          {/* Back button */}
+          <button
+            onClick={() => setViewMode('profile')}
+            className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-purple-600 transition-colors"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {t.analyze.backToProfile}
+          </button>
+
+          {/* Header */}
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-100">
+              <Lightbulb className="h-5 w-5 text-amber-600" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">{t.analyze.getInsights}</h2>
+              <p className="text-sm text-gray-500">@{profile.username}</p>
+            </div>
+          </div>
+
+          {/* Summary cards row */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-4">
+              <div className="flex items-center gap-2 mb-1">
+                <Sparkles className="h-4 w-4 text-amber-500" />
+                <span className="text-xs text-gray-400 font-medium">{t.analyze.bestContentType}</span>
+              </div>
+              <p className="text-lg font-bold text-gray-900">{insights.bestContentType || '—'}</p>
+            </div>
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-4">
+              <div className="flex items-center gap-2 mb-1">
+                <Clock className="h-4 w-4 text-blue-500" />
+                <span className="text-xs text-gray-400 font-medium">{t.analyze.bestPostingTime}</span>
+              </div>
+              <p className="text-lg font-bold text-gray-900">{insights.bestPostingTime || '—'}</p>
+            </div>
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-4">
+              <div className="flex items-center gap-2 mb-1">
+                <Shield className="h-4 w-4 text-emerald-500" />
+                <span className="text-xs text-gray-400 font-medium">{t.analyze.audienceQuality}</span>
+              </div>
+              <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-sm font-bold ${qualityColor(insights.audienceQuality)}`}>
+                {qualityLabel(insights.audienceQuality)}
+              </span>
+            </div>
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-4">
+              <div className="flex items-center gap-2 mb-1">
+                {trendIcon(insights.engagementAnalysis.engagementTrend)}
+                <span className="text-xs text-gray-400 font-medium">{t.analyze.engagementTrend}</span>
+              </div>
+              <p className="text-lg font-bold text-gray-900">{trendLabel(insights.engagementAnalysis.engagementTrend)}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Content Breakdown */}
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-6">
+              <h3 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                <BarChart3 className="h-4 w-4 text-purple-500" />
+                {t.analyze.contentBreakdown}
+              </h3>
+              {insights.contentBreakdown.length > 0 ? (
+                <div className="space-y-3">
+                  {insights.contentBreakdown.map((item) => {
+                    const maxCount = Math.max(...insights.contentBreakdown.map(c => c.count))
+                    const pct = maxCount > 0 ? (item.count / maxCount) * 100 : 0
+                    return (
+                      <div key={item.type}>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm font-medium text-gray-700">{item.type}</span>
+                          <span className="text-xs text-gray-400">{item.count} posts &middot; {item.avgEngagement}% {t.analyze.avgEng}</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-purple-500 transition-all"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <div className="flex items-center gap-4 mt-1 text-xs text-gray-400">
+                          <span><Heart className="inline h-3 w-3 mr-0.5" />{formatNumber(item.avgLikes)}</span>
+                          <span><MessageCircle className="inline h-3 w-3 mr-0.5" />{formatNumber(item.avgComments)}</span>
+                          <span><Eye className="inline h-3 w-3 mr-0.5" />{formatNumber(item.avgViews)}</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400">{t.analyze.noInsightsData}</p>
+              )}
+            </div>
+
+            {/* Engagement Analysis */}
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-6">
+              <h3 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                <Target className="h-4 w-4 text-emerald-500" />
+                {t.analyze.engagementAnalysis}
+              </h3>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">{t.analyze.likeToFollowerRatio}</span>
+                  <span className="text-sm font-semibold text-gray-900">{(insights.engagementAnalysis.likeToFollowerRatio * 100).toFixed(2)}%</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">{t.analyze.commentToLikeRatio}</span>
+                  <span className="text-sm font-semibold text-gray-900">{(insights.engagementAnalysis.commentToLikeRatio * 100).toFixed(2)}%</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">{t.analyze.viewToFollowerRatio}</span>
+                  <span className="text-sm font-semibold text-gray-900">{(insights.engagementAnalysis.viewToFollowerRatio * 100).toFixed(2)}%</span>
+                </div>
+                <div className="border-t border-gray-100 pt-3 flex items-center justify-between">
+                  <span className="text-sm text-gray-600">{t.analyze.estimatedReach}</span>
+                  <span className="text-sm font-bold text-purple-600">{formatNumber(insights.engagementAnalysis.estimatedReach)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Posting Frequency */}
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-6">
+              <h3 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-blue-500" />
+                {t.analyze.postingFrequency}
+              </h3>
+              <div className="grid grid-cols-3 gap-4 text-center">
+                <div>
+                  <p className="text-2xl font-bold text-gray-900">{insights.postingFrequency.postsPerWeek}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{t.analyze.postsPerWeek}</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-900">{insights.postingFrequency.avgDaysBetweenPosts}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{t.analyze.avgDaysBetween}</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-900">{insights.postingFrequency.mostActiveDay || '—'}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{t.analyze.mostActiveDay}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Top Hashtags */}
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-6">
+              <h3 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                <Hash className="h-4 w-4 text-pink-500" />
+                {t.analyze.topHashtags}
+              </h3>
+              {insights.topHashtags.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {insights.topHashtags.map((ht) => (
+                    <span
+                      key={ht.tag}
+                      className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200 transition-colors"
+                    >
+                      {ht.tag}
+                      <span className="text-gray-400">{ht.count} {t.analyze.uses}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400">No hashtags found</p>
+              )}
+            </div>
+          </div>
+
+          {/* Top Performing Posts */}
+          {insights.topPosts.length > 0 && (
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-6">
+              <h3 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                <Star className="h-4 w-4 text-amber-500" />
+                {t.analyze.topPerformingPosts}
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {insights.topPosts.map((post, idx) => (
+                  <a
+                    key={post.id}
+                    href={post.permalink || '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="group relative rounded-lg border border-gray-100 overflow-hidden hover:border-purple-300 transition-colors"
+                  >
+                    <div className="relative aspect-square bg-gray-100">
+                      {post.thumbnailUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={post.thumbnailUrl}
+                          alt=""
+                          className="h-full w-full object-cover group-hover:scale-105 transition-transform"
+                        />
+                      ) : (
+                        <div className="h-full w-full flex items-center justify-center text-gray-300">
+                          <Play className="h-8 w-8" />
+                        </div>
+                      )}
+                      <div className="absolute top-2 left-2 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 text-xs font-bold text-white">
+                        #{idx + 1}
+                      </div>
+                    </div>
+                    <div className="p-3">
+                      <div className="flex items-center gap-3 text-xs text-gray-500 mb-1">
+                        <span className="flex items-center gap-1"><Heart className="h-3 w-3 text-red-400" />{formatNumber(post.likes)}</span>
+                        <span className="flex items-center gap-1"><MessageCircle className="h-3 w-3 text-blue-400" />{formatNumber(post.comments)}</span>
+                        {post.views > 0 && <span className="flex items-center gap-1"><Eye className="h-3 w-3 text-purple-400" />{formatNumber(post.views)}</span>}
+                      </div>
+                      <p className="text-xs font-semibold text-emerald-600">{post.engagementRate}% eng.</p>
+                      {post.caption && (
+                        <p className="text-xs text-gray-400 mt-1 line-clamp-2">{post.caption}</p>
+                      )}
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════ */}
+      {/* LOOKALIKES VIEW */}
+      {/* ═══════════════════════════════════════════ */}
+      {profile && !analyzing && viewMode === 'lookalikes' && (
+        <div className="space-y-6">
+          {/* Back button */}
+          <button
+            onClick={() => setViewMode('profile')}
+            className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-purple-600 transition-colors"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {t.analyze.backToProfile}
+          </button>
+
+          {/* Header */}
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-100">
+              <UserSearch className="h-5 w-5 text-cyan-600" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">{t.analyze.similarProfiles}</h2>
+              <p className="text-sm text-gray-500">{t.lookalikes.similarTo} @{profile.username} &middot; {formatNumber(profile.followers)} {t.campaigns.followers.toLowerCase()}</p>
+            </div>
+          </div>
+
+          {lookalikes.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 bg-white shadow-sm py-20">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-gray-100 text-gray-400">
+                <UserSearch className="h-6 w-6" />
+              </div>
+              <p className="mt-4 text-sm text-gray-500 max-w-md text-center">{t.analyze.noLookalikes}</p>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t.analyze.username}</TableHead>
+                    <TableHead>{t.campaigns.followers}</TableHead>
+                    <TableHead>Eng. Rate</TableHead>
+                    <TableHead>Mdn. Likes</TableHead>
+                    <TableHead>Mdn. Views</TableHead>
+                    <TableHead>{t.common.email}</TableHead>
+                    <TableHead>{t.analyze.matchScore}</TableHead>
+                    <TableHead className="text-right"></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {lookalikes.map((item) => (
+                    <TableRow key={item.id} className="group">
+                      <TableCell>
+                        <button
+                          onClick={() => handleReAnalyze(item.username, item.platform)}
+                          className="flex items-center gap-3 hover:opacity-80 transition-opacity"
+                        >
+                          <Avatar
+                            name={item.displayName || item.username}
+                            size="sm"
+                            src={item.avatarUrl || undefined}
+                          />
+                          <div className="text-left">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-medium text-gray-900">{item.username}</span>
+                              <PlatformIcon platform={item.platform} />
+                            </div>
+                            {item.displayName && item.displayName !== item.username && (
+                              <span className="text-xs text-gray-400">{item.displayName}</span>
+                            )}
+                          </div>
+                        </button>
+                      </TableCell>
+                      <TableCell className="font-medium">{formatNumber(item.followers)}</TableCell>
+                      <TableCell>
+                        <span className={
+                          item.engagementRate >= 5
+                            ? 'text-emerald-500 font-medium'
+                            : item.engagementRate >= 3
+                              ? 'text-purple-600 font-medium'
+                              : 'text-gray-600'
+                        }>
+                          {item.engagementRate}%
+                        </span>
+                      </TableCell>
+                      <TableCell>{formatNumber(item.avgLikes)}</TableCell>
+                      <TableCell>{formatNumber(item.avgViews)}</TableCell>
+                      <TableCell>
+                        <span className="text-xs text-gray-500 max-w-[180px] truncate block">
+                          {item.email || 'Not Provided'}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <div className="h-2 w-16 rounded-full bg-gray-100 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${
+                                item.matchScore >= 70
+                                  ? 'bg-emerald-500'
+                                  : item.matchScore >= 40
+                                    ? 'bg-amber-400'
+                                    : 'bg-gray-400'
+                              }`}
+                              style={{ width: `${item.matchScore}%` }}
+                            />
+                          </div>
+                          <span className="text-xs font-semibold text-gray-700">{item.matchScore}%</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            className="opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={() => setAddToModal({
+                              open: true,
+                              influencerId: item.id,
+                              influencerName: item.displayName || item.username,
+                            })}
+                          >
+                            <ListPlus className="h-3 w-3" />
+                            Add to...
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </div>
       )}
 
@@ -740,8 +1290,14 @@ export default function AnalyzePage() {
                           <TableCell>
                             <div className="flex items-center justify-end gap-1">
                               <Button
+                                variant="primary"
                                 size="sm"
-                                className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                                className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => setAddToModal({
+                                  open: true,
+                                  influencerId: item.id,
+                                  influencerName: item.displayName || item.username,
+                                })}
                               >
                                 <ListPlus className="h-3 w-3" />
                                 Add to...
@@ -771,10 +1327,10 @@ export default function AnalyzePage() {
       )}
 
       {/* Back to searches */}
-      {profile && !analyzing && (
+      {profile && !analyzing && viewMode === 'profile' && (
         <div className="flex justify-center">
           <button
-            onClick={() => { setProfile(null); setActiveTab('recent') }}
+            onClick={() => { setProfile(null); setActiveTab('recent'); setViewMode('profile') }}
             className="text-sm text-gray-500 hover:text-purple-600 transition-colors inline-flex items-center gap-1"
           >
             ← {t.analyze.recentSearches}
