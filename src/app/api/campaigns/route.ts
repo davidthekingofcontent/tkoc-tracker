@@ -80,7 +80,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, type, platforms, targetAccounts, targetHashtags, targetKeywords } = body
+    const { name, type, platforms, targetAccounts, targetHashtags, targetKeywords, startDate, endDate } = body
 
     if (!name) {
       return NextResponse.json({ error: 'Campaign name is required' }, { status: 400 })
@@ -94,6 +94,8 @@ export async function POST(request: NextRequest) {
         targetAccounts: targetAccounts || [],
         targetHashtags: targetHashtags || [],
         targetKeywords: targetKeywords || [],
+        ...(startDate && { startDate: new Date(startDate) }),
+        ...(endDate && { endDate: new Date(endDate) }),
         userId: session.id,
       },
       include: {

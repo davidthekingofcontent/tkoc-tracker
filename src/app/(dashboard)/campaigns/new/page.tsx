@@ -15,6 +15,8 @@ import {
   Youtube,
   X,
   Plus,
+  Calendar,
+  Infinity,
 } from 'lucide-react'
 
 type TrackingType = 'social_listening' | 'influencer_tracking' | null
@@ -33,6 +35,8 @@ export default function NewCampaignPage() {
   })
   const [influencers, setInfluencers] = useState<string[]>([])
   const [influencerInput, setInfluencerInput] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
 
   const addTarget = useCallback(() => {
     const value = targetInput.trim()
@@ -88,6 +92,8 @@ export default function NewCampaignPage() {
           platforms: selectedPlatforms,
           targetAccounts,
           targetHashtags,
+          ...(trackingType === 'influencer_tracking' && startDate && { startDate }),
+          ...(trackingType === 'influencer_tracking' && endDate && { endDate }),
         }),
       })
 
@@ -338,6 +344,64 @@ export default function NewCampaignPage() {
               </button>
             </div>
           </Card>
+
+          {/* Campaign Duration */}
+          {trackingType === 'social_listening' && (
+            <Card variant="elevated">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-50 text-green-600">
+                  <Infinity className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-gray-900">
+                    {t.campaigns.alwaysOn || 'Always On'}
+                  </h3>
+                  <p className="text-sm text-gray-500">
+                    {t.campaigns.alwaysOnDesc || 'This campaign will continuously track all brand mentions and hashtags with no end date.'}
+                  </p>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {trackingType === 'influencer_tracking' && (
+            <Card variant="elevated">
+              <div className="flex items-center gap-2 mb-4">
+                <Calendar className="h-4 w-4 text-purple-600" />
+                <h3 className="text-base font-semibold text-gray-900">
+                  {t.campaigns.campaignDuration || 'Campaign Duration'}
+                </h3>
+              </div>
+              <p className="mb-4 text-sm text-gray-500">
+                {t.campaigns.campaignDurationDesc || 'Set the tracking period for this campaign. Only content posted within these dates will be tracked.'}
+              </p>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                    {t.campaigns.startDateLabel || 'Start Date'}
+                  </label>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                    {t.campaigns.endDateLabel || 'End Date'}
+                  </label>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    min={startDate || undefined}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+              </div>
+            </Card>
+          )}
 
           {/* Add Influencers (only for Influencer Tracking) */}
           {trackingType === 'influencer_tracking' && (

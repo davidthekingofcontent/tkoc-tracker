@@ -87,6 +87,8 @@ interface CampaignData {
   platforms: string[]
   targetAccounts: string[]
   targetHashtags: string[]
+  startDate: string | null
+  endDate: string | null
   influencers: CampaignInfluencer[]
   media: CampaignMedia[]
 }
@@ -418,6 +420,25 @@ export default function CampaignDetailPage() {
             </div>
             <div className="mt-1 flex items-center gap-2 text-sm text-gray-500">
               <span>{campaign.type === 'INFLUENCER_TRACKING' ? t.campaigns.influencerTracking : t.campaigns.socialListening}</span>
+              {campaign.type === 'SOCIAL_LISTENING' && (
+                <>
+                  <span>&middot;</span>
+                  <span className="inline-flex items-center gap-1 text-green-600 font-medium">
+                    <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                    {t.campaigns.alwaysOn || 'Always On'}
+                  </span>
+                </>
+              )}
+              {campaign.type === 'INFLUENCER_TRACKING' && (campaign.startDate || campaign.endDate) && (
+                <>
+                  <span>&middot;</span>
+                  <span>
+                    {campaign.startDate && new Date(campaign.startDate).toLocaleDateString()}
+                    {campaign.startDate && campaign.endDate && ' - '}
+                    {campaign.endDate && new Date(campaign.endDate).toLocaleDateString()}
+                  </span>
+                </>
+              )}
               {platforms.length > 0 && (
                 <>
                   <span>&middot;</span>

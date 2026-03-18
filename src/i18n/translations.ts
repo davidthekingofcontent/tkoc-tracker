@@ -120,6 +120,12 @@ export const translations = {
       followers: 'Followers',
       engagement: 'Engagement',
       platform: 'Platform',
+      alwaysOn: 'Always On',
+      alwaysOnDesc: 'This campaign will continuously track all brand mentions and hashtags with no end date.',
+      campaignDuration: 'Campaign Duration',
+      campaignDurationDesc: 'Set the tracking period for this campaign. Only content posted within these dates will be tracked.',
+      startDateLabel: 'Start Date',
+      endDateLabel: 'End Date',
     },
 
     // Lists
@@ -422,6 +428,12 @@ export const translations = {
       followers: 'Seguidores',
       engagement: 'Engagement',
       platform: 'Plataforma',
+      alwaysOn: 'Siempre Activo',
+      alwaysOnDesc: 'Esta campaña rastreará continuamente todas las menciones de marca y hashtags sin fecha de fin.',
+      campaignDuration: 'Duración de la Campaña',
+      campaignDurationDesc: 'Establece el periodo de seguimiento. Solo se rastreará contenido publicado dentro de estas fechas.',
+      startDateLabel: 'Fecha de Inicio',
+      endDateLabel: 'Fecha de Fin',
     },
 
     // Lists
