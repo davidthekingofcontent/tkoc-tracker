@@ -66,6 +66,28 @@ const SUGGESTIONS = {
 export function AIChatWidget() {
   const { t, locale } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
+  const [userRole, setUserRole] = useState<string | null>(null)
+
+  // Fetch user role on mount
+  useEffect(() => {
+    async function fetchRole() {
+      try {
+        const res = await fetch('/api/auth/me')
+        if (res.ok) {
+          const data = await res.json()
+          setUserRole(data.user?.role || null)
+        }
+      } catch {
+        setUserRole(null)
+      }
+    }
+    fetchRole()
+  }, [])
+
+  // Only show AI chat for ADMIN users
+  if (userRole !== 'ADMIN') {
+    return null
+  }
   const [isExpanded, setIsExpanded] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')

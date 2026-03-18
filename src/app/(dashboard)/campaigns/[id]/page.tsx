@@ -142,11 +142,11 @@ function sortInfluencers(
     let aVal: number
     let bVal: number
     if (sortField === 'followers') {
-      aVal = a.influencer.followers || 0
-      bVal = b.influencer.followers || 0
+      aVal = a.influencer?.followers || 0
+      bVal = b.influencer?.followers || 0
     } else {
-      aVal = a.influencer.engagementRate || 0
-      bVal = b.influencer.engagementRate || 0
+      aVal = a.influencer?.engagementRate || 0
+      bVal = b.influencer?.engagementRate || 0
     }
     return sortDirection === 'asc' ? aVal - bVal : bVal - aVal
   })
@@ -193,7 +193,8 @@ export default function CampaignDetailPage() {
         setOverview(data.overview)
         // If exactly 20 media items, there may be more
         const mediaCount = data.campaign?.media?.length || 0
-        setHasMoreMedia(mediaCount >= 20)
+        setMediaOffset(mediaCount)
+        setHasMoreMedia(mediaCount >= 50)
       }
     } catch (err) {
       console.error('Error fetching campaign:', err)
@@ -246,7 +247,7 @@ export default function CampaignDetailPage() {
 
     try {
       // Step 1: Analyze/scrape the influencer
-      const platform = campaign?.platforms?.[0] || 'INSTAGRAM'
+      const platform = (campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : 'INSTAGRAM'
       const analyzeRes = await fetch('/api/influencers/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -311,8 +312,8 @@ export default function CampaignDetailPage() {
     if (!campaign) return
     setIsLoadingMore(true)
     try {
-      const newOffset = mediaOffset + 20
-      const res = await fetch(`/api/campaigns/${campaignId}?mediaOffset=${newOffset}`)
+      const newOffset = mediaOffset
+      const res = await fetch(`/api/campaigns/${campaignId}?mediaOffset=${newOffset}&mediaLimit=50`)
       if (res.ok) {
         const data = await res.json()
         const newMedia: CampaignMedia[] = data.campaign?.media || []
@@ -324,8 +325,8 @@ export default function CampaignDetailPage() {
               media: [...prev.media, ...newMedia],
             }
           })
-          setMediaOffset(newOffset)
-          setHasMoreMedia(newMedia.length >= 20)
+          setMediaOffset(newOffset + newMedia.length)
+          setHasMoreMedia(newMedia.length >= 50)
         } else {
           setHasMoreMedia(false)
         }
@@ -377,8 +378,11 @@ export default function CampaignDetailPage() {
 
   const influencers = campaign.influencers || []
   const media = campaign.media || []
+  const platforms = campaign.platforms || []
+  const targetAccounts = campaign.targetAccounts || []
+  const targetHashtags = campaign.targetHashtags || []
 
-  const totalReach = overview?.totalReach || influencers.reduce((s, ci) => s + (ci.influencer.followers || 0), 0)
+  const totalReach = overview?.totalReach || influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0)
   const totalEngagements = overview?.totalEngagements || 0
   const totalMedia = overview?.totalMedia || media.length
   const isActive = campaign.status === 'ACTIVE'
@@ -414,8 +418,12 @@ export default function CampaignDetailPage() {
             </div>
             <div className="mt-1 flex items-center gap-2 text-sm text-gray-500">
               <span>{campaign.type === 'INFLUENCER_TRACKING' ? t.campaigns.influencerTracking : t.campaigns.socialListening}</span>
-              <span>&middot;</span>
-              <span>{campaign.platforms.map(p => p.charAt(0) + p.slice(1).toLowerCase()).join(', ')}</span>
+              {platforms.length > 0 && (
+                <>
+                  <span>&middot;</span>
+                  <span>{platforms.map(p => p.charAt(0) + p.slice(1).toLowerCase()).join(', ')}</span>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -493,24 +501,24 @@ export default function CampaignDetailPage() {
       )}
 
       {/* Tracking info */}
-      {(campaign.targetAccounts.length > 0 || campaign.targetHashtags.length > 0) && (
+      {(targetAccounts.length > 0 || targetHashtags.length > 0) && (
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
           <div className="flex flex-wrap gap-4">
-            {campaign.targetAccounts.length > 0 && (
+            {targetAccounts.length > 0 && (
               <div>
                 <span className="text-xs font-medium text-gray-500 uppercase">{t.campaigns.trackingAccounts}</span>
                 <div className="mt-1 flex flex-wrap gap-1.5">
-                  {campaign.targetAccounts.map(a => (
+                  {targetAccounts.map(a => (
                     <Badge key={a} variant="default">{a}</Badge>
                   ))}
                 </div>
               </div>
             )}
-            {campaign.targetHashtags.length > 0 && (
+            {targetHashtags.length > 0 && (
               <div>
                 <span className="text-xs font-medium text-gray-500 uppercase">{t.campaigns.trackingHashtags}</span>
                 <div className="mt-1 flex flex-wrap gap-1.5">
-                  {campaign.targetHashtags.map(h => (
+                  {targetHashtags.map(h => (
                     <Badge key={h} variant="default">{h}</Badge>
                   ))}
                 </div>
@@ -657,7 +665,7 @@ export default function CampaignDetailPage() {
                           </TableCell>
                         </TableRow>
                       ) : (
-                        sortedReportInfluencers.map((ci) => (
+                        sortedReportInfluencers.filter(ci => ci.influencer).map((ci) => (
                           <TableRow key={ci.id}>
                             <TableCell>
                               <div className="flex items-center gap-3">
@@ -770,13 +778,13 @@ export default function CampaignDetailPage() {
                     </div>
                     <div className="p-4">
                       <div className="flex items-center gap-2">
-                        <Avatar name={m.influencer.displayName || m.influencer.username} size="sm" />
+                        <Avatar name={m.influencer?.displayName || m.influencer?.username || '?'} size="sm" />
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-gray-900">
-                            {m.influencer.displayName || m.influencer.username}
+                            {m.influencer?.displayName || m.influencer?.username || 'Unknown'}
                           </p>
                           <p className="truncate text-xs text-gray-500">
-                            @{m.influencer.username}
+                            @{m.influencer?.username || 'unknown'}
                             {m.postedAt && ` · ${new Date(m.postedAt).toLocaleDateString()}`}
                           </p>
                         </div>
@@ -950,7 +958,7 @@ export default function CampaignDetailPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {sortedInfluencers.map((ci) => (
+                      {sortedInfluencers.filter(ci => ci.influencer).map((ci) => (
                         <TableRow key={ci.id}>
                           <TableCell>
                             <div className="flex items-center gap-3">
