@@ -279,7 +279,7 @@ export default function AnalyzePage() {
           />
         </div>
 
-        <Button size="lg" onClick={handleAnalyze} disabled={analyzing || !query.trim()} className="min-w-[180px]">
+        <Button variant="primary" size="lg" onClick={handleAnalyze} disabled={analyzing || !query.trim()} className="min-w-[180px] shadow-sm">
           {analyzing ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -447,7 +447,8 @@ export default function AnalyzePage() {
                 <div className="mt-5">
                   <Button
                     variant="primary"
-                    className="w-full bg-emerald-500 hover:bg-emerald-600"
+                    size="md"
+                    className="w-full shadow-sm"
                     onClick={() => setAddToModal({
                       open: true,
                       influencerId: profile.id,
@@ -632,8 +633,9 @@ export default function AnalyzePage() {
                         <TableCell>
                           <div className="flex items-center justify-end gap-1">
                             <Button
+                              variant="primary"
                               size="sm"
-                              className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                              className="opacity-0 group-hover:opacity-100 transition-opacity"
                               onClick={() => setAddToModal({
                                 open: true,
                                 influencerId: item.id,
