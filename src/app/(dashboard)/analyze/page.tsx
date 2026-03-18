@@ -6,7 +6,6 @@ import {
   Search,
   Instagram,
   Youtube,
-  Twitter,
   RefreshCw,
   ListPlus,
   ExternalLink,
@@ -171,15 +170,19 @@ const PlatformIcon = ({ platform }: { platform: string }) => {
     case 'youtube':
       return <Youtube className="h-4 w-4 text-red-400" />
     case 'tiktok':
-      return <Twitter className="h-4 w-4 text-cyan-400" />
+      return <svg className="h-4 w-4 text-cyan-400" viewBox="0 0 24 24" fill="currentColor"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.34-6.34V9.05a8.27 8.27 0 004.76 1.5V7.12a4.83 4.83 0 01-1-.43z"/></svg>
     default:
       return null
   }
 }
 
+const TikTokIcon = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="currentColor"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.34-6.34V9.05a8.27 8.27 0 004.76 1.5V7.12a4.83 4.83 0 01-1-.43z"/></svg>
+)
+
 const platformButtons = [
   { id: 'INSTAGRAM', label: 'Instagram', icon: Instagram, color: 'text-pink-400' },
-  { id: 'TIKTOK', label: 'TikTok', icon: Twitter, color: 'text-cyan-400' },
+  { id: 'TIKTOK', label: 'TikTok', icon: TikTokIcon, color: 'text-cyan-400' },
   { id: 'YOUTUBE', label: 'YouTube', icon: Youtube, color: 'text-red-400' },
 ]
 
@@ -424,7 +427,7 @@ export default function AnalyzePage() {
           </select>
           <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
             {selectedPlatform === 'INSTAGRAM' && <Instagram className="h-4 w-4 text-pink-400" />}
-            {selectedPlatform === 'TIKTOK' && <Twitter className="h-4 w-4 text-cyan-400" />}
+            {selectedPlatform === 'TIKTOK' && <svg className="h-4 w-4 text-cyan-400" viewBox="0 0 24 24" fill="currentColor"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.34-6.34V9.05a8.27 8.27 0 004.76 1.5V7.12a4.83 4.83 0 01-1-.43z"/></svg>}
             {selectedPlatform === 'YOUTUBE' && <Youtube className="h-4 w-4 text-red-400" />}
           </div>
         </div>
