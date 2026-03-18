@@ -52,7 +52,11 @@ export async function POST(request: NextRequest) {
       hasNoData
 
     // If Apify is configured and data is stale or doesn't exist, scrape fresh data
-    if (isApifyConfigured() && (!existing || isStale)) {
+    const apifyReady = isApifyConfigured()
+    console.log(`[Analyze] username=${cleanUsername}, platform=${platform}, apifyConfigured=${apifyReady}, existing=${!!existing}, isStale=${isStale}, hasNoData=${hasNoData}`)
+
+    if (apifyReady && (!existing || isStale)) {
+      console.log(`[Analyze] Starting Apify scrape for ${cleanUsername} on ${platform}`)
       try {
         // Create a scrape job record
         const job = await prisma.scrapeJob.create({
@@ -198,7 +202,8 @@ export async function POST(request: NextRequest) {
           },
         })
       } catch (scrapeError) {
-        console.error('Apify scrape error:', scrapeError)
+        console.error('[Analyze] Apify scrape error:', scrapeError instanceof Error ? scrapeError.message : scrapeError)
+        console.error('[Analyze] Full error:', scrapeError)
         // Continue to return existing data if scraping fails
       }
     }

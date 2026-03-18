@@ -16,6 +16,10 @@ async function runActor(
   const token = getToken()
   if (!token) throw new Error('APIFY_API_KEY not configured')
 
+  const url = `${APIFY_BASE}/acts/${actorId}/runs?token=${token.substring(0, 8)}...&waitForFinish=${timeoutSecs}`
+  console.log(`[Apify] Starting actor ${actorId} with input:`, JSON.stringify(input).substring(0, 200))
+  console.log(`[Apify] Request URL pattern: ${url}`)
+
   // Start the actor run and wait for it to finish
   const runRes = await fetch(
     `${APIFY_BASE}/acts/${actorId}/runs?token=${token}&waitForFinish=${timeoutSecs}`,
@@ -26,13 +30,17 @@ async function runActor(
     }
   )
 
+  console.log(`[Apify] Response status: ${runRes.status}`)
+
   if (!runRes.ok) {
     const errText = await runRes.text()
+    console.error(`[Apify] Actor ${actorId} FAILED: ${runRes.status} ${errText}`)
     throw new Error(`Apify actor ${actorId} failed to start: ${runRes.status} ${errText}`)
   }
 
   const runData = await runRes.json() as { data?: { defaultDatasetId?: string; status?: string } }
   const datasetId = runData.data?.defaultDatasetId
+  console.log(`[Apify] Run status: ${runData.data?.status}, datasetId: ${datasetId}`)
 
   if (!datasetId) {
     throw new Error(`Apify actor ${actorId} did not return a dataset ID`)
@@ -68,6 +76,7 @@ async function runActor(
   }
 
   const items = await dataRes.json() as Record<string, unknown>[]
+  console.log(`[Apify] Got ${items?.length || 0} items from dataset ${datasetId}`)
   return items || []
 }
 
