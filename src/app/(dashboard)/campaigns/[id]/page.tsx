@@ -31,6 +31,7 @@ import {
   Instagram,
   Youtube,
   Twitter,
+  Download,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -165,14 +166,15 @@ export default function CampaignDetailPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-4">
-        <Link href="/campaigns">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="h-4 w-4" />
-            {t.common.back}
-          </Button>
-        </Link>
-        <div>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Link href="/campaigns">
+            <Button variant="ghost" size="sm">
+              <ArrowLeft className="h-4 w-4" />
+              {t.common.back}
+            </Button>
+          </Link>
+          <div>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold text-gray-900">{campaign.name}</h1>
             <Badge variant={campaign.status === 'ACTIVE' ? 'active' : campaign.status === 'PAUSED' ? 'paused' : 'archived'}>
@@ -185,6 +187,13 @@ export default function CampaignDetailPage() {
             <span>{campaign.platforms.map(p => p.charAt(0) + p.slice(1).toLowerCase()).join(', ')}</span>
           </div>
         </div>
+        </div>
+        <a href={`/api/campaigns/${campaign.id}/export?format=csv`} download>
+          <Button variant="secondary" size="sm">
+            <Download className="h-4 w-4" />
+            Export CSV
+          </Button>
+        </a>
       </div>
 
       {/* Tracking info */}
