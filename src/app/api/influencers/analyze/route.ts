@@ -46,8 +46,10 @@ export async function POST(request: NextRequest) {
       },
     })
 
+    const hasNoData = existing && existing.followers === 0 && existing.engagementRate === 0
     const isStale = !existing?.lastScraped ||
-      (Date.now() - existing.lastScraped.getTime()) > 24 * 60 * 60 * 1000
+      (Date.now() - existing.lastScraped.getTime()) > 24 * 60 * 60 * 1000 ||
+      hasNoData
 
     // If Apify is configured and data is stale or doesn't exist, scrape fresh data
     if (isApifyConfigured() && (!existing || isStale)) {
