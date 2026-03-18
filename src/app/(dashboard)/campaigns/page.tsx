@@ -98,23 +98,23 @@ export default function CampaignsPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           icon={<Megaphone className="h-5 w-5" />}
-          label="Active Campaigns"
+          label={t.campaigns.activeCampaigns}
           value={stats.active}
           accent
         />
         <StatCard
           icon={<Users className="h-5 w-5" />}
-          label="Profiles Tracked"
+          label={t.campaigns.profilesTracked}
           value={formatNumber(stats.profiles)}
         />
         <StatCard
           icon={<FileText className="h-5 w-5" />}
-          label="Total Campaigns"
+          label={t.campaigns.totalCampaigns}
           value={stats.total}
         />
         <StatCard
           icon={<Camera className="h-5 w-5" />}
-          label="Media Found"
+          label={t.campaigns.mediaFound}
           value={formatNumber(stats.media)}
         />
       </div>
@@ -133,7 +133,7 @@ export default function CampaignsPage() {
         </Tabs>
         <div className="w-full sm:w-72">
           <Input
-            placeholder="Search campaigns..."
+            placeholder={t.campaigns.searchCampaigns}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             icon={<Search className="h-4 w-4" />}
@@ -146,18 +146,18 @@ export default function CampaignsPage() {
         {isLoading ? (
           <div className="flex items-center justify-center py-16">
             <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
-            <span className="ml-2 text-gray-500">Loading campaigns...</span>
+            <span className="ml-2 text-gray-500">{t.campaigns.loadingCampaigns}</span>
           </div>
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Campaign Name</TableHead>
-                <TableHead>Profiles</TableHead>
-                <TableHead>Date Created</TableHead>
-                <TableHead>Targets</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>{t.campaigns.campaignNameCol}</TableHead>
+                <TableHead>{t.campaigns.profiles}</TableHead>
+                <TableHead>{t.campaigns.dateCreated}</TableHead>
+                <TableHead>{t.campaigns.targets}</TableHead>
+                <TableHead>{t.campaigns.type}</TableHead>
+                <TableHead>{t.common.status}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

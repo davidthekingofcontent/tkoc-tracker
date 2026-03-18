@@ -7,7 +7,6 @@ import {
   MoreHorizontal,
   Instagram,
   Youtube,
-  Twitter,
   Loader2,
   Users,
 } from 'lucide-react'
@@ -49,7 +48,7 @@ const PlatformIcon = ({ platform }: { platform: string }) => {
   switch (platform) {
     case 'INSTAGRAM': return <Instagram className="h-3.5 w-3.5" />
     case 'YOUTUBE': return <Youtube className="h-3.5 w-3.5" />
-    case 'TIKTOK': return <Twitter className="h-3.5 w-3.5" />
+    case 'TIKTOK': return <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.34-6.34V9.05a8.27 8.27 0 004.76 1.5V7.12a4.83 4.83 0 01-1-.43z"/></svg>
     default: return null
   }
 }
@@ -144,9 +143,9 @@ export default function ContactsPage() {
                 <TableHead>{t.campaigns.followers}</TableHead>
                 <TableHead>{t.campaigns.engagement}</TableHead>
                 <TableHead>{t.common.email}</TableHead>
-                <TableHead>Phone</TableHead>
+                <TableHead>{t.contacts.phone}</TableHead>
                 <TableHead>{t.common.status}</TableHead>
-                <TableHead>Added</TableHead>
+                <TableHead>{t.contacts.added}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

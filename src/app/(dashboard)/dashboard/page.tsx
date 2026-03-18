@@ -212,7 +212,7 @@ export default function DashboardPage() {
             ))
           ) : recentCampaigns.length === 0 ? (
             <div className="px-6 py-12 text-center text-gray-500">
-              No campaigns yet. Create your first campaign to get started.
+              {t.campaigns.noCampaignsStart}
             </div>
           ) : (
             recentCampaigns.map((campaign) => (

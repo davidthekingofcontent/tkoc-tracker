@@ -159,7 +159,7 @@ export default function DiscoverPage() {
               className="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-900 transition-colors"
             >
               <RotateCcw className="h-3 w-3" />
-              Reset
+              {t.discover.reset}
             </button>
           </div>
 
@@ -206,7 +206,7 @@ export default function DiscoverPage() {
 
           <Input
             label={t.discover.location}
-            placeholder="Madrid, España..."
+            placeholder={t.discover.locationPlaceholder}
             value={filters.location}
             onChange={(e) => updateFilter('location', e.target.value)}
           />
@@ -226,8 +226,8 @@ export default function DiscoverPage() {
           />
 
           <Input
-            label="Keyword in Bio"
-            placeholder="vegan, photographer..."
+            label={t.discover.bioKeyword}
+            placeholder={t.discover.bioKeywordPlaceholder}
             value={filters.bioKeyword}
             onChange={(e) => updateFilter('bioKeyword', e.target.value)}
           />
@@ -249,7 +249,7 @@ export default function DiscoverPage() {
             </Button>
             <Button variant="ghost" onClick={resetFilters} className="w-full">
               <RotateCcw className="h-4 w-4" />
-              Reset
+              {t.discover.reset}
             </Button>
           </div>
         </div>
@@ -292,7 +292,7 @@ export default function DiscoverPage() {
                   {total} {t.listDetail.results}
                 </p>
                 <span className="inline-flex items-center rounded-full bg-purple-50 px-2.5 py-0.5 text-xs font-medium text-purple-700">
-                  {source === 'apify' ? 'External Search' : 'Internal Database'}
+                  {source === 'apify' ? t.discover.externalSearch : t.discover.internalDatabase}
                 </span>
               </div>
 
@@ -302,10 +302,10 @@ export default function DiscoverPage() {
                     <TableRow>
                       <TableHead>{t.analyze.username}</TableHead>
                       <TableHead>{t.campaigns.followers}</TableHead>
-                      <TableHead>Eng. Rate</TableHead>
-                      <TableHead>Mdn. Likes</TableHead>
-                      <TableHead>Mdn. Comments</TableHead>
-                      <TableHead>Mdn. Views</TableHead>
+                      <TableHead>{t.discover.engRate}</TableHead>
+                      <TableHead>{t.discover.mdnLikes}</TableHead>
+                      <TableHead>{t.discover.mdnComments}</TableHead>
+                      <TableHead>{t.discover.mdnViews}</TableHead>
                       <TableHead>{t.common.email}</TableHead>
                       <TableHead className="text-right"></TableHead>
                     </TableRow>
@@ -356,7 +356,7 @@ export default function DiscoverPage() {
                         <TableCell>{formatNumber(item.avgViews)}</TableCell>
                         <TableCell>
                           <span className="text-xs text-gray-500 max-w-[180px] truncate block">
-                            {item.email || 'Not Provided'}
+                            {item.email || t.discover.notProvided}
                           </span>
                         </TableCell>
                         <TableCell>
@@ -366,7 +366,7 @@ export default function DiscoverPage() {
                               className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
                             >
                               <ListPlus className="h-3 w-3" />
-                              Add to...
+                              {t.discover.addTo}
                             </Button>
                           </div>
                         </TableCell>
