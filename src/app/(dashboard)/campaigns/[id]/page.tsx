@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/table'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { formatNumber, formatCurrency } from '@/lib/utils'
+import { useI18n } from '@/i18n/context'
 import {
   ArrowLeft,
   Users,
@@ -109,6 +110,7 @@ const platformBadge = (platform: string) => {
 
 export default function CampaignDetailPage() {
   const params = useParams()
+  const { t } = useI18n()
   const campaignId = params.id as string
   const [campaign, setCampaign] = useState<CampaignData | null>(null)
   const [overview, setOverview] = useState<Overview | null>(null)
@@ -136,7 +138,7 @@ export default function CampaignDetailPage() {
     return (
       <div className="flex items-center justify-center py-24">
         <Loader2 className="h-8 w-8 animate-spin text-purple-600" />
-        <span className="ml-3 text-gray-500">Loading campaign...</span>
+        <span className="ml-3 text-gray-500">{t.common.loading}</span>
       </div>
     )
   }
@@ -144,9 +146,9 @@ export default function CampaignDetailPage() {
   if (!campaign) {
     return (
       <div className="py-24 text-center">
-        <p className="text-gray-500">Campaign not found</p>
+        <p className="text-gray-500">{t.common.noResults}</p>
         <Link href="/campaigns" className="mt-4 text-purple-600 hover:underline">
-          Back to campaigns
+          {t.common.back}
         </Link>
       </div>
     )
@@ -167,18 +169,18 @@ export default function CampaignDetailPage() {
         <Link href="/campaigns">
           <Button variant="ghost" size="sm">
             <ArrowLeft className="h-4 w-4" />
-            Back
+            {t.common.back}
           </Button>
         </Link>
         <div>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold text-gray-900">{campaign.name}</h1>
             <Badge variant={campaign.status === 'ACTIVE' ? 'active' : campaign.status === 'PAUSED' ? 'paused' : 'archived'}>
-              {campaign.status.toLowerCase()}
+              {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
             </Badge>
           </div>
           <div className="mt-1 flex items-center gap-2 text-sm text-gray-500">
-            <span>{campaign.type === 'INFLUENCER_TRACKING' ? 'Influencer Tracking' : 'Social Listening'}</span>
+            <span>{campaign.type === 'INFLUENCER_TRACKING' ? t.campaigns.influencerTracking : t.campaigns.socialListening}</span>
             <span>&middot;</span>
             <span>{campaign.platforms.map(p => p.charAt(0) + p.slice(1).toLowerCase()).join(', ')}</span>
           </div>
@@ -191,7 +193,7 @@ export default function CampaignDetailPage() {
           <div className="flex flex-wrap gap-4">
             {campaign.targetAccounts.length > 0 && (
               <div>
-                <span className="text-xs font-medium text-gray-500 uppercase">Tracking Accounts</span>
+                <span className="text-xs font-medium text-gray-500 uppercase">{t.campaigns.trackingAccounts}</span>
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   {campaign.targetAccounts.map(a => (
                     <Badge key={a} variant="default">{a}</Badge>
@@ -201,7 +203,7 @@ export default function CampaignDetailPage() {
             )}
             {campaign.targetHashtags.length > 0 && (
               <div>
-                <span className="text-xs font-medium text-gray-500 uppercase">Tracking Hashtags</span>
+                <span className="text-xs font-medium text-gray-500 uppercase">{t.campaigns.trackingHashtags}</span>
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   {campaign.targetHashtags.map(h => (
                     <Badge key={h} variant="default">{h}</Badge>
@@ -216,9 +218,9 @@ export default function CampaignDetailPage() {
       {/* Tabs */}
       <Tabs defaultValue="report">
         <TabsList>
-          <TabsTrigger value="report">Report</TabsTrigger>
-          <TabsTrigger value="media">Media ({totalMedia})</TabsTrigger>
-          <TabsTrigger value="influencers">Influencers ({influencers.length})</TabsTrigger>
+          <TabsTrigger value="report">{t.campaigns.report}</TabsTrigger>
+          <TabsTrigger value="media">{t.campaigns.mediaTab} ({totalMedia})</TabsTrigger>
+          <TabsTrigger value="influencers">{t.campaigns.influencersTab} ({influencers.length})</TabsTrigger>
         </TabsList>
 
         {/* Report Tab */}
@@ -229,23 +231,23 @@ export default function CampaignDetailPage() {
               <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                 <StatCard
                   icon={<Users className="h-5 w-5" />}
-                  label="Influencers"
+                  label={t.dashboard.influencers}
                   value={influencers.length}
                   accent
                 />
                 <StatCard
                   icon={<Image className="h-5 w-5" />}
-                  label="Media Posted"
+                  label={t.dashboard.media}
                   value={totalMedia}
                 />
                 <StatCard
                   icon={<Eye className="h-5 w-5" />}
-                  label="Total Reach"
+                  label={t.dashboard.totalReach}
                   value={formatNumber(totalReach)}
                 />
                 <StatCard
                   icon={<Heart className="h-5 w-5" />}
-                  label="Engagements"
+                  label={t.campaigns.engagement}
                   value={formatNumber(totalEngagements)}
                 />
               </div>
@@ -254,16 +256,16 @@ export default function CampaignDetailPage() {
             {/* Influencer Overview Table */}
             <Card variant="elevated">
               <CardHeader>
-                <CardTitle>Influencer Overview</CardTitle>
+                <CardTitle>{t.dashboard.influencers}</CardTitle>
               </CardHeader>
               <CardContent>
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Influencer</TableHead>
-                      <TableHead>Platform</TableHead>
-                      <TableHead>Followers</TableHead>
-                      <TableHead>Eng. Rate</TableHead>
+                      <TableHead>{t.dashboard.influencers}</TableHead>
+                      <TableHead>{t.campaigns.platform}</TableHead>
+                      <TableHead>{t.campaigns.followers}</TableHead>
+                      <TableHead>{t.campaigns.engagement}</TableHead>
                       <TableHead>Avg Likes</TableHead>
                       <TableHead>Avg Comments</TableHead>
                     </TableRow>
@@ -272,7 +274,7 @@ export default function CampaignDetailPage() {
                     {influencers.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={6} className="py-12 text-center text-gray-500">
-                          No influencers assigned yet
+                          {t.common.noResults}
                         </TableCell>
                       </TableRow>
                     ) : (
@@ -318,7 +320,7 @@ export default function CampaignDetailPage() {
           {media.length === 0 ? (
             <div className="rounded-xl border border-gray-200 bg-white py-16 text-center shadow-sm">
               <Image className="mx-auto h-12 w-12 text-gray-300" />
-              <p className="mt-4 text-gray-500">No media tracked yet</p>
+              <p className="mt-4 text-gray-500">{t.common.noResults}</p>
               <p className="mt-1 text-sm text-gray-400">
                 Media will appear here once influencers post content matching the campaign tracking criteria.
               </p>
@@ -373,10 +375,10 @@ export default function CampaignDetailPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Influencer</TableHead>
-                    <TableHead>Platform</TableHead>
-                    <TableHead>Followers</TableHead>
-                    <TableHead>Eng. Rate</TableHead>
+                    <TableHead>{t.dashboard.influencers}</TableHead>
+                    <TableHead>{t.campaigns.platform}</TableHead>
+                    <TableHead>{t.campaigns.followers}</TableHead>
+                    <TableHead>{t.campaigns.engagement}</TableHead>
                     <TableHead>Avg Likes</TableHead>
                     <TableHead>Avg Comments</TableHead>
                     <TableHead>Avg Views</TableHead>
@@ -386,7 +388,7 @@ export default function CampaignDetailPage() {
                   {influencers.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={7} className="py-12 text-center text-gray-500">
-                        No influencers assigned yet
+                        {t.common.noResults}
                       </TableCell>
                     </TableRow>
                   ) : (

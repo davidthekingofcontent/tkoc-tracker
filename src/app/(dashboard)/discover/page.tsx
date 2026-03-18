@@ -5,8 +5,10 @@ import { Search, RotateCcw, Compass } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { useI18n } from '@/i18n/context'
 
 export default function DiscoverPage() {
+  const { t } = useI18n()
   const [filters, setFilters] = useState({
     platform: 'instagram',
     topic: '',
@@ -57,9 +59,9 @@ export default function DiscoverPage() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Find Creators</h1>
+        <h1 className="text-2xl font-bold text-gray-900">{t.discover.title}</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Discover influencers that match your campaign criteria
+          {t.discover.subtitle}
         </p>
       </div>
 
@@ -69,7 +71,7 @@ export default function DiscoverPage() {
         <div className="w-80 shrink-0 space-y-5 rounded-xl border border-gray-200 bg-white shadow-sm p-5">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-500">
-              Filters
+              {t.discover.filters}
             </h2>
             <button
               onClick={resetFilters}
@@ -81,7 +83,7 @@ export default function DiscoverPage() {
           </div>
 
           <Select
-            label="Platform"
+            label={t.campaigns.platform}
             value={filters.platform}
             onChange={(e) => updateFilter('platform', e.target.value)}
             options={[
@@ -92,26 +94,26 @@ export default function DiscoverPage() {
           />
 
           <Input
-            label="Topic / Lookalike"
-            placeholder="e.g. fitness, @username"
+            label={t.discover.category}
+            placeholder={t.discover.searchPlaceholder}
             value={filters.topic}
             onChange={(e) => updateFilter('topic', e.target.value)}
           />
 
           <div>
             <label className="mb-1.5 block text-sm font-medium text-gray-700">
-              Followers Range
+              {t.campaigns.followers}
             </label>
             <div className="flex items-center gap-2">
               <Input
-                placeholder="Min"
+                placeholder={t.discover.minFollowers}
                 type="number"
                 value={filters.followersMin}
                 onChange={(e) => updateFilter('followersMin', e.target.value)}
               />
               <span className="text-gray-400">-</span>
               <Input
-                placeholder="Max"
+                placeholder={t.discover.maxFollowers}
                 type="number"
                 value={filters.followersMax}
                 onChange={(e) => updateFilter('followersMax', e.target.value)}
@@ -120,14 +122,14 @@ export default function DiscoverPage() {
           </div>
 
           <Input
-            label="Location"
+            label={t.discover.location}
             placeholder="e.g. Madrid, Spain"
             value={filters.location}
             onChange={(e) => updateFilter('location', e.target.value)}
           />
 
           <Select
-            label="Engagement %"
+            label={`${t.campaigns.engagement} %`}
             value={filters.engagement}
             onChange={(e) => updateFilter('engagement', e.target.value)}
             placeholder="Any"
@@ -242,7 +244,7 @@ export default function DiscoverPage() {
           <div className="flex flex-col gap-2 border-t border-gray-200 pt-5">
             <Button onClick={handleSearch} className="w-full">
               <Search className="h-4 w-4" />
-              Search
+              {t.common.search}
             </Button>
             <Button variant="ghost" onClick={resetFilters} className="w-full">
               <RotateCcw className="h-4 w-4" />

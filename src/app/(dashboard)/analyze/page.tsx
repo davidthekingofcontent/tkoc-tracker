@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useI18n } from '@/i18n/context'
 import {
   Search,
   Instagram,
@@ -146,6 +147,7 @@ const platformButtons = [
 ]
 
 export default function AnalyzePage() {
+  const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [selectedPlatform, setSelectedPlatform] = useState('instagram')
 
@@ -153,9 +155,9 @@ export default function AnalyzePage() {
     <div className="space-y-8">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Analyze Profiles</h1>
+        <h1 className="text-2xl font-bold text-gray-900">{t.analyze.title}</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Search and analyze any creator profile across platforms
+          {t.analyze.subtitle}
         </p>
       </div>
 
@@ -186,13 +188,13 @@ export default function AnalyzePage() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="e.g. katyperry or paste Instagram/TikTok/YouTube URL"
+              placeholder={t.analyze.inputPlaceholder}
               className="block w-full rounded-lg border border-gray-200 bg-gray-50 py-3.5 pl-12 pr-4 text-base text-gray-900 placeholder-gray-400 transition-colors focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
             />
           </div>
           <Button size="lg">
             <Search className="h-4 w-4" />
-            Analyze Profile
+            {t.analyze.analyze}
           </Button>
         </div>
       </div>
@@ -211,13 +213,13 @@ export default function AnalyzePage() {
                 <TableRow>
                   <TableHead className="w-8"></TableHead>
                   <TableHead>Username</TableHead>
-                  <TableHead>Followers</TableHead>
-                  <TableHead>Eng. Rate</TableHead>
+                  <TableHead>{t.campaigns.followers}</TableHead>
+                  <TableHead>{t.campaigns.engagement}</TableHead>
                   <TableHead>Median Likes</TableHead>
                   <TableHead>Median Comments</TableHead>
                   <TableHead>Median Views</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead>{t.common.email}</TableHead>
+                  <TableHead className="text-right">{t.common.actions}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

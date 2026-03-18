@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useI18n } from '@/i18n/context'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -99,6 +100,8 @@ const mockIntegrations: Integration[] = [
 // ---------- Component ----------
 
 export default function SettingsPage() {
+  const { t } = useI18n()
+
   // Profile state
   const [profileName, setProfileName] = useState(mockProfile.name)
   const [profileEmail, setProfileEmail] = useState(mockProfile.email)
@@ -156,23 +159,23 @@ export default function SettingsPage() {
     <div className="space-y-6">
       {/* Page Header */}
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
-        <p className="mt-1 text-gray-500">Manage your account, team, and integrations.</p>
+        <h1 className="text-3xl font-bold text-gray-900">{t.settings.title}</h1>
+        <p className="mt-1 text-gray-500">{t.settings.subtitle}</p>
       </div>
 
       <Tabs defaultValue="profile">
         <TabsList>
           <TabsTrigger value="profile" className="gap-1.5">
-            <User className="h-4 w-4" /> Profile
+            <User className="h-4 w-4" /> {t.settings.profile}
           </TabsTrigger>
           <TabsTrigger value="team" className="gap-1.5">
-            <Users className="h-4 w-4" /> Team
+            <Users className="h-4 w-4" /> {t.settings.team}
           </TabsTrigger>
           <TabsTrigger value="integrations" className="gap-1.5">
-            <Plug className="h-4 w-4" /> Integrations
+            <Plug className="h-4 w-4" /> {t.settings.integrations}
           </TabsTrigger>
           <TabsTrigger value="billing" className="gap-1.5">
-            <CreditCard className="h-4 w-4" /> Billing
+            <CreditCard className="h-4 w-4" /> {t.settings.billing}
           </TabsTrigger>
         </TabsList>
 
@@ -228,10 +231,10 @@ export default function SettingsPage() {
                   <Button onClick={handleProfileSave} loading={profileSaving}>
                     {profileSaved ? (
                       <span className="inline-flex items-center gap-1.5">
-                        <Check className="h-4 w-4" /> Saved
+                        <Check className="h-4 w-4" /> {t.common.save}
                       </span>
                     ) : (
-                      "Save Changes"
+                      t.common.save
                     )}
                   </Button>
                   {profileSaved && (
@@ -257,11 +260,11 @@ export default function SettingsPage() {
                 <table className="w-full text-left text-sm">
                   <thead>
                     <tr className="border-b border-gray-200 text-xs uppercase tracking-wider text-gray-400">
-                      <th className="pb-3 pr-4 font-medium">Member</th>
-                      <th className="pb-3 pr-4 font-medium">Email</th>
+                      <th className="pb-3 pr-4 font-medium">{t.common.name}</th>
+                      <th className="pb-3 pr-4 font-medium">{t.common.email}</th>
                       <th className="pb-3 pr-4 font-medium">Role</th>
-                      <th className="pb-3 pr-4 font-medium">Status</th>
-                      <th className="pb-3 font-medium text-right">Actions</th>
+                      <th className="pb-3 pr-4 font-medium">{t.common.status}</th>
+                      <th className="pb-3 font-medium text-right">{t.common.actions}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -290,13 +293,13 @@ export default function SettingsPage() {
                           <div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                             <button
                               className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-900"
-                              title="Edit role"
+                              title={t.common.edit}
                             >
                               <Pencil className="h-3.5 w-3.5" />
                             </button>
                             <button
                               className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500"
-                              title="Remove member"
+                              title={t.common.remove}
                               onClick={() => handleRemoveMember(member.id)}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
@@ -339,7 +342,7 @@ export default function SettingsPage() {
             </ModalBody>
             <ModalFooter>
               <Button variant="secondary" onClick={() => setInviteOpen(false)}>
-                Cancel
+                {t.common.cancel}
               </Button>
               <Button onClick={handleInvite}>
                 <Send className="h-4 w-4" /> Send Invite
@@ -419,7 +422,7 @@ export default function SettingsPage() {
                     />
                   </div>
                   <Button size="sm" variant="secondary" className="mb-[1px]">
-                    Save
+                    {t.common.save}
                   </Button>
                 </div>
               </CardContent>

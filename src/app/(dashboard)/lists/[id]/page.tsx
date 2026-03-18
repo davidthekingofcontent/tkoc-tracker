@@ -29,6 +29,7 @@ import {
   TableCell,
 } from '@/components/ui/table'
 import { formatNumber } from '@/lib/utils'
+import { useI18n } from '@/i18n/context'
 
 interface ListInfluencer {
   id: string
@@ -78,6 +79,7 @@ const platformBadge = (platform: string) => {
 
 export default function ListDetailPage() {
   const params = useParams()
+  const { t } = useI18n()
   const listId = params.id as string
   const [list, setList] = useState<ListData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -115,7 +117,7 @@ export default function ListDetailPage() {
     return (
       <div className="flex items-center justify-center py-24">
         <Loader2 className="h-8 w-8 animate-spin text-purple-600" />
-        <span className="ml-3 text-gray-500">Loading list...</span>
+        <span className="ml-3 text-gray-500">{t.common.loading}</span>
       </div>
     )
   }
@@ -125,7 +127,7 @@ export default function ListDetailPage() {
       <div className="py-24 text-center">
         <p className="text-gray-500">List not found</p>
         <Link href="/lists" className="mt-4 text-purple-600 hover:underline">
-          Back to lists
+          {t.common.back}
         </Link>
       </div>
     )
@@ -143,7 +145,7 @@ export default function ListDetailPage() {
         className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 transition-colors"
       >
         <ArrowLeft className="h-4 w-4" />
-        Back to Lists
+        {t.common.back}
       </Link>
 
       {/* Header */}
@@ -166,18 +168,18 @@ export default function ListDetailPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard
           icon={<Users className="h-5 w-5" />}
-          label="Influencers"
+          label={t.lists.creators}
           value={items.length}
           accent
         />
         <StatCard
           icon={<Eye className="h-5 w-5" />}
-          label="Combined Reach"
+          label={t.lists.reach}
           value={formatNumber(combinedReach)}
         />
         <StatCard
           icon={<Mail className="h-5 w-5" />}
-          label="With Email"
+          label={t.lists.withEmail}
           value={withEmail}
         />
       </div>
@@ -187,21 +189,21 @@ export default function ListDetailPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Influencer</TableHead>
-              <TableHead>Platform</TableHead>
-              <TableHead>Followers</TableHead>
-              <TableHead>Eng. Rate</TableHead>
+              <TableHead>{t.common.name}</TableHead>
+              <TableHead>{t.campaigns.platform}</TableHead>
+              <TableHead>{t.campaigns.followers}</TableHead>
+              <TableHead>{t.campaigns.engagement}</TableHead>
               <TableHead>Avg Likes</TableHead>
               <TableHead>Location</TableHead>
-              <TableHead>Email</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+              <TableHead>{t.common.email}</TableHead>
+              <TableHead className="text-right">{t.common.actions}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {items.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={8} className="py-12 text-center text-gray-500">
-                  No influencers in this list yet
+                  {t.common.noResults}
                 </TableCell>
               </TableRow>
             ) : (
@@ -245,7 +247,7 @@ export default function ListDetailPage() {
                     <button
                       onClick={() => handleRemove(item.id)}
                       className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500"
-                      title="Remove from list"
+                      title={t.lists.removeFromList}
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>

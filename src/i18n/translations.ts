@@ -49,6 +49,7 @@ export const translations = {
       campaigns: 'Campaigns',
       analyzeProfiles: 'Analyze Profiles',
       findCreators: 'Find Creators',
+      lookalikes: 'Lookalikes',
       lists: 'Lists',
       contacts: 'Contacts',
       settings: 'Settings',
@@ -169,6 +170,19 @@ export const translations = {
       category: 'Category',
     },
 
+    // Lookalikes
+    lookalikes: {
+      title: 'Lookalikes',
+      subtitle: 'Find creators similar to your top-performing influencers',
+      inputPlaceholder: 'Enter an Instagram, TikTok or YouTube handle...',
+      find: 'Find Lookalikes',
+      finding: 'Finding...',
+      similarTo: 'Similar to',
+      matchScore: 'Match',
+      noResults: 'No lookalikes found. Try a different creator.',
+      enterCreator: 'Enter a creator handle to find similar profiles with comparable audience and engagement.',
+    },
+
     // Settings
     settings: {
       title: 'Settings',
@@ -229,6 +243,7 @@ export const translations = {
       campaigns: 'Campañas',
       analyzeProfiles: 'Analizar Perfiles',
       findCreators: 'Buscar Creadores',
+      lookalikes: 'Similares',
       lists: 'Listas',
       contacts: 'Contactos',
       settings: 'Ajustes',
@@ -347,6 +362,19 @@ export const translations = {
       minFollowers: 'Mín. Seguidores',
       maxFollowers: 'Máx. Seguidores',
       category: 'Categoría',
+    },
+
+    // Lookalikes
+    lookalikes: {
+      title: 'Similares',
+      subtitle: 'Encuentra creadores parecidos a tus influencers más exitosos',
+      inputPlaceholder: 'Introduce un handle de Instagram, TikTok o YouTube...',
+      find: 'Buscar Similares',
+      finding: 'Buscando...',
+      similarTo: 'Similar a',
+      matchScore: 'Coincidencia',
+      noResults: 'No se encontraron perfiles similares. Prueba con otro creador.',
+      enterCreator: 'Introduce un handle de creador para encontrar perfiles similares con audiencia y engagement comparables.',
     },
 
     // Settings

@@ -10,6 +10,7 @@ import {
   Compass,
   List,
   Users,
+  UserCheck,
   Settings,
   ChevronDown,
   ChevronRight,
@@ -18,7 +19,6 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useI18n } from '@/i18n/context'
-import { LanguageToggle } from '@/components/ui/language-toggle'
 
 interface NavItem {
   key: string
@@ -31,6 +31,7 @@ const navItems: NavItem[] = [
   { key: "campaigns", icon: Megaphone, href: "/campaigns" },
   { key: "analyzeProfiles", icon: Search, href: "/analyze" },
   { key: "findCreators", icon: Compass, href: "/discover" },
+  { key: "lookalikes", icon: UserCheck, href: "/lookalikes" },
   { key: "lists", icon: List, href: "/lists" },
   { key: "contacts", icon: Users, href: "/contacts" },
   { key: "settings", icon: Settings, href: "/settings" },
@@ -60,6 +61,7 @@ function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
     case 'campaigns': return t.nav.campaigns
     case 'analyzeProfiles': return t.nav.analyzeProfiles
     case 'findCreators': return t.nav.findCreators
+    case 'lookalikes': return t.nav.lookalikes
     case 'lists': return t.lists.title
     case 'contacts': return t.contacts.title
     case 'settings': return t.settings.title
@@ -271,7 +273,6 @@ export function Sidebar() {
               {user.email}
             </p>
           </div>
-          <LanguageToggle />
           <button
             onClick={handleLogout}
             className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
