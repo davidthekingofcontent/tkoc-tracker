@@ -36,6 +36,7 @@ import {
 import { StatCard } from '@/components/ui/stat-card'
 import { Avatar } from '@/components/ui/avatar'
 import { formatNumber } from '@/lib/utils'
+import { AddToModal } from '@/components/add-to-modal'
 
 interface AnalyzedProfile {
   id: string
@@ -126,6 +127,11 @@ export default function AnalyzePage() {
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
   const [activeTab, setActiveTab] = useState('recent')
+  const [addToModal, setAddToModal] = useState<{
+    open: boolean
+    influencerId: string
+    influencerName: string
+  }>({ open: false, influencerId: '', influencerName: '' })
 
   useEffect(() => {
     fetchRecentSearches()
@@ -439,7 +445,15 @@ export default function AnalyzePage() {
                 </div>
 
                 <div className="mt-5">
-                  <Button variant="primary" className="w-full bg-emerald-500 hover:bg-emerald-600">
+                  <Button
+                    variant="primary"
+                    className="w-full bg-emerald-500 hover:bg-emerald-600"
+                    onClick={() => setAddToModal({
+                      open: true,
+                      influencerId: profile.id,
+                      influencerName: profile.displayName || profile.username,
+                    })}
+                  >
                     <ListPlus className="h-4 w-4" />
                     {t.analyze.addToList}
                   </Button>
@@ -620,6 +634,11 @@ export default function AnalyzePage() {
                             <Button
                               size="sm"
                               className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                              onClick={() => setAddToModal({
+                                open: true,
+                                influencerId: item.id,
+                                influencerName: item.displayName || item.username,
+                              })}
                             >
                               <ListPlus className="h-3 w-3" />
                               Add to...
@@ -758,6 +777,14 @@ export default function AnalyzePage() {
           </button>
         </div>
       )}
+
+      {/* Add to Campaign/List Modal */}
+      <AddToModal
+        open={addToModal.open}
+        onClose={() => setAddToModal({ open: false, influencerId: '', influencerName: '' })}
+        influencerId={addToModal.influencerId}
+        influencerName={addToModal.influencerName}
+      />
     </div>
   )
 }

@@ -17,7 +17,7 @@ import {
   TableCell,
 } from '@/components/ui/table'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
-import { formatNumber, formatCurrency } from '@/lib/utils'
+import { formatNumber } from '@/lib/utils'
 import { useI18n } from '@/i18n/context'
 import {
   ArrowLeft,
@@ -32,6 +32,10 @@ import {
   Youtube,
   Twitter,
   Download,
+  Radar,
+  CheckCircle2,
+  AlertCircle,
+  X,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -53,6 +57,9 @@ interface CampaignInfluencer {
 interface CampaignMedia {
   id: string
   mediaType: string
+  caption: string | null
+  thumbnailUrl: string | null
+  permalink: string | null
   likes: number | null
   comments: number | null
   shares: number | null
@@ -116,24 +123,62 @@ export default function CampaignDetailPage() {
   const [campaign, setCampaign] = useState<CampaignData | null>(null)
   const [overview, setOverview] = useState<Overview | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isTracking, setIsTracking] = useState(false)
+  const [trackingResult, setTrackingResult] = useState<{
+    type: 'success' | 'error'
+    message: string
+  } | null>(null)
+
+  async function fetchCampaign() {
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}`)
+      if (res.ok) {
+        const data = await res.json()
+        setCampaign(data.campaign)
+        setOverview(data.overview)
+      }
+    } catch (err) {
+      console.error('Error fetching campaign:', err)
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   useEffect(() => {
-    async function fetchCampaign() {
-      try {
-        const res = await fetch(`/api/campaigns/${campaignId}`)
-        if (res.ok) {
-          const data = await res.json()
-          setCampaign(data.campaign)
-          setOverview(data.overview)
-        }
-      } catch (err) {
-        console.error('Error fetching campaign:', err)
-      } finally {
-        setIsLoading(false)
-      }
-    }
     fetchCampaign()
   }, [campaignId])
+
+  async function handleTrackNow() {
+    setIsTracking(true)
+    setTrackingResult(null)
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/track`, {
+        method: 'POST',
+      })
+      const data = await res.json()
+
+      if (res.ok) {
+        setTrackingResult({
+          type: 'success',
+          message: `${data.results.postsFound} ${t.campaignDetail.postsFound}, ${data.results.influencersFound} ${t.campaignDetail.influencersFound}`,
+        })
+        // Refresh campaign data
+        await fetchCampaign()
+      } else {
+        setTrackingResult({
+          type: 'error',
+          message: data.error || 'Tracking failed',
+        })
+      }
+    } catch {
+      setTrackingResult({
+        type: 'error',
+        message: 'Network error',
+      })
+    } finally {
+      setIsTracking(false)
+    }
+  }
 
   if (isLoading) {
     return (
@@ -158,7 +203,6 @@ export default function CampaignDetailPage() {
   const influencers = campaign.influencers || []
   const media = campaign.media || []
 
-  // Compute stats from influencer data when no media exists yet
   const totalReach = overview?.totalReach || influencers.reduce((s, ci) => s + (ci.influencer.followers || 0), 0)
   const totalEngagements = overview?.totalEngagements || 0
   const totalMedia = overview?.totalMedia || 0
@@ -175,26 +219,91 @@ export default function CampaignDetailPage() {
             </Button>
           </Link>
           <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold text-gray-900">{campaign.name}</h1>
-            <Badge variant={campaign.status === 'ACTIVE' ? 'active' : campaign.status === 'PAUSED' ? 'paused' : 'archived'}>
-              {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
-            </Badge>
-          </div>
-          <div className="mt-1 flex items-center gap-2 text-sm text-gray-500">
-            <span>{campaign.type === 'INFLUENCER_TRACKING' ? t.campaigns.influencerTracking : t.campaigns.socialListening}</span>
-            <span>&middot;</span>
-            <span>{campaign.platforms.map(p => p.charAt(0) + p.slice(1).toLowerCase()).join(', ')}</span>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-gray-900">{campaign.name}</h1>
+              <Badge variant={campaign.status === 'ACTIVE' ? 'active' : campaign.status === 'PAUSED' ? 'paused' : 'archived'}>
+                {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
+              </Badge>
+            </div>
+            <div className="mt-1 flex items-center gap-2 text-sm text-gray-500">
+              <span>{campaign.type === 'INFLUENCER_TRACKING' ? t.campaigns.influencerTracking : t.campaigns.socialListening}</span>
+              <span>&middot;</span>
+              <span>{campaign.platforms.map(p => p.charAt(0) + p.slice(1).toLowerCase()).join(', ')}</span>
+            </div>
           </div>
         </div>
+        <div className="flex items-center gap-2">
+          {campaign.status === 'ACTIVE' && campaign.targetHashtags.length > 0 && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleTrackNow}
+              disabled={isTracking}
+            >
+              {isTracking ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t.campaignDetail.tracking}
+                </>
+              ) : (
+                <>
+                  <Radar className="h-4 w-4" />
+                  {t.campaignDetail.trackNow}
+                </>
+              )}
+            </Button>
+          )}
+          <a href={`/api/campaigns/${campaign.id}/export?format=csv`} download>
+            <Button variant="secondary" size="sm">
+              <Download className="h-4 w-4" />
+              Export CSV
+            </Button>
+          </a>
         </div>
-        <a href={`/api/campaigns/${campaign.id}/export?format=csv`} download>
-          <Button variant="secondary" size="sm">
-            <Download className="h-4 w-4" />
-            Export CSV
-          </Button>
-        </a>
       </div>
+
+      {/* Tracking status banner */}
+      {isTracking && (
+        <div className="flex items-center gap-3 rounded-xl border border-purple-200 bg-purple-50 px-4 py-3">
+          <Loader2 className="h-5 w-5 animate-spin text-purple-600" />
+          <div>
+            <p className="text-sm font-medium text-purple-800">{t.campaignDetail.tracking}</p>
+            <p className="text-xs text-purple-600">{t.campaignDetail.trackingDesc}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Tracking result */}
+      {trackingResult && !isTracking && (
+        <div className={`flex items-center justify-between rounded-xl border px-4 py-3 ${
+          trackingResult.type === 'success'
+            ? 'border-green-200 bg-green-50'
+            : 'border-red-200 bg-red-50'
+        }`}>
+          <div className="flex items-center gap-3">
+            {trackingResult.type === 'success' ? (
+              <CheckCircle2 className="h-5 w-5 text-green-600" />
+            ) : (
+              <AlertCircle className="h-5 w-5 text-red-600" />
+            )}
+            <div>
+              <p className={`text-sm font-medium ${
+                trackingResult.type === 'success' ? 'text-green-800' : 'text-red-800'
+              }`}>
+                {trackingResult.type === 'success' ? t.campaignDetail.trackingComplete : 'Error'}
+              </p>
+              <p className={`text-xs ${
+                trackingResult.type === 'success' ? 'text-green-600' : 'text-red-600'
+              }`}>
+                {trackingResult.message}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => setTrackingResult(null)} className="text-gray-400 hover:text-gray-600">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Tracking info */}
       {(campaign.targetAccounts.length > 0 || campaign.targetHashtags.length > 0) && (
@@ -261,6 +370,32 @@ export default function CampaignDetailPage() {
                 />
               </div>
             </div>
+
+            {/* Additional metrics row */}
+            {overview && (overview.totalViews > 0 || overview.engagementRate > 0) && (
+              <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                <StatCard
+                  icon={<Eye className="h-5 w-5" />}
+                  label="Total Views"
+                  value={formatNumber(overview.totalViews)}
+                />
+                <StatCard
+                  icon={<BarChart3 className="h-5 w-5" />}
+                  label="Engagement Rate"
+                  value={`${overview.engagementRate}%`}
+                />
+                <StatCard
+                  icon={<TrendingUp className="h-5 w-5" />}
+                  label="Impressions"
+                  value={formatNumber(overview.totalImpressions)}
+                />
+                <StatCard
+                  icon={<Users className="h-5 w-5" />}
+                  label="Profiles Posted"
+                  value={overview.profilesPosted}
+                />
+              </div>
+            )}
 
             {/* Influencer Overview Table */}
             <Card variant="elevated">
@@ -333,18 +468,66 @@ export default function CampaignDetailPage() {
               <p className="mt-1 text-sm text-gray-400">
                 {t.campaignDetail.mediaEmptyDesc}
               </p>
+              {campaign.status === 'ACTIVE' && campaign.targetHashtags.length > 0 && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="mt-4"
+                  onClick={handleTrackNow}
+                  disabled={isTracking}
+                >
+                  {isTracking ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {t.campaignDetail.tracking}
+                    </>
+                  ) : (
+                    <>
+                      <Radar className="h-4 w-4" />
+                      {t.campaignDetail.trackNow}
+                    </>
+                  )}
+                </Button>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {media.map((m) => (
-                <div
+                <a
                   key={m.id}
-                  className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm"
+                  href={m.permalink || '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition-shadow hover:shadow-md"
                 >
                   <div className="relative flex h-48 items-center justify-center bg-gray-100">
-                    <div className="flex flex-col items-center gap-2 text-gray-400">
-                      <Image className="h-8 w-8" />
-                      <span className="text-xs">{m.mediaType}</span>
+                    {m.thumbnailUrl ? (
+                      <img
+                        src={m.thumbnailUrl}
+                        alt={m.caption || 'Media'}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-gray-400">
+                        <Image className="h-8 w-8" />
+                        <span className="text-xs">{m.mediaType}</span>
+                      </div>
+                    )}
+                    <div className="absolute inset-0 flex items-center justify-center gap-4 bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
+                      <span className="flex items-center gap-1 text-sm font-semibold text-white">
+                        <Heart className="h-4 w-4" />
+                        {formatNumber(m.likes || 0)}
+                      </span>
+                      <span className="flex items-center gap-1 text-sm font-semibold text-white">
+                        <BarChart3 className="h-4 w-4" />
+                        {formatNumber(m.comments || 0)}
+                      </span>
+                      {(m.views || 0) > 0 && (
+                        <span className="flex items-center gap-1 text-sm font-semibold text-white">
+                          <Eye className="h-4 w-4" />
+                          {formatNumber(m.views || 0)}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="p-4">
@@ -354,8 +537,15 @@ export default function CampaignDetailPage() {
                         <p className="truncate text-sm font-medium text-gray-900">
                           {m.influencer.displayName || m.influencer.username}
                         </p>
+                        <p className="truncate text-xs text-gray-500">
+                          @{m.influencer.username}
+                          {m.postedAt && ` · ${new Date(m.postedAt).toLocaleDateString()}`}
+                        </p>
                       </div>
                     </div>
+                    {m.caption && (
+                      <p className="mt-2 line-clamp-2 text-xs text-gray-500">{m.caption}</p>
+                    )}
                     <div className="mt-3 flex items-center gap-4 text-xs text-gray-500">
                       <span className="flex items-center gap-1">
                         <Heart className="h-3 w-3" />
@@ -371,7 +561,7 @@ export default function CampaignDetailPage() {
                       </span>
                     </div>
                   </div>
-                </div>
+                </a>
               ))}
             </div>
           )}
