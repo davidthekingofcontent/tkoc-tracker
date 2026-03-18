@@ -2,6 +2,7 @@
 
 import { Sidebar } from "./sidebar"
 import { Header } from "./header"
+import { AIChatWidget } from "@/components/ai-chat"
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -13,6 +14,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
+      <AIChatWidget />
     </div>
   )
 }

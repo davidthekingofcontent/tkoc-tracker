@@ -15,6 +15,10 @@ export async function GET(
 
     const { id } = await params
 
+    const { searchParams } = new URL(request.url)
+    const mediaOffset = parseInt(searchParams.get('mediaOffset') || '0', 10)
+    const mediaLimit = parseInt(searchParams.get('mediaLimit') || '50', 10)
+
     const campaign = await prisma.campaign.findUnique({
       where: { id },
       include: {
@@ -26,7 +30,8 @@ export async function GET(
         },
         media: {
           orderBy: { postedAt: 'desc' },
-          take: 20,
+          skip: mediaOffset,
+          take: Math.min(mediaLimit, 100),
           include: {
             influencer: {
               select: { id: true, username: true, displayName: true, avatarUrl: true, platform: true },
