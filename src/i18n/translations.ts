@@ -165,6 +165,9 @@ export const translations = {
       addToList: 'Add to list',
       refreshData: 'Refresh data',
       insightsEmpty: 'Analyze a profile to see insights',
+      profileAnalyzed: 'Profile analyzed successfully',
+      mediansPerPost: 'Medians Per Post',
+      analyzingDesc: 'This may take a few seconds',
     },
 
     // Discover
@@ -419,6 +422,9 @@ export const translations = {
       addToList: 'Añadir a lista',
       refreshData: 'Actualizar datos',
       insightsEmpty: 'Analiza un perfil para ver estadísticas',
+      profileAnalyzed: 'Perfil analizado correctamente',
+      mediansPerPost: 'Medianas por Post',
+      analyzingDesc: 'Esto puede tardar unos segundos',
     },
 
     // Discover

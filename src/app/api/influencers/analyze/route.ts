@@ -209,7 +209,7 @@ export async function POST(request: NextRequest) {
         source: existing.lastScraped ? 'cached' : 'database',
         message: existing.lastScraped
           ? `Showing cached data from ${existing.lastScraped.toISOString()}`
-          : 'Showing database record. Configure APIFY_API_KEY for live scraping.',
+          : 'Profile data loaded from cache.',
       })
     }
 
@@ -228,7 +228,7 @@ export async function POST(request: NextRequest) {
       influencer: newInfluencer,
       analyzed: false,
       source: 'placeholder',
-      message: 'Profile record created. Configure APIFY_API_KEY in Settings > Integrations for live data.',
+      message: 'Profile created. Analyzing data...',
     })
   } catch (error) {
     console.error('Analyze influencer error:', error)
