@@ -1,0 +1,202 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import {
+  Search,
+  Plus,
+  MoreHorizontal,
+  Instagram,
+  Youtube,
+  Twitter,
+  Loader2,
+  Users,
+} from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
+import { Avatar } from '@/components/ui/avatar'
+import { StatCard } from '@/components/ui/stat-card'
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from '@/components/ui/table'
+import { formatNumber, formatDate } from '@/lib/utils'
+
+interface ContactData {
+  id: string
+  status: string
+  notes: string | null
+  createdAt: string
+  influencer: {
+    id: string
+    username: string
+    displayName: string | null
+    avatarUrl: string | null
+    platform: string
+    followers: number
+    engagementRate: number | null
+    email: string | null
+    phone: string | null
+  }
+}
+
+const PlatformIcon = ({ platform }: { platform: string }) => {
+  switch (platform) {
+    case 'INSTAGRAM': return <Instagram className="h-3.5 w-3.5" />
+    case 'YOUTUBE': return <Youtube className="h-3.5 w-3.5" />
+    case 'TIKTOK': return <Twitter className="h-3.5 w-3.5" />
+    default: return null
+  }
+}
+
+const platformBadge = (platform: string) => {
+  switch (platform) {
+    case 'INSTAGRAM': return 'instagram' as const
+    case 'YOUTUBE': return 'youtube' as const
+    case 'TIKTOK': return 'tiktok' as const
+    default: return 'default' as const
+  }
+}
+
+export default function ContactsPage() {
+  const [contacts, setContacts] = useState<ContactData[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [search, setSearch] = useState('')
+
+  useEffect(() => {
+    async function fetchContacts() {
+      try {
+        const res = await fetch('/api/contacts')
+        if (res.ok) {
+          const data = await res.json()
+          setContacts(data.contacts || [])
+        }
+      } catch (err) {
+        console.error('Error fetching contacts:', err)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    fetchContacts()
+  }, [])
+
+  const filtered = contacts.filter(
+    (c) =>
+      (c.influencer.displayName || '').toLowerCase().includes(search.toLowerCase()) ||
+      c.influencer.username.toLowerCase().includes(search.toLowerCase()) ||
+      (c.influencer.email || '').toLowerCase().includes(search.toLowerCase())
+  )
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-gray-900">Contacts</h1>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <StatCard
+          icon={<Users className="h-5 w-5" />}
+          label="Total Contacts"
+          value={contacts.length}
+          accent
+        />
+        <StatCard
+          icon={<Instagram className="h-5 w-5" />}
+          label="With Email"
+          value={contacts.filter(c => c.influencer.email).length}
+        />
+        <StatCard
+          icon={<Users className="h-5 w-5" />}
+          label="Total Reach"
+          value={formatNumber(contacts.reduce((s, c) => s + (c.influencer.followers || 0), 0))}
+        />
+      </div>
+
+      {/* Search */}
+      <Input
+        placeholder="Search contacts by name, username, or email..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        icon={<Search className="h-4 w-4" />}
+      />
+
+      {/* Table */}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16 rounded-xl border border-gray-200 bg-white">
+          <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+          <span className="ml-2 text-gray-500">Loading contacts...</span>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Contact</TableHead>
+                <TableHead>Platform</TableHead>
+                <TableHead>Followers</TableHead>
+                <TableHead>Eng. Rate</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead>Phone</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Added</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="py-12 text-center text-gray-500">
+                    {contacts.length === 0
+                      ? 'No contacts yet. Add influencers as contacts from campaigns or lists.'
+                      : 'No contacts match your search.'}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filtered.map((contact) => (
+                  <TableRow key={contact.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <Avatar name={contact.influencer.displayName || contact.influencer.username} size="sm" />
+                        <div>
+                          <p className="font-medium text-gray-900">@{contact.influencer.username}</p>
+                          <p className="text-xs text-gray-500">{contact.influencer.displayName}</p>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={platformBadge(contact.influencer.platform)}>
+                        <PlatformIcon platform={contact.influencer.platform} />
+                        {contact.influencer.platform.charAt(0) + contact.influencer.platform.slice(1).toLowerCase()}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{formatNumber(contact.influencer.followers)}</TableCell>
+                    <TableCell>
+                      <span className="text-purple-600">{contact.influencer.engagementRate || 0}%</span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs text-gray-400">{contact.influencer.email || '—'}</span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs text-gray-400">{contact.influencer.phone || '—'}</span>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={contact.status === 'new' ? 'default' : contact.status === 'contacted' ? 'active' : 'paused'}>
+                        {contact.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{formatDate(contact.createdAt)}</TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  )
+}

@@ -1,0 +1,296 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============ USERS & AUTH ============
+
+enum UserRole {
+  ADMIN
+  EMPLOYEE
+  BRAND
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String
+  name          String
+  avatar        String?
+  role          UserRole  @default(EMPLOYEE)
+  brandName     String?   // Only for BRAND users
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  campaigns     Campaign[]
+  lists         List[]
+  contacts      Contact[]
+
+  @@map("users")
+}
+
+// ============ CAMPAIGNS ============
+
+enum CampaignStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum CampaignType {
+  SOCIAL_LISTENING
+  INFLUENCER_TRACKING
+}
+
+enum Platform {
+  INSTAGRAM
+  TIKTOK
+  YOUTUBE
+}
+
+model Campaign {
+  id            String          @id @default(cuid())
+  name          String
+  status        CampaignStatus  @default(ACTIVE)
+  type          CampaignType    @default(INFLUENCER_TRACKING)
+  isPinned      Boolean         @default(false)
+  startDate     DateTime        @default(now())
+  endDate       DateTime?
+  budget        Float?          @default(0)
+
+  // Tracking targets
+  targetAccounts String[]       // e.g. ["@vileda.es"]
+  targetHashtags String[]       // e.g. ["#vileda"]
+  targetKeywords String[]       // e.g. ["vileda"]
+  platforms      Platform[]     @default([INSTAGRAM])
+
+  // Relations
+  userId        String
+  user          User            @relation(fields: [userId], references: [id])
+  influencers   CampaignInfluencer[]
+  media         Media[]
+
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@map("campaigns")
+}
+
+// ============ INFLUENCERS / CREATORS ============
+
+model Influencer {
+  id            String    @id @default(cuid())
+  username      String
+  platform      Platform
+  displayName   String?
+  bio           String?
+  avatarUrl     String?
+  email         String?
+  phone         String?
+  website       String?
+
+  // Metrics (updated periodically)
+  followers     Int       @default(0)
+  following     Int       @default(0)
+  postsCount    Int       @default(0)
+  engagementRate Float    @default(0)
+  avgLikes      Int       @default(0)
+  avgComments   Int       @default(0)
+  avgViews      Int       @default(0)
+
+  // Location & demographics
+  country       String?
+  city          String?
+  language      String?
+  gender        String?
+
+  isVerified    Boolean   @default(false)
+  lastScraped   DateTime?
+
+  // Relations
+  campaigns     CampaignInfluencer[]
+  media         Media[]
+  listItems     ListItem[]
+  contactInfo   Contact[]
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([username, platform])
+  @@map("influencers")
+}
+
+model CampaignInfluencer {
+  id            String    @id @default(cuid())
+
+  campaignId    String
+  campaign      Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  influencerId  String
+  influencer    Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  // Per-campaign costs
+  cost          Float?    @default(0)
+  commission    Float?    @default(0)
+  notes         String?
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([campaignId, influencerId])
+  @@map("campaign_influencers")
+}
+
+// ============ MEDIA (Posts, Stories, Reels, Videos) ============
+
+enum MediaType {
+  POST
+  REEL
+  STORY
+  VIDEO
+  SHORT
+  CAROUSEL
+}
+
+model Media {
+  id            String    @id @default(cuid())
+  externalId    String?   // ID from the platform
+  platform      Platform
+  mediaType     MediaType
+
+  // Content
+  caption       String?
+  mediaUrl      String?   // Direct URL to media
+  thumbnailUrl  String?
+  permalink     String?   // Link to original post
+
+  // Metrics
+  likes         Int       @default(0)
+  comments      Int       @default(0)
+  shares        Int       @default(0)
+  saves         Int       @default(0)
+  views         Int       @default(0)
+  reach         Int       @default(0)
+  impressions   Int       @default(0)
+  engagementRate Float    @default(0)
+
+  // Calculated values
+  mediaValue    Float     @default(0)
+
+  // Mentions & Hashtags found
+  mentions      String[]
+  hashtags      String[]
+
+  // Tracking
+  postedAt      DateTime?
+  discoveredAt  DateTime  @default(now())
+
+  // Relations
+  influencerId  String
+  influencer    Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  campaignId    String?
+  campaign      Campaign?  @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([externalId, platform])
+  @@map("media")
+}
+
+// ============ LISTS ============
+
+model List {
+  id            String    @id @default(cuid())
+  name          String
+  isPinned      Boolean   @default(false)
+  isArchived    Boolean   @default(false)
+
+  userId        String
+  user          User      @relation(fields: [userId], references: [id])
+
+  items         ListItem[]
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("lists")
+}
+
+model ListItem {
+  id            String    @id @default(cuid())
+
+  listId        String
+  list          List      @relation(fields: [listId], references: [id], onDelete: Cascade)
+
+  influencerId  String
+  influencer    Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  notes         String?
+
+  createdAt     DateTime  @default(now())
+
+  @@unique([listId, influencerId])
+  @@map("list_items")
+}
+
+// ============ CONTACTS (CRM) ============
+
+model Contact {
+  id            String    @id @default(cuid())
+
+  influencerId  String
+  influencer    Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  userId        String
+  user          User      @relation(fields: [userId], references: [id])
+
+  status        String?   @default("new") // new, contacted, negotiating, confirmed, declined
+  lastContacted DateTime?
+  notes         String?
+  tags          String[]
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([influencerId, userId])
+  @@map("contacts")
+}
+
+// ============ SCRAPING JOBS ============
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model ScrapeJob {
+  id            String    @id @default(cuid())
+  jobType       String    // "stories", "posts", "profile", "discovery"
+  status        JobStatus @default(PENDING)
+  platform      Platform
+
+  // What to scrape
+  targetUsername String?
+  targetUrl     String?
+  campaignId    String?
+
+  // Results
+  itemsFound    Int       @default(0)
+  errorMessage  String?
+
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@map("scrape_jobs")
+}
