@@ -2,9 +2,12 @@
 
 import { useState, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
+import { useI18n } from '@/i18n/context'
+import { LanguageToggle } from '@/components/ui/language-toggle'
 
 export default function LoginPage() {
   const router = useRouter()
+  const { t } = useI18n()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -26,7 +29,7 @@ export default function LoginPage() {
       const data = await res.json()
 
       if (!res.ok) {
-        setError(data.error || 'Credenciales inválidas')
+        setError(data.error || t.auth.invalidCredentials)
         return
       }
 
@@ -38,7 +41,7 @@ export default function LoginPage() {
       router.push('/dashboard')
       router.refresh()
     } catch {
-      setError('Error de conexión. Inténtalo de nuevo.')
+      setError(t.auth.invalidCredentials)
     } finally {
       setIsLoading(false)
     }
@@ -46,6 +49,11 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+      {/* Language Toggle - top right */}
+      <div className="absolute top-4 right-4">
+        <LanguageToggle />
+      </div>
+
       {/* Subtle radial glow behind the card */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <div className="w-[600px] h-[600px] rounded-full bg-purple-500/[0.04] blur-3xl" />
@@ -72,10 +80,10 @@ export default function LoginPage() {
               </svg>
             </div>
             <h1 className="text-2xl font-bold text-purple-600 tracking-tight">
-              TKOC Tracker
+              {t.auth.title}
             </h1>
             <p className="text-sm text-gray-500 mt-1">
-              Influencer Campaign Tracker
+              {t.auth.subtitle}
             </p>
           </div>
 
@@ -93,7 +101,7 @@ export default function LoginPage() {
                 htmlFor="email"
                 className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2"
               >
-                Email
+                {t.auth.email}
               </label>
               <input
                 id="email"
@@ -101,7 +109,7 @@ export default function LoginPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@company.com"
+                placeholder={t.auth.emailPlaceholder}
                 className="w-full px-4 py-3 rounded-lg bg-white border border-gray-300 text-gray-900 placeholder-gray-400 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/40 focus:border-purple-500 transition-all duration-200"
                 disabled={isLoading}
               />
@@ -112,7 +120,7 @@ export default function LoginPage() {
                 htmlFor="password"
                 className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2"
               >
-                Password
+                {t.auth.password}
               </label>
               <input
                 id="password"
@@ -120,7 +128,7 @@ export default function LoginPage() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter your password"
+                placeholder={t.auth.passwordPlaceholder}
                 className="w-full px-4 py-3 rounded-lg bg-white border border-gray-300 text-gray-900 placeholder-gray-400 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/40 focus:border-purple-500 transition-all duration-200"
                 disabled={isLoading}
               />
@@ -152,10 +160,10 @@ export default function LoginPage() {
                       d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                     />
                   </svg>
-                  Signing in...
+                  {t.auth.signingIn}
                 </span>
               ) : (
-                'Sign In'
+                t.auth.signIn
               )}
             </button>
           </form>
@@ -163,7 +171,7 @@ export default function LoginPage() {
 
         {/* Footer */}
         <p className="text-center text-gray-400 text-xs mt-6">
-          Secure access for authorized team members
+          {t.auth.secureAccess}
         </p>
       </div>
     </div>

@@ -17,6 +17,7 @@ import {
   TableCell,
 } from '@/components/ui/table'
 import { formatNumber, formatDate } from '@/lib/utils'
+import { useI18n } from '@/i18n/context'
 
 interface ListData {
   id: string
@@ -29,6 +30,7 @@ interface ListData {
 }
 
 export default function ListsPage() {
+  const { t } = useI18n()
   const [lists, setLists] = useState<ListData[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -96,18 +98,18 @@ export default function ListsPage() {
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>List Name</TableHead>
-          <TableHead>Profiles</TableHead>
-          <TableHead>Date Created</TableHead>
-          <TableHead>Total Reach</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
+          <TableHead>{t.lists.listName}</TableHead>
+          <TableHead>{t.lists.creators}</TableHead>
+          <TableHead>{t.common.status}</TableHead>
+          <TableHead>{t.lists.reach}</TableHead>
+          <TableHead className="text-right">{t.common.actions}</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {items.length === 0 ? (
           <TableRow>
             <TableCell colSpan={5} className="py-12 text-center text-gray-500">
-              No lists found
+              {t.lists.noLists}
             </TableCell>
           </TableRow>
         ) : (
@@ -160,10 +162,10 @@ export default function ListsPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Lists</h1>
+        <h1 className="text-2xl font-bold text-gray-900">{t.lists.title}</h1>
         <Button onClick={() => setShowCreateModal(true)}>
           <Plus className="h-4 w-4" />
-          Create new List
+          {t.lists.createList}
         </Button>
       </div>
 
@@ -171,25 +173,25 @@ export default function ListsPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard
           icon={<ListChecks className="h-5 w-5" />}
-          label="Active Lists"
+          label={t.lists.title}
           value={activeLists.length}
           accent
         />
         <StatCard
           icon={<Users className="h-5 w-5" />}
-          label="Total Influencers"
+          label={t.lists.creators}
           value={formatNumber(totalInfluencers)}
         />
         <StatCard
           icon={<Eye className="h-5 w-5" />}
-          label="Combined Reach"
+          label={t.lists.reach}
           value={formatNumber(combinedReach)}
         />
       </div>
 
       {/* Search */}
       <Input
-        placeholder="Search lists..."
+        placeholder={t.contacts.searchPlaceholder}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         icon={<Search className="h-4 w-4" />}
@@ -199,14 +201,14 @@ export default function ListsPage() {
       {isLoading ? (
         <div className="flex items-center justify-center py-16 rounded-xl border border-gray-200 bg-white">
           <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
-          <span className="ml-2 text-gray-500">Loading lists...</span>
+          <span className="ml-2 text-gray-500">{t.common.loading}</span>
         </div>
       ) : (
         <Tabs defaultValue="all">
           <TabsList>
-            <TabsTrigger value="all">All</TabsTrigger>
-            <TabsTrigger value="pinned">Pinned</TabsTrigger>
-            <TabsTrigger value="archived">Archived</TabsTrigger>
+            <TabsTrigger value="all">{t.campaigns.all}</TabsTrigger>
+            <TabsTrigger value="pinned">{t.lists.pinned}</TabsTrigger>
+            <TabsTrigger value="archived">{t.common.archived}</TabsTrigger>
           </TabsList>
 
           <TabsContent value="all">
@@ -230,12 +232,12 @@ export default function ListsPage() {
       {/* Create List Modal */}
       <Modal open={showCreateModal} onClose={() => setShowCreateModal(false)}>
         <ModalHeader onClose={() => setShowCreateModal(false)}>
-          Create New List
+          {t.lists.createList}
         </ModalHeader>
         <ModalBody>
           <Input
-            label="List Name"
-            placeholder="e.g. Summer Campaign Creators"
+            label={t.lists.listName}
+            placeholder={t.lists.listNamePlaceholder}
             value={newListName}
             onChange={(e) => setNewListName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleCreateList()}
@@ -243,10 +245,10 @@ export default function ListsPage() {
         </ModalBody>
         <ModalFooter>
           <Button variant="ghost" onClick={() => setShowCreateModal(false)}>
-            Cancel
+            {t.common.cancel}
           </Button>
           <Button onClick={handleCreateList} disabled={!newListName.trim() || isCreating}>
-            {isCreating ? 'Creating...' : 'Create List'}
+            {isCreating ? t.common.loading : t.common.create}
           </Button>
         </ModalFooter>
       </Modal>

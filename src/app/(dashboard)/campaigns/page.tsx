@@ -16,6 +16,7 @@ import {
   TableCell,
 } from '@/components/ui/table'
 import { formatNumber, formatDate } from '@/lib/utils'
+import { useI18n } from '@/i18n/context'
 import { Megaphone, Users, FileText, Camera, Plus, Search, Loader2 } from 'lucide-react'
 
 interface Campaign {
@@ -35,6 +36,7 @@ interface Campaign {
 }
 
 export default function CampaignsPage() {
+  const { t } = useI18n()
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -79,15 +81,15 @@ export default function CampaignsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Campaigns</h1>
+          <h1 className="text-2xl font-bold text-gray-900">{t.campaigns.title}</h1>
           <p className="mt-1 text-sm text-gray-500">
-            Track and manage your influencer campaigns
+            {t.campaigns.subtitle}
           </p>
         </div>
         <Link href="/campaigns/new">
           <Button>
             <Plus className="h-4 w-4" />
-            Create Campaign
+            {t.campaigns.newCampaign}
           </Button>
         </Link>
       </div>
@@ -121,12 +123,12 @@ export default function CampaignsPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <Tabs defaultValue="all" onValueChange={setActiveFilter}>
           <TabsList>
-            <TabsTrigger value="all">All</TabsTrigger>
-            <TabsTrigger value="SOCIAL_LISTENING">Social Listening</TabsTrigger>
-            <TabsTrigger value="INFLUENCER_TRACKING">Influencer Tracking</TabsTrigger>
-            <TabsTrigger value="ACTIVE">Active</TabsTrigger>
-            <TabsTrigger value="PAUSED">Paused</TabsTrigger>
-            <TabsTrigger value="ARCHIVED">Archived</TabsTrigger>
+            <TabsTrigger value="all">{t.campaigns.all}</TabsTrigger>
+            <TabsTrigger value="SOCIAL_LISTENING">{t.campaigns.socialListening}</TabsTrigger>
+            <TabsTrigger value="INFLUENCER_TRACKING">{t.campaigns.influencerTracking}</TabsTrigger>
+            <TabsTrigger value="ACTIVE">{t.common.active}</TabsTrigger>
+            <TabsTrigger value="PAUSED">{t.common.paused}</TabsTrigger>
+            <TabsTrigger value="ARCHIVED">{t.common.archived}</TabsTrigger>
           </TabsList>
         </Tabs>
         <div className="w-full sm:w-72">
@@ -169,7 +171,7 @@ export default function CampaignsPage() {
                       {campaign.isPinned ? '📌 ' : ''}{campaign.name}
                     </Link>
                   </TableCell>
-                  <TableCell>{campaign._count?.influencers || 0}</TableCell>
+                  <TableCell>{campaign._count?.influencers || 0} {t.dashboard.influencers}</TableCell>
                   <TableCell>{formatDate(campaign.createdAt)}</TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1">
@@ -183,12 +185,12 @@ export default function CampaignsPage() {
                   </TableCell>
                   <TableCell>
                     <span className="text-sm text-gray-500">
-                      {campaign.type === 'SOCIAL_LISTENING' ? 'Social Listening' : 'Influencer Tracking'}
+                      {campaign.type === 'SOCIAL_LISTENING' ? t.campaigns.socialListening : t.campaigns.influencerTracking}
                     </span>
                   </TableCell>
                   <TableCell>
                     <Badge variant={campaign.status.toLowerCase() as 'active' | 'paused' | 'archived'}>
-                      {campaign.status.charAt(0) + campaign.status.slice(1).toLowerCase()}
+                      {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
                     </Badge>
                   </TableCell>
                 </TableRow>
@@ -197,7 +199,7 @@ export default function CampaignsPage() {
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-12">
                     <p className="text-gray-500">
-                      {campaigns.length === 0 ? 'No campaigns yet. Create your first one!' : 'No campaigns match your filters'}
+                      {campaigns.length === 0 ? t.campaigns.noCampaignsDesc : t.campaigns.noCampaigns}
                     </p>
                   </TableCell>
                 </TableRow>

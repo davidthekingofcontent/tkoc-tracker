@@ -4,6 +4,7 @@ import { useState, useEffect } from "react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { formatNumber } from "@/lib/utils"
+import { useI18n } from '@/i18n/context'
 import {
   Megaphone,
   UserSearch,
@@ -17,33 +18,6 @@ import {
   Clock,
   Loader2,
 } from "lucide-react"
-
-const quickActions = [
-  {
-    title: "Create Campaign",
-    description: "Track influencer mentions and content performance",
-    icon: Megaphone,
-    href: "/campaigns/new",
-  },
-  {
-    title: "Analyze Profile",
-    description: "Look up any creator's stats and audience insights",
-    icon: UserSearch,
-    href: "/analyze",
-  },
-  {
-    title: "Find Creators",
-    description: "Discover influencers matching your criteria",
-    icon: Users,
-    href: "/discover",
-  },
-  {
-    title: "Manage Lists",
-    description: "Organize creators into custom lists",
-    icon: ListChecks,
-    href: "/lists",
-  },
-]
 
 interface DashboardStats {
   activeCampaigns: number
@@ -60,22 +34,46 @@ interface RecentCampaign {
   _count: { influencers: number; media: number }
 }
 
-function getGreeting(): string {
-  const hour = new Date().getHours()
-  if (hour < 12) return "Good morning"
-  if (hour < 18) return "Good afternoon"
-  return "Good evening"
-}
-
 export default function DashboardPage() {
-  const [greeting, setGreeting] = useState("Good morning")
+  const { t } = useI18n()
+  const [greeting, setGreeting] = useState("")
   const [userName, setUserName] = useState("there")
   const [isLoading, setIsLoading] = useState(true)
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [recentCampaigns, setRecentCampaigns] = useState<RecentCampaign[]>([])
 
+  const quickActions = [
+    {
+      title: t.dashboard.quickActions.createCampaign,
+      description: t.dashboard.quickActions.createCampaignDesc,
+      icon: Megaphone,
+      href: "/campaigns/new",
+    },
+    {
+      title: t.dashboard.quickActions.analyzeProfile,
+      description: t.dashboard.quickActions.analyzeProfileDesc,
+      icon: UserSearch,
+      href: "/analyze",
+    },
+    {
+      title: t.dashboard.quickActions.findCreators,
+      description: t.dashboard.quickActions.findCreatorsDesc,
+      icon: Users,
+      href: "/discover",
+    },
+    {
+      title: t.dashboard.quickActions.manageLists,
+      description: t.dashboard.quickActions.manageListsDesc,
+      icon: ListChecks,
+      href: "/lists",
+    },
+  ]
+
   useEffect(() => {
-    setGreeting(getGreeting())
+    const hour = new Date().getHours()
+    if (hour < 12) setGreeting(t.dashboard.greeting.morning)
+    else if (hour < 18) setGreeting(t.dashboard.greeting.afternoon)
+    else setGreeting(t.dashboard.greeting.evening)
 
     // Get user name from localStorage
     try {
@@ -102,14 +100,20 @@ export default function DashboardPage() {
       }
     }
     fetchDashboard()
-  }, [])
+  }, [t])
+
+  const statusLabels: Record<string, string> = {
+    ACTIVE: t.common.active,
+    PAUSED: t.common.paused,
+    ARCHIVED: t.common.archived,
+  }
 
   const statCards = stats
     ? [
-        { label: "Active Campaigns", value: stats.activeCampaigns, icon: Megaphone, format: "number" },
-        { label: "Total Influencers", value: stats.totalInfluencers, icon: Users, format: "number" },
-        { label: "Total Reach", value: stats.totalReach, icon: TrendingUp, format: "number" },
-        { label: "Avg Engagement Rate", value: stats.avgEngagementRate, icon: BarChart3, format: "percent" },
+        { label: t.dashboard.activeCampaigns, value: stats.activeCampaigns, icon: Megaphone, format: "number" },
+        { label: t.dashboard.totalInfluencers, value: stats.totalInfluencers, icon: Users, format: "number" },
+        { label: t.dashboard.totalReach, value: stats.totalReach, icon: TrendingUp, format: "number" },
+        { label: t.dashboard.avgEngagement, value: stats.avgEngagementRate, icon: BarChart3, format: "percent" },
       ]
     : []
 
@@ -121,7 +125,7 @@ export default function DashboardPage() {
           {greeting}, <span className="text-purple-600">{userName}</span>
         </h1>
         <p className="mt-1 text-gray-500">
-          Here&apos;s what&apos;s happening with your campaigns today.
+          {t.dashboard.subtitle}
         </p>
       </div>
 
@@ -186,13 +190,13 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
             <Activity className="h-5 w-5 text-purple-600" />
-            Recent Campaigns
+            {t.dashboard.recentCampaigns}
           </h2>
           <Link
             href="/campaigns"
             className="text-sm text-purple-600 hover:text-purple-500 transition-colors"
           >
-            View all
+            {t.common.viewAll}
           </Link>
         </div>
         <div className="divide-y divide-gray-200">
@@ -230,11 +234,11 @@ export default function DashboardPage() {
                   <p className="mt-0.5 flex items-center gap-3 text-xs text-gray-400">
                     <span className="flex items-center gap-1">
                       <Users className="h-3 w-3" />
-                      {campaign._count.influencers} influencers
+                      {campaign._count.influencers} {t.dashboard.influencers}
                     </span>
                     <span className="flex items-center gap-1">
                       <Eye className="h-3 w-3" />
-                      {campaign._count.media} media
+                      {campaign._count.media} {t.dashboard.media}
                     </span>
                   </p>
                 </div>
@@ -244,7 +248,7 @@ export default function DashboardPage() {
                   campaign.status === 'PAUSED' && "bg-yellow-50 text-yellow-700",
                   campaign.status === 'ARCHIVED' && "bg-gray-100 text-gray-500",
                 )}>
-                  {campaign.status.toLowerCase()}
+                  {statusLabels[campaign.status] || campaign.status.toLowerCase()}
                 </span>
               </Link>
             ))

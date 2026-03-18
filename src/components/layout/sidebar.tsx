@@ -17,15 +17,23 @@ import {
   LogOut,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useI18n } from '@/i18n/context'
+import { LanguageToggle } from '@/components/ui/language-toggle'
 
-const navItems = [
-  { label: "Home", icon: LayoutDashboard, href: "/dashboard" },
-  { label: "Campaigns", icon: Megaphone, href: "/campaigns" },
-  { label: "Analyze Profiles", icon: Search, href: "/analyze" },
-  { label: "Find Creators", icon: Compass, href: "/discover" },
-  { label: "Lists", icon: List, href: "/lists" },
-  { label: "Contacts", icon: Users, href: "/contacts" },
-  { label: "Settings", icon: Settings, href: "/settings" },
+interface NavItem {
+  key: string
+  icon: typeof LayoutDashboard
+  href: string
+}
+
+const navItems: NavItem[] = [
+  { key: "home", icon: LayoutDashboard, href: "/dashboard" },
+  { key: "campaigns", icon: Megaphone, href: "/campaigns" },
+  { key: "analyzeProfiles", icon: Search, href: "/analyze" },
+  { key: "findCreators", icon: Compass, href: "/discover" },
+  { key: "lists", icon: List, href: "/lists" },
+  { key: "contacts", icon: Users, href: "/contacts" },
+  { key: "settings", icon: Settings, href: "/settings" },
 ]
 
 interface SidebarCampaign {
@@ -46,9 +54,23 @@ interface UserData {
   role: string
 }
 
+function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
+  switch (key) {
+    case 'home': return t.nav.home
+    case 'campaigns': return t.nav.campaigns
+    case 'analyzeProfiles': return t.nav.analyzeProfiles
+    case 'findCreators': return t.nav.findCreators
+    case 'lists': return t.lists.title
+    case 'contacts': return t.contacts.title
+    case 'settings': return t.settings.title
+    default: return key
+  }
+}
+
 export function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
+  const { t } = useI18n()
   const [listsOpen, setListsOpen] = useState(true)
   const [campaignsOpen, setCampaignsOpen] = useState(true)
   const [campaigns, setCampaigns] = useState<SidebarCampaign[]>([])
@@ -145,7 +167,7 @@ export function Sidebar() {
                       : "text-gray-400 group-hover:text-gray-600"
                   )}
                 />
-                {item.label}
+                {getNavLabel(item.key, t)}
               </Link>
             )
           })}
@@ -158,7 +180,7 @@ export function Sidebar() {
               onClick={() => setListsOpen(!listsOpen)}
               className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-400 hover:text-gray-600"
             >
-              <span>Lists</span>
+              <span>{t.lists.title}</span>
               {listsOpen ? (
                 <ChevronDown className="h-3.5 w-3.5" />
               ) : (
@@ -195,7 +217,7 @@ export function Sidebar() {
               onClick={() => setCampaignsOpen(!campaignsOpen)}
               className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-400 hover:text-gray-600"
             >
-              <span>Recent Campaigns</span>
+              <span>{t.nav.recentCampaigns}</span>
               {campaignsOpen ? (
                 <ChevronDown className="h-3.5 w-3.5" />
               ) : (
@@ -249,10 +271,11 @@ export function Sidebar() {
               {user.email}
             </p>
           </div>
+          <LanguageToggle />
           <button
             onClick={handleLogout}
             className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-            title="Sign out"
+            title={t.auth.logout}
           >
             <LogOut className="h-4 w-4" />
           </button>

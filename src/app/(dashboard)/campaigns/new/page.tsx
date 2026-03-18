@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card } from '@/components/ui/card'
+import { useI18n } from '@/i18n/context'
 import {
   ArrowLeft,
   Radio,
@@ -20,6 +21,7 @@ type TrackingType = 'social_listening' | 'influencer_tracking' | null
 
 export default function NewCampaignPage() {
   const router = useRouter()
+  const { t } = useI18n()
   const [trackingType, setTrackingType] = useState<TrackingType>(null)
   const [campaignName, setCampaignName] = useState('')
   const [targets, setTargets] = useState<string[]>([])
@@ -60,9 +62,46 @@ export default function NewCampaignPage() {
     setPlatforms((prev) => ({ ...prev, [platform]: !prev[platform] }))
   }
 
-  const handleCreate = () => {
-    // In a real app, this would POST to /api/campaigns
-    router.push('/campaigns')
+  const [isCreating, setIsCreating] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleCreate = async () => {
+    if (!campaignName.trim() || !trackingType) return
+
+    setIsCreating(true)
+    setError('')
+
+    const selectedPlatforms = Object.entries(platforms)
+      .filter(([, enabled]) => enabled)
+      .map(([platform]) => platform.toUpperCase())
+
+    const targetAccounts = targets.filter((t) => t.startsWith('@'))
+    const targetHashtags = targets.filter((t) => t.startsWith('#'))
+
+    try {
+      const res = await fetch('/api/campaigns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: campaignName.trim(),
+          type: trackingType === 'social_listening' ? 'SOCIAL_LISTENING' : 'INFLUENCER_TRACKING',
+          platforms: selectedPlatforms,
+          targetAccounts,
+          targetHashtags,
+        }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to create campaign')
+      }
+
+      const { campaign } = await res.json()
+      router.push(`/campaigns/${campaign.id}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+      setIsCreating(false)
+    }
   }
 
   return (
@@ -72,13 +111,13 @@ export default function NewCampaignPage() {
         <Link href="/campaigns">
           <Button variant="ghost" size="sm">
             <ArrowLeft className="h-4 w-4" />
-            Back
+            {t.common.back}
           </Button>
         </Link>
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Create Campaign</h1>
+          <h1 className="text-2xl font-bold text-gray-900">{t.campaigns.createCampaign}</h1>
           <p className="mt-1 text-sm text-gray-500">
-            Set up a new tracking campaign
+            {t.campaigns.setupNew}
           </p>
         </div>
       </div>
@@ -86,7 +125,7 @@ export default function NewCampaignPage() {
       {/* Tracking Type Selection */}
       <div>
         <h2 className="mb-4 text-lg font-semibold text-gray-900">
-          Choose tracking type
+          {t.campaigns.chooseType}
         </h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           {/* Social Listening Card */}
@@ -114,11 +153,10 @@ export default function NewCampaignPage() {
                 </div>
                 <div>
                   <h3 className="text-base font-semibold text-gray-900">
-                    Social Listening
+                    {t.campaigns.socialListening}
                   </h3>
                   <p className="mt-1 text-sm text-gray-500">
-                    Track everyone mentioning your brand, hashtags, or accounts.
-                    Discover organic content and UGC automatically.
+                    {t.campaigns.socialListeningDesc}
                   </p>
                 </div>
               </div>
@@ -126,7 +164,7 @@ export default function NewCampaignPage() {
                 <div className="mt-4 flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-purple-600" />
                   <span className="text-xs font-medium text-purple-600">
-                    Selected
+                    {t.campaigns.selected}
                   </span>
                 </div>
               )}
@@ -158,11 +196,10 @@ export default function NewCampaignPage() {
                 </div>
                 <div>
                   <h3 className="text-base font-semibold text-gray-900">
-                    Influencer Tracking
+                    {t.campaigns.influencerTracking}
                   </h3>
                   <p className="mt-1 text-sm text-gray-500">
-                    Track specific influencers and monitor their posts, stories,
-                    and engagement metrics in real-time.
+                    {t.campaigns.influencerTrackingDesc}
                   </p>
                 </div>
               </div>
@@ -170,7 +207,7 @@ export default function NewCampaignPage() {
                 <div className="mt-4 flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-purple-600" />
                   <span className="text-xs font-medium text-purple-600">
-                    Selected
+                    {t.campaigns.selected}
                   </span>
                 </div>
               )}
@@ -185,11 +222,11 @@ export default function NewCampaignPage() {
           {/* Campaign Name */}
           <Card variant="elevated">
             <h3 className="mb-4 text-base font-semibold text-gray-900">
-              Campaign Details
+              {t.campaigns.campaignDetails}
             </h3>
             <Input
-              label="Campaign Name"
-              placeholder="e.g., Vileda Spring 2026"
+              label={t.campaigns.campaignName}
+              placeholder={t.campaigns.campaignNamePlaceholder}
               value={campaignName}
               onChange={(e) => setCampaignName(e.target.value)}
             />
@@ -198,14 +235,14 @@ export default function NewCampaignPage() {
           {/* Brand Account Targets */}
           <Card variant="elevated">
             <h3 className="mb-4 text-base font-semibold text-gray-900">
-              Brand Account Targets
+              {t.campaigns.brandTargets}
             </h3>
             <p className="mb-4 text-sm text-gray-500">
-              Add @mentions and #hashtags to track
+              {t.campaigns.brandTargetsDesc}
             </p>
             <div className="flex gap-2">
               <Input
-                placeholder="@brand or #hashtag"
+                placeholder={t.campaigns.brandTargetPlaceholder}
                 value={targetInput}
                 onChange={(e) => setTargetInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -217,7 +254,7 @@ export default function NewCampaignPage() {
               />
               <Button onClick={addTarget} variant="secondary" size="md">
                 <Plus className="h-4 w-4" />
-                Add
+                {t.common.add}
               </Button>
             </div>
             {targets.length > 0 && (
@@ -243,10 +280,10 @@ export default function NewCampaignPage() {
           {/* Platform Selection */}
           <Card variant="elevated">
             <h3 className="mb-4 text-base font-semibold text-gray-900">
-              Platforms
+              {t.campaigns.platforms}
             </h3>
             <p className="mb-4 text-sm text-gray-500">
-              Select platforms to track
+              {t.campaigns.platformsDesc}
             </p>
             <div className="flex flex-wrap gap-3">
               <button
@@ -306,14 +343,14 @@ export default function NewCampaignPage() {
           {trackingType === 'influencer_tracking' && (
             <Card variant="elevated">
               <h3 className="mb-4 text-base font-semibold text-gray-900">
-                Add Influencers
+                {t.campaigns.addInfluencers}
               </h3>
               <p className="mb-4 text-sm text-gray-500">
-                Add influencer handles to track
+                {t.campaigns.addInfluencersDesc}
               </p>
               <div className="flex gap-2">
                 <Input
-                  placeholder="@influencer_handle"
+                  placeholder={t.campaigns.influencerPlaceholder}
                   value={influencerInput}
                   onChange={(e) => setInfluencerInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -325,7 +362,7 @@ export default function NewCampaignPage() {
                 />
                 <Button onClick={addInfluencer} variant="secondary" size="md">
                   <Plus className="h-4 w-4" />
-                  Add
+                  {t.common.add}
                 </Button>
               </div>
               {influencers.length > 0 && (
@@ -349,16 +386,23 @@ export default function NewCampaignPage() {
             </Card>
           )}
 
+          {/* Error Message */}
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-600">
+              {error}
+            </div>
+          )}
+
           {/* Action Buttons */}
           <div className="flex items-center justify-end gap-3 border-t border-gray-200 pt-6">
             <Link href="/campaigns">
-              <Button variant="ghost">Cancel</Button>
+              <Button variant="ghost">{t.common.cancel}</Button>
             </Link>
             <Button
               onClick={handleCreate}
-              disabled={!campaignName.trim()}
+              disabled={!campaignName.trim() || isCreating}
             >
-              Create Campaign
+              {isCreating ? t.campaigns.creating : t.campaigns.createCampaign}
             </Button>
           </div>
         </div>

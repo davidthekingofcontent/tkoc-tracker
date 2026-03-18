@@ -1,0 +1,369 @@
+export type Locale = 'en' | 'es'
+
+export const translations = {
+  en: {
+    // Common
+    common: {
+      save: 'Save',
+      cancel: 'Cancel',
+      delete: 'Delete',
+      edit: 'Edit',
+      create: 'Create',
+      search: 'Search',
+      loading: 'Loading...',
+      back: 'Back',
+      viewAll: 'View all',
+      add: 'Add',
+      remove: 'Remove',
+      noResults: 'No results found',
+      actions: 'Actions',
+      status: 'Status',
+      name: 'Name',
+      email: 'Email',
+      active: 'active',
+      paused: 'paused',
+      archived: 'archived',
+      confirm: 'Confirm',
+      close: 'Close',
+    },
+
+    // Auth
+    auth: {
+      signIn: 'Sign In',
+      signOut: 'Sign Out',
+      email: 'Email',
+      password: 'Password',
+      emailPlaceholder: 'you@company.com',
+      passwordPlaceholder: 'Enter your password',
+      title: 'TKOC Tracker',
+      subtitle: 'Influencer Campaign Tracker',
+      secureAccess: 'Secure access for authorized team members',
+      invalidCredentials: 'Invalid email or password',
+      signingIn: 'Signing in...',
+      logout: 'Sign out',
+    },
+
+    // Sidebar / Nav
+    nav: {
+      home: 'Home',
+      campaigns: 'Campaigns',
+      analyzeProfiles: 'Analyze Profiles',
+      findCreators: 'Find Creators',
+      lists: 'Lists',
+      contacts: 'Contacts',
+      settings: 'Settings',
+      recentCampaigns: 'Recent Campaigns',
+      searchPlaceholder: 'Search campaigns, creators, lists...',
+    },
+
+    // Dashboard
+    dashboard: {
+      greeting: {
+        morning: 'Good morning',
+        afternoon: 'Good afternoon',
+        evening: 'Good evening',
+      },
+      subtitle: "Here's what's happening with your campaigns today.",
+      activeCampaigns: 'Active Campaigns',
+      totalInfluencers: 'Total Influencers',
+      totalReach: 'Total Reach',
+      avgEngagement: 'Avg Engagement Rate',
+      recentCampaigns: 'Recent Campaigns',
+      quickActions: {
+        createCampaign: 'Create Campaign',
+        createCampaignDesc: 'Track influencer mentions and content performance',
+        analyzeProfile: 'Analyze Profile',
+        analyzeProfileDesc: "Look up any creator's stats and audience insights",
+        findCreators: 'Find Creators',
+        findCreatorsDesc: 'Discover influencers matching your criteria',
+        manageLists: 'Manage Lists',
+        manageListsDesc: 'Organize creators into custom lists',
+      },
+      influencers: 'influencers',
+      media: 'media',
+    },
+
+    // Campaigns
+    campaigns: {
+      title: 'Campaigns',
+      subtitle: 'Track and manage your influencer campaigns',
+      newCampaign: 'New Campaign',
+      createCampaign: 'Create Campaign',
+      setupNew: 'Set up a new tracking campaign',
+      noCampaigns: 'No campaigns yet',
+      noCampaignsDesc: 'Create your first campaign to start tracking influencer content.',
+      chooseType: 'Choose tracking type',
+      campaignDetails: 'Campaign Details',
+      campaignName: 'Campaign Name',
+      campaignNamePlaceholder: 'e.g., Vileda Spring 2026',
+      socialListening: 'Social Listening',
+      socialListeningDesc: 'Track everyone mentioning your brand, hashtags, or accounts. Discover organic content and UGC automatically.',
+      influencerTracking: 'Influencer Tracking',
+      influencerTrackingDesc: 'Track specific influencers and monitor their posts, stories, and engagement metrics in real-time.',
+      selected: 'Selected',
+      brandTargets: 'Brand Account Targets',
+      brandTargetsDesc: 'Add @mentions and #hashtags to track',
+      brandTargetPlaceholder: '@brand or #hashtag',
+      platforms: 'Platforms',
+      platformsDesc: 'Select platforms to track',
+      addInfluencers: 'Add Influencers',
+      addInfluencersDesc: 'Add influencer handles to track',
+      influencerPlaceholder: '@influencer_handle',
+      creating: 'Creating...',
+      all: 'All',
+      report: 'Report',
+      mediaTab: 'Media',
+      influencersTab: 'Influencers',
+      trackingHashtags: 'Tracking Hashtags',
+      trackingAccounts: 'Tracking Accounts',
+      followers: 'Followers',
+      engagement: 'Engagement',
+      platform: 'Platform',
+    },
+
+    // Lists
+    lists: {
+      title: 'Lists',
+      subtitle: 'Organize creators into custom lists',
+      createList: 'Create new List',
+      listName: 'List Name',
+      listNamePlaceholder: 'e.g., Summer Campaign Creators',
+      noLists: 'No lists yet',
+      noListsDesc: 'Create your first list to organize influencers.',
+      creators: 'creators',
+      reach: 'reach',
+      withEmail: 'with email',
+      removeFromList: 'Remove from list',
+      pinned: 'Pinned',
+    },
+
+    // Contacts
+    contacts: {
+      title: 'Contacts',
+      subtitle: 'Manage your influencer contacts and communication',
+      noContacts: 'No contacts yet',
+      noContactsDesc: 'Add influencers to your campaigns and lists to build your contact database.',
+      totalContacts: 'Total Contacts',
+      withEmail: 'With Email',
+      searchPlaceholder: 'Search contacts...',
+    },
+
+    // Analyze
+    analyze: {
+      title: 'Analyze Profiles',
+      subtitle: 'Look up any creator\'s stats and audience insights',
+      inputPlaceholder: 'Enter Instagram, TikTok or YouTube URL...',
+      analyze: 'Analyze',
+      analyzing: 'Analyzing...',
+    },
+
+    // Discover
+    discover: {
+      title: 'Find Creators',
+      subtitle: 'Discover influencers matching your criteria',
+      searchPlaceholder: 'Search by name, niche, or keyword...',
+      filters: 'Filters',
+      location: 'Location',
+      minFollowers: 'Min Followers',
+      maxFollowers: 'Max Followers',
+      category: 'Category',
+    },
+
+    // Settings
+    settings: {
+      title: 'Settings',
+      subtitle: 'Manage your account and preferences',
+      profile: 'Profile',
+      team: 'Team',
+      integrations: 'Integrations',
+      billing: 'Billing',
+      language: 'Language',
+    },
+  },
+
+  es: {
+    // Common
+    common: {
+      save: 'Guardar',
+      cancel: 'Cancelar',
+      delete: 'Eliminar',
+      edit: 'Editar',
+      create: 'Crear',
+      search: 'Buscar',
+      loading: 'Cargando...',
+      back: 'Volver',
+      viewAll: 'Ver todo',
+      add: 'Añadir',
+      remove: 'Eliminar',
+      noResults: 'Sin resultados',
+      actions: 'Acciones',
+      status: 'Estado',
+      name: 'Nombre',
+      email: 'Email',
+      active: 'activa',
+      paused: 'pausada',
+      archived: 'archivada',
+      confirm: 'Confirmar',
+      close: 'Cerrar',
+    },
+
+    // Auth
+    auth: {
+      signIn: 'Iniciar Sesión',
+      signOut: 'Cerrar Sesión',
+      email: 'Email',
+      password: 'Contraseña',
+      emailPlaceholder: 'tu@empresa.com',
+      passwordPlaceholder: 'Introduce tu contraseña',
+      title: 'TKOC Tracker',
+      subtitle: 'Seguimiento de Campañas con Influencers',
+      secureAccess: 'Acceso seguro para miembros autorizados del equipo',
+      invalidCredentials: 'Email o contraseña incorrectos',
+      signingIn: 'Iniciando sesión...',
+      logout: 'Cerrar sesión',
+    },
+
+    // Sidebar / Nav
+    nav: {
+      home: 'Inicio',
+      campaigns: 'Campañas',
+      analyzeProfiles: 'Analizar Perfiles',
+      findCreators: 'Buscar Creadores',
+      lists: 'Listas',
+      contacts: 'Contactos',
+      settings: 'Ajustes',
+      recentCampaigns: 'Campañas Recientes',
+      searchPlaceholder: 'Buscar campañas, creadores, listas...',
+    },
+
+    // Dashboard
+    dashboard: {
+      greeting: {
+        morning: 'Buenos días',
+        afternoon: 'Buenas tardes',
+        evening: 'Buenas noches',
+      },
+      subtitle: 'Esto es lo que está pasando con tus campañas hoy.',
+      activeCampaigns: 'Campañas Activas',
+      totalInfluencers: 'Total Influencers',
+      totalReach: 'Alcance Total',
+      avgEngagement: 'Engagement Medio',
+      recentCampaigns: 'Campañas Recientes',
+      quickActions: {
+        createCampaign: 'Crear Campaña',
+        createCampaignDesc: 'Rastrea menciones de influencers y rendimiento de contenido',
+        analyzeProfile: 'Analizar Perfil',
+        analyzeProfileDesc: 'Consulta las estadísticas y audiencia de cualquier creador',
+        findCreators: 'Buscar Creadores',
+        findCreatorsDesc: 'Descubre influencers que encajan con tus criterios',
+        manageLists: 'Gestionar Listas',
+        manageListsDesc: 'Organiza creadores en listas personalizadas',
+      },
+      influencers: 'influencers',
+      media: 'media',
+    },
+
+    // Campaigns
+    campaigns: {
+      title: 'Campañas',
+      subtitle: 'Rastrea y gestiona tus campañas con influencers',
+      newCampaign: 'Nueva Campaña',
+      createCampaign: 'Crear Campaña',
+      setupNew: 'Configura una nueva campaña de seguimiento',
+      noCampaigns: 'Sin campañas todavía',
+      noCampaignsDesc: 'Crea tu primera campaña para empezar a rastrear contenido de influencers.',
+      chooseType: 'Elige el tipo de seguimiento',
+      campaignDetails: 'Detalles de la Campaña',
+      campaignName: 'Nombre de la Campaña',
+      campaignNamePlaceholder: 'ej. Vileda Primavera 2026',
+      socialListening: 'Social Listening',
+      socialListeningDesc: 'Rastrea a todos los que mencionan tu marca, hashtags o cuentas. Descubre contenido orgánico y UGC automáticamente.',
+      influencerTracking: 'Seguimiento de Influencers',
+      influencerTrackingDesc: 'Rastrea influencers específicos y monitoriza sus publicaciones, stories y métricas de engagement en tiempo real.',
+      selected: 'Seleccionado',
+      brandTargets: 'Cuentas de Marca Objetivo',
+      brandTargetsDesc: 'Añade @menciones y #hashtags para rastrear',
+      brandTargetPlaceholder: '@marca o #hashtag',
+      platforms: 'Plataformas',
+      platformsDesc: 'Selecciona las plataformas a rastrear',
+      addInfluencers: 'Añadir Influencers',
+      addInfluencersDesc: 'Añade handles de influencers para rastrear',
+      influencerPlaceholder: '@handle_influencer',
+      creating: 'Creando...',
+      all: 'Todas',
+      report: 'Informe',
+      mediaTab: 'Media',
+      influencersTab: 'Influencers',
+      trackingHashtags: 'Hashtags Rastreados',
+      trackingAccounts: 'Cuentas Rastreadas',
+      followers: 'Seguidores',
+      engagement: 'Engagement',
+      platform: 'Plataforma',
+    },
+
+    // Lists
+    lists: {
+      title: 'Listas',
+      subtitle: 'Organiza creadores en listas personalizadas',
+      createList: 'Crear nueva Lista',
+      listName: 'Nombre de la Lista',
+      listNamePlaceholder: 'ej. Creadores Campaña Verano',
+      noLists: 'Sin listas todavía',
+      noListsDesc: 'Crea tu primera lista para organizar influencers.',
+      creators: 'creadores',
+      reach: 'alcance',
+      withEmail: 'con email',
+      removeFromList: 'Eliminar de la lista',
+      pinned: 'Fijada',
+    },
+
+    // Contacts
+    contacts: {
+      title: 'Contactos',
+      subtitle: 'Gestiona tus contactos de influencers y comunicación',
+      noContacts: 'Sin contactos todavía',
+      noContactsDesc: 'Añade influencers a tus campañas y listas para construir tu base de contactos.',
+      totalContacts: 'Total Contactos',
+      withEmail: 'Con Email',
+      searchPlaceholder: 'Buscar contactos...',
+    },
+
+    // Analyze
+    analyze: {
+      title: 'Analizar Perfiles',
+      subtitle: 'Consulta las estadísticas y audiencia de cualquier creador',
+      inputPlaceholder: 'Introduce URL de Instagram, TikTok o YouTube...',
+      analyze: 'Analizar',
+      analyzing: 'Analizando...',
+    },
+
+    // Discover
+    discover: {
+      title: 'Buscar Creadores',
+      subtitle: 'Descubre influencers que encajan con tus criterios',
+      searchPlaceholder: 'Buscar por nombre, nicho o palabra clave...',
+      filters: 'Filtros',
+      location: 'Ubicación',
+      minFollowers: 'Mín. Seguidores',
+      maxFollowers: 'Máx. Seguidores',
+      category: 'Categoría',
+    },
+
+    // Settings
+    settings: {
+      title: 'Ajustes',
+      subtitle: 'Gestiona tu cuenta y preferencias',
+      profile: 'Perfil',
+      team: 'Equipo',
+      integrations: 'Integraciones',
+      billing: 'Facturación',
+      language: 'Idioma',
+    },
+  },
+}
+
+type DeepStringify<T> = {
+  [K in keyof T]: T[K] extends Record<string, unknown> ? DeepStringify<T[K]> : string
+}
+
+export type TranslationKeys = DeepStringify<typeof translations.en>

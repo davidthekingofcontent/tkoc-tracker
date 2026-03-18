@@ -25,6 +25,7 @@ import {
   TableCell,
 } from '@/components/ui/table'
 import { formatNumber, formatDate } from '@/lib/utils'
+import { useI18n } from '@/i18n/context'
 
 interface ContactData {
   id: string
@@ -63,6 +64,7 @@ const platformBadge = (platform: string) => {
 }
 
 export default function ContactsPage() {
+  const { t } = useI18n()
   const [contacts, setContacts] = useState<ContactData[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -95,32 +97,32 @@ export default function ContactsPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Contacts</h1>
+        <h1 className="text-2xl font-bold text-gray-900">{t.contacts.title}</h1>
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard
           icon={<Users className="h-5 w-5" />}
-          label="Total Contacts"
+          label={t.contacts.totalContacts}
           value={contacts.length}
           accent
         />
         <StatCard
           icon={<Instagram className="h-5 w-5" />}
-          label="With Email"
+          label={t.contacts.withEmail}
           value={contacts.filter(c => c.influencer.email).length}
         />
         <StatCard
           icon={<Users className="h-5 w-5" />}
-          label="Total Reach"
+          label={t.dashboard.totalReach}
           value={formatNumber(contacts.reduce((s, c) => s + (c.influencer.followers || 0), 0))}
         />
       </div>
 
       {/* Search */}
       <Input
-        placeholder="Search contacts by name, username, or email..."
+        placeholder={t.contacts.searchPlaceholder}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         icon={<Search className="h-4 w-4" />}
@@ -130,20 +132,20 @@ export default function ContactsPage() {
       {isLoading ? (
         <div className="flex items-center justify-center py-16 rounded-xl border border-gray-200 bg-white">
           <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
-          <span className="ml-2 text-gray-500">Loading contacts...</span>
+          <span className="ml-2 text-gray-500">{t.common.loading}</span>
         </div>
       ) : (
         <div className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Contact</TableHead>
-                <TableHead>Platform</TableHead>
-                <TableHead>Followers</TableHead>
-                <TableHead>Eng. Rate</TableHead>
-                <TableHead>Email</TableHead>
+                <TableHead>{t.contacts.title}</TableHead>
+                <TableHead>{t.campaigns.platform}</TableHead>
+                <TableHead>{t.campaigns.followers}</TableHead>
+                <TableHead>{t.campaigns.engagement}</TableHead>
+                <TableHead>{t.common.email}</TableHead>
                 <TableHead>Phone</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>{t.common.status}</TableHead>
                 <TableHead>Added</TableHead>
               </TableRow>
             </TableHeader>
@@ -152,8 +154,8 @@ export default function ContactsPage() {
                 <TableRow>
                   <TableCell colSpan={8} className="py-12 text-center text-gray-500">
                     {contacts.length === 0
-                      ? 'No contacts yet. Add influencers as contacts from campaigns or lists.'
-                      : 'No contacts match your search.'}
+                      ? t.contacts.noContactsDesc
+                      : t.common.noResults}
                   </TableCell>
                 </TableRow>
               ) : (
