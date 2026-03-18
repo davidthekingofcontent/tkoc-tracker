@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { Platform, Prisma } from '@/generated/prisma/client'
-import { isApifyConfigured } from '@/lib/apify'
-import { ApifyClient } from 'apify-client'
+import { isApifyConfigured, scrapeProfile } from '@/lib/apify'
 
 interface DiscoverResult {
   username: string
@@ -19,76 +18,32 @@ interface DiscoverResult {
   source: 'apify' | 'database'
 }
 
-async function searchInstagramViaApify(query: string, minFollowers?: number, maxFollowers?: number): Promise<DiscoverResult[]> {
-  const token = process.env.APIFY_API_KEY
-  if (!token) return []
+async function searchInstagramViaApify(query: string, platform: string, minFollowers?: number, maxFollowers?: number): Promise<DiscoverResult[]> {
+  // Use scrapeProfile to look up the query as a username
+  try {
+    const scraped = await scrapeProfile(query, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
+    if (!scraped) return []
 
-  const client = new ApifyClient({ token })
+    const followers = scraped.followers
+    if (minFollowers && followers < minFollowers) return []
+    if (maxFollowers && followers > maxFollowers) return []
 
-  const run = await client.actor('apify/instagram-profile-scraper').call(
-    {
-      search: query,
-      resultsLimit: 20,
-    },
-    {
-      waitSecs: 120,
-    }
-  )
-
-  const { items } = await client.dataset(run.defaultDatasetId).listItems()
-
-  if (!items || items.length === 0) return []
-
-  const results: DiscoverResult[] = []
-
-  for (const item of items) {
-    const profile = item as Record<string, unknown>
-    const followers = (profile.followersCount as number) || 0
-
-    // Apply follower filters
-    if (minFollowers && followers < minFollowers) continue
-    if (maxFollowers && followers > maxFollowers) continue
-
-    // Calculate engagement from recent posts
-    const posts = ((profile.latestPosts as Record<string, unknown>[]) || []).slice(0, 12)
-    let totalLikes = 0
-    let totalComments = 0
-    let totalViews = 0
-
-    for (const post of posts) {
-      totalLikes += (post.likesCount as number) || 0
-      totalComments += (post.commentsCount as number) || 0
-      totalViews += (post.videoViewCount as number) || (post.videoPlayCount as number) || 0
-    }
-
-    const postCount = posts.length || 1
-    const avgLikes = Math.round(totalLikes / postCount)
-    const avgComments = Math.round(totalComments / postCount)
-    const avgViews = Math.round(totalViews / postCount)
-    const engagementRate = followers > 0
-      ? parseFloat((((totalLikes + totalComments) / postCount / followers) * 100).toFixed(2))
-      : 0
-
-    // Extract email from bio
-    const bio = (profile.biography as string) || ''
-    const emailMatch = bio.match(/[\w.-]+@[\w.-]+\.\w+/)
-
-    results.push({
-      username: (profile.username as string) || '',
-      displayName: (profile.fullName as string) || null,
-      avatarUrl: (profile.profilePicUrl as string) || (profile.profilePicUrlHD as string) || null,
-      followers,
-      engagementRate,
-      avgLikes,
-      avgComments,
-      avgViews,
-      email: emailMatch ? emailMatch[0] : null,
-      platform: 'INSTAGRAM',
+    return [{
+      username: scraped.username,
+      displayName: scraped.displayName,
+      avatarUrl: scraped.avatarUrl,
+      followers: scraped.followers,
+      engagementRate: scraped.engagementRate,
+      avgLikes: scraped.avgLikes,
+      avgComments: scraped.avgComments,
+      avgViews: scraped.avgViews,
+      email: scraped.email,
+      platform,
       source: 'apify',
-    })
+    }]
+  } catch {
+    return []
   }
-
-  return results
 }
 
 async function searchInternalDatabase(
@@ -166,10 +121,10 @@ export async function POST(request: NextRequest) {
     let results: DiscoverResult[] = []
     let source: 'apify' | 'database' = 'database'
 
-    // Try Apify for external search (Instagram only for now)
-    if (isApifyConfigured() && normalizedPlatform === 'INSTAGRAM') {
+    // Try Apify for external search
+    if (isApifyConfigured()) {
       try {
-        results = await searchInstagramViaApify(cleanQuery, minFollowers, maxFollowers)
+        results = await searchInstagramViaApify(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
         source = 'apify'
       } catch (apifyError) {
         console.error('Apify discover error, falling back to database:', apifyError)

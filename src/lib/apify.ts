@@ -1,10 +1,74 @@
-import { ApifyClient } from 'apify-client'
+// Apify REST API client — uses fetch() directly, no external dependencies
+// Docs: https://docs.apify.com/api/v2
 
-// Initialize Apify client
-function getClient(): ApifyClient | null {
-  const token = process.env.APIFY_API_KEY
-  if (!token) return null
-  return new ApifyClient({ token })
+const APIFY_BASE = 'https://api.apify.com/v2'
+
+function getToken(): string | null {
+  return process.env.APIFY_API_KEY || null
+}
+
+/** Run an Apify actor and return the dataset items */
+async function runActor(
+  actorId: string,
+  input: Record<string, unknown>,
+  timeoutSecs = 120
+): Promise<Record<string, unknown>[]> {
+  const token = getToken()
+  if (!token) throw new Error('APIFY_API_KEY not configured')
+
+  // Start the actor run and wait for it to finish
+  const runRes = await fetch(
+    `${APIFY_BASE}/acts/${actorId}/runs?token=${token}&waitForFinish=${timeoutSecs}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }
+  )
+
+  if (!runRes.ok) {
+    const errText = await runRes.text()
+    throw new Error(`Apify actor ${actorId} failed to start: ${runRes.status} ${errText}`)
+  }
+
+  const runData = await runRes.json() as { data?: { defaultDatasetId?: string; status?: string } }
+  const datasetId = runData.data?.defaultDatasetId
+
+  if (!datasetId) {
+    throw new Error(`Apify actor ${actorId} did not return a dataset ID`)
+  }
+
+  // If status is not SUCCEEDED, the run may still be running or failed
+  const status = runData.data?.status
+  if (status && status !== 'SUCCEEDED' && status !== 'READY') {
+    // Wait a bit more and check
+    if (status === 'RUNNING') {
+      // Poll until done
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 5000))
+        const checkRes = await fetch(`${APIFY_BASE}/actor-runs/${datasetId}?token=${token}`)
+        if (checkRes.ok) {
+          const checkData = await checkRes.json() as { data?: { status?: string } }
+          if (checkData.data?.status === 'SUCCEEDED') break
+          if (checkData.data?.status === 'FAILED' || checkData.data?.status === 'ABORTED') {
+            throw new Error(`Apify actor ${actorId} ${checkData.data.status}`)
+          }
+        }
+      }
+    }
+  }
+
+  // Fetch dataset items
+  const dataRes = await fetch(
+    `${APIFY_BASE}/datasets/${datasetId}/items?token=${token}&format=json&clean=true`
+  )
+
+  if (!dataRes.ok) {
+    throw new Error(`Failed to fetch dataset ${datasetId}: ${dataRes.status}`)
+  }
+
+  const items = await dataRes.json() as Record<string, unknown>[]
+  return items || []
 }
 
 // ============ TYPES ============
@@ -49,20 +113,13 @@ export interface ScrapedPost {
 // ============ INSTAGRAM ============
 
 async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile | null> {
-  const client = getClient()
-  if (!client) throw new Error('APIFY_API_KEY not configured')
-
-  const run = await client.actor('apify/instagram-profile-scraper').call({
+  const items = await runActor('apify/instagram-profile-scraper', {
     usernames: [username],
-  }, {
-    waitSecs: 120,
   })
-
-  const { items } = await client.dataset(run.defaultDatasetId).listItems()
 
   if (!items || items.length === 0) return null
 
-  const profile = items[0] as Record<string, unknown>
+  const profile = items[0]
 
   // Extract email from bio if present
   const bio = (profile.biography as string) || ''
@@ -85,13 +142,11 @@ async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile 
     totalComments += comments
     totalViews += views
 
-    // Determine media type
     let mediaType: ScrapedPost['mediaType'] = 'POST'
     const type = (post.type as string) || ''
     if (type.includes('Video') || type.includes('Reel')) mediaType = 'REEL'
     else if (type.includes('Sidecar') || type.includes('Carousel')) mediaType = 'CAROUSEL'
 
-    // Extract hashtags and mentions from caption
     const caption = (post.caption as string) || ''
     const hashtags = caption.match(/#\w+/g) || []
     const mentions = caption.match(/@\w+/g) || []
@@ -146,31 +201,20 @@ async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile 
 // ============ TIKTOK ============
 
 async function scrapeTikTokProfile(username: string): Promise<ScrapedProfile | null> {
-  const client = getClient()
-  if (!client) throw new Error('APIFY_API_KEY not configured')
-
-  // Use the free TikTok scraper
-  const run = await client.actor('clockworks/free-tiktok-scraper').call({
+  const items = await runActor('clockworks/free-tiktok-scraper', {
     profiles: [username],
     resultsPerPage: 12,
     shouldDownloadVideos: false,
-  }, {
-    waitSecs: 120,
   })
-
-  const { items } = await client.dataset(run.defaultDatasetId).listItems()
 
   if (!items || items.length === 0) return null
 
-  // The scraper returns posts, we need to extract profile info from them
-  // First item usually has author info
-  const firstItem = items[0] as Record<string, unknown>
+  const firstItem = items[0]
   const authorMeta = (firstItem.authorMeta as Record<string, unknown>) || firstItem
 
   const followers = (authorMeta.fans as number) || (authorMeta.followers as number) || 0
   const following = (authorMeta.following as number) || 0
 
-  // Process posts for metrics
   let totalLikes = 0
   let totalComments = 0
   let totalViews = 0
@@ -244,21 +288,14 @@ async function scrapeTikTokProfile(username: string): Promise<ScrapedProfile | n
 // ============ YOUTUBE ============
 
 async function scrapeYouTubeProfile(username: string): Promise<ScrapedProfile | null> {
-  const client = getClient()
-  if (!client) throw new Error('APIFY_API_KEY not configured')
-
-  const run = await client.actor('streamers/youtube-channel-scraper').call({
+  const items = await runActor('streamers/youtube-channel-scraper', {
     channelUrls: [`https://youtube.com/@${username}`],
     maxVideos: 12,
-  }, {
-    waitSecs: 120,
   })
-
-  const { items } = await client.dataset(run.defaultDatasetId).listItems()
 
   if (!items || items.length === 0) return null
 
-  const channel = items[0] as Record<string, unknown>
+  const channel = items[0]
 
   const followers = (channel.subscriberCount as number) || (channel.numberOfSubscribers as number) || 0
   const videos = (channel.videos as Record<string, unknown>[]) || []
@@ -280,7 +317,6 @@ async function scrapeYouTubeProfile(username: string): Promise<ScrapedProfile | 
     const description = (video.description as string) || ''
     const hashtags = (title + ' ' + description).match(/#\w+/g) || []
 
-    // Determine if short
     const duration = (video.duration as string) || ''
     const isShort = duration && parseInt(duration) < 61
     const mediaType = isShort ? 'SHORT' : 'VIDEO'
@@ -346,19 +382,12 @@ export interface HashtagResult {
 }
 
 async function scrapeInstagramHashtag(hashtag: string, maxPosts = 20): Promise<HashtagResult[]> {
-  const client = getClient()
-  if (!client) throw new Error('APIFY_API_KEY not configured')
-
   const cleanTag = hashtag.replace(/^#/, '')
 
-  const run = await client.actor('apify/instagram-hashtag-scraper').call({
+  const items = await runActor('apify/instagram-hashtag-scraper', {
     hashtags: [cleanTag],
     resultsLimit: maxPosts,
-  }, {
-    waitSecs: 180,
   })
-
-  const { items } = await client.dataset(run.defaultDatasetId).listItems()
 
   if (!items || items.length === 0) return []
 
@@ -412,7 +441,6 @@ export async function scrapeHashtag(hashtag: string, platform: 'INSTAGRAM' | 'TI
   switch (platform) {
     case 'INSTAGRAM':
       return scrapeInstagramHashtag(hashtag, maxPosts)
-    // TikTok and YouTube hashtag scraping can be added later
     default:
       return []
   }
