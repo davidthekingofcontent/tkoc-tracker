@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const search = searchParams.get('search')
     const platform = searchParams.get('platform')
+    const sort = searchParams.get('sort') // 'lastScraped', 'followers', 'engagement'
     const page = parseInt(searchParams.get('page') || '1', 10)
     const limit = Math.min(parseInt(searchParams.get('limit') || '20', 10), 100)
     const skip = (page - 1) * limit
@@ -23,6 +24,7 @@ export async function GET(request: NextRequest) {
       where.OR = [
         { username: { contains: search, mode: 'insensitive' } },
         { displayName: { contains: search, mode: 'insensitive' } },
+        { bio: { contains: search, mode: 'insensitive' } },
       ]
     }
 
@@ -30,12 +32,20 @@ export async function GET(request: NextRequest) {
       where.platform = platform as Platform
     }
 
+    // Determine sort order
+    let orderBy: Prisma.InfluencerOrderByWithRelationInput = { followers: 'desc' }
+    if (sort === 'lastScraped') {
+      orderBy = { lastScraped: 'desc' }
+    } else if (sort === 'engagement') {
+      orderBy = { engagementRate: 'desc' }
+    }
+
     const [influencers, total] = await Promise.all([
       prisma.influencer.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { followers: 'desc' },
+        orderBy,
         include: {
           _count: {
             select: { campaigns: true, media: true },
