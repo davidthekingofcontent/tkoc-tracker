@@ -279,7 +279,11 @@ export default function AnalyzePage() {
           />
         </div>
 
-        <Button variant="primary" size="lg" onClick={handleAnalyze} disabled={analyzing || !query.trim()} className="min-w-[180px] shadow-sm">
+        <button
+          onClick={handleAnalyze}
+          disabled={analyzing || !query.trim()}
+          className="inline-flex min-w-[180px] items-center justify-center gap-2.5 rounded-lg bg-purple-600 px-6 py-3.5 text-base font-medium text-white shadow-md transition-colors hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500/50 disabled:opacity-50 disabled:pointer-events-none"
+        >
           {analyzing ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -291,7 +295,7 @@ export default function AnalyzePage() {
               {t.analyze.analyze}
             </>
           )}
-        </Button>
+        </button>
       </div>
 
       {/* Error / Success */}
@@ -445,10 +449,8 @@ export default function AnalyzePage() {
                 </div>
 
                 <div className="mt-5">
-                  <Button
-                    variant="primary"
-                    size="md"
-                    className="w-full shadow-sm"
+                  <button
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-purple-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500/50"
                     onClick={() => setAddToModal({
                       open: true,
                       influencerId: profile.id,
@@ -457,7 +459,7 @@ export default function AnalyzePage() {
                   >
                     <ListPlus className="h-4 w-4" />
                     {t.analyze.addToList}
-                  </Button>
+                  </button>
                 </div>
               </div>
 
