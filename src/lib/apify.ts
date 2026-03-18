@@ -122,7 +122,7 @@ export interface ScrapedPost {
 // ============ INSTAGRAM ============
 
 async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile | null> {
-  const items = await runActor('apify/instagram-profile-scraper', {
+  const items = await runActor('apify~instagram-profile-scraper', {
     usernames: [username],
   })
 
@@ -210,7 +210,7 @@ async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile 
 // ============ TIKTOK ============
 
 async function scrapeTikTokProfile(username: string): Promise<ScrapedProfile | null> {
-  const items = await runActor('clockworks/free-tiktok-scraper', {
+  const items = await runActor('clockworks~free-tiktok-scraper', {
     profiles: [username],
     resultsPerPage: 12,
     shouldDownloadVideos: false,
@@ -297,7 +297,7 @@ async function scrapeTikTokProfile(username: string): Promise<ScrapedProfile | n
 // ============ YOUTUBE ============
 
 async function scrapeYouTubeProfile(username: string): Promise<ScrapedProfile | null> {
-  const items = await runActor('streamers/youtube-channel-scraper', {
+  const items = await runActor('streamers~youtube-channel-scraper', {
     channelUrls: [`https://youtube.com/@${username}`],
     maxVideos: 12,
   })
@@ -393,7 +393,7 @@ export interface HashtagResult {
 async function scrapeInstagramHashtag(hashtag: string, maxPosts = 20): Promise<HashtagResult[]> {
   const cleanTag = hashtag.replace(/^#/, '')
 
-  const items = await runActor('apify/instagram-hashtag-scraper', {
+  const items = await runActor('apify~instagram-hashtag-scraper', {
     hashtags: [cleanTag],
     resultsLimit: maxPosts,
   })
