@@ -202,8 +202,8 @@ export default function AnalyzePage() {
       {/* Tabs */}
       <Tabs defaultValue="recent">
         <TabsList>
-          <TabsTrigger value="recent">Recent Searches</TabsTrigger>
-          <TabsTrigger value="insights">Insights</TabsTrigger>
+          <TabsTrigger value="recent">{t.analyze.recentSearches}</TabsTrigger>
+          <TabsTrigger value="insights">{t.analyze.insights}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="recent">
@@ -212,12 +212,12 @@ export default function AnalyzePage() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-8"></TableHead>
-                  <TableHead>Username</TableHead>
+                  <TableHead>{t.analyze.username}</TableHead>
                   <TableHead>{t.campaigns.followers}</TableHead>
                   <TableHead>{t.campaigns.engagement}</TableHead>
-                  <TableHead>Median Likes</TableHead>
-                  <TableHead>Median Comments</TableHead>
-                  <TableHead>Median Views</TableHead>
+                  <TableHead>{t.analyze.medianLikes}</TableHead>
+                  <TableHead>{t.analyze.medianComments}</TableHead>
+                  <TableHead>{t.analyze.medianViews}</TableHead>
                   <TableHead>{t.common.email}</TableHead>
                   <TableHead className="text-right">{t.common.actions}</TableHead>
                 </TableRow>
@@ -260,13 +260,13 @@ export default function AnalyzePage() {
                       <div className="flex items-center justify-end gap-1">
                         <button
                           className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-900"
-                          title="Add to list"
+                          title={t.analyze.addToList}
                         >
                           <ListPlus className="h-4 w-4" />
                         </button>
                         <button
                           className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-900"
-                          title="Refresh data"
+                          title={t.analyze.refreshData}
                         >
                           <RefreshCw className="h-4 w-4" />
                         </button>
@@ -285,7 +285,7 @@ export default function AnalyzePage() {
               <Search className="h-6 w-6" />
             </div>
             <p className="mt-4 text-sm text-gray-500">
-              Analyze a profile to see insights
+              {t.analyze.insightsEmpty}
             </p>
           </div>
         </TabsContent>

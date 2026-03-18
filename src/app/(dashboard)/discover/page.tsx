@@ -265,7 +265,7 @@ export default function DiscoverPage() {
           {hasSearched && !searching && results.length > 0 && (
             <div className="space-y-4">
               <p className="text-sm text-gray-500">
-                {total} {t.common.noResults !== t.common.noResults ? '' : 'resultados'}
+                {total} {t.listDetail.results}
               </p>
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {results.map((inf) => (

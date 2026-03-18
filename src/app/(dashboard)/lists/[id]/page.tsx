@@ -125,7 +125,7 @@ export default function ListDetailPage() {
   if (!list) {
     return (
       <div className="py-24 text-center">
-        <p className="text-gray-500">List not found</p>
+        <p className="text-gray-500">{t.listDetail.listNotFound}</p>
         <Link href="/lists" className="mt-4 text-purple-600 hover:underline">
           {t.common.back}
         </Link>
@@ -153,13 +153,13 @@ export default function ListDetailPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{list.name}</h1>
           <p className="mt-1 text-sm text-gray-500">
-            {items.length} influencers &middot; {formatNumber(combinedReach)} combined reach
+            {items.length} influencers &middot; {formatNumber(combinedReach)} {t.listDetail.combinedReach}
           </p>
         </div>
         <div className="flex items-center gap-3">
           <Button variant="secondary" onClick={() => {}}>
             <Download className="h-4 w-4" />
-            Export
+            {t.listDetail.export}
           </Button>
         </div>
       </div>
@@ -193,8 +193,8 @@ export default function ListDetailPage() {
               <TableHead>{t.campaigns.platform}</TableHead>
               <TableHead>{t.campaigns.followers}</TableHead>
               <TableHead>{t.campaigns.engagement}</TableHead>
-              <TableHead>Avg Likes</TableHead>
-              <TableHead>Location</TableHead>
+              <TableHead>{t.listDetail.avgLikes}</TableHead>
+              <TableHead>{t.listDetail.location}</TableHead>
               <TableHead>{t.common.email}</TableHead>
               <TableHead className="text-right">{t.common.actions}</TableHead>
             </TableRow>

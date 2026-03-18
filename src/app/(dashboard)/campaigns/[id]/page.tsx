@@ -227,7 +227,7 @@ export default function CampaignDetailPage() {
         <TabsContent value="report">
           <div className="space-y-6">
             <div>
-              <h2 className="mb-4 text-lg font-semibold text-gray-900">Overview</h2>
+              <h2 className="mb-4 text-lg font-semibold text-gray-900">{t.campaignDetail.overview}</h2>
               <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                 <StatCard
                   icon={<Users className="h-5 w-5" />}
@@ -266,8 +266,8 @@ export default function CampaignDetailPage() {
                       <TableHead>{t.campaigns.platform}</TableHead>
                       <TableHead>{t.campaigns.followers}</TableHead>
                       <TableHead>{t.campaigns.engagement}</TableHead>
-                      <TableHead>Avg Likes</TableHead>
-                      <TableHead>Avg Comments</TableHead>
+                      <TableHead>{t.campaignDetail.avgLikes}</TableHead>
+                      <TableHead>{t.campaignDetail.avgComments}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -322,7 +322,7 @@ export default function CampaignDetailPage() {
               <Image className="mx-auto h-12 w-12 text-gray-300" />
               <p className="mt-4 text-gray-500">{t.common.noResults}</p>
               <p className="mt-1 text-sm text-gray-400">
-                Media will appear here once influencers post content matching the campaign tracking criteria.
+                {t.campaignDetail.mediaEmptyDesc}
               </p>
             </div>
           ) : (
@@ -379,9 +379,9 @@ export default function CampaignDetailPage() {
                     <TableHead>{t.campaigns.platform}</TableHead>
                     <TableHead>{t.campaigns.followers}</TableHead>
                     <TableHead>{t.campaigns.engagement}</TableHead>
-                    <TableHead>Avg Likes</TableHead>
-                    <TableHead>Avg Comments</TableHead>
-                    <TableHead>Avg Views</TableHead>
+                    <TableHead>{t.campaignDetail.avgLikes}</TableHead>
+                    <TableHead>{t.campaignDetail.avgComments}</TableHead>
+                    <TableHead>{t.campaignDetail.avgViews}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

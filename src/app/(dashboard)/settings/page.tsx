@@ -62,7 +62,7 @@ const mockIntegrations: Integration[] = [
   {
     id: "instagram",
     name: "Instagram",
-    description: "Track stories, reels, and posts from influencer accounts",
+    description: "trackStoriesDesc",
     connected: true,
     icon: (
       <svg viewBox="0 0 24 24" className="h-6 w-6" fill="currentColor">
@@ -74,7 +74,7 @@ const mockIntegrations: Integration[] = [
   {
     id: "tiktok",
     name: "TikTok",
-    description: "Monitor TikTok creator content and engagement metrics",
+    description: "monitorTiktokDesc",
     connected: false,
     icon: (
       <svg viewBox="0 0 24 24" className="h-6 w-6" fill="currentColor">
@@ -86,7 +86,7 @@ const mockIntegrations: Integration[] = [
   {
     id: "youtube",
     name: "YouTube",
-    description: "Track YouTube videos, shorts, and channel analytics",
+    description: "trackYoutubeDesc",
     connected: false,
     icon: (
       <svg viewBox="0 0 24 24" className="h-6 w-6" fill="currentColor">
@@ -183,7 +183,7 @@ export default function SettingsPage() {
         <TabsContent value="profile">
           <Card variant="elevated">
             <CardHeader>
-              <CardTitle>Profile Information</CardTitle>
+              <CardTitle>{t.settings.profileInfo}</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-6">
@@ -193,26 +193,26 @@ export default function SettingsPage() {
                     <Avatar name={profileName} size="lg" />
                     <button
                       className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-900"
-                      title="Upload avatar"
+                      title={t.settings.uploadAvatar}
                     >
                       <Camera className="h-3.5 w-3.5" />
                     </button>
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-gray-900">Profile Photo</p>
-                    <p className="text-xs text-gray-400">JPG, PNG or GIF. Max 2MB.</p>
+                    <p className="text-sm font-medium text-gray-900">{t.settings.profilePhoto}</p>
+                    <p className="text-xs text-gray-400">{t.settings.photoHint}</p>
                   </div>
                 </div>
 
                 {/* Fields */}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Input
-                    label="Full Name"
+                    label={t.settings.fullName}
                     value={profileName}
                     onChange={(e) => setProfileName(e.target.value)}
                   />
                   <Input
-                    label="Email Address"
+                    label={t.settings.emailAddress}
                     type="email"
                     value={profileEmail}
                     onChange={(e) => setProfileEmail(e.target.value)}
@@ -220,7 +220,7 @@ export default function SettingsPage() {
                 </div>
                 <div className="max-w-sm">
                   <Input
-                    label="Company"
+                    label={t.settings.company}
                     value={profileCompany}
                     onChange={(e) => setProfileCompany(e.target.value)}
                   />
@@ -238,7 +238,7 @@ export default function SettingsPage() {
                     )}
                   </Button>
                   {profileSaved && (
-                    <span className="text-sm text-emerald-500">Profile updated successfully.</span>
+                    <span className="text-sm text-emerald-500">{t.settings.profileUpdated}</span>
                   )}
                 </div>
               </div>
@@ -250,9 +250,9 @@ export default function SettingsPage() {
         <TabsContent value="team">
           <Card variant="elevated">
             <CardHeader>
-              <CardTitle>Team Members</CardTitle>
+              <CardTitle>{t.settings.teamMembers}</CardTitle>
               <Button size="sm" onClick={() => setInviteOpen(true)}>
-                <Send className="h-3.5 w-3.5" /> Invite Team Member
+                <Send className="h-3.5 w-3.5" /> {t.settings.inviteTeamMember}
               </Button>
             </CardHeader>
             <CardContent>
@@ -262,7 +262,7 @@ export default function SettingsPage() {
                     <tr className="border-b border-gray-200 text-xs uppercase tracking-wider text-gray-400">
                       <th className="pb-3 pr-4 font-medium">{t.common.name}</th>
                       <th className="pb-3 pr-4 font-medium">{t.common.email}</th>
-                      <th className="pb-3 pr-4 font-medium">Role</th>
+                      <th className="pb-3 pr-4 font-medium">{t.settings.role}</th>
                       <th className="pb-3 pr-4 font-medium">{t.common.status}</th>
                       <th className="pb-3 font-medium text-right">{t.common.actions}</th>
                     </tr>
@@ -317,19 +317,19 @@ export default function SettingsPage() {
           {/* Invite Modal */}
           <Modal open={inviteOpen} onClose={() => setInviteOpen(false)}>
             <ModalHeader onClose={() => setInviteOpen(false)}>
-              Invite Team Member
+              {t.settings.inviteTeamMember}
             </ModalHeader>
             <ModalBody>
               <div className="space-y-4">
                 <Input
-                  label="Email Address"
+                  label={t.settings.emailAddress}
                   type="email"
                   placeholder="colleague@company.com"
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
                 />
                 <Select
-                  label="Role"
+                  label={t.settings.role}
                   value={inviteRole}
                   onChange={(e) => setInviteRole(e.target.value)}
                   options={[
@@ -345,7 +345,7 @@ export default function SettingsPage() {
                 {t.common.cancel}
               </Button>
               <Button onClick={handleInvite}>
-                <Send className="h-4 w-4" /> Send Invite
+                <Send className="h-4 w-4" /> {t.settings.sendInvite}
               </Button>
             </ModalFooter>
           </Modal>
@@ -366,11 +366,11 @@ export default function SettingsPage() {
                       </div>
                       <div>
                         <h3 className="font-semibold text-gray-900">{integration.name}</h3>
-                        <p className="mt-0.5 text-xs text-gray-400">{integration.description}</p>
+                        <p className="mt-0.5 text-xs text-gray-400">{t.settings[integration.description as keyof typeof t.settings] || integration.description}</p>
                       </div>
                     </div>
                     <Badge variant={integration.connected ? "active" : "archived"}>
-                      {integration.connected ? "Connected" : "Not connected"}
+                      {integration.connected ? t.settings.connected : t.settings.notConnected}
                     </Badge>
                   </div>
                   <div className="mt-4">
@@ -380,10 +380,10 @@ export default function SettingsPage() {
                       onClick={() => handleToggleIntegration(integration.id)}
                     >
                       {integration.connected ? (
-                        <>Disconnect</>
+                        <>{t.settings.disconnect}</>
                       ) : (
                         <>
-                          <ExternalLink className="h-3.5 w-3.5" /> Connect
+                          <ExternalLink className="h-3.5 w-3.5" /> {t.settings.connect}
                         </>
                       )}
                     </Button>
@@ -403,18 +403,18 @@ export default function SettingsPage() {
                     <div>
                       <h3 className="font-semibold text-gray-900">Apify</h3>
                       <p className="mt-0.5 text-xs text-gray-400">
-                        Scraping engine for influencer data collection
+                        {t.settings.scrapingEngine}
                       </p>
                     </div>
                   </div>
                   <Badge variant={apifyKey ? "active" : "archived"}>
-                    {apifyKey ? "Configured" : "Not configured"}
+                    {apifyKey ? t.settings.configured : t.settings.notConfigured}
                   </Badge>
                 </div>
                 <div className="mt-4 flex items-end gap-2">
                   <div className="flex-1">
                     <Input
-                      label="API Key"
+                      label={t.settings.apiKey}
                       type="password"
                       placeholder="apify_api_xxxxxxxxx"
                       value={apifyKey}
@@ -436,20 +436,17 @@ export default function SettingsPage() {
             {/* Current Plan */}
             <Card variant="elevated">
               <CardHeader>
-                <CardTitle>Current Plan</CardTitle>
+                <CardTitle>{t.settings.currentPlan}</CardTitle>
                 <Badge variant="active">Pro</Badge>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-gray-500 mb-4">
-                  You are on the <span className="font-medium text-gray-900">Pro</span> plan.
-                  Billed monthly at <span className="font-medium text-gray-900">$99/mo</span>.
-                </p>
+                <p className="text-sm text-gray-500 mb-4" dangerouslySetInnerHTML={{ __html: t.settings.planDescription }} />
                 <div className="flex gap-3">
                   <Button size="sm">
-                    <Zap className="h-3.5 w-3.5" /> Upgrade to Enterprise
+                    <Zap className="h-3.5 w-3.5" /> {t.settings.upgradeEnterprise}
                   </Button>
                   <Button size="sm" variant="ghost">
-                    Manage Subscription
+                    {t.settings.manageSubscription}
                   </Button>
                 </div>
               </CardContent>
@@ -458,14 +455,14 @@ export default function SettingsPage() {
             {/* Usage Stats */}
             <Card variant="elevated">
               <CardHeader>
-                <CardTitle>Usage This Period</CardTitle>
+                <CardTitle>{t.settings.usageThisPeriod}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-                  <UsageStat label="Campaigns Used" used={12} limit={25} />
-                  <UsageStat label="Profiles Tracked" used={348} limit={500} />
-                  <UsageStat label="API Calls" used={8420} limit={50000} />
-                  <UsageStat label="Team Members" used={4} limit={10} />
+                  <UsageStat label={t.settings.campaignsUsed} used={12} limit={25} />
+                  <UsageStat label={t.settings.profilesTracked} used={348} limit={500} />
+                  <UsageStat label={t.settings.apiCalls} used={8420} limit={50000} />
+                  <UsageStat label={t.settings.teamMembersUsage} used={4} limit={10} />
                 </div>
               </CardContent>
             </Card>
