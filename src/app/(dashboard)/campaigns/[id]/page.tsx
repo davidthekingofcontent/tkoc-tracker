@@ -185,6 +185,9 @@ export default function CampaignDetailPage() {
   const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [hasMoreMedia, setHasMoreMedia] = useState(false)
 
+  // Media sort state
+  const [mediaSortBy, setMediaSortBy] = useState<'recent' | 'likes' | 'comments' | 'views'>('recent')
+
   async function fetchCampaign() {
     try {
       const res = await fetch(`/api/campaigns/${campaignId}`)
@@ -398,6 +401,16 @@ export default function CampaignDetailPage() {
     () => sortInfluencers(influencers, influencerSortField, influencerSortDirection),
     [influencers, influencerSortField, influencerSortDirection]
   )
+
+  const sortedMedia = useMemo(() => {
+    if (mediaSortBy === 'recent') return media
+    return [...media].sort((a, b) => {
+      if (mediaSortBy === 'likes') return (b.likes || 0) - (a.likes || 0)
+      if (mediaSortBy === 'comments') return (b.comments || 0) - (a.comments || 0)
+      if (mediaSortBy === 'views') return (b.views || 0) - (a.views || 0)
+      return 0
+    })
+  }, [media, mediaSortBy])
 
   return (
     <div className="space-y-6">
@@ -619,28 +632,37 @@ export default function CampaignDetailPage() {
               </div>
 
               {/* Additional metrics row */}
-              {overview && (overview.totalViews > 0 || overview.engagementRate > 0) && (
+              {overview && (overview.totalViews > 0 || overview.engagementRate > 0 || overview.mediaValue > 0) && (
                 <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                   <StatCard
                     icon={<Eye className="h-5 w-5" />}
-                    label="Total Views"
+                    label={t.campaignDetail.totalViews}
                     value={formatNumber(overview.totalViews)}
                   />
                   <StatCard
                     icon={<BarChart3 className="h-5 w-5" />}
-                    label="Engagement Rate"
+                    label={t.campaignDetail.engagementRate}
                     value={`${overview.engagementRate}%`}
                   />
                   <StatCard
                     icon={<TrendingUp className="h-5 w-5" />}
-                    label="Impressions"
+                    label={t.campaignDetail.impressions}
                     value={formatNumber(overview.totalImpressions)}
                   />
-                  <StatCard
-                    icon={<Users className="h-5 w-5" />}
-                    label="Profiles Posted"
-                    value={overview.profilesPosted}
-                  />
+                  {overview.mediaValue > 0 ? (
+                    <StatCard
+                      icon={<TrendingUp className="h-5 w-5" />}
+                      label={t.campaignDetail.mediaValue}
+                      value={`$${formatNumber(Math.round(overview.mediaValue))}`}
+                      accent
+                    />
+                  ) : (
+                    <StatCard
+                      icon={<Users className="h-5 w-5" />}
+                      label={t.campaignDetail.profilesPosted}
+                      value={overview.profilesPosted}
+                    />
+                  )}
                 </div>
               )}
 
@@ -757,8 +779,34 @@ export default function CampaignDetailPage() {
             </div>
           ) : (
             <div className="space-y-6">
+              {/* Sort Controls */}
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-gray-500">{totalMedia} {t.dashboard.media}</p>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-500">{t.campaignDetail.sortBy}:</span>
+                  {([
+                    { key: 'recent', label: t.campaignDetail.mostRecent },
+                    { key: 'likes', label: t.campaignDetail.mostLiked },
+                    { key: 'comments', label: t.campaignDetail.mostCommented },
+                    { key: 'views', label: t.campaignDetail.mostViewed },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.key}
+                      onClick={() => setMediaSortBy(opt.key)}
+                      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                        mediaSortBy === opt.key
+                          ? 'bg-purple-100 text-purple-700'
+                          : 'text-gray-500 hover:bg-gray-100'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {media.map((m) => (
+                {sortedMedia.map((m) => (
                   <a
                     key={m.id}
                     href={m.permalink || '#'}
@@ -846,7 +894,7 @@ export default function CampaignDetailPage() {
                         {t.common.loading}
                       </>
                     ) : (
-                      'Load More'
+                      t.campaignDetail.loadMore
                     )}
                   </Button>
                 </div>
