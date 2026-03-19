@@ -248,7 +248,7 @@ async function scrapeTikTokProfile(username: string): Promise<ScrapedProfile | n
       externalId: (post.id as string) || '',
       caption: text,
       mediaUrl: (post.videoUrl as string) || null,
-      thumbnailUrl: (post.covers as Record<string, string>)?.default || null,
+      thumbnailUrl: (post.covers as Record<string, string>)?.default || (post.coverUrl as string) || (post.cover as string) || (post.thumbnailUrl as string) || null,
       permalink: (post.webVideoUrl as string) || `https://tiktok.com/@${username}/video/${post.id}`,
       mediaType: 'VIDEO' as const,
       likes,
@@ -411,7 +411,7 @@ async function scrapeInstagramHashtag(hashtag: string, maxPosts = 20): Promise<H
         externalId: (post.id as string) || (post.shortCode as string) || '',
         caption,
         mediaUrl: (post.displayUrl as string) || null,
-        thumbnailUrl: (post.thumbnailUrl as string) || null,
+        thumbnailUrl: (post.thumbnailUrl as string) || (post.displayUrl as string) || null,
         permalink: post.shortCode ? `https://instagram.com/p/${post.shortCode}` : null,
         mediaType: ((post.type as string) || '').includes('Video') ? 'REEL' as const : 'POST' as const,
         likes: (post.likesCount as number) || 0,
@@ -456,7 +456,7 @@ async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[
     const items = await runActor('apify~instagram-story-scraper', {
       usernames: usernames.slice(0, 20), // Max 20 at a time
       resultsLimit: 100,
-    })
+    }, 300) // 5 min timeout for stories
 
     if (!items || items.length === 0) return []
 
@@ -464,11 +464,12 @@ async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[
     const storyMap = new Map<string, ScrapedStory[]>()
 
     for (const item of items) {
-      const username = (item.ownerUsername as string) || (item.owner as Record<string, unknown>)?.username as string || ''
+      const owner = item.owner as Record<string, unknown> | undefined
+      const username = (item.ownerUsername as string) || (owner?.username as string) || (item.user as Record<string, unknown>)?.username as string || ''
       if (!username) continue
 
       const story: ScrapedStory = {
-        externalId: (item.id as string) || (item.pk as string)?.toString() || `story_${Date.now()}_${Math.random()}`,
+        externalId: (item.id as string) || (item.pk as number | string)?.toString() || `story_${username}_${(item.takenAtTimestamp as number) || Date.now()}`,
         mediaUrl: (item.videoUrl as string) || (item.displayUrl as string) || (item.imageUrl as string) || null,
         thumbnailUrl: (item.displayUrl as string) || (item.imageUrl as string) || (item.thumbnailUrl as string) || null,
         mediaType: 'STORY',

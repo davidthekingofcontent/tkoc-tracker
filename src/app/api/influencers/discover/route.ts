@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { Platform, Prisma } from '@/generated/prisma/client'
-import { isApifyConfigured, scrapeProfile } from '@/lib/apify'
+import { isApifyConfigured, scrapeProfile, scrapeHashtag } from '@/lib/apify'
 
 interface DiscoverResult {
   username: string
@@ -18,16 +18,18 @@ interface DiscoverResult {
   source: 'apify' | 'database'
 }
 
-async function searchInstagramViaApify(query: string, platform: string, minFollowers?: number, maxFollowers?: number): Promise<DiscoverResult[]> {
-  // Use scrapeProfile to look up the query as a username
+function looksLikeUsername(query: string): boolean {
+  // Usernames: no spaces, starts with @, or is a single word with dots/underscores
+  return query.startsWith('@') || (/^[\w.]+$/.test(query) && !query.includes(' '))
+}
+
+async function searchViaApifyProfile(query: string, platform: string, minFollowers?: number, maxFollowers?: number): Promise<DiscoverResult[]> {
   try {
-    const scraped = await scrapeProfile(query, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
+    const cleanUsername = query.replace(/^@/, '')
+    const scraped = await scrapeProfile(cleanUsername, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
     if (!scraped) return []
-
-    const followers = scraped.followers
-    if (minFollowers && followers < minFollowers) return []
-    if (maxFollowers && followers > maxFollowers) return []
-
+    if (minFollowers && scraped.followers < minFollowers) return []
+    if (maxFollowers && scraped.followers > maxFollowers) return []
     return [{
       username: scraped.username,
       displayName: scraped.displayName,
@@ -42,6 +44,64 @@ async function searchInstagramViaApify(query: string, platform: string, minFollo
       source: 'apify',
     }]
   } catch {
+    return []
+  }
+}
+
+async function searchViaApifyHashtag(query: string, platform: string, minFollowers?: number, maxFollowers?: number): Promise<DiscoverResult[]> {
+  try {
+    // Search by hashtag to discover creators in a niche/category
+    const cleanTag = query.replace(/^#/, '').replace(/\s+/g, '')
+    const hashtagResults = await scrapeHashtag(cleanTag, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 50)
+    if (!hashtagResults || hashtagResults.length === 0) return []
+
+    // Collect unique authors
+    const authorMap = new Map<string, DiscoverResult>()
+    for (const result of hashtagResults) {
+      const username = result.authorUsername
+      if (!username || authorMap.has(username)) continue
+      const followers = result.authorFollowers || 0
+      if (minFollowers && followers < minFollowers && followers > 0) continue
+      if (maxFollowers && followers > maxFollowers && followers > 0) continue
+      authorMap.set(username, {
+        username,
+        displayName: result.authorDisplayName,
+        avatarUrl: result.authorAvatarUrl,
+        followers,
+        engagementRate: 0,
+        avgLikes: result.posts[0]?.likes || 0,
+        avgComments: result.posts[0]?.comments || 0,
+        avgViews: result.posts[0]?.views || 0,
+        email: null,
+        platform,
+        source: 'apify',
+      })
+    }
+
+    // For top authors, try to enrich with full profile data from DB
+    const usernames = Array.from(authorMap.keys())
+    if (usernames.length > 0) {
+      const dbProfiles = await prisma.influencer.findMany({
+        where: { username: { in: usernames }, platform: platform as Platform },
+      })
+      for (const db of dbProfiles) {
+        const existing = authorMap.get(db.username)
+        if (existing) {
+          existing.followers = db.followers || existing.followers
+          existing.engagementRate = db.engagementRate || 0
+          existing.avgLikes = db.avgLikes || existing.avgLikes
+          existing.avgComments = db.avgComments || existing.avgComments
+          existing.avgViews = db.avgViews || existing.avgViews
+          existing.avatarUrl = db.avatarUrl || existing.avatarUrl
+          existing.displayName = db.displayName || existing.displayName
+          existing.email = db.email || null
+        }
+      }
+    }
+
+    return Array.from(authorMap.values()).sort((a, b) => b.followers - a.followers).slice(0, 50)
+  } catch (err) {
+    console.error('Hashtag search error:', err)
     return []
   }
 }
@@ -124,11 +184,16 @@ export async function POST(request: NextRequest) {
     // Try Apify for external search
     if (isApifyConfigured()) {
       try {
-        results = await searchInstagramViaApify(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
-        source = 'apify'
+        if (looksLikeUsername(cleanQuery)) {
+          // Direct profile lookup
+          results = await searchViaApifyProfile(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
+        } else {
+          // Category/keyword search via hashtag
+          results = await searchViaApifyHashtag(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
+        }
+        if (results.length > 0) source = 'apify'
       } catch (apifyError) {
         console.error('Apify discover error, falling back to database:', apifyError)
-        // Fall through to database search
       }
     }
 

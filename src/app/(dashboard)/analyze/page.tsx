@@ -79,6 +79,7 @@ interface MediaItem {
   mediaType: string
   caption: string | null
   thumbnailUrl: string | null
+  mediaUrl: string | null
   permalink: string | null
   likes: number
   comments: number
@@ -116,6 +117,7 @@ interface InsightsData {
     id: string
     caption: string | null
     thumbnailUrl: string | null
+    mediaUrl: string | null
     permalink: string | null
     mediaType: string
     likes: number
@@ -710,12 +712,13 @@ export default function AnalyzePage() {
                       rel="noopener noreferrer"
                       className="group relative aspect-square bg-gray-100 rounded-lg overflow-hidden"
                     >
-                      {media.thumbnailUrl ? (
+                      {(media.thumbnailUrl || media.mediaUrl) ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={media.thumbnailUrl}
+                          src={(media.thumbnailUrl || media.mediaUrl) as string}
                           alt={media.caption || ''}
                           className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-200"
+                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
                         />
                       ) : (
                         <div className="h-full w-full flex items-center justify-center">
@@ -942,12 +945,13 @@ export default function AnalyzePage() {
                     className="group relative rounded-lg border border-gray-100 overflow-hidden hover:border-purple-300 transition-colors"
                   >
                     <div className="relative aspect-square bg-gray-100">
-                      {post.thumbnailUrl ? (
+                      {(post.thumbnailUrl || post.mediaUrl) ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={post.thumbnailUrl}
+                          src={(post.thumbnailUrl || post.mediaUrl) as string}
                           alt=""
                           className="h-full w-full object-cover group-hover:scale-105 transition-transform"
+                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
                         />
                       ) : (
                         <div className="h-full w-full flex items-center justify-center text-gray-300">

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus } from '@/generated/prisma/client'
+import { calculateCampaignEMV } from '@/lib/emv'
 
 export async function GET(
   request: NextRequest,
@@ -153,7 +154,30 @@ export async function GET(
 
     const timeline = Array.from(timelineMap.values())
 
-    return NextResponse.json({ campaign, overview, timeline })
+    // Calculate EMV using the proper TKOC formula
+    const allMediaForEMV = await prisma.media.findMany({
+      where: { campaignId: id },
+      select: {
+        likes: true, comments: true, shares: true, saves: true,
+        views: true, reach: true, impressions: true,
+        influencer: { select: { platform: true } },
+      },
+    })
+
+    const emv = calculateCampaignEMV(
+      allMediaForEMV.map(m => ({
+        platform: m.influencer?.platform || 'INSTAGRAM',
+        impressions: m.impressions || 0,
+        reach: m.reach || 0,
+        views: m.views || 0,
+        likes: m.likes || 0,
+        comments: m.comments || 0,
+        shares: m.shares || 0,
+        saves: m.saves || 0,
+      }))
+    )
+
+    return NextResponse.json({ campaign, overview: { ...overview, emvBasic: emv.basic, emvExtended: emv.extended }, timeline })
   } catch (error) {
     console.error('Get campaign error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

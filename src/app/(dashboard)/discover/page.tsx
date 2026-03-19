@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Search,
   RotateCcw,
@@ -9,6 +9,8 @@ import {
   ExternalLink,
   ListPlus,
   Loader2,
+  CheckCircle2,
+  X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -37,6 +39,11 @@ interface DiscoverResult {
   email: string | null
   platform: string
   source: 'apify' | 'database'
+}
+
+interface ListItem {
+  id: string
+  name: string
 }
 
 function PlatformIcon({ platform }: { platform: string }) {
@@ -74,6 +81,16 @@ export default function DiscoverPage() {
   const [hasSearched, setHasSearched] = useState(false)
   const [total, setTotal] = useState(0)
   const [source, setSource] = useState<'apify' | 'database'>('database')
+  const [lists, setLists] = useState<ListItem[]>([])
+  const [addToListModal, setAddToListModal] = useState<{ username: string; platform: string } | null>(null)
+  const [addingToList, setAddingToList] = useState(false)
+  const [addToListResult, setAddToListResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+
+  useEffect(() => {
+    fetch('/api/lists').then(r => r.ok ? r.json() : null).then(data => {
+      if (data?.lists) setLists(data.lists)
+    }).catch(() => {})
+  }, [])
 
   const updateFilter = (key: string, value: string) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
@@ -93,6 +110,44 @@ export default function DiscoverPage() {
     })
     setHasSearched(false)
     setResults([])
+  }
+
+  const handleAddToList = async (listId: string) => {
+    if (!addToListModal) return
+    setAddingToList(true)
+    setAddToListResult(null)
+    try {
+      // First analyze/upsert the influencer to get an ID
+      const analyzeRes = await fetch('/api/influencers/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: addToListModal.username, platform: addToListModal.platform.toUpperCase() }),
+      })
+      const analyzeData = await analyzeRes.json()
+      const influencerId = analyzeData.influencer?.id || analyzeData.id
+      if (!influencerId) {
+        setAddToListResult({ type: 'error', message: 'Could not find influencer' })
+        return
+      }
+      // Add to list
+      const addRes = await fetch(`/api/lists/${listId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ influencerId }),
+      })
+      if (addRes.ok) {
+        setAddToListResult({ type: 'success', message: t.campaignDetail.addedSuccess })
+        setTimeout(() => { setAddToListModal(null); setAddToListResult(null) }, 1500)
+      } else if (addRes.status === 409) {
+        setAddToListResult({ type: 'error', message: t.campaignDetail.alreadyAdded })
+      } else {
+        setAddToListResult({ type: 'error', message: 'Failed to add' })
+      }
+    } catch {
+      setAddToListResult({ type: 'error', message: 'Network error' })
+    } finally {
+      setAddingToList(false)
+    }
   }
 
   const handleSearch = async () => {
@@ -234,7 +289,7 @@ export default function DiscoverPage() {
 
           {/* Action Buttons */}
           <div className="flex flex-col gap-2 border-t border-gray-200 pt-5">
-            <Button onClick={handleSearch} disabled={searching || !filters.search.trim()} className="w-full">
+            <Button variant="primary" size="lg" onClick={handleSearch} disabled={searching || !filters.search.trim()} className="w-full">
               {searching ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -247,7 +302,7 @@ export default function DiscoverPage() {
                 </>
               )}
             </Button>
-            <Button variant="ghost" onClick={resetFilters} className="w-full">
+            <Button variant="secondary" size="md" onClick={resetFilters} className="w-full">
               <RotateCcw className="h-4 w-4" />
               {t.discover.reset}
             </Button>
@@ -362,10 +417,11 @@ export default function DiscoverPage() {
                         <TableCell>
                           <div className="flex items-center justify-end">
                             <Button
+                              variant="primary"
                               size="sm"
-                              className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                              onClick={() => setAddToListModal({ username: item.username, platform: item.platform })}
                             >
-                              <ListPlus className="h-3 w-3" />
+                              <ListPlus className="h-3.5 w-3.5" />
                               {t.discover.addTo}
                             </Button>
                           </div>
@@ -379,6 +435,50 @@ export default function DiscoverPage() {
           )}
         </div>
       </div>
+
+      {/* Add to List Modal */}
+      {addToListModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {t.discover.addTo} @{addToListModal.username}
+              </h3>
+              <button onClick={() => { setAddToListModal(null); setAddToListResult(null) }} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {addToListResult && (
+              <div className={`mb-4 flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
+                addToListResult.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+              }`}>
+                {addToListResult.type === 'success' ? <CheckCircle2 className="h-4 w-4" /> : <X className="h-4 w-4" />}
+                {addToListResult.message}
+              </div>
+            )}
+
+            {lists.length === 0 ? (
+              <p className="text-sm text-gray-500 py-4 text-center">{t.lists.noLists}</p>
+            ) : (
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {lists.map(list => (
+                  <button
+                    key={list.id}
+                    onClick={() => handleAddToList(list.id)}
+                    disabled={addingToList}
+                    className="w-full flex items-center gap-3 rounded-lg border border-gray-200 px-4 py-3 text-left text-sm font-medium text-gray-700 transition-colors hover:border-purple-300 hover:bg-purple-50 hover:text-purple-700 disabled:opacity-50"
+                  >
+                    <ListPlus className="h-4 w-4 shrink-0" />
+                    {list.name}
+                    {addingToList && <Loader2 className="ml-auto h-4 w-4 animate-spin" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

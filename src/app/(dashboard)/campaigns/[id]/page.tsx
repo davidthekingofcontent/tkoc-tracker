@@ -106,6 +106,8 @@ interface Overview {
   totalViews: number
   profilesPosted: number
   totalMedia: number
+  emvBasic: number
+  emvExtended: number
 }
 
 interface TimelinePoint {
@@ -242,7 +244,7 @@ function sortInfluencers(
 
 export default function CampaignDetailPage() {
   const params = useParams()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const campaignId = params.id as string
   const [campaign, setCampaign] = useState<CampaignData | null>(null)
   const [overview, setOverview] = useState<Overview | null>(null)
@@ -755,20 +757,34 @@ export default function CampaignDetailPage() {
                     label={t.campaignDetail.impressions}
                     value={formatNumber(overview.totalImpressions)}
                   />
-                  {overview.mediaValue > 0 ? (
-                    <StatCard
-                      icon={<TrendingUp className="h-5 w-5" />}
-                      label={t.campaignDetail.mediaValue}
-                      value={`$${formatNumber(Math.round(overview.mediaValue))}`}
-                      accent
-                    />
-                  ) : (
-                    <StatCard
-                      icon={<Users className="h-5 w-5" />}
-                      label={t.campaignDetail.profilesPosted}
-                      value={overview.profilesPosted}
-                    />
-                  )}
+                  <StatCard
+                    icon={<Users className="h-5 w-5" />}
+                    label={t.campaignDetail.profilesPosted}
+                    value={overview.profilesPosted}
+                  />
+                </div>
+              )}
+
+              {/* EMV Section */}
+              {overview && (overview.emvBasic > 0 || overview.emvExtended > 0) && (
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                  <div className="rounded-xl border-2 border-green-200 bg-gradient-to-br from-green-50 to-emerald-50 p-5 shadow-sm">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-green-600">EMV {locale === 'es' ? 'Basico' : 'Basic'}</p>
+                    <p className="mt-1 text-2xl font-bold text-green-700">${formatNumber(Math.round(overview.emvBasic || 0))}</p>
+                    <p className="mt-1 text-xs text-green-500">{locale === 'es' ? 'Solo alcance' : 'Reach only'}</p>
+                  </div>
+                  <div className="rounded-xl border-2 border-purple-200 bg-gradient-to-br from-purple-50 to-indigo-50 p-5 shadow-sm">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-purple-600">EMV {locale === 'es' ? 'Ampliado' : 'Extended'}</p>
+                    <p className="mt-1 text-2xl font-bold text-purple-700">${formatNumber(Math.round(overview.emvExtended || 0))}</p>
+                    <p className="mt-1 text-xs text-purple-500">{locale === 'es' ? 'Alcance + engagement' : 'Reach + engagement'}</p>
+                  </div>
+                  <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm flex items-center">
+                    <p className="text-xs text-gray-500 leading-relaxed">
+                      {locale === 'es'
+                        ? 'El EMV es una estimacion del coste equivalente que habria supuesto obtener un alcance, interaccion e intencion similares mediante medios pagados. No representa ventas ni ROI directo.'
+                        : 'EMV is an estimate of the equivalent cost of achieving similar reach, interaction, and intent through paid media. It does not represent sales or direct ROI.'}
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -1134,11 +1150,18 @@ export default function CampaignDetailPage() {
                   >
                     <div className="relative flex h-48 items-center justify-center bg-gray-100">
                       {m.thumbnailUrl ? (
-                        <img
-                          src={m.thumbnailUrl}
-                          alt={m.caption || 'Media'}
-                          className="h-full w-full object-cover"
-                        />
+                        <>
+                          <img
+                            src={m.thumbnailUrl}
+                            alt={m.caption || 'Media'}
+                            className="h-full w-full object-cover"
+                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; (e.currentTarget.nextElementSibling as HTMLElement)?.classList.remove('hidden') }}
+                          />
+                          <div className="hidden flex flex-col items-center gap-2 text-gray-400">
+                            <Image className="h-8 w-8" />
+                            <span className="text-xs">{m.mediaType}</span>
+                          </div>
+                        </>
                       ) : (
                         <div className="flex flex-col items-center gap-2 text-gray-400">
                           <Image className="h-8 w-8" />
@@ -1286,6 +1309,7 @@ export default function CampaignDetailPage() {
                               src={story.thumbnailUrl}
                               alt="Story"
                               className="h-full w-full object-cover"
+                              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
                             />
                           ) : (
                             <div className="flex h-full items-center justify-center text-gray-400">
