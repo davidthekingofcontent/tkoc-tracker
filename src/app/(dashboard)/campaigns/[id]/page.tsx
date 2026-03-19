@@ -47,12 +47,14 @@ import {
   MapPin,
   Settings2,
   Save,
+  Kanban,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
   id: string
   cost: number | null
   notes: string | null
+  status: string
   influencer: {
     id: string
     username: string
@@ -774,6 +776,10 @@ export default function CampaignDetailPage() {
             {t.campaignDetail.storiesTab || 'Stories'} ({stories.length})
           </TabsTrigger>
           <TabsTrigger value="influencers">{t.campaigns.influencersTab} ({influencers.length})</TabsTrigger>
+          <TabsTrigger value="pipeline">
+            <Kanban className="h-3.5 w-3.5" />
+            {t.pipeline.title}
+          </TabsTrigger>
         </TabsList>
 
         {/* Report Tab */}
@@ -1703,6 +1709,116 @@ export default function CampaignDetailPage() {
                 )}
               </CardContent>
             </Card>
+          </div>
+        </TabsContent>
+
+        {/* Pipeline Kanban Tab */}
+        <TabsContent value="pipeline">
+          <div className="overflow-x-auto pb-4">
+            <div className="flex gap-4" style={{ minWidth: 'max-content' }}>
+              {([
+                { key: 'PROSPECT', label: t.pipeline.prospect, color: 'gray' },
+                { key: 'OUTREACH', label: t.pipeline.outreach, color: 'blue' },
+                { key: 'NEGOTIATING', label: t.pipeline.negotiating, color: 'amber' },
+                { key: 'AGREED', label: t.pipeline.agreed, color: 'purple' },
+                { key: 'CONTRACTED', label: t.pipeline.contracted, color: 'indigo' },
+                { key: 'POSTED', label: t.pipeline.posted, color: 'cyan' },
+                { key: 'COMPLETED', label: t.pipeline.completed, color: 'green' },
+              ] as const).map((col) => {
+                const colInfluencers = influencers.filter(
+                  (ci) => (ci.status || 'PROSPECT') === col.key
+                )
+                const colorMap: Record<string, { bg: string; border: string; text: string; headerBg: string; dot: string }> = {
+                  gray: { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', headerBg: 'bg-gray-100', dot: 'bg-gray-400' },
+                  blue: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', headerBg: 'bg-blue-100', dot: 'bg-blue-400' },
+                  amber: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', headerBg: 'bg-amber-100', dot: 'bg-amber-400' },
+                  purple: { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', headerBg: 'bg-purple-100', dot: 'bg-purple-400' },
+                  indigo: { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', headerBg: 'bg-indigo-100', dot: 'bg-indigo-400' },
+                  cyan: { bg: 'bg-cyan-50', border: 'border-cyan-200', text: 'text-cyan-700', headerBg: 'bg-cyan-100', dot: 'bg-cyan-400' },
+                  green: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', headerBg: 'bg-green-100', dot: 'bg-green-400' },
+                }
+                const colors = colorMap[col.color]
+                return (
+                  <div
+                    key={col.key}
+                    className={`w-[280px] shrink-0 rounded-xl border ${colors.border} ${colors.bg} shadow-sm`}
+                  >
+                    {/* Column Header */}
+                    <div className={`flex items-center justify-between rounded-t-xl px-4 py-3 ${colors.headerBg}`}>
+                      <div className="flex items-center gap-2">
+                        <span className={`h-2.5 w-2.5 rounded-full ${colors.dot}`} />
+                        <span className={`text-sm font-semibold ${colors.text}`}>{col.label}</span>
+                      </div>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${colors.text} ${colors.bg}`}>
+                        {colInfluencers.length}
+                      </span>
+                    </div>
+
+                    {/* Column Cards */}
+                    <div className="space-y-3 p-3" style={{ minHeight: '120px' }}>
+                      {colInfluencers.length === 0 ? (
+                        <p className="py-6 text-center text-xs text-gray-400">{t.pipeline.noInfluencers}</p>
+                      ) : (
+                        colInfluencers.map((ci) => (
+                          <div key={ci.id} className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                            <div className="flex items-center gap-2.5">
+                              <Avatar
+                                src={ci.influencer.avatarUrl || undefined}
+                                name={ci.influencer.displayName || ci.influencer.username}
+                                size="sm"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-gray-900">
+                                  @{ci.influencer.username}
+                                </p>
+                                <div className="flex items-center gap-2 text-xs text-gray-500">
+                                  <Badge variant={ci.influencer.platform === 'INSTAGRAM' ? 'instagram' : ci.influencer.platform === 'YOUTUBE' ? 'youtube' : ci.influencer.platform === 'TIKTOK' ? 'tiktok' : 'default'} className="text-[10px] px-1.5 py-0">
+                                    {ci.influencer.platform === 'INSTAGRAM' ? 'IG' : ci.influencer.platform === 'YOUTUBE' ? 'YT' : ci.influencer.platform === 'TIKTOK' ? 'TT' : ci.influencer.platform}
+                                  </Badge>
+                                  <span>{formatNumber(ci.influencer.followers)}</span>
+                                </div>
+                              </div>
+                            </div>
+                            {ci.influencer.engagementRate != null && (
+                              <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
+                                <TrendingUp className="h-3 w-3" />
+                                <span>{ci.influencer.engagementRate.toFixed(1)}% eng.</span>
+                              </div>
+                            )}
+                            {/* Move-to select */}
+                            <select
+                              className="mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-600 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400"
+                              value={ci.status || 'PROSPECT'}
+                              onChange={async (e) => {
+                                const newStatus = e.target.value
+                                try {
+                                  await fetch(`/api/campaigns/${campaignId}/influencers`, {
+                                    method: 'PATCH',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ influencerId: ci.influencer.id, status: newStatus }),
+                                  })
+                                  await fetchCampaign()
+                                } catch (err) {
+                                  console.error('Error updating status:', err)
+                                }
+                              }}
+                            >
+                              <option value="PROSPECT">{t.pipeline.prospect}</option>
+                              <option value="OUTREACH">{t.pipeline.outreach}</option>
+                              <option value="NEGOTIATING">{t.pipeline.negotiating}</option>
+                              <option value="AGREED">{t.pipeline.agreed}</option>
+                              <option value="CONTRACTED">{t.pipeline.contracted}</option>
+                              <option value="POSTED">{t.pipeline.posted}</option>
+                              <option value="COMPLETED">{t.pipeline.completed}</option>
+                            </select>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         </TabsContent>
       </Tabs>

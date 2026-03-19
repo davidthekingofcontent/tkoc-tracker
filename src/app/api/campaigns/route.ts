@@ -18,8 +18,15 @@ export async function GET(request: NextRequest) {
 
     const where: Prisma.CampaignWhereInput = {}
 
-    // BRAND users only see their own campaigns
-    if (session.role === 'BRAND') {
+    // ADMIN sees all campaigns
+    // EMPLOYEE sees campaigns they created OR are assigned to
+    // BRAND sees only campaigns they created
+    if (session.role === 'EMPLOYEE') {
+      where.OR = [
+        { userId: session.id },
+        { assignments: { some: { userId: session.id } } },
+      ]
+    } else if (session.role === 'BRAND') {
       where.userId = session.id
     }
 
@@ -98,6 +105,10 @@ export async function POST(request: NextRequest) {
         ...(endDate && { endDate: new Date(endDate) }),
         ...(country && { country }),
         userId: session.id,
+        // Auto-assign creator
+        assignments: {
+          create: { userId: session.id },
+        },
       },
       include: {
         _count: {

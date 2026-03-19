@@ -10,20 +10,28 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const userId = session.id
+    // ADMIN sees all campaigns
+    // EMPLOYEE sees own + assigned campaigns
+    // BRAND sees only own campaigns
+    let campaignWhere: Record<string, unknown> = {}
+    if (session.role === 'EMPLOYEE') {
+      campaignWhere = { OR: [{ userId: session.id }, { assignments: { some: { userId: session.id } } }] }
+    } else if (session.role === 'BRAND') {
+      campaignWhere = { userId: session.id }
+    }
 
     // Active campaigns count
     const activeCampaigns = await prisma.campaign.count({
-      where: { userId, status: CampaignStatus.ACTIVE },
+      where: { ...campaignWhere, status: CampaignStatus.ACTIVE },
     })
 
     const totalCampaigns = await prisma.campaign.count({
-      where: { userId },
+      where: campaignWhere,
     })
 
     // Total influencers across all campaigns
     const uniqueInfluencers = await prisma.campaignInfluencer.findMany({
-      where: { campaign: { userId } },
+      where: { campaign: campaignWhere },
       select: { influencerId: true },
       distinct: ['influencerId'],
     })
@@ -43,7 +51,7 @@ export async function GET(request: NextRequest) {
 
     // Recent campaigns with influencer counts
     const recentCampaigns = await prisma.campaign.findMany({
-      where: { userId },
+      where: campaignWhere,
       orderBy: { updatedAt: 'desc' },
       take: 5,
       include: {
@@ -53,7 +61,7 @@ export async function GET(request: NextRequest) {
 
     // Pinned lists
     const pinnedLists = await prisma.list.findMany({
-      where: { userId, isPinned: true, isArchived: false },
+      where: { userId: session.id, isPinned: true, isArchived: false },
       include: { _count: { select: { items: true } } },
       take: 5,
     })

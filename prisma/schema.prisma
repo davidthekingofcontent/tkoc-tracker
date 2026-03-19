@@ -32,6 +32,7 @@ model User {
   lists         List[]
   contacts      Contact[]
   invitations   Invitation[]
+  assignedCampaigns CampaignAssignment[]
 
   @@map("users")
 }
@@ -93,11 +94,29 @@ model Campaign {
   user          User            @relation(fields: [userId], references: [id])
   influencers   CampaignInfluencer[]
   media         Media[]
+  assignments   CampaignAssignment[]
 
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 
   @@map("campaigns")
+}
+
+// ============ CAMPAIGN ASSIGNMENTS ============
+
+model CampaignAssignment {
+  id          String   @id @default(cuid())
+
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+
+  @@unique([campaignId, userId])
+  @@map("campaign_assignments")
 }
 
 // ============ INFLUENCERS / CREATORS ============

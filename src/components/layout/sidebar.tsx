@@ -16,7 +16,6 @@ import {
   ChevronRight,
   Pin,
   LogOut,
-  Kanban,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useI18n } from '@/i18n/context'
@@ -34,7 +33,6 @@ const navItems: NavItem[] = [
   { key: "findCreators", icon: Compass, href: "/discover" },
   { key: "lookalikes", icon: UserCheck, href: "/lookalikes" },
   { key: "lists", icon: List, href: "/lists" },
-  { key: "pipeline", icon: Kanban, href: "/pipeline" },
   { key: "contacts", icon: Users, href: "/contacts" },
   { key: "settings", icon: Settings, href: "/settings" },
 ]
@@ -65,7 +63,6 @@ function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
     case 'findCreators': return t.nav.findCreators
     case 'lookalikes': return t.nav.lookalikes
     case 'lists': return t.lists.title
-    case 'pipeline': return t.nav.pipeline
     case 'contacts': return t.contacts.title
     case 'settings': return t.settings.title
     default: return key
