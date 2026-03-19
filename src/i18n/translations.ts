@@ -347,6 +347,14 @@ export const translations = {
       postsOverTime: 'Posts Over Time',
       reachOverTime: 'Reach Over Time',
       storiesExpireNote: 'Stories expire after 24h',
+      audienceDemographics: 'Audience Demographics',
+      platformBreakdown: 'Platform Breakdown',
+      avgEngByPlatform: 'Avg. Engagement by Platform',
+      influencerTiers: 'Influencer Tiers',
+      combinedAudience: 'Combined Audience',
+      geoDistribution: 'Geographic Distribution',
+      noLocationData: 'Location data will appear as profiles are analyzed',
+      avgFollowers: 'Avg. Followers/Influencer',
     },
 
     // List Detail
@@ -706,6 +714,14 @@ export const translations = {
       postsOverTime: 'Publicaciones a lo Largo del Tiempo',
       reachOverTime: 'Alcance a lo Largo del Tiempo',
       storiesExpireNote: 'Las stories expiran tras 24h',
+      audienceDemographics: 'Demografia de Audiencia',
+      platformBreakdown: 'Distribucion por Plataforma',
+      avgEngByPlatform: 'Eng. Medio por Plataforma',
+      influencerTiers: 'Niveles de Influencers',
+      combinedAudience: 'Audiencia Combinada',
+      geoDistribution: 'Distribucion Geografica',
+      noLocationData: 'Los datos de ubicacion apareceran a medida que se analicen los perfiles',
+      avgFollowers: 'Media Seguidores/Influencer',
     },
 
     // List Detail

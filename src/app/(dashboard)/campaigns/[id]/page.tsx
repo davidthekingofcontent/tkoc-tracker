@@ -42,6 +42,8 @@ import {
   UserPlus,
   Clock,
   Film,
+  Globe,
+  MapPin,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -768,6 +770,179 @@ export default function CampaignDetailPage() {
                   )}
                 </div>
               )}
+
+              {/* Audience Demographics */}
+              {influencers.length > 0 && (() => {
+                // Calculate platform breakdown
+                const platformCounts = influencers.reduce((acc, ci) => {
+                  const p = ci.influencer?.platform || 'UNKNOWN'
+                  acc[p] = (acc[p] || 0) + 1
+                  return acc
+                }, {} as Record<string, number>)
+
+                // Calculate location breakdown from influencer data
+                const locationCounts = influencers.reduce((acc, ci) => {
+                  const inf = ci.influencer as CampaignInfluencer['influencer'] & { country?: string; city?: string }
+                  const loc = inf?.country || inf?.city
+                  if (loc) acc[loc] = (acc[loc] || 0) + 1
+                  return acc
+                }, {} as Record<string, number>)
+
+                // Follower tier breakdown
+                const tiers = { micro: 0, mid: 0, macro: 0, mega: 0 }
+                influencers.forEach(ci => {
+                  const f = ci.influencer?.followers || 0
+                  if (f < 10000) tiers.micro++
+                  else if (f < 100000) tiers.mid++
+                  else if (f < 1000000) tiers.macro++
+                  else tiers.mega++
+                })
+
+                // Average engagement by platform
+                const engByPlatform = influencers.reduce((acc, ci) => {
+                  const p = ci.influencer?.platform || 'UNKNOWN'
+                  if (!acc[p]) acc[p] = { total: 0, count: 0 }
+                  acc[p].total += ci.influencer?.engagementRate || 0
+                  acc[p].count++
+                  return acc
+                }, {} as Record<string, { total: number; count: number }>)
+
+                const tierColors = {
+                  micro: '#8b5cf6',
+                  mid: '#06b6d4',
+                  macro: '#f59e0b',
+                  mega: '#ec4899',
+                }
+
+                const platformColors: Record<string, string> = {
+                  INSTAGRAM: '#e11d48',
+                  TIKTOK: '#06b6d4',
+                  YOUTUBE: '#dc2626',
+                }
+
+                return (
+                  <div className="space-y-4">
+                    <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                      <Globe className="h-5 w-5 text-purple-600" />
+                      {t.campaignDetail.audienceDemographics || 'Audience Demographics'}
+                    </h2>
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                      {/* Platform Breakdown */}
+                      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <h3 className="mb-4 text-sm font-semibold text-gray-700">{t.campaignDetail.platformBreakdown || 'Platform Breakdown'}</h3>
+                        <div className="space-y-3">
+                          {Object.entries(platformCounts).map(([platform, count]) => {
+                            const pct = Math.round((count / influencers.length) * 100)
+                            return (
+                              <div key={platform}>
+                                <div className="flex items-center justify-between text-sm">
+                                  <span className="flex items-center gap-2 text-gray-700">
+                                    <PlatformIcon platform={platform} />
+                                    {platform.charAt(0) + platform.slice(1).toLowerCase()}
+                                  </span>
+                                  <span className="font-medium text-gray-900">{count} ({pct}%)</span>
+                                </div>
+                                <div className="mt-1 h-2 rounded-full bg-gray-100 overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full transition-all"
+                                    style={{ width: `${pct}%`, backgroundColor: platformColors[platform] || '#9ca3af' }}
+                                  />
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {/* Avg engagement by platform */}
+                        <div className="mt-4 pt-4 border-t border-gray-100">
+                          <p className="text-xs font-medium text-gray-500 mb-2">{t.campaignDetail.avgEngByPlatform || 'Avg. Engagement by Platform'}</p>
+                          {Object.entries(engByPlatform).map(([platform, data]) => (
+                            <div key={platform} className="flex items-center justify-between text-xs text-gray-600">
+                              <span>{platform.charAt(0) + platform.slice(1).toLowerCase()}</span>
+                              <span className="font-medium text-purple-600">{(data.total / data.count).toFixed(2)}%</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Influencer Tiers */}
+                      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <h3 className="mb-4 text-sm font-semibold text-gray-700">{t.campaignDetail.influencerTiers || 'Influencer Tiers'}</h3>
+                        <div className="space-y-3">
+                          {([
+                            { key: 'mega', label: 'Mega (1M+)', count: tiers.mega },
+                            { key: 'macro', label: 'Macro (100K-1M)', count: tiers.macro },
+                            { key: 'mid', label: 'Mid (10K-100K)', count: tiers.mid },
+                            { key: 'micro', label: 'Micro (<10K)', count: tiers.micro },
+                          ] as const).map(tier => {
+                            const pct = influencers.length > 0 ? Math.round((tier.count / influencers.length) * 100) : 0
+                            return (
+                              <div key={tier.key}>
+                                <div className="flex items-center justify-between text-sm">
+                                  <span className="text-gray-700">{tier.label}</span>
+                                  <span className="font-medium text-gray-900">{tier.count} ({pct}%)</span>
+                                </div>
+                                <div className="mt-1 h-2 rounded-full bg-gray-100 overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full transition-all"
+                                    style={{ width: `${pct}%`, backgroundColor: tierColors[tier.key] }}
+                                  />
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {/* Total combined audience */}
+                        <div className="mt-4 pt-4 border-t border-gray-100">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-500">{t.campaignDetail.combinedAudience || 'Combined Audience'}</span>
+                            <span className="text-sm font-bold text-purple-600">
+                              {formatNumber(influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0))}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Location / Geo Distribution */}
+                      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <h3 className="mb-4 text-sm font-semibold text-gray-700 flex items-center gap-2">
+                          <MapPin className="h-4 w-4 text-gray-400" />
+                          {t.campaignDetail.geoDistribution || 'Geographic Distribution'}
+                        </h3>
+                        {Object.keys(locationCounts).length > 0 ? (
+                          <div className="space-y-2">
+                            {Object.entries(locationCounts)
+                              .sort(([, a], [, b]) => b - a)
+                              .slice(0, 8)
+                              .map(([loc, count]) => {
+                                const pct = Math.round((count / influencers.length) * 100)
+                                return (
+                                  <div key={loc} className="flex items-center justify-between text-sm">
+                                    <span className="text-gray-700">{loc}</span>
+                                    <span className="font-medium text-gray-900">{count} ({pct}%)</span>
+                                  </div>
+                                )
+                              })}
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center py-8 text-center">
+                            <Globe className="h-8 w-8 text-gray-300 mb-2" />
+                            <p className="text-xs text-gray-400">{t.campaignDetail.noLocationData || 'Location data will appear as profiles are analyzed'}</p>
+                          </div>
+                        )}
+                        {/* Avg followers per influencer */}
+                        <div className="mt-4 pt-4 border-t border-gray-100">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-500">{t.campaignDetail.avgFollowers || 'Avg. Followers/Influencer'}</span>
+                            <span className="text-sm font-bold text-gray-900">
+                              {formatNumber(Math.round(influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0) / (influencers.length || 1)))}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
 
               {/* Growth Charts */}
               {timeline.length > 1 && (
