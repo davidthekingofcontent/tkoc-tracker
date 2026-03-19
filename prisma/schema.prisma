@@ -31,8 +31,25 @@ model User {
   campaigns     Campaign[]
   lists         List[]
   contacts      Contact[]
+  invitations   Invitation[]
 
   @@map("users")
+}
+
+model Invitation {
+  id        String   @id @default(cuid())
+  email     String
+  role      UserRole @default(EMPLOYEE)
+  token     String   @unique
+  expiresAt DateTime
+  accepted  Boolean  @default(false)
+
+  invitedBy String
+  user      User     @relation(fields: [invitedBy], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@map("invitations")
 }
 
 // ============ CAMPAIGNS ============

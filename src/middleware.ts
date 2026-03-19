@@ -11,6 +11,9 @@ function isPublicPath(pathname: string): boolean {
   // Exact matches for public paths
   if (publicPaths.includes(pathname)) return true
 
+  // Invitation accept pages
+  if (pathname.startsWith('/invite/')) return true
+
   // Static assets, Next.js internals, and ALL API routes
   // (API routes handle their own authentication via getSession)
   if (

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useI18n } from '@/i18n/context'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
@@ -23,7 +23,31 @@ import {
   ExternalLink,
   Key,
   Zap,
+  Loader2,
+  RotateCcw,
+  XCircle,
 } from "lucide-react"
+
+// ---------- Interfaces ----------
+
+interface TeamUser {
+  id: string
+  name: string
+  email: string
+  role: string
+  avatar: string | null
+  isActive: boolean
+  createdAt: string
+}
+
+interface PendingInvitation {
+  id: string
+  email: string
+  role: string
+  expiresAt: string
+  createdAt: string
+  user: { name: string }
+}
 
 // ---------- Mock Data ----------
 
@@ -32,22 +56,6 @@ const mockProfile = {
   email: "david@tkoc.com",
   company: "TKOC Agency",
 }
-
-interface TeamMember {
-  id: number
-  name: string
-  email: string
-  role: "Admin" | "Employee" | "Brand"
-  status: "Active" | "Invited"
-  avatarUrl?: string
-}
-
-const mockTeam: TeamMember[] = [
-  { id: 1, name: "David Calamardo", email: "david@tkoc.com", role: "Admin", status: "Active" },
-  { id: 2, name: "Sofia Martinez", email: "sofia@tkoc.com", role: "Employee", status: "Active" },
-  { id: 3, name: "Alex Johnson", email: "alex@tkoc.com", role: "Employee", status: "Active" },
-  { id: 4, name: "New Hire", email: "newhire@tkoc.com", role: "Brand", status: "Invited" },
-]
 
 interface Integration {
   id: string
@@ -110,7 +118,11 @@ export default function SettingsPage() {
   const [profileSaved, setProfileSaved] = useState(false)
 
   // Team state
-  const [team, setTeam] = useState<TeamMember[]>(mockTeam)
+  const [teamUsers, setTeamUsers] = useState<TeamUser[]>([])
+  const [pendingInvitations, setPendingInvitations] = useState<PendingInvitation[]>([])
+  const [teamLoading, setTeamLoading] = useState(true)
+  const [inviteSending, setInviteSending] = useState(false)
+  const [inviteResult, setInviteResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [inviteOpen, setInviteOpen] = useState(false)
   const [inviteEmail, setInviteEmail] = useState("")
   const [inviteRole, setInviteRole] = useState("Employee")
@@ -118,6 +130,25 @@ export default function SettingsPage() {
   // Integrations state
   const [integrations, setIntegrations] = useState(mockIntegrations)
   const [apifyKey, setApifyKey] = useState("")
+
+  // ---------- Team Data Fetch ----------
+
+  useEffect(() => {
+    fetchTeam()
+  }, [])
+
+  async function fetchTeam() {
+    try {
+      const res = await fetch('/api/team/invite')
+      if (res.ok) {
+        const data = await res.json()
+        setTeamUsers(data.users || [])
+        setPendingInvitations(data.invitations || [])
+      }
+    } catch {} finally {
+      setTeamLoading(false)
+    }
+  }
 
   // ---------- Handlers ----------
 
@@ -130,23 +161,55 @@ export default function SettingsPage() {
     }, 800)
   }
 
-  function handleInvite() {
+  async function handleInvite() {
     if (!inviteEmail) return
-    const newMember: TeamMember = {
-      id: Date.now(),
-      name: inviteEmail.split("@")[0],
-      email: inviteEmail,
-      role: inviteRole as TeamMember["role"],
-      status: "Invited",
+    setInviteSending(true)
+    setInviteResult(null)
+    try {
+      const res = await fetch('/api/team/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: inviteEmail, role: inviteRole.toUpperCase() }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setInviteResult({ type: 'success', message: 'Invitation sent successfully!' })
+        setInviteEmail('')
+        setInviteRole('Employee')
+        setInviteOpen(false)
+        await fetchTeam()
+      } else {
+        setInviteResult({ type: 'error', message: data.error || 'Failed to send invitation' })
+      }
+    } catch {
+      setInviteResult({ type: 'error', message: 'Network error' })
+    } finally {
+      setInviteSending(false)
     }
-    setTeam((prev) => [...prev, newMember])
-    setInviteEmail("")
-    setInviteRole("Employee")
-    setInviteOpen(false)
   }
 
-  function handleRemoveMember(id: number) {
-    setTeam((prev) => prev.filter((m) => m.id !== id))
+  async function handleRevokeInvitation(id: string) {
+    try {
+      await fetch(`/api/team/invite?id=${id}`, { method: 'DELETE' })
+      await fetchTeam()
+    } catch {}
+  }
+
+  async function handleResendInvitation(email: string, role: string) {
+    // Revoke old + send new
+    const existing = pendingInvitations.find(i => i.email === email)
+    if (existing) {
+      await fetch(`/api/team/invite?id=${existing.id}`, { method: 'DELETE' })
+    }
+    const res = await fetch('/api/team/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, role }),
+    })
+    if (res.ok) {
+      setInviteResult({ type: 'success', message: 'Invitation resent!' })
+      await fetchTeam()
+    }
   }
 
   function handleToggleIntegration(id: string) {
@@ -256,61 +319,115 @@ export default function SettingsPage() {
               </Button>
             </CardHeader>
             <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-200 text-xs uppercase tracking-wider text-gray-400">
-                      <th className="pb-3 pr-4 font-medium">{t.common.name}</th>
-                      <th className="pb-3 pr-4 font-medium">{t.common.email}</th>
-                      <th className="pb-3 pr-4 font-medium">{t.settings.role}</th>
-                      <th className="pb-3 pr-4 font-medium">{t.common.status}</th>
-                      <th className="pb-3 font-medium text-right">{t.common.actions}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {team.map((member) => (
-                      <tr key={member.id} className="group">
-                        <td className="py-3 pr-4">
-                          <div className="flex items-center gap-3">
-                            <Avatar name={member.name} size="sm" src={member.avatarUrl} />
-                            <span className="font-medium text-gray-900">{member.name}</span>
-                          </div>
-                        </td>
-                        <td className="py-3 pr-4 text-gray-500">{member.email}</td>
-                        <td className="py-3 pr-4">
-                          <Badge
-                            variant={member.role === "Admin" ? "active" : "default"}
-                          >
-                            {member.role}
-                          </Badge>
-                        </td>
-                        <td className="py-3 pr-4">
-                          <Badge variant={member.status === "Active" ? "active" : "paused"}>
-                            {member.status}
-                          </Badge>
-                        </td>
-                        <td className="py-3 text-right">
-                          <div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                            <button
-                              className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-900"
-                              title={t.common.edit}
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500"
-                              title={t.common.remove}
-                              onClick={() => handleRemoveMember(member.id)}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        </td>
+              {teamLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-200 text-xs uppercase tracking-wider text-gray-400">
+                        <th className="pb-3 pr-4 font-medium">{t.common.name}</th>
+                        <th className="pb-3 pr-4 font-medium">{t.common.email}</th>
+                        <th className="pb-3 pr-4 font-medium">{t.settings.role}</th>
+                        <th className="pb-3 pr-4 font-medium">{t.common.status}</th>
+                        <th className="pb-3 font-medium text-right">{t.common.actions}</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {/* Active Users */}
+                      {teamUsers.map((user) => (
+                        <tr key={user.id} className="group">
+                          <td className="py-3 pr-4">
+                            <div className="flex items-center gap-3">
+                              <Avatar name={user.name} size="sm" src={user.avatar || undefined} />
+                              <span className="font-medium text-gray-900">{user.name}</span>
+                            </div>
+                          </td>
+                          <td className="py-3 pr-4 text-gray-500">{user.email}</td>
+                          <td className="py-3 pr-4">
+                            <Badge
+                              variant={user.role === "ADMIN" ? "active" : "default"}
+                            >
+                              {user.role.charAt(0) + user.role.slice(1).toLowerCase()}
+                            </Badge>
+                          </td>
+                          <td className="py-3 pr-4">
+                            <Badge variant="active">Active</Badge>
+                          </td>
+                          <td className="py-3 text-right">
+                            <div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                              <button
+                                className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-900"
+                                title={t.common.edit}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+
+                      {/* Pending Invitations */}
+                      {pendingInvitations.map((invitation) => (
+                        <tr key={invitation.id} className="group">
+                          <td className="py-3 pr-4">
+                            <div className="flex items-center gap-3">
+                              <Avatar name={invitation.email} size="sm" />
+                              <span className="font-medium text-gray-400">{invitation.email.split('@')[0]}</span>
+                            </div>
+                          </td>
+                          <td className="py-3 pr-4 text-gray-500">{invitation.email}</td>
+                          <td className="py-3 pr-4">
+                            <Badge variant="default">
+                              {invitation.role.charAt(0) + invitation.role.slice(1).toLowerCase()}
+                            </Badge>
+                          </td>
+                          <td className="py-3 pr-4">
+                            <Badge variant="paused">Invited</Badge>
+                          </td>
+                          <td className="py-3 text-right">
+                            <div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                              <button
+                                className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-900"
+                                title="Resend invitation"
+                                onClick={() => handleResendInvitation(invitation.email, invitation.role)}
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500"
+                                title="Revoke invitation"
+                                onClick={() => handleRevokeInvitation(invitation.id)}
+                              >
+                                <XCircle className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+
+                      {/* Empty state */}
+                      {teamUsers.length === 0 && pendingInvitations.length === 0 && (
+                        <tr>
+                          <td colSpan={5} className="py-8 text-center text-sm text-gray-400">
+                            No team members yet. Invite someone to get started.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {inviteResult && (
+                <div className={`mt-4 rounded-lg px-4 py-3 text-sm ${
+                  inviteResult.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+                }`}>
+                  {inviteResult.message}
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -344,7 +461,7 @@ export default function SettingsPage() {
               <Button variant="secondary" onClick={() => setInviteOpen(false)}>
                 {t.common.cancel}
               </Button>
-              <Button onClick={handleInvite}>
+              <Button onClick={handleInvite} loading={inviteSending}>
                 <Send className="h-4 w-4" /> {t.settings.sendInvite}
               </Button>
             </ModalFooter>
