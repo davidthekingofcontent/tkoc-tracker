@@ -341,6 +341,12 @@ export const translations = {
       storyExpires: 'Expires',
       storyExpired: 'Expired',
       storyCaptured: 'Captured',
+      growthCharts: 'Growth Over Time',
+      engagementOverTime: 'Engagement Over Time',
+      viewsOverTime: 'Views Over Time',
+      postsOverTime: 'Posts Over Time',
+      reachOverTime: 'Reach Over Time',
+      storiesExpireNote: 'Stories expire after 24h',
     },
 
     // List Detail
@@ -694,6 +700,12 @@ export const translations = {
       storyExpires: 'Expira',
       storyExpired: 'Expirado',
       storyCaptured: 'Capturado',
+      growthCharts: 'Evolucion Temporal',
+      engagementOverTime: 'Engagement a lo Largo del Tiempo',
+      viewsOverTime: 'Vistas a lo Largo del Tiempo',
+      postsOverTime: 'Publicaciones a lo Largo del Tiempo',
+      reachOverTime: 'Alcance a lo Largo del Tiempo',
+      storiesExpireNote: 'Las stories expiran tras 24h',
     },
 
     // List Detail

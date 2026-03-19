@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
+import dynamic from 'next/dynamic'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { StatCard } from '@/components/ui/stat-card'
@@ -105,6 +106,88 @@ interface Overview {
   totalMedia: number
 }
 
+interface TimelinePoint {
+  date: string
+  posts: number
+  likes: number
+  comments: number
+  views: number
+  reach: number
+  engagements: number
+}
+
+// Dynamic import for Recharts (client-side only)
+const RechartsArea = dynamic(
+  () => import('recharts').then(mod => {
+    const { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend } = mod
+    return function ChartWrapper({ data, title, dataKeys }: {
+      data: TimelinePoint[]
+      title: string
+      dataKeys: { key: string; color: string; name: string }[]
+    }) {
+      return (
+        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <h3 className="mb-4 text-sm font-semibold text-gray-700">{title}</h3>
+          <ResponsiveContainer width="100%" height={240}>
+            <AreaChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+              <defs>
+                {dataKeys.map(dk => (
+                  <linearGradient key={dk.key} id={`grad_${dk.key}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={dk.color} stopOpacity={0.3} />
+                    <stop offset="95%" stopColor={dk.color} stopOpacity={0} />
+                  </linearGradient>
+                ))}
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+              <XAxis
+                dataKey="date"
+                tick={{ fontSize: 10, fill: '#9ca3af' }}
+                tickFormatter={(v: string) => {
+                  const d = new Date(v)
+                  return `${d.getDate()}/${d.getMonth() + 1}`
+                }}
+              />
+              <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={(v: number) => {
+                if (v >= 1000000) return `${(v/1000000).toFixed(1)}M`
+                if (v >= 1000) return `${(v/1000).toFixed(1)}K`
+                return v.toString()
+              }} />
+              <Tooltip
+                contentStyle={{
+                  borderRadius: '8px',
+                  border: '1px solid #e5e7eb',
+                  boxShadow: '0 4px 6px -1px rgba(0,0,0,.1)',
+                  fontSize: '12px',
+                }}
+                labelFormatter={(v) => new Date(String(v)).toLocaleDateString()}
+                formatter={(value) => {
+                  const num = Number(value)
+                  if (num >= 1000000) return [`${(num/1000000).toFixed(1)}M`, '']
+                  if (num >= 1000) return [`${(num/1000).toFixed(1)}K`, '']
+                  return [num.toString(), '']
+                }}
+              />
+              <Legend wrapperStyle={{ fontSize: '11px' }} />
+              {dataKeys.map(dk => (
+                <Area
+                  key={dk.key}
+                  type="monotone"
+                  dataKey={dk.key}
+                  name={dk.name}
+                  stroke={dk.color}
+                  strokeWidth={2}
+                  fill={`url(#grad_${dk.key})`}
+                />
+              ))}
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )
+    }
+  }),
+  { ssr: false, loading: () => <div className="h-[300px] rounded-xl border border-gray-200 bg-white animate-pulse" /> }
+)
+
 type SortField = 'followers' | 'engagement'
 type SortDirection = 'asc' | 'desc'
 
@@ -161,6 +244,7 @@ export default function CampaignDetailPage() {
   const campaignId = params.id as string
   const [campaign, setCampaign] = useState<CampaignData | null>(null)
   const [overview, setOverview] = useState<Overview | null>(null)
+  const [timeline, setTimeline] = useState<TimelinePoint[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isTracking, setIsTracking] = useState(false)
   const [trackingResult, setTrackingResult] = useState<{
@@ -197,6 +281,7 @@ export default function CampaignDetailPage() {
         const data = await res.json()
         setCampaign(data.campaign)
         setOverview(data.overview)
+        setTimeline(data.timeline || [])
         // If exactly 20 media items, there may be more
         const mediaCount = data.campaign?.media?.length || 0
         setMediaOffset(mediaCount)
@@ -681,6 +766,45 @@ export default function CampaignDetailPage() {
                       value={overview.profilesPosted}
                     />
                   )}
+                </div>
+              )}
+
+              {/* Growth Charts */}
+              {timeline.length > 1 && (
+                <div className="space-y-4">
+                  <h2 className="text-lg font-semibold text-gray-900">{t.campaignDetail.growthCharts || 'Growth Over Time'}</h2>
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <RechartsArea
+                      data={timeline}
+                      title={t.campaignDetail.engagementOverTime || 'Engagement Over Time'}
+                      dataKeys={[
+                        { key: 'likes', color: '#ec4899', name: 'Likes' },
+                        { key: 'comments', color: '#8b5cf6', name: 'Comments' },
+                      ]}
+                    />
+                    <RechartsArea
+                      data={timeline}
+                      title={t.campaignDetail.viewsOverTime || 'Views Over Time'}
+                      dataKeys={[
+                        { key: 'views', color: '#06b6d4', name: 'Views' },
+                      ]}
+                    />
+                    <RechartsArea
+                      data={timeline}
+                      title={t.campaignDetail.postsOverTime || 'Posts Over Time'}
+                      dataKeys={[
+                        { key: 'posts', color: '#7c3aed', name: 'Posts' },
+                      ]}
+                    />
+                    <RechartsArea
+                      data={timeline}
+                      title={t.campaignDetail.reachOverTime || 'Reach Over Time'}
+                      dataKeys={[
+                        { key: 'reach', color: '#10b981', name: 'Reach' },
+                        { key: 'engagements', color: '#f59e0b', name: 'Engagements' },
+                      ]}
+                    />
+                  </div>
                 </div>
               )}
 

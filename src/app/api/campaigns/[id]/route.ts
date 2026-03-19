@@ -104,7 +104,56 @@ export async function GET(
       ),
     }
 
-    return NextResponse.json({ campaign, overview })
+    // Timeline data for growth charts — group media by date
+    const timelineMedia = await prisma.media.findMany({
+      where: { campaignId: id, postedAt: { not: null } },
+      select: {
+        postedAt: true,
+        likes: true,
+        comments: true,
+        shares: true,
+        views: true,
+        reach: true,
+        mediaType: true,
+      },
+      orderBy: { postedAt: 'asc' },
+    })
+
+    // Aggregate by day
+    const timelineMap = new Map<string, {
+      date: string
+      posts: number
+      likes: number
+      comments: number
+      views: number
+      reach: number
+      engagements: number
+    }>()
+
+    for (const m of timelineMedia) {
+      if (!m.postedAt) continue
+      const dateKey = m.postedAt.toISOString().split('T')[0]
+      const existing = timelineMap.get(dateKey) || {
+        date: dateKey,
+        posts: 0,
+        likes: 0,
+        comments: 0,
+        views: 0,
+        reach: 0,
+        engagements: 0,
+      }
+      existing.posts++
+      existing.likes += m.likes || 0
+      existing.comments += m.comments || 0
+      existing.views += m.views || 0
+      existing.reach += m.reach || 0
+      existing.engagements += (m.likes || 0) + (m.comments || 0) + (m.shares || 0)
+      timelineMap.set(dateKey, existing)
+    }
+
+    const timeline = Array.from(timelineMap.values())
+
+    return NextResponse.json({ campaign, overview, timeline })
   } catch (error) {
     console.error('Get campaign error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
