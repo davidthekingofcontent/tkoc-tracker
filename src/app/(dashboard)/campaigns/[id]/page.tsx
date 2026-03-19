@@ -20,6 +20,7 @@ import {
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { formatNumber } from '@/lib/utils'
 import { useI18n } from '@/i18n/context'
+import { calculateCPM, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
 import {
   ArrowLeft,
   Users,
@@ -48,6 +49,8 @@ import {
 
 interface CampaignInfluencer {
   id: string
+  cost: number | null
+  notes: string | null
   influencer: {
     id: string
     username: string
@@ -278,6 +281,10 @@ export default function CampaignDetailPage() {
   // Media sort state
   const [mediaSortBy, setMediaSortBy] = useState<'recent' | 'likes' | 'comments' | 'views'>('recent')
 
+  // CPM fee editing
+  const [editingFee, setEditingFee] = useState<Record<string, string>>({})
+  const [savingFee, setSavingFee] = useState<string | null>(null)
+
   async function fetchCampaign() {
     try {
       const res = await fetch(`/api/campaigns/${campaignId}`)
@@ -441,6 +448,28 @@ export default function CampaignDetailPage() {
       setReportSortField(field)
       setReportSortDirection('desc')
     }
+  }
+
+  async function handleSaveFee(campaignInfluencerId: string, influencerId: string, fee: string) {
+    setSavingFee(campaignInfluencerId)
+    try {
+      await fetch(`/api/campaigns/${campaignId}/influencers`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ influencerId, cost: fee }),
+      })
+      await fetchCampaign()
+    } catch { /* ignore */ }
+    setSavingFee(null)
+  }
+
+  function getCPMForInfluencer(ci: CampaignInfluencer): CPMResult {
+    return calculateCPM({
+      fee: ci.cost || null,
+      avgViews: ci.influencer?.avgViews || 0,
+      platform: (ci.influencer?.platform || 'INSTAGRAM') as CPMPlatform,
+      followers: ci.influencer?.followers || 0,
+    }, locale as 'en' | 'es')
   }
 
   function toggleInfluencerSort(field: SortField) {
@@ -1452,65 +1481,155 @@ export default function CampaignDetailPage() {
                     </div>
                   </div>
                 ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>{t.dashboard.influencers}</TableHead>
-                        <TableHead>{t.campaigns.platform}</TableHead>
-                        <TableHead>
-                          <button
-                            onClick={() => toggleInfluencerSort('followers')}
-                            className="inline-flex items-center font-medium hover:text-purple-600"
-                          >
-                            {t.campaigns.followers}
-                            <SortIndicator field="followers" sortField={influencerSortField} sortDirection={influencerSortDirection} />
-                          </button>
-                        </TableHead>
-                        <TableHead>
-                          <button
-                            onClick={() => toggleInfluencerSort('engagement')}
-                            className="inline-flex items-center font-medium hover:text-purple-600"
-                          >
-                            {t.campaigns.engagement}
-                            <SortIndicator field="engagement" sortField={influencerSortField} sortDirection={influencerSortDirection} />
-                          </button>
-                        </TableHead>
-                        <TableHead>{t.campaignDetail.avgLikes}</TableHead>
-                        <TableHead>{t.campaignDetail.avgComments}</TableHead>
-                        <TableHead>{t.campaignDetail.avgViews}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {sortedInfluencers.filter(ci => ci.influencer).map((ci) => (
-                        <TableRow key={ci.id}>
-                          <TableCell>
-                            <div className="flex items-center gap-3">
-                              <Avatar name={ci.influencer.displayName || ci.influencer.username} size="sm" />
+                  <div className="space-y-4">
+                    {sortedInfluencers.filter(ci => ci.influencer).map((ci) => {
+                      const cpm = getCPMForInfluencer(ci)
+                      const feeValue = editingFee[ci.id] !== undefined ? editingFee[ci.id] : (ci.cost || '')
+                      const trafficColors = {
+                        green: 'bg-green-100 text-green-800 border-green-300',
+                        yellow: 'bg-amber-100 text-amber-800 border-amber-300',
+                        red: 'bg-red-100 text-red-800 border-red-300',
+                        gray: 'bg-gray-100 text-gray-600 border-gray-300',
+                      }
+                      const trafficDot = {
+                        green: 'bg-green-500',
+                        yellow: 'bg-amber-500',
+                        red: 'bg-red-500',
+                        gray: 'bg-gray-400',
+                      }
+
+                      return (
+                        <div key={ci.id} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                          <div className="flex items-start gap-4">
+                            {/* Profile */}
+                            <div className="flex items-center gap-3 min-w-[200px]">
+                              <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" />
                               <div>
-                                <p className="font-medium text-gray-900">
-                                  {ci.influencer.displayName || ci.influencer.username}
-                                </p>
+                                <p className="font-semibold text-gray-900">{ci.influencer.displayName || ci.influencer.username}</p>
                                 <p className="text-xs text-gray-500">@{ci.influencer.username}</p>
+                                <div className="mt-1 flex items-center gap-2">
+                                  <Badge variant={platformBadge(ci.influencer.platform)}>
+                                    <PlatformIcon platform={ci.influencer.platform} />
+                                    {ci.influencer.platform.charAt(0) + ci.influencer.platform.slice(1).toLowerCase()}
+                                  </Badge>
+                                  <span className="text-[10px] text-gray-400 uppercase font-medium">{cpm.tier}</span>
+                                </div>
                               </div>
                             </div>
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={platformBadge(ci.influencer.platform)}>
-                              <PlatformIcon platform={ci.influencer.platform} />
-                              {ci.influencer.platform.charAt(0) + ci.influencer.platform.slice(1).toLowerCase()}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>{formatNumber(ci.influencer.followers)}</TableCell>
-                          <TableCell>
-                            <span className="text-purple-600">{ci.influencer.engagementRate || 0}%</span>
-                          </TableCell>
-                          <TableCell>{formatNumber(ci.influencer.avgLikes || 0)}</TableCell>
-                          <TableCell>{formatNumber(ci.influencer.avgComments || 0)}</TableCell>
-                          <TableCell>{formatNumber(ci.influencer.avgViews || 0)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+
+                            {/* Stats */}
+                            <div className="flex-1 grid grid-cols-4 gap-3 text-center">
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider text-gray-400">{t.campaigns.followers}</p>
+                                <p className="text-sm font-bold text-gray-900">{formatNumber(ci.influencer.followers)}</p>
+                              </div>
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider text-gray-400">{t.campaignDetail.avgViews}</p>
+                                <p className="text-sm font-bold text-gray-900">{formatNumber(ci.influencer.avgViews || 0)}</p>
+                              </div>
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider text-gray-400">{t.campaigns.engagement}</p>
+                                <p className="text-sm font-bold text-purple-600">{ci.influencer.engagementRate || 0}%</p>
+                              </div>
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider text-gray-400">{t.campaignDetail.avgLikes}</p>
+                                <p className="text-sm font-bold text-gray-900">{formatNumber(ci.influencer.avgLikes || 0)}</p>
+                              </div>
+                            </div>
+
+                            {/* Traffic Light */}
+                            <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${trafficColors[cpm.trafficLight]}`}>
+                              <span className={`h-3 w-3 rounded-full ${trafficDot[cpm.trafficLight]}`} />
+                              <span className="text-sm font-bold">{cpm.recommendation}</span>
+                            </div>
+                          </div>
+
+                          {/* CPM Evaluation Row */}
+                          <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-6 gap-3 items-end">
+                            {/* Fee Input */}
+                            <div>
+                              <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">Fee (€)</label>
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="number"
+                                  value={feeValue}
+                                  onChange={(e) => setEditingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
+                                  onBlur={() => {
+                                    const val = editingFee[ci.id]
+                                    if (val !== undefined && val !== String(ci.cost || '')) {
+                                      handleSaveFee(ci.id, ci.influencer.id, val)
+                                    }
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0')
+                                    }
+                                  }}
+                                  placeholder="0"
+                                  className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-medium text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                                />
+                                {savingFee === ci.id && <Loader2 className="h-3 w-3 animate-spin text-purple-500 shrink-0" />}
+                              </div>
+                            </div>
+
+                            {/* CPM Real */}
+                            <div>
+                              <p className="text-[10px] uppercase tracking-wider text-gray-400">CPM Real</p>
+                              <p className="text-sm font-bold text-gray-900">
+                                {cpm.cpmReal !== null ? `€${cpm.cpmReal.toFixed(2)}` : '—'}
+                              </p>
+                            </div>
+
+                            {/* CPM Target */}
+                            <div>
+                              <p className="text-[10px] uppercase tracking-wider text-gray-400">CPM {locale === 'es' ? 'Objetivo' : 'Target'}</p>
+                              <p className="text-sm font-medium text-gray-600">
+                                {cpm.cpmTarget !== null ? `€${cpm.cpmTarget}` : '—'}
+                              </p>
+                            </div>
+
+                            {/* Fee Recommended */}
+                            <div>
+                              <p className="text-[10px] uppercase tracking-wider text-gray-400">Fee {locale === 'es' ? 'Recomendado' : 'Recommended'}</p>
+                              <p className="text-sm font-bold text-green-600">
+                                {cpm.feeRecommended !== null ? `€${cpm.feeRecommended.toLocaleString()}` : '—'}
+                              </p>
+                            </div>
+
+                            {/* Fee Max */}
+                            <div>
+                              <p className="text-[10px] uppercase tracking-wider text-gray-400">Fee {locale === 'es' ? 'Maximo' : 'Max'}</p>
+                              <p className="text-sm font-medium text-amber-600">
+                                {cpm.feeMax !== null ? `€${cpm.feeMax.toLocaleString()}` : '—'}
+                              </p>
+                            </div>
+
+                            {/* Savings/Overcost */}
+                            <div>
+                              <p className="text-[10px] uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Diferencia' : 'Diff'}</p>
+                              {cpm.savingsOrOvercost !== null ? (
+                                <p className={`text-sm font-bold ${cpm.savingsOrOvercost > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                  {cpm.savingsOrOvercost > 0 ? '+' : ''}{cpm.savingsOrOvercost > 0 ? `€${cpm.savingsOrOvercost.toLocaleString()}` : `-€${Math.abs(cpm.savingsOrOvercost).toLocaleString()}`}
+                                </p>
+                              ) : <p className="text-sm text-gray-400">—</p>}
+                            </div>
+                          </div>
+
+                          {/* Recommendation Detail */}
+                          {cpm.recommendationDetail && (
+                            <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${
+                              cpm.trafficLight === 'green' ? 'bg-green-50 text-green-700' :
+                              cpm.trafficLight === 'yellow' ? 'bg-amber-50 text-amber-700' :
+                              cpm.trafficLight === 'red' ? 'bg-red-50 text-red-700' :
+                              'bg-gray-50 text-gray-600'
+                            }`}>
+                              {cpm.recommendationDetail}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
                 )}
               </CardContent>
             </Card>

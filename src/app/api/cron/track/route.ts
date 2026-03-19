@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { scrapeHashtag, isApifyConfigured } from '@/lib/apify'
+import { scrapeHashtag, scrapeStories, isApifyConfigured } from '@/lib/apify'
 
 // This endpoint can be called by a cron job (e.g., Railway cron, Vercel cron, or external)
 // Secure with a secret key
@@ -26,9 +26,20 @@ export async function GET(request: NextRequest) {
       },
     })
 
+    // Also find campaigns with influencers for story tracking
+    const campaignsWithInfluencers = await prisma.campaign.findMany({
+      where: { status: 'ACTIVE' },
+      include: {
+        influencers: {
+          include: { influencer: { select: { username: true, platform: true } } },
+        },
+      },
+    })
+
     const results = {
       campaignsProcessed: 0,
       totalPostsFound: 0,
+      storiesCaptured: 0,
       errors: [] as string[],
     }
 
@@ -156,6 +167,54 @@ export async function GET(request: NextRequest) {
         results.campaignsProcessed++
       } catch (err) {
         results.errors.push(`Campaign ${campaign.name}: ${err instanceof Error ? err.message : 'Error'}`)
+      }
+    }
+
+    // Story tracking for campaigns with Instagram influencers
+    for (const campaign of campaignsWithInfluencers) {
+      const igInfluencers = campaign.influencers.filter(ci => ci.influencer.platform === 'INSTAGRAM')
+      if (igInfluencers.length === 0) continue
+
+      try {
+        const usernames = igInfluencers.map(ci => ci.influencer.username)
+        const storyResults = await scrapeStories(usernames, 'INSTAGRAM')
+
+        for (const sr of storyResults) {
+          const influencer = await prisma.influencer.findFirst({
+            where: { username: sr.username, platform: 'INSTAGRAM' },
+          })
+          if (!influencer) continue
+
+          for (const story of sr.stories) {
+            try {
+              await prisma.media.upsert({
+                where: {
+                  externalId_platform: { externalId: story.externalId, platform: 'INSTAGRAM' },
+                },
+                create: {
+                  externalId: story.externalId,
+                  platform: 'INSTAGRAM',
+                  mediaType: 'STORY',
+                  mediaUrl: story.mediaUrl,
+                  thumbnailUrl: story.thumbnailUrl,
+                  views: story.views,
+                  mentions: story.mentions,
+                  hashtags: story.hashtags,
+                  postedAt: story.postedAt ? new Date(story.postedAt) : null,
+                  influencerId: influencer.id,
+                  campaignId: campaign.id,
+                },
+                update: {
+                  views: story.views,
+                  campaignId: campaign.id,
+                },
+              })
+              results.storiesCaptured++
+            } catch { /* skip duplicate */ }
+          }
+        }
+      } catch (err) {
+        results.errors.push(`Stories ${campaign.name}: ${err instanceof Error ? err.message : 'Error'}`)
       }
     }
 

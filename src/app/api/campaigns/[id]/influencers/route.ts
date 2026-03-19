@@ -55,6 +55,48 @@ export async function POST(
   }
 }
 
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await getSession(request)
+    if (!session) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    const { id } = await params
+    const body = await request.json()
+    const { influencerId, cost, notes } = body
+
+    if (!influencerId) {
+      return NextResponse.json({ error: 'influencerId is required' }, { status: 400 })
+    }
+
+    const existing = await prisma.campaignInfluencer.findUnique({
+      where: { campaignId_influencerId: { campaignId: id, influencerId } },
+    })
+
+    if (!existing) {
+      return NextResponse.json({ error: 'Influencer not in this campaign' }, { status: 404 })
+    }
+
+    const updated = await prisma.campaignInfluencer.update({
+      where: { id: existing.id },
+      data: {
+        ...(cost !== undefined && { cost: parseFloat(cost) || 0 }),
+        ...(notes !== undefined && { notes }),
+      },
+      include: { influencer: true },
+    })
+
+    return NextResponse.json({ item: updated })
+  } catch (error) {
+    console.error('Update campaign influencer error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
