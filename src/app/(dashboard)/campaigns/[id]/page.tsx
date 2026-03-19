@@ -450,31 +450,12 @@ export default function CampaignDetailPage() {
     }
   }
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-24">
-        <Loader2 className="h-8 w-8 animate-spin text-purple-600" />
-        <span className="ml-3 text-gray-500">{t.common.loading}</span>
-      </div>
-    )
-  }
-
-  if (!campaign) {
-    return (
-      <div className="py-24 text-center">
-        <p className="text-gray-500">{t.common.noResults}</p>
-        <Link href="/campaigns" className="mt-4 text-purple-600 hover:underline">
-          {t.common.back}
-        </Link>
-      </div>
-    )
-  }
-
-  const influencers = campaign.influencers || []
-  const media = campaign.media || []
-  const platforms = campaign.platforms || []
-  const targetAccounts = campaign.targetAccounts || []
-  const targetHashtags = campaign.targetHashtags || []
+  // Derived data (must be before any conditional returns to respect Rules of Hooks)
+  const influencers = campaign?.influencers || []
+  const media = campaign?.media || []
+  const platforms = campaign?.platforms || []
+  const targetAccounts = campaign?.targetAccounts || []
+  const targetHashtags = campaign?.targetHashtags || []
 
   const stories = media.filter(m => m.mediaType === 'STORY')
   const nonStoryMedia = media.filter(m => m.mediaType !== 'STORY')
@@ -482,7 +463,7 @@ export default function CampaignDetailPage() {
   const totalReach = overview?.totalReach || influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0)
   const totalEngagements = overview?.totalEngagements || 0
   const totalMedia = overview?.totalMedia || media.length
-  const isActive = campaign.status === 'ACTIVE'
+  const isActive = campaign?.status === 'ACTIVE'
   const isEmpty = media.length === 0 && influencers.length === 0
 
   const sortedReportInfluencers = useMemo(
@@ -504,6 +485,26 @@ export default function CampaignDetailPage() {
       return 0
     })
   }, [nonStoryMedia, mediaSortBy])
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <Loader2 className="h-8 w-8 animate-spin text-purple-600" />
+        <span className="ml-3 text-gray-500">{t.common.loading}</span>
+      </div>
+    )
+  }
+
+  if (!campaign) {
+    return (
+      <div className="py-24 text-center">
+        <p className="text-gray-500">{t.common.noResults}</p>
+        <Link href="/campaigns" className="mt-4 text-purple-600 hover:underline">
+          {t.common.back}
+        </Link>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
