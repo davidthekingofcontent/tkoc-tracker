@@ -51,6 +51,10 @@ import {
   Kanban,
   DollarSign,
   Gift,
+  Video,
+  Link2,
+  ExternalLink,
+  Package,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -59,6 +63,8 @@ interface CampaignInfluencer {
   agreedFee: number | null
   notes: string | null
   status: string
+  portfolioUrl: string | null
+  contentDelivered: boolean
   influencer: {
     id: string
     username: string
@@ -637,7 +643,7 @@ export default function CampaignDetailPage() {
               </button>
             </div>
             <div className="mt-1 flex items-center gap-2 text-sm text-gray-500">
-              <span>{campaign.type === 'INFLUENCER_TRACKING' ? t.campaigns.influencerTracking : t.campaigns.socialListening}</span>
+              <span>{campaign.type === 'UGC' ? (locale === 'es' ? 'Campaña UGC' : 'UGC Campaign') : campaign.type === 'INFLUENCER_TRACKING' ? t.campaigns.influencerTracking : t.campaigns.socialListening}</span>
               {campaign.type === 'SOCIAL_LISTENING' && (
                 <>
                   <span>&middot;</span>
@@ -785,15 +791,26 @@ export default function CampaignDetailPage() {
       )}
 
       {/* Tabs */}
-      <Tabs defaultValue="report">
+      <Tabs defaultValue={campaign.type === 'UGC' ? 'creators' : 'report'}>
         <TabsList>
-          <TabsTrigger value="report">{t.campaigns.report}</TabsTrigger>
-          <TabsTrigger value="media">{t.campaigns.mediaTab} ({nonStoryMedia.length})</TabsTrigger>
-          <TabsTrigger value="stories">
-            <Film className="h-3.5 w-3.5" />
-            {t.campaignDetail.storiesTab || 'Stories'} ({stories.length})
-          </TabsTrigger>
-          <TabsTrigger value="influencers">{t.campaigns.influencersTab} ({influencers.length})</TabsTrigger>
+          {campaign.type !== 'UGC' && (
+            <>
+              <TabsTrigger value="report">{t.campaigns.report}</TabsTrigger>
+              <TabsTrigger value="media">{t.campaigns.mediaTab} ({nonStoryMedia.length})</TabsTrigger>
+              <TabsTrigger value="stories">
+                <Film className="h-3.5 w-3.5" />
+                {t.campaignDetail.storiesTab || 'Stories'} ({stories.length})
+              </TabsTrigger>
+            </>
+          )}
+          {campaign.type === 'UGC' ? (
+            <TabsTrigger value="creators">
+              <Video className="h-3.5 w-3.5" />
+              {locale === 'es' ? 'Creadores' : 'Creators'} ({influencers.length})
+            </TabsTrigger>
+          ) : (
+            <TabsTrigger value="influencers">{t.campaigns.influencersTab} ({influencers.length})</TabsTrigger>
+          )}
           <TabsTrigger value="pipeline">
             <Kanban className="h-3.5 w-3.5" />
             {t.pipeline.title}
@@ -1817,6 +1834,278 @@ export default function CampaignDetailPage() {
                               {cpm.recommendationDetail}
                             </div>
                           )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        {/* UGC Creators Tab */}
+        <TabsContent value="creators">
+          <div className="space-y-4">
+            {/* Add Creator Section */}
+            <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-2 mb-3">
+                <UserPlus className="h-4 w-4 text-purple-600" />
+                <h3 className="text-sm font-semibold text-gray-900">
+                  {locale === 'es' ? 'Añadir Creador UGC' : 'Add UGC Creator'}
+                </h3>
+              </div>
+              <p className="mb-3 text-xs text-gray-500">
+                {locale === 'es'
+                  ? 'Añade creadores UGC por su handle de Instagram. Podrás gestionar pagos y portfolio desde aquí.'
+                  : 'Add UGC creators by their Instagram handle. You can manage payments and portfolio from here.'}
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={addInfluencerUsername}
+                  onChange={(e) => setAddInfluencerUsername(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddInfluencer()}
+                  placeholder="@creator_handle"
+                  className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                />
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleAddInfluencer}
+                  disabled={isAddingInfluencer || !addInfluencerUsername.trim()}
+                >
+                  {isAddingInfluencer ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {t.common.loading}
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="h-4 w-4" />
+                      {t.common.add}
+                    </>
+                  )}
+                </Button>
+              </div>
+              {addInfluencerResult && (
+                <div className={`mt-3 flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
+                  addInfluencerResult.type === 'success'
+                    ? 'bg-green-50 text-green-700'
+                    : 'bg-red-50 text-red-700'
+                }`}>
+                  {addInfluencerResult.type === 'success' ? (
+                    <CheckCircle2 className="h-4 w-4 text-green-600" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-red-600" />
+                  )}
+                  {addInfluencerResult.message}
+                  <button
+                    onClick={() => setAddInfluencerResult(null)}
+                    className="ml-auto text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* UGC Summary Stats */}
+            {influencers.length > 0 && (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <p className="text-xs uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Total Creadores' : 'Total Creators'}</p>
+                  <p className="mt-1 text-2xl font-bold text-gray-900">{influencers.length}</p>
+                </div>
+                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <p className="text-xs uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Coste Total' : 'Total Cost'}</p>
+                  <p className="mt-1 text-2xl font-bold text-gray-900">
+                    €{influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0).toLocaleString()}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <p className="text-xs uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Contenido Entregado' : 'Content Delivered'}</p>
+                  <p className="mt-1 text-2xl font-bold text-green-600">
+                    {influencers.filter(ci => ci.contentDelivered).length}/{influencers.length}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <p className="text-xs uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Coste Medio' : 'Avg Cost'}</p>
+                  <p className="mt-1 text-2xl font-bold text-gray-900">
+                    €{influencers.length > 0
+                      ? Math.round(influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0) / influencers.length).toLocaleString()
+                      : 0}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* UGC Creators Cards */}
+            <Card variant="elevated">
+              <CardContent>
+                {influencers.length === 0 ? (
+                  <div className="py-16 text-center">
+                    <Video className="mx-auto h-12 w-12 text-gray-300" />
+                    <h3 className="mt-4 text-lg font-semibold text-gray-700">
+                      {locale === 'es' ? 'Sin creadores todavía' : 'No creators yet'}
+                    </h3>
+                    <p className="mx-auto mt-2 max-w-md text-sm text-gray-400">
+                      {locale === 'es'
+                        ? 'Añade creadores UGC usando el campo de arriba para gestionar pagos y entregas.'
+                        : 'Add UGC creators using the field above to manage payments and deliveries.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {influencers.filter(ci => ci.influencer).map((ci) => {
+                      const feeValue = editingFee[ci.id] !== undefined ? editingFee[ci.id] : (ci.agreedFee || ci.cost || '')
+                      return (
+                        <div key={ci.id} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                          <div className="flex items-start gap-4">
+                            {/* Profile */}
+                            <div className="flex items-center gap-3 min-w-[200px]">
+                              <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={ci.influencer.avatarUrl || undefined} />
+                              <div>
+                                <p className="font-semibold text-gray-900">{ci.influencer.displayName || ci.influencer.username}</p>
+                                <p className="text-xs text-gray-500">@{ci.influencer.username}</p>
+                                <div className="mt-1 flex items-center gap-2">
+                                  <span className="text-xs text-gray-400">{formatNumber(ci.influencer.followers)} {t.campaigns.followers}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Payment & Status */}
+                            <div className="flex-1 grid grid-cols-3 gap-4 items-start">
+                              {/* Payment */}
+                              <div>
+                                <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">
+                                  {locale === 'es' ? 'Pago (€)' : 'Payment (€)'}
+                                </label>
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="number"
+                                    value={feeValue}
+                                    onChange={(e) => setEditingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
+                                    onBlur={() => {
+                                      const val = editingFee[ci.id]
+                                      if (val !== undefined && val !== String(ci.agreedFee || ci.cost || '')) {
+                                        handleSaveFee(ci.id, ci.influencer.id, val)
+                                      }
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0')
+                                      }
+                                    }}
+                                    placeholder="0"
+                                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-medium text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                                  />
+                                  {savingFee === ci.id && <Loader2 className="h-3 w-3 animate-spin text-purple-500 shrink-0" />}
+                                </div>
+                              </div>
+
+                              {/* Portfolio Link */}
+                              <div>
+                                <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">
+                                  <Link2 className="inline h-3 w-3" /> Portfolio
+                                </label>
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="url"
+                                    defaultValue={ci.portfolioUrl || ''}
+                                    onBlur={async (e) => {
+                                      const url = e.target.value.trim()
+                                      try {
+                                        await fetch(`/api/campaigns/${campaignId}/influencers`, {
+                                          method: 'PATCH',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ influencerId: ci.influencer.id, portfolioUrl: url }),
+                                        })
+                                      } catch { /* ignore */ }
+                                    }}
+                                    placeholder={locale === 'es' ? 'https://portfolio...' : 'https://portfolio...'}
+                                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                                  />
+                                  {ci.portfolioUrl && (
+                                    <a href={ci.portfolioUrl} target="_blank" rel="noopener noreferrer" className="shrink-0 text-purple-500 hover:text-purple-700">
+                                      <ExternalLink className="h-4 w-4" />
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Content Delivered Toggle */}
+                              <div>
+                                <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">
+                                  <Package className="inline h-3 w-3" /> {locale === 'es' ? 'Entregado' : 'Delivered'}
+                                </label>
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      await fetch(`/api/campaigns/${campaignId}/influencers`, {
+                                        method: 'PATCH',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                          influencerId: ci.influencer.id,
+                                          contentDelivered: !ci.contentDelivered,
+                                        }),
+                                      })
+                                      await fetchCampaign()
+                                    } catch { /* ignore */ }
+                                  }}
+                                  className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition-all ${
+                                    ci.contentDelivered
+                                      ? 'border-green-300 bg-green-50 text-green-700'
+                                      : 'border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300'
+                                  }`}
+                                >
+                                  {ci.contentDelivered ? (
+                                    <>
+                                      <CheckCircle2 className="h-4 w-4" />
+                                      {locale === 'es' ? 'Entregado' : 'Delivered'}
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Clock className="h-4 w-4" />
+                                      {locale === 'es' ? 'Pendiente' : 'Pending'}
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Pipeline Status */}
+                          <div className="mt-3 pt-3 border-t border-gray-100 flex items-center gap-3">
+                            <span className="text-[10px] uppercase tracking-wider text-gray-400">
+                              {locale === 'es' ? 'Estado' : 'Status'}:
+                            </span>
+                            <select
+                              className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-xs text-gray-600 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400"
+                              value={ci.status || 'PROSPECT'}
+                              onChange={async (e) => {
+                                try {
+                                  await fetch(`/api/campaigns/${campaignId}/influencers`, {
+                                    method: 'PATCH',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ influencerId: ci.influencer.id, status: e.target.value }),
+                                  })
+                                  await fetchCampaign()
+                                } catch { /* ignore */ }
+                              }}
+                            >
+                              <option value="PROSPECT">{t.pipeline.prospect}</option>
+                              <option value="OUTREACH">{t.pipeline.outreach}</option>
+                              <option value="NEGOTIATING">{t.pipeline.negotiating}</option>
+                              <option value="AGREED">{t.pipeline.agreed}</option>
+                              <option value="CONTRACTED">{t.pipeline.contracted}</option>
+                              <option value="POSTED">{t.pipeline.posted}</option>
+                              <option value="COMPLETED">{t.pipeline.completed}</option>
+                            </select>
+                            {ci.notes && (
+                              <span className="text-xs text-gray-400 truncate max-w-xs">{ci.notes}</span>
+                            )}
+                          </div>
                         </div>
                       )
                     })}

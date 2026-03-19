@@ -68,7 +68,7 @@ export async function PATCH(
 
     const { id } = await params
     const body = await request.json()
-    const { influencerId, cost, agreedFee, notes, status } = body
+    const { influencerId, cost, agreedFee, notes, status, portfolioUrl, contentDelivered } = body
 
     if (!influencerId) {
       return NextResponse.json({ error: 'influencerId is required' }, { status: 400 })
@@ -93,6 +93,8 @@ export async function PATCH(
         ...(agreedFee !== undefined && { agreedFee: parseFloat(agreedFee) || 0 }),
         ...(notes !== undefined && { notes }),
         ...(status !== undefined && { status: status as InfluencerStatus }),
+        ...(portfolioUrl !== undefined && { portfolioUrl: portfolioUrl || null }),
+        ...(contentDelivered !== undefined && { contentDelivered: !!contentDelivered }),
       },
       include: { influencer: true },
     })

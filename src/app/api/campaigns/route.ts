@@ -105,6 +105,8 @@ export async function POST(request: NextRequest) {
         ...(endDate && { endDate: new Date(endDate) }),
         ...(country && { country }),
         ...(paymentType && ['PAID', 'GIFTED'].includes(paymentType) && { paymentType }),
+        // UGC campaigns are always PAID
+        ...(type === 'UGC' && { paymentType: 'PAID' }),
         userId: session.id,
         // Auto-assign creator
         assignments: {

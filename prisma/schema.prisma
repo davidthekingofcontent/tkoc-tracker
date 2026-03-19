@@ -64,6 +64,7 @@ enum CampaignStatus {
 enum CampaignType {
   SOCIAL_LISTENING
   INFLUENCER_TRACKING
+  UGC
 }
 
 enum Platform {
@@ -193,6 +194,8 @@ model CampaignInfluencer {
   agreedFee     Float?    // What was agreed for THIS specific campaign
   commission    Float?    @default(0)
   notes         String?
+  portfolioUrl  String?   // UGC creator portfolio link
+  contentDelivered Boolean @default(false) // Whether UGC content has been delivered
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt

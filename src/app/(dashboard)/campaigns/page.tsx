@@ -228,6 +228,7 @@ export default function CampaignsPage() {
       if (activeFilter === 'all') return matchesSearch
       if (activeFilter === 'SOCIAL_LISTENING') return matchesSearch && campaign.type === 'SOCIAL_LISTENING'
       if (activeFilter === 'INFLUENCER_TRACKING') return matchesSearch && campaign.type === 'INFLUENCER_TRACKING'
+      if (activeFilter === 'UGC') return matchesSearch && campaign.type === 'UGC'
       return matchesSearch && campaign.status === activeFilter.toUpperCase()
     })
   }, [campaigns, search, activeFilter])
@@ -289,6 +290,7 @@ export default function CampaignsPage() {
             <TabsTrigger value="all">{t.campaigns.all}</TabsTrigger>
             <TabsTrigger value="SOCIAL_LISTENING">{t.campaigns.socialListening}</TabsTrigger>
             <TabsTrigger value="INFLUENCER_TRACKING">{t.campaigns.influencerTracking}</TabsTrigger>
+            <TabsTrigger value="UGC">UGC</TabsTrigger>
             <TabsTrigger value="ACTIVE">{t.common.active}</TabsTrigger>
             <TabsTrigger value="PAUSED">{t.common.paused}</TabsTrigger>
             <TabsTrigger value="ARCHIVED">{t.common.archived}</TabsTrigger>
@@ -349,7 +351,7 @@ export default function CampaignsPage() {
                   </TableCell>
                   <TableCell>
                     <span className="text-sm text-gray-500">
-                      {campaign.type === 'SOCIAL_LISTENING' ? t.campaigns.socialListening : t.campaigns.influencerTracking}
+                      {campaign.type === 'UGC' ? 'UGC' : campaign.type === 'SOCIAL_LISTENING' ? t.campaigns.socialListening : t.campaigns.influencerTracking}
                     </span>
                   </TableCell>
                   <TableCell>

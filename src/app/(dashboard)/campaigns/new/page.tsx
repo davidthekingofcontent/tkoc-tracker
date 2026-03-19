@@ -19,9 +19,11 @@ import {
   Infinity,
   DollarSign,
   Gift,
+  Video,
+  Link2,
 } from 'lucide-react'
 
-type TrackingType = 'social_listening' | 'influencer_tracking' | null
+type TrackingType = 'social_listening' | 'influencer_tracking' | 'ugc' | null
 type PaymentType = 'PAID' | 'GIFTED'
 
 export default function NewCampaignPage() {
@@ -93,7 +95,7 @@ export default function NewCampaignPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: campaignName.trim(),
-          type: trackingType === 'social_listening' ? 'SOCIAL_LISTENING' : 'INFLUENCER_TRACKING',
+          type: trackingType === 'social_listening' ? 'SOCIAL_LISTENING' : trackingType === 'ugc' ? 'UGC' : 'INFLUENCER_TRACKING',
           platforms: selectedPlatforms,
           targetAccounts,
           targetHashtags,
@@ -140,7 +142,7 @@ export default function NewCampaignPage() {
         <h2 className="mb-4 text-lg font-semibold text-gray-900">
           {t.campaigns.chooseType}
         </h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           {/* Social Listening Card */}
           <button
             onClick={() => setTrackingType('social_listening')}
@@ -226,6 +228,51 @@ export default function NewCampaignPage() {
               )}
             </Card>
           </button>
+
+          {/* UGC Campaign Card */}
+          <button
+            onClick={() => setTrackingType('ugc')}
+            className="text-left"
+          >
+            <Card
+              className={`cursor-pointer transition-all hover:border-purple-300 ${
+                trackingType === 'ugc'
+                  ? 'border-purple-600 bg-purple-50'
+                  : ''
+              }`}
+              variant="elevated"
+            >
+              <div className="flex items-start gap-4">
+                <div
+                  className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${
+                    trackingType === 'ugc'
+                      ? 'bg-purple-100 text-purple-600'
+                      : 'bg-gray-100 text-gray-400'
+                  }`}
+                >
+                  <Video className="h-6 w-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-gray-900">
+                    {locale === 'es' ? 'Campaña UGC' : 'UGC Campaign'}
+                  </h3>
+                  <p className="mt-1 text-sm text-gray-500">
+                    {locale === 'es'
+                      ? 'Gestiona creadores UGC, pagos y entrega de contenido. Sin necesidad de calculadora de CPM.'
+                      : 'Manage UGC creators, payments and content delivery. No CPM calculator needed.'}
+                  </p>
+                </div>
+              </div>
+              {trackingType === 'ugc' && (
+                <div className="mt-4 flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-purple-600" />
+                  <span className="text-xs font-medium text-purple-600">
+                    {t.campaigns.selected}
+                  </span>
+                </div>
+              )}
+            </Card>
+          </button>
         </div>
       </div>
 
@@ -245,8 +292,8 @@ export default function NewCampaignPage() {
             />
           </Card>
 
-          {/* Payment Type */}
-          <Card variant="elevated">
+          {/* Payment Type (hide for UGC - always paid) */}
+          {trackingType !== 'ugc' && <Card variant="elevated">
             <h3 className="mb-4 text-base font-semibold text-gray-900">
               {locale === 'es' ? 'Tipo de Campaña' : 'Campaign Type'}
             </h3>
@@ -300,10 +347,31 @@ export default function NewCampaignPage() {
                 )}
               </button>
             </div>
-          </Card>
+          </Card>}
 
-          {/* Brand Account Targets */}
-          <Card variant="elevated">
+          {/* UGC Info Card */}
+          {trackingType === 'ugc' && (
+            <Card variant="elevated">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 text-purple-600">
+                  <Video className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-gray-900">
+                    {locale === 'es' ? 'Gestión de Creadores UGC' : 'UGC Creator Management'}
+                  </h3>
+                  <p className="text-sm text-gray-500">
+                    {locale === 'es'
+                      ? 'Añade creadores UGC después de crear la campaña. Podrás gestionar pagos, portfolio y estado de entrega desde el detalle de la campaña.'
+                      : 'Add UGC creators after creating the campaign. You can manage payments, portfolios and delivery status from the campaign detail page.'}
+                  </p>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {/* Brand Account Targets (not for UGC) */}
+          {trackingType !== 'ugc' && <Card variant="elevated">
             <h3 className="mb-4 text-base font-semibold text-gray-900">
               {t.campaigns.brandTargets}
             </h3>
@@ -345,9 +413,10 @@ export default function NewCampaignPage() {
                 ))}
               </div>
             )}
-          </Card>
+          </Card>}
 
-          {/* Platform Selection */}
+          {/* Platform Selection (not for UGC) */}
+          {trackingType !== 'ugc' &&
           <Card variant="elevated">
             <h3 className="mb-4 text-base font-semibold text-gray-900">
               {t.campaigns.platforms}
@@ -407,7 +476,7 @@ export default function NewCampaignPage() {
                 )}
               </button>
             </div>
-          </Card>
+          </Card>}
 
           {/* Country Filter */}
           <Card variant="elevated">
@@ -458,7 +527,7 @@ export default function NewCampaignPage() {
             </Card>
           )}
 
-          {trackingType === 'influencer_tracking' && (
+          {(trackingType === 'influencer_tracking' || trackingType === 'ugc') && (
             <Card variant="elevated">
               <div className="flex items-center gap-2 mb-4">
                 <Calendar className="h-4 w-4 text-purple-600" />
@@ -497,8 +566,8 @@ export default function NewCampaignPage() {
             </Card>
           )}
 
-          {/* Add Influencers (only for Influencer Tracking) */}
-          {trackingType === 'influencer_tracking' && (
+          {/* Add Influencers/Creators */}
+          {(trackingType === 'influencer_tracking' || trackingType === 'ugc') && (
             <Card variant="elevated">
               <h3 className="mb-4 text-base font-semibold text-gray-900">
                 {t.campaigns.addInfluencers}
