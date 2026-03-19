@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/db'
-import { isApifyConfigured, scrapeProfile, searchInstagramAccounts } from '@/lib/apify'
+import { isApifyConfigured, scrapeProfile, searchInstagramAccounts, scrapeInstagramSimilarAccounts } from '@/lib/apify'
 
 function calculateMatchScore(
   source: { followers: number; engagementRate: number; platform: string },
@@ -107,12 +107,56 @@ export async function GET(request: NextRequest) {
 
     const sourceFollowers = source.followers || 1000
     const sourceER = source.engagementRate || 0
+    const existingUsernames = new Set([source.username])
 
-    // Find similar influencers: same platform, follower range 0.2x-5x, engagement rate ±3%
+    const lookalikes: {
+      username: string
+      displayName: string
+      platform: string
+      followers: number
+      engagementRate: number
+      matchScore: number
+      bio: string
+      avatarUrl: string | null
+      profileUrl: string
+    }[] = []
+
+    // Strategy 1: Try Instagram's "similar accounts" / suggested profiles first
+    if (isApifyConfigured() && platform === 'INSTAGRAM') {
+      try {
+        const similarAccounts = await scrapeInstagramSimilarAccounts(cleanHandle)
+
+        for (const result of similarAccounts) {
+          if (lookalikes.length >= 12) break
+          if (!result.username || existingUsernames.has(result.username)) continue
+
+          existingUsernames.add(result.username)
+          lookalikes.push({
+            username: result.username,
+            displayName: result.displayName || result.username,
+            platform,
+            followers: result.followers,
+            engagementRate: 0,
+            matchScore: calculateMatchScore(
+              { followers: sourceFollowers, engagementRate: sourceER, platform },
+              { followers: result.followers, engagementRate: 0, platform, email: null }
+            ),
+            bio: result.bio || '',
+            avatarUrl: result.avatarUrl,
+            profileUrl: `https://instagram.com/${result.username}`,
+          })
+        }
+      } catch (err) {
+        console.error('Instagram similar accounts error:', err)
+      }
+    }
+
+    // Strategy 2: Supplement with local DB matches
     const similar = await prisma.influencer.findMany({
       where: {
         platform,
         id: { not: source.id },
+        username: { notIn: Array.from(existingUsernames) },
         followers: {
           gte: Math.floor(sourceFollowers * 0.2),
           lte: Math.ceil(sourceFollowers * 5),
@@ -128,9 +172,12 @@ export async function GET(request: NextRequest) {
       orderBy: { followers: 'desc' },
     })
 
-    // Score and sort by match quality
-    const lookalikes = similar
-      .map((inf) => ({
+    for (const inf of similar) {
+      if (lookalikes.length >= 12) break
+      if (existingUsernames.has(inf.username)) continue
+
+      existingUsernames.add(inf.username)
+      lookalikes.push({
         username: inf.username,
         displayName: inf.displayName || inf.username,
         platform: inf.platform,
@@ -147,11 +194,10 @@ export async function GET(request: NextRequest) {
           : inf.platform === 'YOUTUBE'
             ? `https://youtube.com/@${inf.username}`
             : `https://instagram.com/${inf.username}`,
-      }))
-      .sort((a, b) => b.matchScore - a.matchScore)
-      .slice(0, 12)
+      })
+    }
 
-    // If fewer than 5 results, try external Apify search using bio keywords
+    // Strategy 3: Fallback — if still fewer than 5 results, try keyword-based Apify search
     if (lookalikes.length < 5 && isApifyConfigured() && platform === 'INSTAGRAM' && source) {
       try {
         const bio = source.bio || ''
@@ -166,7 +212,6 @@ export async function GET(request: NextRequest) {
           : source.displayName || source.username
 
         const searchResults = await searchInstagramAccounts(searchQuery, { limit: 20 })
-        const existingUsernames = new Set([source.username, ...lookalikes.map(l => l.username)])
         const minF = Math.floor(sourceFollowers * 0.2)
         const maxF = Math.ceil(sourceFollowers * 5)
 
@@ -191,12 +236,13 @@ export async function GET(request: NextRequest) {
             profileUrl: `https://instagram.com/${result.username}`,
           })
         }
-
-        lookalikes.sort((a, b) => b.matchScore - a.matchScore)
       } catch (err) {
         console.error('Lookalikes external search error:', err)
       }
     }
+
+    // Sort all results by match score
+    lookalikes.sort((a, b) => b.matchScore - a.matchScore)
 
     return NextResponse.json({
       lookalikes,

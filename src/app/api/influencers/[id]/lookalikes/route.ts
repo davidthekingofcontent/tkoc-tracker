@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { scrapeProfile, isApifyConfigured, searchInstagramAccounts } from '@/lib/apify'
+import { scrapeProfile, isApifyConfigured, searchInstagramAccounts, scrapeInstagramSimilarAccounts } from '@/lib/apify'
 import { Platform } from '@/generated/prisma/client'
 
 // ---------------------------------------------------------------------------
@@ -85,23 +85,63 @@ export async function GET(
     )
   }
 
-  // 3. Strategy 1: Database search
+  // 3. Prepare search parameters
   const minFollowers = Math.round(source.followers * 0.2)
   const maxFollowers = Math.round(source.followers * 5)
   const minER = source.engagementRate - 3
   const maxER = source.engagementRate + 3
+  const existingUsernames = new Set([source.username])
 
+  const lookalikes: LookalikeEntry[] = []
+
+  // Strategy 1: Try Instagram's "similar accounts" / suggested profiles first
+  if (isApifyConfigured() && source.platform === 'INSTAGRAM') {
+    try {
+      const similarAccounts = await scrapeInstagramSimilarAccounts(source.username)
+
+      for (const result of similarAccounts) {
+        if (lookalikes.length >= 12) break
+        if (!result.username || existingUsernames.has(result.username)) continue
+
+        existingUsernames.add(result.username)
+        lookalikes.push({
+          id: `ext_${result.username}`,
+          username: result.username,
+          displayName: result.displayName,
+          avatarUrl: result.avatarUrl,
+          platform: source.platform,
+          followers: result.followers,
+          engagementRate: 0,
+          avgLikes: 0,
+          avgComments: 0,
+          avgViews: 0,
+          email: null,
+          matchScore: calculateMatchScore(source, {
+            followers: result.followers,
+            engagementRate: 0,
+            platform: source.platform,
+            email: null,
+          }),
+        })
+      }
+    } catch (err) {
+      console.error('[Lookalikes] Instagram similar accounts error:', err)
+    }
+  }
+
+  // Strategy 2: Supplement with local DB matches
   const dbResults = await prisma.influencer.findMany({
     where: {
       id: { not: source.id },
       platform: source.platform,
+      username: { notIn: Array.from(existingUsernames) },
       followers: { gte: minFollowers, lte: maxFollowers },
       engagementRate: { gte: minER, lte: maxER },
     },
     orderBy: {
       followers: 'asc',
     },
-    take: 10,
+    take: 12,
   })
 
   // Sort by closest follower count to source
@@ -111,26 +151,30 @@ export async function GET(
       Math.abs(b.followers - source.followers)
   )
 
-  const lookalikes: LookalikeEntry[] = dbResults.map((inf) => ({
-    id: inf.id,
-    username: inf.username,
-    displayName: inf.displayName,
-    avatarUrl: inf.avatarUrl,
-    platform: inf.platform,
-    followers: inf.followers,
-    engagementRate: inf.engagementRate,
-    avgLikes: inf.avgLikes,
-    avgComments: inf.avgComments,
-    avgViews: inf.avgViews,
-    email: inf.email,
-    matchScore: calculateMatchScore(source, inf),
-  }))
+  for (const inf of dbResults) {
+    if (lookalikes.length >= 12) break
+    if (existingUsernames.has(inf.username)) continue
 
-  // 4. Strategy 2: If database has < 5 results AND Apify is configured,
-  //    search externally using keywords from the source influencer's bio/niche
+    existingUsernames.add(inf.username)
+    lookalikes.push({
+      id: inf.id,
+      username: inf.username,
+      displayName: inf.displayName,
+      avatarUrl: inf.avatarUrl,
+      platform: inf.platform,
+      followers: inf.followers,
+      engagementRate: inf.engagementRate,
+      avgLikes: inf.avgLikes,
+      avgComments: inf.avgComments,
+      avgViews: inf.avgViews,
+      email: inf.email,
+      matchScore: calculateMatchScore(source, inf),
+    })
+  }
+
+  // Strategy 3: Fallback — if still fewer than 5, try keyword-based search
   if (lookalikes.length < 5 && isApifyConfigured()) {
     try {
-      // Extract keywords from bio for search
       const bio = source.bio || ''
       const bioWords = bio
         .replace(/[\n\r]/g, ' ')
@@ -144,13 +188,11 @@ export async function GET(
 
       if (source.platform === 'INSTAGRAM') {
         const searchResults = await searchInstagramAccounts(searchQuery, { limit: 20 })
-        const existingUsernames = new Set([source.username, ...lookalikes.map(l => l.username)])
 
         for (const result of searchResults) {
           if (lookalikes.length >= 12) break
           if (!result.username || existingUsernames.has(result.username)) continue
-          if (minFollowers && result.followers > 0 && result.followers < minFollowers) continue
-          if (maxFollowers && result.followers > 0 && result.followers > maxFollowers) continue
+          if (result.followers > 0 && (result.followers < minFollowers || result.followers > maxFollowers)) continue
 
           existingUsernames.add(result.username)
           lookalikes.push({
@@ -185,11 +227,12 @@ export async function GET(
             where: {
               id: { notIn: [source.id, ...lookalikes.map((l) => l.id)] },
               platform: source.platform,
+              username: { notIn: Array.from(existingUsernames) },
               followers: { gte: minFollowers, lte: maxFollowers },
               engagementRate: { gte: minER, lte: maxER },
             },
             orderBy: { followers: 'asc' },
-            take: 10 - lookalikes.length,
+            take: 12 - lookalikes.length,
           })
 
           additionalResults.sort(
@@ -199,22 +242,22 @@ export async function GET(
           )
 
           for (const inf of additionalResults) {
-            if (!lookalikes.find((l) => l.id === inf.id)) {
-              lookalikes.push({
-                id: inf.id,
-                username: inf.username,
-                displayName: inf.displayName,
-                avatarUrl: inf.avatarUrl,
-                platform: inf.platform,
-                followers: inf.followers,
-                engagementRate: inf.engagementRate,
-                avgLikes: inf.avgLikes,
-                avgComments: inf.avgComments,
-                avgViews: inf.avgViews,
-                email: inf.email,
-                matchScore: calculateMatchScore(source, inf),
-              })
-            }
+            if (existingUsernames.has(inf.username)) continue
+            existingUsernames.add(inf.username)
+            lookalikes.push({
+              id: inf.id,
+              username: inf.username,
+              displayName: inf.displayName,
+              avatarUrl: inf.avatarUrl,
+              platform: inf.platform,
+              followers: inf.followers,
+              engagementRate: inf.engagementRate,
+              avgLikes: inf.avgLikes,
+              avgComments: inf.avgComments,
+              avgViews: inf.avgViews,
+              email: inf.email,
+              matchScore: calculateMatchScore(source, inf),
+            })
           }
         }
       }

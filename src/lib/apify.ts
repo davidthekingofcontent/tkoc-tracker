@@ -724,6 +724,55 @@ export async function searchInstagramAccounts(
   }
 }
 
+/**
+ * Scrape Instagram's "similar accounts" / suggested profiles for a given username.
+ * Uses the same apify~instagram-profile-scraper actor and extracts the relatedProfiles
+ * or similarAccounts field from the result.
+ */
+export async function scrapeInstagramSimilarAccounts(
+  username: string
+): Promise<InstagramSearchResult[]> {
+  try {
+    const items = await runActor('apify~instagram-profile-scraper', {
+      usernames: [username],
+    })
+
+    if (!items || items.length === 0) return []
+
+    const profile = items[0]
+
+    // The actor may return related profiles under different field names
+    const relatedProfiles =
+      (profile.relatedProfiles as Record<string, unknown>[]) ||
+      (profile.similarAccounts as Record<string, unknown>[]) ||
+      (profile.suggestedUsers as Record<string, unknown>[]) ||
+      (profile.relatedAccounts as Record<string, unknown>[]) ||
+      (profile.edgeRelatedProfiles as Record<string, unknown>[]) ||
+      []
+
+    if (!Array.isArray(relatedProfiles) || relatedProfiles.length === 0) {
+      console.log(`[Apify] No similar accounts found for @${username}`)
+      return []
+    }
+
+    console.log(`[Apify] Found ${relatedProfiles.length} similar accounts for @${username}`)
+
+    return relatedProfiles
+      .map((rp: Record<string, unknown>) => ({
+        username: (rp.username as string) || (rp.login as string) || '',
+        displayName: (rp.fullName as string) || (rp.full_name as string) || (rp.name as string) || null,
+        avatarUrl: (rp.profilePicUrl as string) || (rp.profile_pic_url as string) || (rp.avatarUrl as string) || null,
+        followers: (rp.followersCount as number) || (rp.follower_count as number) || (rp.followers as number) || 0,
+        bio: (rp.biography as string) || (rp.bio as string) || null,
+        isVerified: (rp.isVerified as boolean) || (rp.is_verified as boolean) || (rp.verified as boolean) || false,
+      }))
+      .filter((r) => r.username)
+  } catch (err) {
+    console.error('[Apify] Similar accounts scraping error:', err)
+    return []
+  }
+}
+
 export async function scrapeProfile(username: string, platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<ScrapedProfile | null> {
   switch (platform) {
     case 'INSTAGRAM':

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { UserCheck, Search, Instagram, ExternalLink } from 'lucide-react'
 import { useI18n } from '@/i18n/context'
 
@@ -130,9 +131,10 @@ export default function LookalikesPage() {
           </h2>
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {results.map((result, i) => (
-              <div
+              <Link
                 key={i}
-                className="rounded-xl border border-gray-200 bg-white p-5 hover:shadow-md transition-shadow"
+                href={`/analyze?username=${encodeURIComponent(result.username)}`}
+                className="block rounded-xl border border-gray-200 bg-white p-5 cursor-pointer hover:shadow-md hover:border-purple-300 transition-all"
               >
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
@@ -160,17 +162,18 @@ export default function LookalikesPage() {
                     </span>
                   </div>
                   {result.profileUrl && (
-                    <a
-                      href={result.profileUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <span
+                      onClick={(e) => {
+                        e.preventDefault()
+                        window.open(result.profileUrl, '_blank', 'noopener,noreferrer')
+                      }}
                       className="text-gray-400 hover:text-purple-600 transition-colors"
                     >
                       <ExternalLink className="h-4 w-4" />
-                    </a>
+                    </span>
                   )}
                 </div>
-              </div>
+              </Link>
             ))}
           </div>
         </div>
