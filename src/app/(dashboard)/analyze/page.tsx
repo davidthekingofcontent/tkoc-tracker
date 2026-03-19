@@ -34,6 +34,7 @@ import {
   Sparkles,
   Target,
   Shield,
+  Save,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
@@ -72,6 +73,7 @@ interface AnalyzedProfile {
   country: string | null
   city: string | null
   lastScraped: string | null
+  standardFee: number | null
   media: MediaItem[]
   _count: { campaigns: number; media: number }
 }
@@ -204,6 +206,8 @@ export default function AnalyzePage() {
   const { t, locale } = useI18n()
   const [query, setQuery] = useState('')
   const [hypotheticalFee, setHypotheticalFee] = useState<string>('')
+  const [savingStandardFee, setSavingStandardFee] = useState(false)
+  const [standardFeeSaved, setStandardFeeSaved] = useState(false)
   const [selectedPlatform, setSelectedPlatform] = useState('INSTAGRAM')
   const [analyzing, setAnalyzing] = useState(false)
   const [profile, setProfile] = useState<AnalyzedProfile | null>(null)
@@ -267,6 +271,7 @@ export default function AnalyzePage() {
     setViewMode('profile')
     setInsights(null)
     setLookalikes([])
+    setStandardFeeSaved(false)
     setHypotheticalFee('')
 
     try {
@@ -287,6 +292,9 @@ export default function AnalyzePage() {
       }
 
       setProfile(data.influencer)
+      if (data.influencer?.standardFee) {
+        setHypotheticalFee(String(data.influencer.standardFee))
+      }
       if (data.source === 'apify') {
         setSuccessMsg(t.analyze.profileAnalyzed || 'Profile analyzed successfully')
       }
@@ -321,6 +329,9 @@ export default function AnalyzePage() {
 
       if (res.ok) {
         setProfile(data.influencer)
+        if (data.influencer?.standardFee) {
+          setHypotheticalFee(String(data.influencer.standardFee))
+        }
         if (data.source === 'apify') {
           setSuccessMsg(t.analyze.profileAnalyzed || 'Profile analyzed successfully')
         }
@@ -701,13 +712,52 @@ export default function AnalyzePage() {
                     {/* Fee input */}
                     <div className="mb-3">
                       <label className="block text-xs font-medium text-gray-500 mb-1">{t.analyze.enterFee}</label>
-                      <input
-                        type="number"
-                        value={hypotheticalFee}
-                        onChange={(e) => setHypotheticalFee(e.target.value)}
-                        placeholder="0"
-                        className="block w-full rounded-lg border border-gray-200 bg-white py-2 px-3 text-sm text-gray-900 placeholder-gray-400 focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
-                      />
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          value={hypotheticalFee}
+                          onChange={(e) => { setHypotheticalFee(e.target.value); setStandardFeeSaved(false) }}
+                          placeholder="0"
+                          className="block flex-1 rounded-lg border border-gray-200 bg-white py-2 px-3 text-sm text-gray-900 placeholder-gray-400 focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                        />
+                        <button
+                          onClick={async () => {
+                            if (!profile || !hypotheticalFee) return
+                            setSavingStandardFee(true)
+                            try {
+                              const res = await fetch(`/api/influencers/${profile.id}`, {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ standardFee: parseFloat(hypotheticalFee) }),
+                              })
+                              if (res.ok) {
+                                setStandardFeeSaved(true)
+                                setProfile(prev => prev ? { ...prev, standardFee: parseFloat(hypotheticalFee) } : prev)
+                              }
+                            } catch { /* ignore */ }
+                            setSavingStandardFee(false)
+                          }}
+                          disabled={!hypotheticalFee || savingStandardFee}
+                          className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 hover:border-purple-300 hover:text-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                          title={locale === 'es' ? 'Guardar como tarifa estándar' : 'Save as standard rate'}
+                        >
+                          {savingStandardFee ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : standardFeeSaved ? (
+                            <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                          ) : (
+                            <Save className="h-3.5 w-3.5" />
+                          )}
+                          {standardFeeSaved
+                            ? (locale === 'es' ? 'Guardado' : 'Saved')
+                            : (locale === 'es' ? 'Guardar' : 'Save')}
+                        </button>
+                      </div>
+                      {profile?.standardFee && (
+                        <p className="mt-1 text-[10px] text-gray-400">
+                          {locale === 'es' ? 'Tarifa estándar guardada' : 'Saved standard rate'}: €{profile.standardFee.toLocaleString()}
+                        </p>
+                      )}
                     </div>
 
                     {/* Traffic light indicator */}

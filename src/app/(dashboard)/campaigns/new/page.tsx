@@ -17,14 +17,18 @@ import {
   Plus,
   Calendar,
   Infinity,
+  DollarSign,
+  Gift,
 } from 'lucide-react'
 
 type TrackingType = 'social_listening' | 'influencer_tracking' | null
+type PaymentType = 'PAID' | 'GIFTED'
 
 export default function NewCampaignPage() {
   const router = useRouter()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [trackingType, setTrackingType] = useState<TrackingType>(null)
+  const [paymentType, setPaymentType] = useState<PaymentType>('PAID')
   const [campaignName, setCampaignName] = useState('')
   const [targets, setTargets] = useState<string[]>([])
   const [targetInput, setTargetInput] = useState('')
@@ -93,6 +97,7 @@ export default function NewCampaignPage() {
           platforms: selectedPlatforms,
           targetAccounts,
           targetHashtags,
+          paymentType,
           ...(trackingType === 'influencer_tracking' && startDate && { startDate }),
           ...(trackingType === 'influencer_tracking' && endDate && { endDate }),
           ...(country && { country }),
@@ -238,6 +243,63 @@ export default function NewCampaignPage() {
               value={campaignName}
               onChange={(e) => setCampaignName(e.target.value)}
             />
+          </Card>
+
+          {/* Payment Type */}
+          <Card variant="elevated">
+            <h3 className="mb-4 text-base font-semibold text-gray-900">
+              {locale === 'es' ? 'Tipo de Campaña' : 'Campaign Type'}
+            </h3>
+            <p className="mb-4 text-sm text-gray-500">
+              {locale === 'es'
+                ? 'Selecciona si los influencers reciben pago o producto gifted.'
+                : 'Select whether influencers receive payment or gifted product.'}
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                onClick={() => setPaymentType('PAID')}
+                className={`flex items-center gap-3 rounded-lg border px-4 py-3 transition-all ${
+                  paymentType === 'PAID'
+                    ? 'border-green-500/50 bg-green-50 text-green-700'
+                    : 'border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300'
+                }`}
+              >
+                <DollarSign className="h-5 w-5" />
+                <div className="text-left">
+                  <span className="text-sm font-medium block">
+                    {locale === 'es' ? 'Campaña de Pago' : 'Paid Campaign'}
+                  </span>
+                  <span className="text-xs opacity-75">
+                    {locale === 'es' ? 'Influencers reciben compensación económica' : 'Influencers receive monetary compensation'}
+                  </span>
+                </div>
+                {paymentType === 'PAID' && (
+                  <div className="ml-auto h-2 w-2 rounded-full bg-green-500" />
+                )}
+              </button>
+
+              <button
+                onClick={() => setPaymentType('GIFTED')}
+                className={`flex items-center gap-3 rounded-lg border px-4 py-3 transition-all ${
+                  paymentType === 'GIFTED'
+                    ? 'border-pink-500/50 bg-pink-50 text-pink-700'
+                    : 'border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300'
+                }`}
+              >
+                <Gift className="h-5 w-5" />
+                <div className="text-left">
+                  <span className="text-sm font-medium block">
+                    {locale === 'es' ? 'Campaña Gifted' : 'Gifted Campaign'}
+                  </span>
+                  <span className="text-xs opacity-75">
+                    {locale === 'es' ? 'Influencers reciben producto o servicio' : 'Influencers receive product or service'}
+                  </span>
+                </div>
+                {paymentType === 'GIFTED' && (
+                  <div className="ml-auto h-2 w-2 rounded-full bg-pink-500" />
+                )}
+              </button>
+            </div>
           </Card>
 
           {/* Brand Account Targets */}

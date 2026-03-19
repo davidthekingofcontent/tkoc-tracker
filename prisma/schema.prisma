@@ -88,6 +88,7 @@ model Campaign {
   targetKeywords String[]       // e.g. ["vileda"]
   platforms      Platform[]     @default([INSTAGRAM])
   country        String?        // Filter content by country (e.g. "ES", "MX")
+  paymentType    String         @default("PAID") // "PAID" or "GIFTED"
 
   // Relations
   userId        String
@@ -147,6 +148,8 @@ model Influencer {
   language      String?
   gender        String?
 
+  standardFee   Float?    // What the influencer typically charges
+
   isVerified    Boolean   @default(false)
   lastScraped   DateTime?
 
@@ -187,6 +190,7 @@ model CampaignInfluencer {
 
   // Per-campaign costs
   cost          Float?    @default(0)
+  agreedFee     Float?    // What was agreed for THIS specific campaign
   commission    Float?    @default(0)
   notes         String?
 

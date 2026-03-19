@@ -90,6 +90,12 @@ export async function GET(
       _count: true,
     })
 
+    // Calculate total cost from agreedFees
+    const totalCost = campaign.influencers.reduce(
+      (sum, ci) => sum + (ci.agreedFee || 0),
+      0
+    )
+
     const overview = {
       totalReach,
       totalImpressions: metrics._sum.impressions || 0,
@@ -99,6 +105,7 @@ export async function GET(
       totalViews: metrics._sum.views || 0,
       profilesPosted: profilesPosted.length,
       totalMedia: metrics._count,
+      totalCost,
       mediaCounts: mediaCounts.reduce(
         (acc, item) => ({ ...acc, [item.mediaType]: item._count }),
         {} as Record<string, number>
@@ -206,7 +213,7 @@ export async function PUT(
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
     }
 
-    const { name, status, budget, isPinned, startDate, endDate, platforms, targetAccounts, targetHashtags, targetKeywords, country } = body
+    const { name, status, budget, isPinned, startDate, endDate, platforms, targetAccounts, targetHashtags, targetKeywords, country, paymentType } = body
 
     const campaign = await prisma.campaign.update({
       where: { id },
@@ -222,6 +229,7 @@ export async function PUT(
         ...(targetHashtags !== undefined && { targetHashtags }),
         ...(targetKeywords !== undefined && { targetKeywords }),
         ...(country !== undefined && { country: country || null }),
+        ...(paymentType !== undefined && ['PAID', 'GIFTED'].includes(paymentType) && { paymentType }),
       },
       include: {
         _count: { select: { influencers: true, media: true } },

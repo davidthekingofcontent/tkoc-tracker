@@ -49,11 +49,14 @@ import {
   Settings2,
   Save,
   Kanban,
+  DollarSign,
+  Gift,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
   id: string
   cost: number | null
+  agreedFee: number | null
   notes: string | null
   status: string
   influencer: {
@@ -67,6 +70,7 @@ interface CampaignInfluencer {
     avgLikes: number | null
     avgComments: number | null
     avgViews: number | null
+    standardFee: number | null
   }
 }
 
@@ -96,6 +100,7 @@ interface CampaignData {
   name: string
   type: string
   status: string
+  paymentType: string
   platforms: string[]
   targetAccounts: string[]
   targetHashtags: string[]
@@ -117,6 +122,7 @@ interface Overview {
   totalMedia: number
   emvBasic: number
   emvExtended: number
+  totalCost: number
 }
 
 interface TimelinePoint {
@@ -475,7 +481,7 @@ export default function CampaignDetailPage() {
       await fetch(`/api/campaigns/${campaignId}/influencers`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ influencerId, cost: fee }),
+        body: JSON.stringify({ influencerId, cost: fee, agreedFee: parseFloat(fee) || 0 }),
       })
       await fetchCampaign()
     } catch { /* ignore */ }
@@ -611,6 +617,17 @@ export default function CampaignDetailPage() {
               <Badge variant={campaign.status === 'ACTIVE' ? 'active' : campaign.status === 'PAUSED' ? 'paused' : 'archived'}>
                 {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
               </Badge>
+              {campaign.paymentType === 'GIFTED' ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-pink-200 bg-pink-50 px-2.5 py-0.5 text-xs font-medium text-pink-700">
+                  <Gift className="h-3 w-3" />
+                  {locale === 'es' ? 'Gifted' : 'Gifted'}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full border border-green-200 bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-700">
+                  <DollarSign className="h-3 w-3" />
+                  {locale === 'es' ? 'Pago' : 'Paid'}
+                </span>
+              )}
               <button
                 onClick={openEditModal}
                 className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
@@ -893,6 +910,96 @@ export default function CampaignDetailPage() {
                   </div>
                 </div>
               )}
+
+              {/* Cost Summary (only for PAID campaigns) */}
+              {campaign.paymentType === 'PAID' && influencers.length > 0 && (() => {
+                const totalCost = overview?.totalCost || influencers.reduce((sum, ci) => sum + (ci.agreedFee || 0), 0)
+                const emvValue = overview?.emvExtended || overview?.emvBasic || 0
+                const roi = totalCost > 0 ? ((emvValue - totalCost) / totalCost) * 100 : 0
+                const isPositiveROI = emvValue > totalCost
+
+                return (
+                  <div className="space-y-4">
+                    <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                      <DollarSign className="h-5 w-5 text-green-600" />
+                      {locale === 'es' ? 'Resumen de Costes' : 'Cost Summary'}
+                    </h2>
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                          {locale === 'es' ? 'Coste Total Campaña' : 'Total Campaign Cost'}
+                        </p>
+                        <p className="mt-1 text-2xl font-bold text-gray-900">
+                          {totalCost > 0 ? `€${formatNumber(Math.round(totalCost))}` : '—'}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-400">
+                          {locale === 'es' ? `${influencers.filter(ci => ci.agreedFee).length} de ${influencers.length} con fee acordado` : `${influencers.filter(ci => ci.agreedFee).length} of ${influencers.length} with agreed fee`}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                          {locale === 'es' ? 'Coste Medio por Influencer' : 'Avg Cost per Influencer'}
+                        </p>
+                        <p className="mt-1 text-2xl font-bold text-gray-900">
+                          {totalCost > 0 && influencers.filter(ci => ci.agreedFee).length > 0
+                            ? `€${formatNumber(Math.round(totalCost / influencers.filter(ci => ci.agreedFee).length))}`
+                            : '—'}
+                        </p>
+                      </div>
+                      <div className={`rounded-xl border-2 p-5 shadow-sm ${
+                        totalCost > 0
+                          ? isPositiveROI
+                            ? 'border-green-200 bg-gradient-to-br from-green-50 to-emerald-50'
+                            : 'border-red-200 bg-gradient-to-br from-red-50 to-orange-50'
+                          : 'border-gray-200 bg-white'
+                      }`}>
+                        <p className={`text-xs font-semibold uppercase tracking-wider ${
+                          totalCost > 0
+                            ? isPositiveROI ? 'text-green-600' : 'text-red-600'
+                            : 'text-gray-500'
+                        }`}>
+                          ROI {locale === 'es' ? 'Indicador' : 'Indicator'}
+                        </p>
+                        <p className={`mt-1 text-2xl font-bold ${
+                          totalCost > 0
+                            ? isPositiveROI ? 'text-green-700' : 'text-red-700'
+                            : 'text-gray-900'
+                        }`}>
+                          {totalCost > 0 ? `${roi > 0 ? '+' : ''}${roi.toFixed(0)}%` : '—'}
+                        </p>
+                        <p className={`mt-1 text-xs ${
+                          totalCost > 0
+                            ? isPositiveROI ? 'text-green-500' : 'text-red-500'
+                            : 'text-gray-400'
+                        }`}>
+                          {totalCost > 0
+                            ? isPositiveROI
+                              ? (locale === 'es' ? 'EMV supera el coste' : 'EMV exceeds cost')
+                              : (locale === 'es' ? 'Coste supera el EMV' : 'Cost exceeds EMV')
+                            : (locale === 'es' ? 'Añade fees para calcular' : 'Add fees to calculate')}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Per-influencer cost breakdown */}
+                    {influencers.some(ci => ci.agreedFee) && (
+                      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                        <h3 className="text-sm font-semibold text-gray-700 mb-3">
+                          {locale === 'es' ? 'Desglose por Influencer' : 'Cost per Influencer'}
+                        </h3>
+                        <div className="space-y-2">
+                          {influencers.filter(ci => ci.influencer && ci.agreedFee).map(ci => (
+                            <div key={ci.id} className="flex items-center justify-between text-sm">
+                              <span className="text-gray-700">@{ci.influencer.username}</span>
+                              <span className="font-medium text-gray-900">€{formatNumber(ci.agreedFee || 0)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
 
               {/* Audience Demographics */}
               {influencers.length > 0 && (() => {
@@ -1561,7 +1668,7 @@ export default function CampaignDetailPage() {
                   <div className="space-y-4">
                     {sortedInfluencers.filter(ci => ci.influencer).map((ci) => {
                       const cpm = getCPMForInfluencer(ci)
-                      const feeValue = editingFee[ci.id] !== undefined ? editingFee[ci.id] : (ci.cost || '')
+                      const feeValue = editingFee[ci.id] !== undefined ? editingFee[ci.id] : (ci.agreedFee || ci.cost || '')
                       const trafficColors = {
                         green: 'bg-green-100 text-green-800 border-green-300',
                         yellow: 'bg-amber-100 text-amber-800 border-amber-300',
@@ -1625,7 +1732,9 @@ export default function CampaignDetailPage() {
                           <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-6 gap-3 items-end">
                             {/* Fee Input */}
                             <div>
-                              <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">Fee (€)</label>
+                              <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">
+                                {locale === 'es' ? 'Fee Acordado (€)' : 'Agreed Fee (€)'}
+                              </label>
                               <div className="flex items-center gap-1">
                                 <input
                                   type="number"
@@ -1633,7 +1742,7 @@ export default function CampaignDetailPage() {
                                   onChange={(e) => setEditingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
                                   onBlur={() => {
                                     const val = editingFee[ci.id]
-                                    if (val !== undefined && val !== String(ci.cost || '')) {
+                                    if (val !== undefined && val !== String(ci.agreedFee || ci.cost || '')) {
                                       handleSaveFee(ci.id, ci.influencer.id, val)
                                     }
                                   }}
@@ -1642,11 +1751,16 @@ export default function CampaignDetailPage() {
                                       handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0')
                                     }
                                   }}
-                                  placeholder="0"
+                                  placeholder={ci.influencer.standardFee ? `Std: €${ci.influencer.standardFee}` : '0'}
                                   className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-medium text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                                 />
                                 {savingFee === ci.id && <Loader2 className="h-3 w-3 animate-spin text-purple-500 shrink-0" />}
                               </div>
+                              {ci.influencer.standardFee && (
+                                <p className="mt-0.5 text-[10px] text-gray-400">
+                                  {locale === 'es' ? 'Tarifa estándar' : 'Standard rate'}: €{ci.influencer.standardFee.toLocaleString()}
+                                </p>
+                              )}
                             </div>
 
                             {/* CPM Real */}

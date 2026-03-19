@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, type, platforms, targetAccounts, targetHashtags, targetKeywords, startDate, endDate, country } = body
+    const { name, type, platforms, targetAccounts, targetHashtags, targetKeywords, startDate, endDate, country, paymentType } = body
 
     if (!name) {
       return NextResponse.json({ error: 'Campaign name is required' }, { status: 400 })
@@ -104,6 +104,7 @@ export async function POST(request: NextRequest) {
         ...(startDate && { startDate: new Date(startDate) }),
         ...(endDate && { endDate: new Date(endDate) }),
         ...(country && { country }),
+        ...(paymentType && ['PAID', 'GIFTED'].includes(paymentType) && { paymentType }),
         userId: session.id,
         // Auto-assign creator
         assignments: {
