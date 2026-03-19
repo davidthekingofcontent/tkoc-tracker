@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -17,7 +18,7 @@ import {
 } from '@/components/ui/table'
 import { formatNumber, formatDate } from '@/lib/utils'
 import { useI18n } from '@/i18n/context'
-import { Megaphone, Users, FileText, Camera, Plus, Search, Loader2 } from 'lucide-react'
+import { Megaphone, Users, FileText, Camera, Plus, Search, Loader2, MoreVertical, Pause, Play, Archive, Trash2 } from 'lucide-react'
 
 interface Campaign {
   id: string
@@ -35,29 +36,191 @@ interface Campaign {
   }
 }
 
+function CampaignActionMenu({
+  campaign,
+  onAction,
+  lang,
+}: {
+  campaign: Campaign
+  onAction: (action: string, id: string) => void
+  lang: string
+}) {
+  const [open, setOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    if (open) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [open])
+
+  const labels = {
+    edit: lang === 'es' ? 'Editar' : 'Edit',
+    pause: lang === 'es' ? 'Pausar' : 'Pause',
+    activate: lang === 'es' ? 'Activar' : 'Activate',
+    archive: lang === 'es' ? 'Archivar' : 'Archive',
+    delete: lang === 'es' ? 'Eliminar' : 'Delete',
+  }
+
+  return (
+    <div className="relative" ref={menuRef}>
+      <button
+        onClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          setOpen(!open)
+        }}
+        className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+          <button
+            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              setOpen(false)
+              onAction('edit', campaign.id)
+            }}
+          >
+            <FileText className="h-4 w-4" />
+            {labels.edit}
+          </button>
+          {campaign.status === 'ACTIVE' ? (
+            <button
+              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setOpen(false)
+                onAction('pause', campaign.id)
+              }}
+            >
+              <Pause className="h-4 w-4" />
+              {labels.pause}
+            </button>
+          ) : campaign.status !== 'ARCHIVED' ? (
+            <button
+              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setOpen(false)
+                onAction('activate', campaign.id)
+              }}
+            >
+              <Play className="h-4 w-4" />
+              {labels.activate}
+            </button>
+          ) : null}
+          {campaign.status !== 'ARCHIVED' && (
+            <button
+              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setOpen(false)
+                onAction('archive', campaign.id)
+              }}
+            >
+              <Archive className="h-4 w-4" />
+              {labels.archive}
+            </button>
+          )}
+          <div className="my-1 border-t border-gray-100" />
+          <button
+            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              setOpen(false)
+              onAction('delete', campaign.id)
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+            {labels.delete}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function CampaignsPage() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  const router = useRouter()
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [activeFilter, setActiveFilter] = useState('all')
 
+  const fetchCampaigns = useCallback(async () => {
+    try {
+      const res = await fetch('/api/campaigns')
+      if (res.ok) {
+        const data = await res.json()
+        setCampaigns(data.campaigns || [])
+      }
+    } catch (err) {
+      console.error('Error fetching campaigns:', err)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
-    async function fetchCampaigns() {
-      try {
-        const res = await fetch('/api/campaigns')
-        if (res.ok) {
-          const data = await res.json()
-          setCampaigns(data.campaigns || [])
+    fetchCampaigns()
+  }, [fetchCampaigns])
+
+  const handleAction = useCallback(async (action: string, campaignId: string) => {
+    switch (action) {
+      case 'edit':
+        router.push(`/campaigns/${campaignId}`)
+        break
+      case 'pause':
+        await fetch(`/api/campaigns/${campaignId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'PAUSED' }),
+        })
+        fetchCampaigns()
+        break
+      case 'activate':
+        await fetch(`/api/campaigns/${campaignId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'ACTIVE' }),
+        })
+        fetchCampaigns()
+        break
+      case 'archive':
+        await fetch(`/api/campaigns/${campaignId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'ARCHIVED' }),
+        })
+        fetchCampaigns()
+        break
+      case 'delete': {
+        const confirmMsg = locale === 'es'
+          ? 'Estas seguro de que quieres eliminar esta campana?'
+          : 'Are you sure you want to delete this campaign?'
+        if (confirm(confirmMsg)) {
+          await fetch(`/api/campaigns/${campaignId}`, { method: 'DELETE' })
+          fetchCampaigns()
         }
-      } catch (err) {
-        console.error('Error fetching campaigns:', err)
-      } finally {
-        setIsLoading(false)
+        break
       }
     }
-    fetchCampaigns()
-  }, [])
+  }, [router, fetchCampaigns, locale])
 
   const filteredCampaigns = useMemo(() => {
     return campaigns.filter((campaign) => {
@@ -158,6 +321,7 @@ export default function CampaignsPage() {
                 <TableHead>{t.campaigns.targets}</TableHead>
                 <TableHead>{t.campaigns.type}</TableHead>
                 <TableHead>{t.common.status}</TableHead>
+                <TableHead className="w-12" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -193,11 +357,18 @@ export default function CampaignsPage() {
                       {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
                     </Badge>
                   </TableCell>
+                  <TableCell>
+                    <CampaignActionMenu
+                      campaign={campaign}
+                      onAction={handleAction}
+                      lang={locale}
+                    />
+                  </TableCell>
                 </TableRow>
               ))}
               {filteredCampaigns.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-12">
+                  <TableCell colSpan={7} className="text-center py-12">
                     <p className="text-gray-500">
                       {campaigns.length === 0 ? t.campaigns.noCampaignsDesc : t.campaigns.noCampaigns}
                     </p>

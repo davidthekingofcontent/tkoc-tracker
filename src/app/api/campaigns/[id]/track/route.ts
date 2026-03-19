@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { scrapeHashtag, scrapeProfile, scrapeStories, isApifyConfigured } from '@/lib/apify'
+import { scrapeHashtag, scrapeProfile, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
 import { Platform } from '@/generated/prisma/client'
 
 export async function POST(
@@ -50,6 +50,7 @@ export async function POST(
     const results = {
       hashtagsScraped: 0,
       postsFound: 0,
+      postsFilteredByCountry: 0,
       influencersFound: 0,
       storiesCaptured: 0,
       errors: [] as string[],
@@ -100,6 +101,37 @@ export async function POST(
                   ...(result.authorFollowers > 0 && { followers: result.authorFollowers }),
                 },
               })
+
+              // Country filtering: if campaign has a country set, check influencer's country
+              if (campaign.country) {
+                // Try to detect country from the influencer's existing DB data
+                let influencerCountry = influencer.country
+
+                // If no country in DB yet, try to detect from a quick profile scrape
+                if (!influencerCountry) {
+                  try {
+                    const profileData = await scrapeProfile(
+                      result.authorUsername,
+                      platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
+                    )
+                    if (profileData?.country) {
+                      influencerCountry = profileData.country
+                      await prisma.influencer.update({
+                        where: { id: influencer.id },
+                        data: { country: profileData.country, city: profileData.city },
+                      })
+                    }
+                  } catch {
+                    // If profile scrape fails, keep influencerCountry as null
+                  }
+                }
+
+                // If we know the influencer's country and it doesn't match, skip their posts
+                if (influencerCountry && influencerCountry !== campaign.country) {
+                  results.postsFilteredByCountry += result.posts.length
+                  continue // Skip to next influencer
+                }
+              }
 
               // Link influencer to campaign if not already linked
               await prisma.campaignInfluencer.upsert({

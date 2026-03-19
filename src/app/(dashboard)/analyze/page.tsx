@@ -808,21 +808,35 @@ export default function AnalyzePage() {
                       href={media.permalink || '#'}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="group relative aspect-square bg-gray-100 rounded-lg overflow-hidden"
+                      className="group relative aspect-square rounded-lg overflow-hidden border border-gray-200 bg-gradient-to-br from-gray-50 to-gray-100"
                     >
-                      {(media.thumbnailUrl || media.mediaUrl) ? (
+                      {(media.thumbnailUrl || media.mediaUrl) && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={(media.thumbnailUrl || media.mediaUrl) as string}
                           alt={media.caption || ''}
-                          className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-200"
+                          className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-transform duration-200"
                           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
                         />
-                      ) : (
-                        <div className="h-full w-full flex items-center justify-center">
-                          <span className="text-xs text-gray-400">{media.mediaType}</span>
-                        </div>
                       )}
+                      {/* Fallback content — always rendered behind the image */}
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/80 text-gray-400 shadow-sm">
+                          {media.mediaType === 'REEL' || media.mediaType === 'VIDEO' ? (
+                            <Play className="h-5 w-5" />
+                          ) : media.mediaType === 'CAROUSEL' ? (
+                            <BarChart3 className="h-5 w-5" />
+                          ) : (
+                            <Heart className="h-5 w-5" />
+                          )}
+                        </div>
+                        <span className="text-[10px] font-medium text-gray-400 uppercase">{media.mediaType}</span>
+                        <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                          <span>❤ {formatNumber(media.likes)}</span>
+                          <span>💬 {formatNumber(media.comments)}</span>
+                        </div>
+                      </div>
+                      {/* Hover overlay with metrics */}
                       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-2.5 pt-6">
                         <div className="flex items-center gap-3 text-xs text-white">
                           <span className="flex items-center gap-1">
@@ -839,6 +853,12 @@ export default function AnalyzePage() {
                               {formatNumber(media.views)}
                             </span>
                           )}
+                        </div>
+                      </div>
+                      {/* External link icon on hover */}
+                      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-black/50 text-white">
+                          <ExternalLink className="h-3 w-3" />
                         </div>
                       </div>
                     </a>
@@ -1042,21 +1062,28 @@ export default function AnalyzePage() {
                     rel="noopener noreferrer"
                     className="group relative rounded-lg border border-gray-100 overflow-hidden hover:border-purple-300 transition-colors"
                   >
-                    <div className="relative aspect-square bg-gray-100">
-                      {(post.thumbnailUrl || post.mediaUrl) ? (
+                    <div className="relative aspect-square bg-gradient-to-br from-gray-50 to-gray-100">
+                      {(post.thumbnailUrl || post.mediaUrl) && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={(post.thumbnailUrl || post.mediaUrl) as string}
                           alt=""
-                          className="h-full w-full object-cover group-hover:scale-105 transition-transform"
+                          className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-transform"
                           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
                         />
-                      ) : (
-                        <div className="h-full w-full flex items-center justify-center text-gray-300">
-                          <Play className="h-8 w-8" />
-                        </div>
                       )}
-                      <div className="absolute top-2 left-2 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 text-xs font-bold text-white">
+                      {/* Fallback */}
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/80 text-gray-400 shadow-sm">
+                          {post.mediaType === 'REEL' || post.mediaType === 'VIDEO' ? <Play className="h-5 w-5" /> : <Heart className="h-5 w-5" />}
+                        </div>
+                        <span className="text-[10px] text-gray-400 uppercase">{post.mediaType}</span>
+                        <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                          <span>❤ {formatNumber(post.likes)}</span>
+                          <span>💬 {formatNumber(post.comments)}</span>
+                        </div>
+                      </div>
+                      <div className="absolute top-2 left-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 text-xs font-bold text-white shadow">
                         #{idx + 1}
                       </div>
                     </div>

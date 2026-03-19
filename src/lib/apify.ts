@@ -80,6 +80,173 @@ async function runActor(
   return items || []
 }
 
+// ============ COUNTRY DETECTION ============
+
+const LOCATION_TO_COUNTRY: Record<string, string> = {
+  // Spain
+  'spain': 'ES', 'españa': 'ES', 'madrid': 'ES', 'barcelona': 'ES', 'valencia': 'ES',
+  'sevilla': 'ES', 'seville': 'ES', 'málaga': 'ES', 'malaga': 'ES', 'bilbao': 'ES',
+  'zaragoza': 'ES', 'granada': 'ES', 'murcia': 'ES', 'palma': 'ES', 'alicante': 'ES',
+  'ibiza': 'ES', 'tenerife': 'ES', 'marbella': 'ES', 'salamanca': 'ES',
+  // Mexico
+  'mexico': 'MX', 'méxico': 'MX', 'cdmx': 'MX', 'ciudad de mexico': 'MX',
+  'guadalajara': 'MX', 'monterrey': 'MX', 'cancun': 'MX', 'cancún': 'MX',
+  'puebla': 'MX', 'tijuana': 'MX', 'playa del carmen': 'MX',
+  // Argentina
+  'argentina': 'AR', 'buenos aires': 'AR', 'córdoba': 'AR', 'rosario': 'AR', 'mendoza': 'AR',
+  // Colombia
+  'colombia': 'CO', 'bogotá': 'CO', 'bogota': 'CO', 'medellín': 'CO', 'medellin': 'CO',
+  'cali': 'CO', 'barranquilla': 'CO', 'cartagena': 'CO',
+  // Chile
+  'chile': 'CL', 'santiago': 'CL', 'valparaíso': 'CL',
+  // Peru
+  'peru': 'PE', 'perú': 'PE', 'lima': 'PE',
+  // USA
+  'united states': 'US', 'usa': 'US', 'new york': 'US', 'los angeles': 'US',
+  'chicago': 'US', 'miami': 'US', 'san francisco': 'US', 'houston': 'US',
+  'atlanta': 'US', 'dallas': 'US', 'seattle': 'US', 'boston': 'US',
+  'las vegas': 'US', 'austin': 'US', 'denver': 'US', 'phoenix': 'US',
+  'san diego': 'US', 'philadelphia': 'US', 'nashville': 'US', 'portland': 'US',
+  // UK
+  'united kingdom': 'GB', 'uk': 'GB', 'london': 'GB', 'manchester': 'GB',
+  'birmingham': 'GB', 'liverpool': 'GB', 'edinburgh': 'GB', 'england': 'GB',
+  'scotland': 'GB', 'wales': 'GB',
+  // Brazil
+  'brazil': 'BR', 'brasil': 'BR', 'são paulo': 'BR', 'sao paulo': 'BR',
+  'rio de janeiro': 'BR', 'rio': 'BR', 'brasília': 'BR',
+  // France
+  'france': 'FR', 'francia': 'FR', 'paris': 'FR', 'lyon': 'FR', 'marseille': 'FR',
+  // Germany
+  'germany': 'DE', 'alemania': 'DE', 'berlin': 'DE', 'munich': 'DE', 'münchen': 'DE',
+  'hamburg': 'DE', 'frankfurt': 'DE',
+  // Italy
+  'italy': 'IT', 'italia': 'IT', 'rome': 'IT', 'roma': 'IT', 'milan': 'IT', 'milano': 'IT',
+  'naples': 'IT', 'napoli': 'IT', 'florence': 'IT', 'firenze': 'IT',
+  // Portugal
+  'portugal': 'PT', 'lisbon': 'PT', 'lisboa': 'PT', 'porto': 'PT',
+  // Canada
+  'canada': 'CA', 'toronto': 'CA', 'vancouver': 'CA', 'montreal': 'CA', 'montréal': 'CA',
+  // Australia
+  'australia': 'AU', 'sydney': 'AU', 'melbourne': 'AU', 'brisbane': 'AU',
+  // Japan
+  'japan': 'JP', 'tokyo': 'JP', 'osaka': 'JP',
+  // South Korea
+  'south korea': 'KR', 'korea': 'KR', 'seoul': 'KR',
+  // India
+  'india': 'IN', 'mumbai': 'IN', 'delhi': 'IN', 'bangalore': 'IN', 'bengaluru': 'IN',
+  // Dominican Republic
+  'república dominicana': 'DO', 'republica dominicana': 'DO', 'dominican republic': 'DO',
+  'santo domingo': 'DO',
+  // Venezuela
+  'venezuela': 'VE', 'caracas': 'VE',
+  // Ecuador
+  'ecuador': 'EC', 'quito': 'EC', 'guayaquil': 'EC',
+  // Uruguay
+  'uruguay': 'UY', 'montevideo': 'UY',
+  // Paraguay
+  'paraguay': 'PY', 'asunción': 'PY',
+  // Bolivia
+  'bolivia': 'BO', 'la paz': 'BO',
+  // Costa Rica
+  'costa rica': 'CR', 'san josé': 'CR',
+  // Panama
+  'panama': 'PA', 'panamá': 'PA',
+  // Cuba
+  'cuba': 'CU', 'havana': 'CU', 'la habana': 'CU',
+  // Puerto Rico
+  'puerto rico': 'PR', 'san juan': 'PR',
+}
+
+// ISO country code map for direct matches (e.g. YouTube returns "US", "ES")
+const ISO_COUNTRY_CODES = new Set([
+  'AD','AE','AF','AG','AI','AL','AM','AO','AQ','AR','AS','AT','AU','AW','AX','AZ',
+  'BA','BB','BD','BE','BF','BG','BH','BI','BJ','BL','BM','BN','BO','BQ','BR','BS',
+  'BT','BV','BW','BY','BZ','CA','CC','CD','CF','CG','CH','CI','CK','CL','CM','CN',
+  'CO','CR','CU','CV','CW','CX','CY','CZ','DE','DJ','DK','DM','DO','DZ','EC','EE',
+  'EG','EH','ER','ES','ET','FI','FJ','FK','FM','FO','FR','GA','GB','GD','GE','GF',
+  'GG','GH','GI','GL','GM','GN','GP','GQ','GR','GS','GT','GU','GW','GY','HK','HM',
+  'HN','HR','HT','HU','ID','IE','IL','IM','IN','IO','IQ','IR','IS','IT','JE','JM',
+  'JO','JP','KE','KG','KH','KI','KM','KN','KP','KR','KW','KY','KZ','LA','LB','LC',
+  'LI','LK','LR','LS','LT','LU','LV','LY','MA','MC','MD','ME','MF','MG','MH','MK',
+  'ML','MM','MN','MO','MP','MQ','MR','MS','MT','MU','MV','MW','MX','MY','MZ','NA',
+  'NC','NE','NF','NG','NI','NL','NO','NP','NR','NU','NZ','OM','PA','PE','PF','PG',
+  'PH','PK','PL','PM','PN','PR','PS','PT','PW','PY','QA','RE','RO','RS','RU','RW',
+  'SA','SB','SC','SD','SE','SG','SH','SI','SJ','SK','SL','SM','SN','SO','SR','SS',
+  'ST','SV','SX','SY','SZ','TC','TD','TF','TG','TH','TJ','TK','TL','TM','TN','TO',
+  'TR','TT','TV','TW','TZ','UA','UG','UM','US','UY','UZ','VA','VC','VE','VG','VI',
+  'VN','VU','WF','WS','YE','YT','ZA','ZM','ZW',
+])
+
+/**
+ * Detect country code from profile data fields.
+ * Checks locationName, biography, city, and other location-related fields.
+ * Returns a 2-letter ISO country code or null.
+ */
+export function detectCountry(profile: Record<string, unknown>): string | null {
+  // 1. Check if there's already a direct country code (e.g. YouTube)
+  const directCountry = (profile.country as string) || (profile.countryCode as string) || ''
+  if (directCountry && ISO_COUNTRY_CODES.has(directCountry.toUpperCase())) {
+    return directCountry.toUpperCase()
+  }
+
+  // 2. Collect all text fields that might contain location info
+  const locationFields = [
+    profile.locationName,
+    profile.location,
+    profile.city,
+    profile.region,
+    profile.addressStreet,
+    profile.businessCategoryName,
+    profile.contactPhoneNumber,
+  ].filter(Boolean).map(f => String(f).toLowerCase().trim())
+
+  // Also check bio but with lower priority
+  const bio = ((profile.biography as string) || (profile.bio as string) || '').toLowerCase()
+
+  // 3. Try matching location fields first (more reliable)
+  for (const text of locationFields) {
+    // Try multi-word matches first (longer keys first)
+    const sortedKeys = Object.keys(LOCATION_TO_COUNTRY).sort((a, b) => b.length - a.length)
+    for (const key of sortedKeys) {
+      if (text.includes(key)) {
+        return LOCATION_TO_COUNTRY[key]
+      }
+    }
+  }
+
+  // 4. Try matching in bio (less reliable, use flag emojis or explicit mentions)
+  // Look for flag emojis
+  const flagMatch = bio.match(/[\u{1F1E0}-\u{1F1FF}]{2}/u)
+  if (flagMatch) {
+    const flag = flagMatch[0]
+    const first = flag.codePointAt(0)! - 0x1F1E5
+    const second = flag.codePointAt(2)! - 0x1F1E5
+    const code = String.fromCharCode(64 + first) + String.fromCharCode(64 + second)
+    if (ISO_COUNTRY_CODES.has(code)) {
+      return code
+    }
+  }
+
+  // Look for location patterns in bio like "Based in Madrid" or "📍 Barcelona"
+  const bioLocationPatterns = [
+    /(?:based in|from|ubicad[oa] en|de|📍)\s+([a-záéíóúñü\s]+)/i,
+  ]
+  for (const pattern of bioLocationPatterns) {
+    const match = bio.match(pattern)
+    if (match) {
+      const location = match[1].trim().toLowerCase()
+      const sortedKeys = Object.keys(LOCATION_TO_COUNTRY).sort((a, b) => b.length - a.length)
+      for (const key of sortedKeys) {
+        if (location.includes(key)) {
+          return LOCATION_TO_COUNTRY[key]
+        }
+      }
+    }
+  }
+
+  return null
+}
+
 // ============ TYPES ============
 
 export interface ScrapedProfile {
@@ -201,8 +368,8 @@ async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile 
     isVerified: (profile.verified as boolean) || (profile.isVerified as boolean) || false,
     website: (profile.externalUrl as string) || null,
     email: emailMatch ? emailMatch[0] : null,
-    country: null,
-    city: null,
+    country: detectCountry(profile),
+    city: (profile.locationName as string) || (profile.city as string) || null,
     recentPosts,
   }
 }
@@ -288,7 +455,7 @@ async function scrapeTikTokProfile(username: string): Promise<ScrapedProfile | n
     isVerified: (authorMeta.verified as boolean) || false,
     website: null,
     email: emailMatch ? emailMatch[0] : null,
-    country: null,
+    country: detectCountry(authorMeta as Record<string, unknown>),
     city: null,
     recentPosts,
   }
