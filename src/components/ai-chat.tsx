@@ -67,6 +67,13 @@ export function AIChatWidget() {
   const { t, locale } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
   const [userRole, setUserRole] = useState<string | null>(null)
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [input, setInput] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState('')
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // Fetch user role on mount
   useEffect(() => {
@@ -83,18 +90,6 @@ export function AIChatWidget() {
     }
     fetchRole()
   }, [])
-
-  // Only show AI chat for ADMIN users
-  if (userRole !== 'ADMIN') {
-    return null
-  }
-  const [isExpanded, setIsExpanded] = useState(false)
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [input, setInput] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState('')
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -154,6 +149,11 @@ export function AIChatWidget() {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  // Only show AI chat for ADMIN users
+  if (userRole !== 'ADMIN') {
+    return null
   }
 
   const suggestions = SUGGESTIONS[locale as keyof typeof SUGGESTIONS] || SUGGESTIONS.en
