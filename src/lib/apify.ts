@@ -431,6 +431,84 @@ async function scrapeInstagramHashtag(hashtag: string, maxPosts = 20): Promise<H
   })
 }
 
+// ============ INSTAGRAM STORIES ============
+
+export interface ScrapedStory {
+  externalId: string
+  mediaUrl: string | null
+  thumbnailUrl: string | null
+  mediaType: 'STORY'
+  views: number
+  postedAt: string | null
+  expiresAt: string | null
+  mentions: string[]
+  hashtags: string[]
+  stickers: string[]
+}
+
+export interface StoryResult {
+  username: string
+  stories: ScrapedStory[]
+}
+
+async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[]> {
+  try {
+    const items = await runActor('apify~instagram-story-scraper', {
+      usernames: usernames.slice(0, 20), // Max 20 at a time
+      resultsLimit: 100,
+    })
+
+    if (!items || items.length === 0) return []
+
+    // Group by username
+    const storyMap = new Map<string, ScrapedStory[]>()
+
+    for (const item of items) {
+      const username = (item.ownerUsername as string) || (item.owner as Record<string, unknown>)?.username as string || ''
+      if (!username) continue
+
+      const story: ScrapedStory = {
+        externalId: (item.id as string) || (item.pk as string)?.toString() || `story_${Date.now()}_${Math.random()}`,
+        mediaUrl: (item.videoUrl as string) || (item.displayUrl as string) || (item.imageUrl as string) || null,
+        thumbnailUrl: (item.displayUrl as string) || (item.imageUrl as string) || (item.thumbnailUrl as string) || null,
+        mediaType: 'STORY',
+        views: (item.viewerCount as number) || (item.views as number) || 0,
+        postedAt: (item.takenAtTimestamp as number)
+          ? new Date((item.takenAtTimestamp as number) * 1000).toISOString()
+          : (item.timestamp as string) || (item.takenAt as string) || null,
+        expiresAt: (item.expiringAtTimestamp as number)
+          ? new Date((item.expiringAtTimestamp as number) * 1000).toISOString()
+          : null,
+        mentions: ((item.mentions as string[]) || []),
+        hashtags: ((item.hashtags as string[]) || []),
+        stickers: ((item.stickers as string[]) || []),
+      }
+
+      const existing = storyMap.get(username) || []
+      existing.push(story)
+      storyMap.set(username, existing)
+    }
+
+    return Array.from(storyMap.entries()).map(([username, stories]) => ({
+      username,
+      stories,
+    }))
+  } catch (err) {
+    console.error('[Apify] Story scraping error:', err)
+    return []
+  }
+}
+
+export async function scrapeStories(usernames: string[], platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<StoryResult[]> {
+  switch (platform) {
+    case 'INSTAGRAM':
+      return scrapeInstagramStories(usernames)
+    default:
+      // Stories only supported on Instagram for now
+      return []
+  }
+}
+
 // ============ PUBLIC API ============
 
 export async function scrapeProfile(username: string, platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<ScrapedProfile | null> {

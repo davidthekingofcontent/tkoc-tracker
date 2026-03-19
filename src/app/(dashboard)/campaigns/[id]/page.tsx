@@ -39,6 +39,8 @@ import {
   ChevronDown,
   Plus,
   UserPlus,
+  Clock,
+  Film,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -221,9 +223,10 @@ export default function CampaignDetailPage() {
       const data = await res.json()
 
       if (res.ok) {
+        const storiesMsg = data.results.storiesCaptured > 0 ? `, ${data.results.storiesCaptured} stories` : ''
         setTrackingResult({
           type: 'success',
-          message: `${data.results.postsFound} ${t.campaignDetail.postsFound}, ${data.results.influencersFound} ${t.campaignDetail.influencersFound}`,
+          message: `${data.results.postsFound} ${t.campaignDetail.postsFound}, ${data.results.influencersFound} ${t.campaignDetail.influencersFound}${storiesMsg}`,
         })
         await fetchCampaign()
       } else {
@@ -386,6 +389,9 @@ export default function CampaignDetailPage() {
   const targetAccounts = campaign.targetAccounts || []
   const targetHashtags = campaign.targetHashtags || []
 
+  const stories = media.filter(m => m.mediaType === 'STORY')
+  const nonStoryMedia = media.filter(m => m.mediaType !== 'STORY')
+
   const totalReach = overview?.totalReach || influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0)
   const totalEngagements = overview?.totalEngagements || 0
   const totalMedia = overview?.totalMedia || media.length
@@ -403,14 +409,14 @@ export default function CampaignDetailPage() {
   )
 
   const sortedMedia = useMemo(() => {
-    if (mediaSortBy === 'recent') return media
-    return [...media].sort((a, b) => {
+    if (mediaSortBy === 'recent') return nonStoryMedia
+    return [...nonStoryMedia].sort((a, b) => {
       if (mediaSortBy === 'likes') return (b.likes || 0) - (a.likes || 0)
       if (mediaSortBy === 'comments') return (b.comments || 0) - (a.comments || 0)
       if (mediaSortBy === 'views') return (b.views || 0) - (a.views || 0)
       return 0
     })
-  }, [media, mediaSortBy])
+  }, [nonStoryMedia, mediaSortBy])
 
   return (
     <div className="space-y-6">
@@ -481,12 +487,20 @@ export default function CampaignDetailPage() {
               )}
             </Button>
           )}
-          <a href={`/api/campaigns/${campaign.id}/export?format=csv`} download>
-            <Button variant="secondary" size="sm">
-              <Download className="h-4 w-4" />
-              Export CSV
-            </Button>
-          </a>
+          <div className="flex items-center gap-2">
+            <a href={`/api/campaigns/${campaign.id}/export?format=pdf`} download>
+              <Button variant="primary" size="sm">
+                <Download className="h-4 w-4" />
+                {t.campaignDetail.exportPDF || 'Export PDF'}
+              </Button>
+            </a>
+            <a href={`/api/campaigns/${campaign.id}/export?format=csv`} download>
+              <Button variant="secondary" size="sm">
+                <Download className="h-4 w-4" />
+                {t.campaignDetail.exportCSV || 'Export CSV'}
+              </Button>
+            </a>
+          </div>
         </div>
       </div>
 
@@ -565,7 +579,11 @@ export default function CampaignDetailPage() {
       <Tabs defaultValue="report">
         <TabsList>
           <TabsTrigger value="report">{t.campaigns.report}</TabsTrigger>
-          <TabsTrigger value="media">{t.campaigns.mediaTab} ({totalMedia})</TabsTrigger>
+          <TabsTrigger value="media">{t.campaigns.mediaTab} ({nonStoryMedia.length})</TabsTrigger>
+          <TabsTrigger value="stories">
+            <Film className="h-3.5 w-3.5" />
+            {t.campaignDetail.storiesTab || 'Stories'} ({stories.length})
+          </TabsTrigger>
           <TabsTrigger value="influencers">{t.campaigns.influencersTab} ({influencers.length})</TabsTrigger>
         </TabsList>
 
@@ -899,6 +917,119 @@ export default function CampaignDetailPage() {
                   </Button>
                 </div>
               )}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Stories Tab */}
+        <TabsContent value="stories">
+          {stories.length === 0 ? (
+            <div className="rounded-xl border border-gray-200 bg-white py-16 text-center shadow-sm">
+              <Film className="mx-auto h-12 w-12 text-gray-300" />
+              <h3 className="mt-4 text-lg font-semibold text-gray-700">{t.campaignDetail.stories || 'Stories'}</h3>
+              <p className="mx-auto mt-2 max-w-md text-sm text-gray-400">
+                {t.campaignDetail.storiesEmpty}
+              </p>
+              <div className="mt-6 flex items-center justify-center gap-3">
+                {isActive && (
+                  <Button
+                    variant="primary"
+                    size="md"
+                    onClick={handleTrackNow}
+                    disabled={isTracking}
+                  >
+                    {isTracking ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {t.campaignDetail.tracking}
+                      </>
+                    ) : (
+                      <>
+                        <Radar className="h-4 w-4" />
+                        {t.campaignDetail.trackNow}
+                      </>
+                    )}
+                  </Button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-gray-500">{stories.length} {t.campaignDetail.stories || 'Stories'}</p>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                  <Clock className="h-3 w-3" />
+                  {t.campaignDetail.storiesEmpty ? 'Stories expire after 24h' : 'Las stories expiran tras 24h'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                {stories.map((story) => {
+                  const postedDate = story.postedAt ? new Date(story.postedAt) : null
+                  const isExpired = postedDate ? (Date.now() - postedDate.getTime()) > 24 * 60 * 60 * 1000 : true
+
+                  return (
+                    <div
+                      key={story.id}
+                      className="group relative overflow-hidden rounded-xl border-2 border-transparent bg-white shadow-sm transition-all hover:border-purple-300 hover:shadow-md"
+                    >
+                      {/* Story gradient ring */}
+                      <div className={`absolute inset-0 rounded-xl ${isExpired ? 'bg-gray-100' : 'bg-gradient-to-br from-purple-500 via-pink-500 to-orange-400'} p-[2px]`}>
+                        <div className="h-full w-full rounded-[10px] bg-white" />
+                      </div>
+
+                      <div className="relative">
+                        {/* Thumbnail */}
+                        <div className="relative aspect-[9/16] overflow-hidden rounded-t-xl bg-gray-100">
+                          {story.thumbnailUrl ? (
+                            <img
+                              src={story.thumbnailUrl}
+                              alt="Story"
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-full items-center justify-center text-gray-400">
+                              <Film className="h-10 w-10" />
+                            </div>
+                          )}
+
+                          {/* Views overlay */}
+                          {(story.views || 0) > 0 && (
+                            <div className="absolute bottom-2 left-2 flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5 text-xs font-medium text-white">
+                              <Eye className="h-3 w-3" />
+                              {formatNumber(story.views || 0)}
+                            </div>
+                          )}
+
+                          {/* Expired badge */}
+                          {isExpired && (
+                            <div className="absolute top-2 right-2 rounded-full bg-gray-900/70 px-2 py-0.5 text-[10px] font-medium text-white">
+                              {t.campaignDetail.storyExpired || 'Expired'}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Creator info */}
+                        <div className="p-3">
+                          <div className="flex items-center gap-2">
+                            <Avatar name={story.influencer?.displayName || story.influencer?.username || '?'} size="sm" />
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-medium text-gray-900">
+                                @{story.influencer?.username || 'unknown'}
+                              </p>
+                              {postedDate && (
+                                <p className="text-[10px] text-gray-400">
+                                  {postedDate.toLocaleDateString()} {postedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )}
         </TabsContent>

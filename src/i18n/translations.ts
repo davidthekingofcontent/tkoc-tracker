@@ -333,6 +333,14 @@ export const translations = {
       addedSuccess: 'Added successfully',
       alreadyAdded: 'Already added',
       loadMore: 'Load More',
+      exportPDF: 'Export PDF',
+      exportCSV: 'Export CSV',
+      stories: 'Stories',
+      storiesTab: 'Stories',
+      storiesEmpty: 'No stories captured yet. Track the campaign to capture Instagram Stories before they expire.',
+      storyExpires: 'Expires',
+      storyExpired: 'Expired',
+      storyCaptured: 'Captured',
     },
 
     // List Detail
@@ -678,6 +686,14 @@ export const translations = {
       addedSuccess: 'Añadido correctamente',
       alreadyAdded: 'Ya añadido',
       loadMore: 'Cargar Más',
+      exportPDF: 'Exportar PDF',
+      exportCSV: 'Exportar CSV',
+      stories: 'Stories',
+      storiesTab: 'Stories',
+      storiesEmpty: 'No hay stories capturados todavia. Rastrea la campana para capturar Stories de Instagram antes de que expiren.',
+      storyExpires: 'Expira',
+      storyExpired: 'Expirado',
+      storyCaptured: 'Capturado',
     },
 
     // List Detail

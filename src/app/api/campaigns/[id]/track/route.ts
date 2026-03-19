@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { scrapeHashtag, scrapeProfile, isApifyConfigured } from '@/lib/apify'
+import { scrapeHashtag, scrapeProfile, scrapeStories, isApifyConfigured } from '@/lib/apify'
 import { Platform } from '@/generated/prisma/client'
 
 export async function POST(
@@ -51,6 +51,7 @@ export async function POST(
       hashtagsScraped: 0,
       postsFound: 0,
       influencersFound: 0,
+      storiesCaptured: 0,
       errors: [] as string[],
     }
 
@@ -215,6 +216,90 @@ export async function POST(
         } catch {
           // Skip profile refresh errors
         }
+      }
+    }
+
+    // ===== STORY CAPTURE =====
+    // Capture Instagram Stories from all campaign influencers
+    const instagramInfluencers = existingInfluencers
+      .filter(ci => ci.influencer.platform === 'INSTAGRAM')
+      .map(ci => ci.influencer)
+
+    if (instagramInfluencers.length > 0) {
+      try {
+        const storyJob = await prisma.scrapeJob.create({
+          data: {
+            jobType: 'stories',
+            platform: 'INSTAGRAM' as Platform,
+            targetUsername: instagramInfluencers.map(i => i.username).join(','),
+            campaignId: id,
+            status: 'RUNNING',
+            startedAt: new Date(),
+          },
+        })
+
+        const storyResults = await scrapeStories(
+          instagramInfluencers.map(i => i.username),
+          'INSTAGRAM'
+        )
+
+        let storiesInBatch = 0
+
+        for (const storyResult of storyResults) {
+          // Find the matching influencer
+          const matchingInf = instagramInfluencers.find(
+            i => i.username.toLowerCase() === storyResult.username.toLowerCase()
+          )
+          if (!matchingInf) continue
+
+          for (const story of storyResult.stories) {
+            try {
+              await prisma.media.upsert({
+                where: {
+                  externalId_platform: {
+                    externalId: story.externalId,
+                    platform: 'INSTAGRAM' as Platform,
+                  },
+                },
+                create: {
+                  externalId: story.externalId,
+                  platform: 'INSTAGRAM' as Platform,
+                  mediaType: 'STORY',
+                  mediaUrl: story.mediaUrl,
+                  thumbnailUrl: story.thumbnailUrl,
+                  views: story.views,
+                  mentions: story.mentions,
+                  hashtags: story.hashtags,
+                  postedAt: story.postedAt ? new Date(story.postedAt) : null,
+                  influencerId: matchingInf.id,
+                  campaignId: id,
+                },
+                update: {
+                  views: story.views,
+                  campaignId: id,
+                },
+              })
+              storiesInBatch++
+            } catch {
+              // Skip duplicate/invalid stories
+            }
+          }
+        }
+
+        results.storiesCaptured = storiesInBatch
+
+        await prisma.scrapeJob.update({
+          where: { id: storyJob.id },
+          data: {
+            status: 'COMPLETED',
+            itemsFound: storiesInBatch,
+            completedAt: new Date(),
+          },
+        })
+      } catch (err) {
+        const errorMsg = `Failed to scrape stories: ${err instanceof Error ? err.message : 'Unknown error'}`
+        results.errors.push(errorMsg)
+        console.error(errorMsg)
       }
     }
 
