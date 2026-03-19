@@ -49,6 +49,7 @@ import { StatCard } from '@/components/ui/stat-card'
 import { Avatar } from '@/components/ui/avatar'
 import { formatNumber } from '@/lib/utils'
 import { AddToModal } from '@/components/add-to-modal'
+import { calculateCPM, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
 
 interface AnalyzedProfile {
   id: string
@@ -199,8 +200,9 @@ function getProfileUrl(username: string, platform: string) {
 type ViewMode = 'profile' | 'insights' | 'lookalikes'
 
 export default function AnalyzePage() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [query, setQuery] = useState('')
+  const [hypotheticalFee, setHypotheticalFee] = useState<string>('')
   const [selectedPlatform, setSelectedPlatform] = useState('INSTAGRAM')
   const [analyzing, setAnalyzing] = useState(false)
   const [profile, setProfile] = useState<AnalyzedProfile | null>(null)
@@ -264,6 +266,7 @@ export default function AnalyzePage() {
     setViewMode('profile')
     setInsights(null)
     setLookalikes([])
+    setHypotheticalFee('')
 
     try {
       const res = await fetch('/api/influencers/analyze', {
@@ -304,6 +307,7 @@ export default function AnalyzePage() {
     setViewMode('profile')
     setInsights(null)
     setLookalikes([])
+    setHypotheticalFee('')
 
     try {
       const res = await fetch('/api/influencers/analyze', {
@@ -411,6 +415,26 @@ export default function AnalyzePage() {
       case 'medium': return t.analyze.medium
       default: return t.analyze.low
     }
+  }
+
+  const cpmResult = profile ? calculateCPM({
+    fee: hypotheticalFee ? parseFloat(hypotheticalFee) : null,
+    avgViews: profile.avgViews || 0,
+    platform: (profile.platform || 'INSTAGRAM') as CPMPlatform,
+    followers: profile.followers || 0,
+  }, locale as 'en' | 'es') : null
+
+  const trafficColors: Record<string, string> = {
+    green: 'bg-green-100 text-green-800 border-green-300',
+    yellow: 'bg-amber-100 text-amber-800 border-amber-300',
+    red: 'bg-red-100 text-red-800 border-red-300',
+    gray: 'bg-gray-100 text-gray-600 border-gray-300',
+  }
+  const trafficDot: Record<string, string> = {
+    green: 'bg-green-500',
+    yellow: 'bg-amber-500',
+    red: 'bg-red-500',
+    gray: 'bg-gray-400',
   }
 
   return (
@@ -662,6 +686,80 @@ export default function AnalyzePage() {
                     </button>
                   </div>
                 </div>
+
+                {/* Rate Card */}
+                {cpmResult && (
+                  <div className="mt-5 border-t border-gray-100 pt-5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Target className="h-4 w-4 text-purple-500" />
+                      <h3 className="text-sm font-semibold text-gray-900">{t.analyze.rateCard}</h3>
+                      <span className="text-xs text-gray-400">{t.analyze.rateCardDesc}</span>
+                    </div>
+
+                    {/* Fee input */}
+                    <div className="mb-3">
+                      <label className="block text-xs font-medium text-gray-500 mb-1">{t.analyze.enterFee}</label>
+                      <input
+                        type="number"
+                        value={hypotheticalFee}
+                        onChange={(e) => setHypotheticalFee(e.target.value)}
+                        placeholder="0"
+                        className="block w-full rounded-lg border border-gray-200 bg-white py-2 px-3 text-sm text-gray-900 placeholder-gray-400 focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                      />
+                    </div>
+
+                    {/* Traffic light indicator */}
+                    <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 mb-3 ${trafficColors[cpmResult.trafficLight]}`}>
+                      <div className={`h-3 w-3 rounded-full flex-shrink-0 ${trafficDot[cpmResult.trafficLight]}`} />
+                      <span className="text-sm font-semibold">{cpmResult.recommendation}</span>
+                    </div>
+
+                    {/* Metrics grid */}
+                    <div className="grid grid-cols-2 gap-2 mb-3">
+                      <div className="rounded-lg bg-gray-50 p-2.5">
+                        <p className="text-[10px] text-gray-400 uppercase font-medium">CPM Real</p>
+                        <p className="text-sm font-bold text-gray-900">
+                          {cpmResult.cpmReal !== null ? `€${cpmResult.cpmReal}` : '—'}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-gray-50 p-2.5">
+                        <p className="text-[10px] text-gray-400 uppercase font-medium">CPM Target</p>
+                        <p className="text-sm font-bold text-gray-900">
+                          {cpmResult.cpmTarget !== null ? `€${cpmResult.cpmTarget}` : '—'}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-gray-50 p-2.5">
+                        <p className="text-[10px] text-gray-400 uppercase font-medium">Fee Rec.</p>
+                        <p className="text-sm font-bold text-gray-900">
+                          {cpmResult.feeRecommended !== null ? `€${cpmResult.feeRecommended.toLocaleString()}` : '—'}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-gray-50 p-2.5">
+                        <p className="text-[10px] text-gray-400 uppercase font-medium">Fee Max</p>
+                        <p className="text-sm font-bold text-gray-900">
+                          {cpmResult.feeMax !== null ? `€${cpmResult.feeMax.toLocaleString()}` : '—'}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-gray-50 p-2.5">
+                        <p className="text-[10px] text-gray-400 uppercase font-medium">Tier</p>
+                        <p className="text-sm font-bold text-gray-900">{cpmResult.tier}</p>
+                      </div>
+                      <div className="rounded-lg bg-gray-50 p-2.5">
+                        <p className="text-[10px] text-gray-400 uppercase font-medium">Difference</p>
+                        <p className={`text-sm font-bold ${cpmResult.savingsOrOvercost !== null ? (cpmResult.savingsOrOvercost > 0 ? 'text-red-600' : 'text-green-600') : 'text-gray-900'}`}>
+                          {cpmResult.savingsOrOvercost !== null
+                            ? `${cpmResult.savingsOrOvercost > 0 ? '+' : ''}€${cpmResult.savingsOrOvercost.toLocaleString()}`
+                            : '—'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Recommendation detail */}
+                    <div className={`rounded-lg border px-3 py-2 text-xs leading-relaxed ${trafficColors[cpmResult.trafficLight]}`}>
+                      {cpmResult.recommendationDetail}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Stat Cards */}

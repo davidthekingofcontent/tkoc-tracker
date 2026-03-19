@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
+import { InfluencerStatus } from '@/generated/prisma/client'
 
 export async function POST(
   request: NextRequest,
@@ -67,10 +68,14 @@ export async function PATCH(
 
     const { id } = await params
     const body = await request.json()
-    const { influencerId, cost, notes } = body
+    const { influencerId, cost, notes, status } = body
 
     if (!influencerId) {
       return NextResponse.json({ error: 'influencerId is required' }, { status: 400 })
+    }
+
+    if (status && !Object.values(InfluencerStatus).includes(status as InfluencerStatus)) {
+      return NextResponse.json({ error: 'Invalid status value' }, { status: 400 })
     }
 
     const existing = await prisma.campaignInfluencer.findUnique({
@@ -86,6 +91,7 @@ export async function PATCH(
       data: {
         ...(cost !== undefined && { cost: parseFloat(cost) || 0 }),
         ...(notes !== undefined && { notes }),
+        ...(status !== undefined && { status: status as InfluencerStatus }),
       },
       include: { influencer: true },
     })

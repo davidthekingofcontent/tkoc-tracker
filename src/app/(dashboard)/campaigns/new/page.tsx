@@ -37,6 +37,7 @@ export default function NewCampaignPage() {
   const [influencerInput, setInfluencerInput] = useState('')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
+  const [country, setCountry] = useState('')
 
   const addTarget = useCallback(() => {
     const value = targetInput.trim()
@@ -94,6 +95,7 @@ export default function NewCampaignPage() {
           targetHashtags,
           ...(trackingType === 'influencer_tracking' && startDate && { startDate }),
           ...(trackingType === 'influencer_tracking' && endDate && { endDate }),
+          ...(country && { country }),
         }),
       })
 
@@ -343,6 +345,36 @@ export default function NewCampaignPage() {
                 )}
               </button>
             </div>
+          </Card>
+
+          {/* Country Filter */}
+          <Card variant="elevated">
+            <h3 className="mb-4 text-base font-semibold text-gray-900">
+              {t.campaigns.countryFilter || 'Country Filter'}
+            </h3>
+            <p className="mb-4 text-sm text-gray-500">
+              {t.campaigns.countryFilterDesc || 'Only track content from influencers in this country. Leave empty to track worldwide.'}
+            </p>
+            <select
+              value={country}
+              onChange={(e) => setCountry(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white"
+            >
+              <option value="">{t.campaigns.allCountries || 'All countries (worldwide)'}</option>
+              <option value="ES">Spain</option>
+              <option value="MX">Mexico</option>
+              <option value="AR">Argentina</option>
+              <option value="CO">Colombia</option>
+              <option value="CL">Chile</option>
+              <option value="PE">Peru</option>
+              <option value="US">United States</option>
+              <option value="UK">United Kingdom</option>
+              <option value="FR">France</option>
+              <option value="DE">Germany</option>
+              <option value="IT">Italy</option>
+              <option value="PT">Portugal</option>
+              <option value="BR">Brazil</option>
+            </select>
           </Card>
 
           {/* Campaign Duration */}

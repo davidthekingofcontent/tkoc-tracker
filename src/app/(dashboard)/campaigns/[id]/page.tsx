@@ -45,6 +45,8 @@ import {
   Film,
   Globe,
   MapPin,
+  Settings2,
+  Save,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -96,6 +98,7 @@ interface CampaignData {
   targetHashtags: string[]
   startDate: string | null
   endDate: string | null
+  country: string | null
   influencers: CampaignInfluencer[]
   media: CampaignMedia[]
 }
@@ -284,6 +287,19 @@ export default function CampaignDetailPage() {
   // CPM fee editing
   const [editingFee, setEditingFee] = useState<Record<string, string>>({})
   const [savingFee, setSavingFee] = useState<string | null>(null)
+
+  // Edit campaign modal
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [editForm, setEditForm] = useState({
+    name: '',
+    startDate: '',
+    endDate: '',
+    country: '',
+    targetHashtags: '',
+    targetAccounts: '',
+    status: '',
+  })
+  const [isSaving, setIsSaving] = useState(false)
 
   async function fetchCampaign() {
     try {
@@ -481,6 +497,44 @@ export default function CampaignDetailPage() {
     }
   }
 
+  function openEditModal() {
+    if (!campaign) return
+    setEditForm({
+      name: campaign.name,
+      startDate: campaign.startDate ? new Date(campaign.startDate).toISOString().split('T')[0] : '',
+      endDate: campaign.endDate ? new Date(campaign.endDate).toISOString().split('T')[0] : '',
+      country: campaign.country || '',
+      targetHashtags: targetHashtags.join(', '),
+      targetAccounts: targetAccounts.join(', '),
+      status: campaign.status,
+    })
+    setShowEditModal(true)
+  }
+
+  async function handleSaveCampaign() {
+    setIsSaving(true)
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editForm.name,
+          status: editForm.status,
+          startDate: editForm.startDate || null,
+          endDate: editForm.endDate || null,
+          country: editForm.country || null,
+          targetHashtags: editForm.targetHashtags ? editForm.targetHashtags.split(',').map(s => s.trim()).filter(Boolean) : [],
+          targetAccounts: editForm.targetAccounts ? editForm.targetAccounts.split(',').map(s => s.trim()).filter(Boolean) : [],
+        }),
+      })
+      if (res.ok) {
+        setShowEditModal(false)
+        await fetchCampaign()
+      }
+    } catch { /* ignore */ }
+    setIsSaving(false)
+  }
+
   // Derived data (must be before any conditional returns to respect Rules of Hooks)
   const influencers = campaign?.influencers || []
   const media = campaign?.media || []
@@ -554,6 +608,13 @@ export default function CampaignDetailPage() {
               <Badge variant={campaign.status === 'ACTIVE' ? 'active' : campaign.status === 'PAUSED' ? 'paused' : 'archived'}>
                 {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
               </Badge>
+              <button
+                onClick={openEditModal}
+                className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+                title={t.common.edit}
+              >
+                <Settings2 className="h-4 w-4" />
+              </button>
             </div>
             <div className="mt-1 flex items-center gap-2 text-sm text-gray-500">
               <span>{campaign.type === 'INFLUENCER_TRACKING' ? t.campaigns.influencerTracking : t.campaigns.socialListening}</span>
@@ -580,6 +641,15 @@ export default function CampaignDetailPage() {
                 <>
                   <span>&middot;</span>
                   <span>{platforms.map(p => p.charAt(0) + p.slice(1).toLowerCase()).join(', ')}</span>
+                </>
+              )}
+              {campaign.country && (
+                <>
+                  <span>&middot;</span>
+                  <span className="inline-flex items-center gap-1">
+                    <Globe className="h-3 w-3" />
+                    {campaign.country}
+                  </span>
                 </>
               )}
             </div>
@@ -1636,6 +1706,156 @@ export default function CampaignDetailPage() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* Edit Campaign Modal */}
+      {showEditModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="mx-4 w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-lg font-bold text-gray-900">
+                {locale === 'es' ? 'Editar Campaña' : 'Edit Campaign'}
+              </h2>
+              <button onClick={() => setShowEditModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Name */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                  {t.campaigns.campaignName}
+                </label>
+                <input
+                  type="text"
+                  value={editForm.name}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                />
+              </div>
+
+              {/* Status */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                  {t.common.status}
+                </label>
+                <select
+                  value={editForm.status}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, status: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white"
+                >
+                  <option value="ACTIVE">{t.common.active}</option>
+                  <option value="PAUSED">{t.common.paused}</option>
+                  <option value="ARCHIVED">{t.common.archived}</option>
+                </select>
+              </div>
+
+              {/* Dates */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                    {t.campaigns.startDateLabel || 'Start Date'}
+                  </label>
+                  <input
+                    type="date"
+                    value={editForm.startDate}
+                    onChange={(e) => setEditForm(prev => ({ ...prev, startDate: e.target.value }))}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                    {t.campaigns.endDateLabel || 'End Date'}
+                  </label>
+                  <input
+                    type="date"
+                    value={editForm.endDate}
+                    onChange={(e) => setEditForm(prev => ({ ...prev, endDate: e.target.value }))}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+              </div>
+
+              {/* Country */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                  {locale === 'es' ? 'País' : 'Country'}
+                </label>
+                <select
+                  value={editForm.country}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, country: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white"
+                >
+                  <option value="">{locale === 'es' ? 'Todos los países' : 'All countries'}</option>
+                  <option value="ES">Spain</option>
+                  <option value="MX">Mexico</option>
+                  <option value="AR">Argentina</option>
+                  <option value="CO">Colombia</option>
+                  <option value="CL">Chile</option>
+                  <option value="PE">Peru</option>
+                  <option value="US">United States</option>
+                  <option value="UK">United Kingdom</option>
+                  <option value="FR">France</option>
+                  <option value="DE">Germany</option>
+                  <option value="IT">Italy</option>
+                  <option value="PT">Portugal</option>
+                  <option value="BR">Brazil</option>
+                </select>
+              </div>
+
+              {/* Hashtags */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                  {t.campaigns.trackingHashtags}
+                </label>
+                <input
+                  type="text"
+                  value={editForm.targetHashtags}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, targetHashtags: e.target.value }))}
+                  placeholder="#hashtag1, #hashtag2"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                />
+                <p className="mt-1 text-xs text-gray-400">{locale === 'es' ? 'Separados por comas' : 'Comma separated'}</p>
+              </div>
+
+              {/* Accounts */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                  {t.campaigns.trackingAccounts}
+                </label>
+                <input
+                  type="text"
+                  value={editForm.targetAccounts}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, targetAccounts: e.target.value }))}
+                  placeholder="@account1, @account2"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                />
+                <p className="mt-1 text-xs text-gray-400">{locale === 'es' ? 'Separados por comas' : 'Comma separated'}</p>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <Button variant="ghost" onClick={() => setShowEditModal(false)}>
+                {t.common.cancel}
+              </Button>
+              <Button variant="primary" onClick={handleSaveCampaign} disabled={isSaving || !editForm.name.trim()}>
+                {isSaving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {t.common.loading}
+                  </>
+                ) : (
+                  <>
+                    <Save className="h-4 w-4" />
+                    {t.common.save}
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

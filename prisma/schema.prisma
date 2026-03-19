@@ -69,6 +69,7 @@ model Campaign {
   targetHashtags String[]       // e.g. ["#vileda"]
   targetKeywords String[]       // e.g. ["vileda"]
   platforms      Platform[]     @default([INSTAGRAM])
+  country        String?        // Filter content by country (e.g. "ES", "MX")
 
   // Relations
   userId        String
@@ -126,6 +127,16 @@ model Influencer {
   @@map("influencers")
 }
 
+enum InfluencerStatus {
+  PROSPECT
+  OUTREACH
+  NEGOTIATING
+  AGREED
+  CONTRACTED
+  POSTED
+  COMPLETED
+}
+
 model CampaignInfluencer {
   id            String    @id @default(cuid())
 
@@ -134,6 +145,9 @@ model CampaignInfluencer {
 
   influencerId  String
   influencer    Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  // Pipeline status
+  status        InfluencerStatus @default(PROSPECT)
 
   // Per-campaign costs
   cost          Float?    @default(0)

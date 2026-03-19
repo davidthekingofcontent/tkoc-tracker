@@ -55,6 +55,7 @@ export const translations = {
       settings: 'Settings',
       recentCampaigns: 'Recent Campaigns',
       searchPlaceholder: 'Search campaigns, creators, lists...',
+      pipeline: 'Pipeline',
     },
 
     // Dashboard
@@ -138,6 +139,9 @@ export const translations = {
       searchCampaigns: 'Search campaigns...',
       loadingCampaigns: 'Loading campaigns...',
       noCampaignsStart: 'No campaigns yet. Create your first campaign to get started.',
+      countryFilter: 'Country Filter',
+      countryFilterDesc: 'Only track content from influencers in this country. Leave empty to track worldwide.',
+      allCountries: 'All countries (worldwide)',
     },
 
     // Lists
@@ -221,6 +225,9 @@ export const translations = {
       similarProfiles: 'Similar Profiles',
       uses: 'uses',
       avgEng: 'avg eng.',
+      rateCard: 'Rate Card',
+      rateCardDesc: 'Evaluate pricing before adding to campaign',
+      enterFee: 'Enter Fee (€)',
     },
 
     // Discover
@@ -357,6 +364,24 @@ export const translations = {
       avgFollowers: 'Avg. Followers/Influencer',
     },
 
+    // Pipeline
+    pipeline: {
+      title: 'Pipeline',
+      subtitle: 'Track influencer journey from discovery to completion',
+      prospect: 'Prospect',
+      outreach: 'Outreach',
+      negotiating: 'Negotiating',
+      agreed: 'Agreed',
+      contracted: 'Contracted',
+      posted: 'Posted',
+      completed: 'Completed',
+      moveTo: 'Move to',
+      noInfluencers: 'No influencers in this stage',
+      filterByCampaign: 'Filter by campaign',
+      allCampaigns: 'All campaigns',
+      totalInPipeline: 'Total in Pipeline',
+    },
+
     // List Detail
     listDetail: {
       listNotFound: 'List not found',
@@ -422,6 +447,7 @@ export const translations = {
       settings: 'Ajustes',
       recentCampaigns: 'Campañas Recientes',
       searchPlaceholder: 'Buscar campañas, creadores, listas...',
+      pipeline: 'Pipeline',
     },
 
     // Dashboard
@@ -505,6 +531,9 @@ export const translations = {
       searchCampaigns: 'Buscar campañas...',
       loadingCampaigns: 'Cargando campañas...',
       noCampaignsStart: 'Sin campañas todavía. Crea tu primera campaña para empezar.',
+      countryFilter: 'Filtro de País',
+      countryFilterDesc: 'Solo rastrear contenido de influencers en este país. Déjalo vacío para rastrear a nivel mundial.',
+      allCountries: 'Todos los países (mundial)',
     },
 
     // Lists
@@ -588,6 +617,9 @@ export const translations = {
       similarProfiles: 'Perfiles Similares',
       uses: 'usos',
       avgEng: 'eng. medio',
+      rateCard: 'Tarjeta de Tarifas',
+      rateCardDesc: 'Evalua precios antes de añadir a campaña',
+      enterFee: 'Introduce Fee (€)',
     },
 
     // Discover
@@ -722,6 +754,24 @@ export const translations = {
       geoDistribution: 'Distribucion Geografica',
       noLocationData: 'Los datos de ubicacion apareceran a medida que se analicen los perfiles',
       avgFollowers: 'Media Seguidores/Influencer',
+    },
+
+    // Pipeline
+    pipeline: {
+      title: 'Pipeline',
+      subtitle: 'Seguimiento del recorrido del influencer',
+      prospect: 'Prospecto',
+      outreach: 'Contacto',
+      negotiating: 'Negociando',
+      agreed: 'Acordado',
+      contracted: 'Contratado',
+      posted: 'Publicado',
+      completed: 'Completado',
+      moveTo: 'Mover a',
+      noInfluencers: 'Sin influencers en esta etapa',
+      filterByCampaign: 'Filtrar por campaña',
+      allCampaigns: 'Todas las campañas',
+      totalInPipeline: 'Total en Pipeline',
     },
 
     // List Detail
