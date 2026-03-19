@@ -81,6 +81,7 @@ export async function GET(
     id: m.id,
     caption: m.caption,
     thumbnailUrl: m.thumbnailUrl,
+    mediaUrl: m.mediaUrl,
     permalink: m.permalink,
     mediaType: m.mediaType,
     likes: m.likes,

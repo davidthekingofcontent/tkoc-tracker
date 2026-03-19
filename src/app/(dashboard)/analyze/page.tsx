@@ -933,6 +933,41 @@ export default function AnalyzePage() {
                 <span className="text-xs text-gray-400 font-medium">{t.analyze.engagementTrend}</span>
               </div>
               <p className="text-lg font-bold text-gray-900">{trendLabel(insights.engagementAnalysis.engagementTrend)}</p>
+              {/* Mini sparkline */}
+              {profile && profile.media && profile.media.length > 2 && (() => {
+                const engagements = [...profile.media]
+                  .sort((a, b) => new Date(a.postedAt || 0).getTime() - new Date(b.postedAt || 0).getTime())
+                  .slice(-10)
+                  .map(m => ((m.likes + m.comments) / Math.max(profile.followers, 1)) * 100)
+                const max = Math.max(...engagements, 0.01)
+                const min = Math.min(...engagements, 0)
+                const range = max - min || 1
+                const w = 100 / engagements.length
+                const points = engagements.map((v, i) => `${i * w + w/2},${100 - ((v - min) / range) * 80 - 10}`).join(' ')
+                const trendColor = insights.engagementAnalysis.engagementTrend === 'rising' ? '#10b981' : insights.engagementAnalysis.engagementTrend === 'declining' ? '#ef4444' : '#8b5cf6'
+                return (
+                  <svg viewBox="0 0 100 100" className="mt-2 h-10 w-full" preserveAspectRatio="none">
+                    <defs>
+                      <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={trendColor} stopOpacity="0.3" />
+                        <stop offset="100%" stopColor={trendColor} stopOpacity="0" />
+                      </linearGradient>
+                    </defs>
+                    <polygon
+                      points={`${w/2},100 ${points} ${(engagements.length - 1) * w + w/2},100`}
+                      fill="url(#sparkGrad)"
+                    />
+                    <polyline
+                      points={points}
+                      fill="none"
+                      stroke={trendColor}
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )
+              })()}
             </div>
           </div>
 
@@ -1062,29 +1097,36 @@ export default function AnalyzePage() {
                     rel="noopener noreferrer"
                     className="group relative rounded-lg border border-gray-100 overflow-hidden hover:border-purple-300 transition-colors"
                   >
-                    <div className="relative aspect-square bg-gradient-to-br from-gray-50 to-gray-100">
+                    <div className="relative aspect-square bg-gradient-to-br from-purple-50 via-gray-50 to-indigo-50">
                       {(post.thumbnailUrl || post.mediaUrl) && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={(post.thumbnailUrl || post.mediaUrl) as string}
                           alt=""
-                          className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-transform"
+                          className="absolute inset-0 z-[1] h-full w-full object-cover group-hover:scale-105 transition-transform"
                           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
                         />
                       )}
-                      {/* Fallback */}
-                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/80 text-gray-400 shadow-sm">
-                          {post.mediaType === 'REEL' || post.mediaType === 'VIDEO' ? <Play className="h-5 w-5" /> : <Heart className="h-5 w-5" />}
+                      {/* Fallback — always visible behind img */}
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-purple-400 shadow-md border border-purple-100">
+                          {post.mediaType === 'REEL' || post.mediaType === 'VIDEO' ? <Play className="h-7 w-7" /> : <Heart className="h-7 w-7" />}
                         </div>
-                        <span className="text-[10px] text-gray-400 uppercase">{post.mediaType}</span>
-                        <div className="flex items-center gap-2 text-[10px] text-gray-500">
-                          <span>❤ {formatNumber(post.likes)}</span>
-                          <span>💬 {formatNumber(post.comments)}</span>
+                        <span className="text-xs font-semibold text-purple-400 uppercase tracking-wider">{post.mediaType}</span>
+                        <div className="flex items-center gap-3 text-xs font-medium text-gray-600">
+                          <span className="flex items-center gap-1"><Heart className="h-3.5 w-3.5 text-red-400" />{formatNumber(post.likes)}</span>
+                          <span className="flex items-center gap-1"><MessageCircle className="h-3.5 w-3.5 text-blue-400" />{formatNumber(post.comments)}</span>
                         </div>
+                        <span className="text-lg font-bold text-purple-600">{post.engagementRate}% eng</span>
                       </div>
-                      <div className="absolute top-2 left-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 text-xs font-bold text-white shadow">
+                      <div className="absolute top-2 left-2 z-10 flex h-7 w-7 items-center justify-center rounded-full bg-amber-400 text-xs font-bold text-white shadow-md">
                         #{idx + 1}
+                      </div>
+                      {/* View on IG icon */}
+                      <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-purple-600 text-white shadow">
+                          <ExternalLink className="h-3 w-3" />
+                        </div>
                       </div>
                     </div>
                     <div className="p-3">
