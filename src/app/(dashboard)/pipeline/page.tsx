@@ -198,7 +198,7 @@ export default function PipelinePage() {
 
                         {/* Profile */}
                         <div className="flex items-center gap-3">
-                          <Avatar name={item.influencer.displayName || item.influencer.username} size="sm" />
+                          <Avatar name={item.influencer.displayName || item.influencer.username} size="sm" src={item.influencer.avatarUrl || undefined} />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-semibold text-gray-900">
                               {item.influencer.displayName || item.influencer.username}

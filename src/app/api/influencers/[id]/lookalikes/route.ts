@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { scrapeProfile, isApifyConfigured } from '@/lib/apify'
+import { scrapeProfile, isApifyConfigured, searchInstagramAccounts } from '@/lib/apify'
 import { Platform } from '@/generated/prisma/client'
 
 // ---------------------------------------------------------------------------
@@ -126,53 +126,95 @@ export async function GET(
     matchScore: calculateMatchScore(source, inf),
   }))
 
-  // 4. Strategy 2: If database has < 5 results AND Apify is configured
+  // 4. Strategy 2: If database has < 5 results AND Apify is configured,
+  //    search externally using keywords from the source influencer's bio/niche
   if (lookalikes.length < 5 && isApifyConfigured()) {
     try {
-      const scraped = await scrapeProfile(
-        source.username,
-        source.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
-      )
+      // Extract keywords from bio for search
+      const bio = source.bio || ''
+      const bioWords = bio
+        .replace(/[\n\r]/g, ' ')
+        .replace(/[^\w\sáéíóúñü]/gi, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 3)
+        .slice(0, 5)
+      const searchQuery = bioWords.length > 0
+        ? bioWords.join(' ')
+        : source.displayName || source.username
 
-      if (scraped) {
-        // Use scraped data to find/create related profiles in the database
-        // The scrapeProfile call itself may discover related profiles;
-        // we re-query the database after scraping to pick up any new entries.
-        const additionalResults = await prisma.influencer.findMany({
-          where: {
-            id: { notIn: [source.id, ...lookalikes.map((l) => l.id)] },
+      if (source.platform === 'INSTAGRAM') {
+        const searchResults = await searchInstagramAccounts(searchQuery, { limit: 20 })
+        const existingUsernames = new Set([source.username, ...lookalikes.map(l => l.username)])
+
+        for (const result of searchResults) {
+          if (lookalikes.length >= 12) break
+          if (!result.username || existingUsernames.has(result.username)) continue
+          if (minFollowers && result.followers > 0 && result.followers < minFollowers) continue
+          if (maxFollowers && result.followers > 0 && result.followers > maxFollowers) continue
+
+          existingUsernames.add(result.username)
+          lookalikes.push({
+            id: `ext_${result.username}`,
+            username: result.username,
+            displayName: result.displayName,
+            avatarUrl: result.avatarUrl,
             platform: source.platform,
-            followers: { gte: minFollowers, lte: maxFollowers },
-            engagementRate: { gte: minER, lte: maxER },
-          },
-          orderBy: {
-            followers: 'asc',
-          },
-          take: 10 - lookalikes.length,
-        })
-
-        additionalResults.sort(
-          (a, b) =>
-            Math.abs(a.followers - source.followers) -
-            Math.abs(b.followers - source.followers)
+            followers: result.followers,
+            engagementRate: 0,
+            avgLikes: 0,
+            avgComments: 0,
+            avgViews: 0,
+            email: null,
+            matchScore: calculateMatchScore(source, {
+              followers: result.followers,
+              engagementRate: 0,
+              platform: source.platform,
+              email: null,
+            }),
+          })
+        }
+      } else {
+        // For non-Instagram: try scraping the source profile to trigger DB re-query
+        const scraped = await scrapeProfile(
+          source.username,
+          source.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
         )
 
-        for (const inf of additionalResults) {
-          if (!lookalikes.find((l) => l.id === inf.id)) {
-            lookalikes.push({
-              id: inf.id,
-              username: inf.username,
-              displayName: inf.displayName,
-              avatarUrl: inf.avatarUrl,
-              platform: inf.platform,
-              followers: inf.followers,
-              engagementRate: inf.engagementRate,
-              avgLikes: inf.avgLikes,
-              avgComments: inf.avgComments,
-              avgViews: inf.avgViews,
-              email: inf.email,
-              matchScore: calculateMatchScore(source, inf),
-            })
+        if (scraped) {
+          const additionalResults = await prisma.influencer.findMany({
+            where: {
+              id: { notIn: [source.id, ...lookalikes.map((l) => l.id)] },
+              platform: source.platform,
+              followers: { gte: minFollowers, lte: maxFollowers },
+              engagementRate: { gte: minER, lte: maxER },
+            },
+            orderBy: { followers: 'asc' },
+            take: 10 - lookalikes.length,
+          })
+
+          additionalResults.sort(
+            (a, b) =>
+              Math.abs(a.followers - source.followers) -
+              Math.abs(b.followers - source.followers)
+          )
+
+          for (const inf of additionalResults) {
+            if (!lookalikes.find((l) => l.id === inf.id)) {
+              lookalikes.push({
+                id: inf.id,
+                username: inf.username,
+                displayName: inf.displayName,
+                avatarUrl: inf.avatarUrl,
+                platform: inf.platform,
+                followers: inf.followers,
+                engagementRate: inf.engagementRate,
+                avgLikes: inf.avgLikes,
+                avgComments: inf.avgComments,
+                avgViews: inf.avgViews,
+                email: inf.email,
+                matchScore: calculateMatchScore(source, inf),
+              })
+            }
           }
         }
       }

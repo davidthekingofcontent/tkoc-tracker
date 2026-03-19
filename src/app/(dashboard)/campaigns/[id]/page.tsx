@@ -21,6 +21,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { formatNumber } from '@/lib/utils'
 import { useI18n } from '@/i18n/context'
 import { calculateCPM, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
+import { InfoTooltip } from '@/components/ui/info-tooltip'
 import {
   ArrowLeft,
   Users,
@@ -854,7 +855,7 @@ export default function CampaignDetailPage() {
                   />
                   <StatCard
                     icon={<BarChart3 className="h-5 w-5" />}
-                    label={t.campaignDetail.engagementRate}
+                    label={<span className="flex items-center gap-1">{t.campaignDetail.engagementRate} <InfoTooltip text={locale === 'es' ? 'Calculado como (likes + comentarios + shares + saves) / alcance × 100' : 'Calculated as (likes + comments + shares + saves) / reach × 100'} /></span>}
                     value={`${overview.engagementRate}%`}
                   />
                   <StatCard
@@ -874,12 +875,12 @@ export default function CampaignDetailPage() {
               {overview && (overview.emvBasic > 0 || overview.emvExtended > 0) && (
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                   <div className="rounded-xl border-2 border-green-200 bg-gradient-to-br from-green-50 to-emerald-50 p-5 shadow-sm">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-green-600">EMV {locale === 'es' ? 'Basico' : 'Basic'}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-green-600 flex items-center gap-1">EMV {locale === 'es' ? 'Basico' : 'Basic'} <InfoTooltip text={locale === 'es' ? 'Valor estimado basado únicamente en el alcance (impresiones / 1.000 × CPM del sector).' : 'Estimated value based on reach only (impressions / 1,000 × industry CPM).'} /></p>
                     <p className="mt-1 text-2xl font-bold text-green-700">${formatNumber(Math.round(overview.emvBasic || 0))}</p>
                     <p className="mt-1 text-xs text-green-500">{locale === 'es' ? 'Solo alcance' : 'Reach only'}</p>
                   </div>
                   <div className="rounded-xl border-2 border-purple-200 bg-gradient-to-br from-purple-50 to-indigo-50 p-5 shadow-sm">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-purple-600">EMV {locale === 'es' ? 'Ampliado' : 'Extended'}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-purple-600 flex items-center gap-1">EMV {locale === 'es' ? 'Ampliado' : 'Extended'} <InfoTooltip text={locale === 'es' ? 'Incluye alcance + clics + engagement (likes, comentarios, shares, saves). Fórmula TKOC personalizada.' : 'Includes reach + clicks + engagement (likes, comments, shares, saves). Custom TKOC formula.'} /></p>
                     <p className="mt-1 text-2xl font-bold text-purple-700">${formatNumber(Math.round(overview.emvExtended || 0))}</p>
                     <p className="mt-1 text-xs text-purple-500">{locale === 'es' ? 'Alcance + engagement' : 'Reach + engagement'}</p>
                   </div>
@@ -988,7 +989,7 @@ export default function CampaignDetailPage() {
 
                       {/* Influencer Tiers */}
                       <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-                        <h3 className="mb-4 text-sm font-semibold text-gray-700">{t.campaignDetail.influencerTiers || 'Influencer Tiers'}</h3>
+                        <h3 className="mb-4 text-sm font-semibold text-gray-700 flex items-center gap-1">{t.campaignDetail.influencerTiers || 'Influencer Tiers'} <InfoTooltip text={locale === 'es' ? 'Micro: <10K seguidores | Mid: 10K-100K | Macro: 100K-1M | Mega: >1M' : 'Micro: <10K followers | Mid: 10K-100K | Macro: 100K-1M | Mega: >1M'} /></h3>
                         <div className="space-y-3">
                           {([
                             { key: 'mega', label: 'Mega (1M+)', count: tiers.mega },
@@ -1150,7 +1151,7 @@ export default function CampaignDetailPage() {
                           <TableRow key={ci.id}>
                             <TableCell>
                               <div className="flex items-center gap-3">
-                                <Avatar name={ci.influencer.displayName || ci.influencer.username} size="sm" />
+                                <Avatar name={ci.influencer.displayName || ci.influencer.username} size="sm" src={ci.influencer.avatarUrl || undefined} />
                                 <div>
                                   <p className="font-medium text-gray-900">
                                     {ci.influencer.displayName || ci.influencer.username}
@@ -1292,7 +1293,7 @@ export default function CampaignDetailPage() {
                     </div>
                     <div className="p-4">
                       <div className="flex items-center gap-2">
-                        <Avatar name={m.influencer?.displayName || m.influencer?.username || '?'} size="sm" />
+                        <Avatar name={m.influencer?.displayName || m.influencer?.username || '?'} size="sm" src={m.influencer?.avatarUrl || undefined} />
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-gray-900">
                             {m.influencer?.displayName || m.influencer?.username || 'Unknown'}
@@ -1441,7 +1442,7 @@ export default function CampaignDetailPage() {
                         {/* Creator info */}
                         <div className="p-3">
                           <div className="flex items-center gap-2">
-                            <Avatar name={story.influencer?.displayName || story.influencer?.username || '?'} size="sm" />
+                            <Avatar name={story.influencer?.displayName || story.influencer?.username || '?'} size="sm" src={story.influencer?.avatarUrl || undefined} />
                             <div className="min-w-0">
                               <p className="truncate text-xs font-medium text-gray-900">
                                 @{story.influencer?.username || 'unknown'}
@@ -1579,7 +1580,7 @@ export default function CampaignDetailPage() {
                           <div className="flex items-start gap-4">
                             {/* Profile */}
                             <div className="flex items-center gap-3 min-w-[200px]">
-                              <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" />
+                              <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={ci.influencer.avatarUrl || undefined} />
                               <div>
                                 <p className="font-semibold text-gray-900">{ci.influencer.displayName || ci.influencer.username}</p>
                                 <p className="text-xs text-gray-500">@{ci.influencer.username}</p>
@@ -1650,7 +1651,7 @@ export default function CampaignDetailPage() {
 
                             {/* CPM Real */}
                             <div>
-                              <p className="text-[10px] uppercase tracking-wider text-gray-400">CPM Real</p>
+                              <p className="text-[10px] uppercase tracking-wider text-gray-400 flex items-center gap-1">CPM Real <InfoTooltip text={locale === 'es' ? 'Coste por mil visualizaciones = (Fee / Avg Views) × 1.000' : 'Cost per thousand views = (Fee / Avg Views) × 1,000'} /></p>
                               <p className="text-sm font-bold text-gray-900">
                                 {cpm.cpmReal !== null ? `€${cpm.cpmReal.toFixed(2)}` : '—'}
                               </p>

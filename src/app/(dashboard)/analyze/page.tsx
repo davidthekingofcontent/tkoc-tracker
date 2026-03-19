@@ -50,6 +50,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { formatNumber } from '@/lib/utils'
 import { AddToModal } from '@/components/add-to-modal'
 import { calculateCPM, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
+import { InfoTooltip } from '@/components/ui/info-tooltip'
 
 interface AnalyzedProfile {
   id: string
@@ -572,7 +573,7 @@ export default function AnalyzePage() {
 
                 <div className="grid grid-cols-3 gap-4 mb-4">
                   <div className="text-center">
-                    <p className="text-xs text-gray-400 mb-0.5">Engagement</p>
+                    <p className="text-xs text-gray-400 mb-0.5 flex items-center justify-center gap-1">Engagement <InfoTooltip text={locale === 'es' ? 'Calculado como (avg likes + avg comentarios) / seguidores × 100' : 'Calculated as (avg likes + avg comments) / followers × 100'} /></p>
                     <p className="text-2xl font-bold text-gray-900">{profile.engagementRate}<span className="text-base text-gray-400">%</span></p>
                   </div>
                   <div className="text-center">
@@ -694,6 +695,7 @@ export default function AnalyzePage() {
                       <Target className="h-4 w-4 text-purple-500" />
                       <h3 className="text-sm font-semibold text-gray-900">{t.analyze.rateCard}</h3>
                       <span className="text-xs text-gray-400">{t.analyze.rateCardDesc}</span>
+                      <InfoTooltip text={locale === 'es' ? 'Evalúa precios comparando el CPM real con benchmarks del sector por tamaño de audiencia.' : 'Evaluates pricing by comparing actual CPM with industry benchmarks by audience size.'} />
                     </div>
 
                     {/* Fee input */}
@@ -921,7 +923,7 @@ export default function AnalyzePage() {
             <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-4">
               <div className="flex items-center gap-2 mb-1">
                 <Shield className="h-4 w-4 text-emerald-500" />
-                <span className="text-xs text-gray-400 font-medium">{t.analyze.audienceQuality}</span>
+                <span className="text-xs text-gray-400 font-medium flex items-center gap-1">{t.analyze.audienceQuality} <InfoTooltip text={locale === 'es' ? 'Alta: engagement >3% | Media: 1-3% | Baja: <1%. Basado en el ratio de interacción respecto a seguidores.' : 'High: engagement >3% | Medium: 1-3% | Low: <1%. Based on interaction ratio to followers.'} /></span>
               </div>
               <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-sm font-bold ${qualityColor(insights.audienceQuality)}`}>
                 {qualityLabel(insights.audienceQuality)}
@@ -930,7 +932,7 @@ export default function AnalyzePage() {
             <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-4">
               <div className="flex items-center gap-2 mb-1">
                 {trendIcon(insights.engagementAnalysis.engagementTrend)}
-                <span className="text-xs text-gray-400 font-medium">{t.analyze.engagementTrend}</span>
+                <span className="text-xs text-gray-400 font-medium flex items-center gap-1">{t.analyze.engagementTrend} <InfoTooltip text={locale === 'es' ? 'Tendencia calculada comparando el engagement de los últimos 5 posts con los 5 anteriores.' : 'Trend calculated by comparing engagement of the last 5 posts vs the previous 5.'} /></span>
               </div>
               <p className="text-lg font-bold text-gray-900">{trendLabel(insights.engagementAnalysis.engagementTrend)}</p>
               {/* Mini sparkline */}

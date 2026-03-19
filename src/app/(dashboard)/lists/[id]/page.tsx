@@ -210,7 +210,7 @@ export default function ListDetailPage() {
                 <TableRow key={item.id}>
                   <TableCell>
                     <div className="flex items-center gap-3">
-                      <Avatar name={item.influencer.displayName || item.influencer.username} size="sm" />
+                      <Avatar name={item.influencer.displayName || item.influencer.username} size="sm" src={item.influencer.avatarUrl || undefined} />
                       <div>
                         <p className="font-medium text-gray-900">
                           @{item.influencer.username}

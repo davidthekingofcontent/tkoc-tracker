@@ -5,6 +5,7 @@ import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { formatNumber } from "@/lib/utils"
 import { useI18n } from '@/i18n/context'
+import { InfoTooltip } from '@/components/ui/info-tooltip'
 import {
   Megaphone,
   UserSearch,
@@ -35,7 +36,7 @@ interface RecentCampaign {
 }
 
 export default function DashboardPage() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [greeting, setGreeting] = useState("")
   const [userName, setUserName] = useState("there")
   const [isLoading, setIsLoading] = useState(true)
@@ -110,10 +111,10 @@ export default function DashboardPage() {
 
   const statCards = stats
     ? [
-        { label: t.dashboard.activeCampaigns, value: stats.activeCampaigns, icon: Megaphone, format: "number" },
-        { label: t.dashboard.totalInfluencers, value: stats.totalInfluencers, icon: Users, format: "number" },
-        { label: t.dashboard.totalReach, value: stats.totalReach, icon: TrendingUp, format: "number" },
-        { label: t.dashboard.avgEngagement, value: stats.avgEngagementRate, icon: BarChart3, format: "percent" },
+        { label: t.dashboard.activeCampaigns, value: stats.activeCampaigns, icon: Megaphone, format: "number", tooltip: "" },
+        { label: t.dashboard.totalInfluencers, value: stats.totalInfluencers, icon: Users, format: "number", tooltip: "" },
+        { label: t.dashboard.totalReach, value: stats.totalReach, icon: TrendingUp, format: "number", tooltip: locale === 'es' ? 'Suma de seguidores de todos los influencers únicos en tus campañas.' : 'Sum of followers from all unique influencers in your campaigns.' },
+        { label: t.dashboard.avgEngagement, value: stats.avgEngagementRate, icon: BarChart3, format: "percent", tooltip: locale === 'es' ? 'Media del engagement rate de todos los influencers en tus campañas.' : 'Average engagement rate across all influencers in your campaigns.' },
       ]
     : []
 
@@ -173,7 +174,7 @@ export default function DashboardPage() {
                 className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm"
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-500">{stat.label}</span>
+                  <span className="text-sm text-gray-500 flex items-center gap-1">{stat.label}{stat.tooltip && <InfoTooltip text={stat.tooltip} />}</span>
                   <stat.icon className="h-4 w-4 text-gray-400" />
                 </div>
                 <p className="mt-2 text-2xl font-bold text-gray-900">

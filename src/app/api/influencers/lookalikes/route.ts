@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/db'
-import { isApifyConfigured, scrapeProfile } from '@/lib/apify'
+import { isApifyConfigured, scrapeProfile, searchInstagramAccounts } from '@/lib/apify'
 
 function calculateMatchScore(
   source: { followers: number; engagementRate: number; platform: string },
@@ -150,6 +150,53 @@ export async function GET(request: NextRequest) {
       }))
       .sort((a, b) => b.matchScore - a.matchScore)
       .slice(0, 12)
+
+    // If fewer than 5 results, try external Apify search using bio keywords
+    if (lookalikes.length < 5 && isApifyConfigured() && platform === 'INSTAGRAM' && source) {
+      try {
+        const bio = source.bio || ''
+        const bioWords = bio
+          .replace(/[\n\r]/g, ' ')
+          .replace(/[^\w\sáéíóúñü]/gi, ' ')
+          .split(/\s+/)
+          .filter((w: string) => w.length > 3)
+          .slice(0, 5)
+        const searchQuery = bioWords.length > 0
+          ? bioWords.join(' ')
+          : source.displayName || source.username
+
+        const searchResults = await searchInstagramAccounts(searchQuery, { limit: 20 })
+        const existingUsernames = new Set([source.username, ...lookalikes.map(l => l.username)])
+        const minF = Math.floor(sourceFollowers * 0.2)
+        const maxF = Math.ceil(sourceFollowers * 5)
+
+        for (const result of searchResults) {
+          if (lookalikes.length >= 12) break
+          if (!result.username || existingUsernames.has(result.username)) continue
+          if (result.followers > 0 && (result.followers < minF || result.followers > maxF)) continue
+
+          existingUsernames.add(result.username)
+          lookalikes.push({
+            username: result.username,
+            displayName: result.displayName || result.username,
+            platform,
+            followers: result.followers,
+            engagementRate: 0,
+            matchScore: calculateMatchScore(
+              { followers: sourceFollowers, engagementRate: sourceER, platform },
+              { followers: result.followers, engagementRate: 0, platform, email: null }
+            ),
+            bio: result.bio || '',
+            avatarUrl: result.avatarUrl,
+            profileUrl: `https://instagram.com/${result.username}`,
+          })
+        }
+
+        lookalikes.sort((a, b) => b.matchScore - a.matchScore)
+      } catch (err) {
+        console.error('Lookalikes external search error:', err)
+      }
+    }
 
     return NextResponse.json({
       lookalikes,

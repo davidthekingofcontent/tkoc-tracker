@@ -162,7 +162,7 @@ export default function ContactsPage() {
                   <TableRow key={contact.id}>
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        <Avatar name={contact.influencer.displayName || contact.influencer.username} size="sm" />
+                        <Avatar name={contact.influencer.displayName || contact.influencer.username} size="sm" src={contact.influencer.avatarUrl || undefined} />
                         <div>
                           <p className="font-medium text-gray-900">@{contact.influencer.username}</p>
                           <p className="text-xs text-gray-500">{contact.influencer.displayName}</p>

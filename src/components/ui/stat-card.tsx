@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 
 interface StatCardProps extends React.HTMLAttributes<HTMLDivElement> {
   icon?: React.ReactNode
-  label: string
+  label: React.ReactNode
   value: string | number
   trend?: {
     value: number

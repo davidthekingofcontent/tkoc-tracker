@@ -434,7 +434,7 @@ async function scrapeTikTokProfile(username: string): Promise<ScrapedProfile | n
   const avgComments = Math.round(totalComments / postCount)
   const avgViews = Math.round(totalViews / postCount)
   const engagementRate = followers > 0
-    ? parseFloat(((((totalLikes + totalComments + totalShares) / postCount) / followers) * 100).toFixed(2))
+    ? parseFloat(((((totalLikes + totalComments) / postCount) / followers) * 100).toFixed(2))
     : 0
 
   const bio = (authorMeta.signature as string) || (authorMeta.bio as string) || ''
@@ -678,6 +678,51 @@ export async function scrapeStories(usernames: string[], platform: 'INSTAGRAM' |
 }
 
 // ============ PUBLIC API ============
+
+// ============ INSTAGRAM SEARCH (for Discovery & Lookalikes) ============
+
+export interface InstagramSearchResult {
+  username: string
+  displayName: string | null
+  avatarUrl: string | null
+  followers: number
+  bio: string | null
+  isVerified: boolean
+}
+
+/**
+ * Search Instagram for accounts matching a query (keyword, category, or name).
+ * Uses the apify~instagram-search actor.
+ * Returns an array of profile summaries.
+ */
+export async function searchInstagramAccounts(
+  query: string,
+  options?: { limit?: number }
+): Promise<InstagramSearchResult[]> {
+  const limit = options?.limit || 20
+
+  try {
+    const items = await runActor('apify~instagram-search', {
+      search: query,
+      resultsLimit: limit,
+      searchType: 'user',
+    })
+
+    if (!items || items.length === 0) return []
+
+    return items.map((item: Record<string, unknown>) => ({
+      username: (item.username as string) || (item.login as string) || '',
+      displayName: (item.fullName as string) || (item.full_name as string) || null,
+      avatarUrl: (item.profilePicUrl as string) || (item.profile_pic_url as string) || null,
+      followers: (item.followersCount as number) || (item.follower_count as number) || 0,
+      bio: (item.biography as string) || (item.bio as string) || null,
+      isVerified: (item.isVerified as boolean) || (item.is_verified as boolean) || false,
+    })).filter((r: InstagramSearchResult) => r.username)
+  } catch (err) {
+    console.error('[Apify] Instagram search error:', err)
+    return []
+  }
+}
 
 export async function scrapeProfile(username: string, platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<ScrapedProfile | null> {
   switch (platform) {
