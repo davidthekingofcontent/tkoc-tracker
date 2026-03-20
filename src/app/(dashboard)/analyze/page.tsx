@@ -53,6 +53,8 @@ import { AddToModal } from '@/components/add-to-modal'
 import { calculateCPM, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 
+import { proxyImg } from '@/lib/proxy-image'
+
 interface AnalyzedProfile {
   id: string
   username: string
@@ -865,7 +867,7 @@ export default function AnalyzePage() {
                       {(media.thumbnailUrl || media.mediaUrl) && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={(media.thumbnailUrl || media.mediaUrl) as string}
+                          src={proxyImg(media.thumbnailUrl || media.mediaUrl)}
                           alt={media.caption || ''}
                           className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-transform duration-200"
                           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
@@ -1153,7 +1155,7 @@ export default function AnalyzePage() {
                       {(post.thumbnailUrl || post.mediaUrl) && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={(post.thumbnailUrl || post.mediaUrl) as string}
+                          src={proxyImg(post.thumbnailUrl || post.mediaUrl)}
                           alt=""
                           className="absolute inset-0 z-[1] h-full w-full object-cover group-hover:scale-105 transition-transform"
                           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}

@@ -26,6 +26,7 @@ import { CampaignNotesButton } from '@/components/campaign-notes'
 import { InfluencerHistoryButton } from '@/components/influencer-history'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
 import { StoriesTracker } from '@/components/stories-tracker'
+import { proxyImg } from '@/lib/proxy-image'
 import {
   ArrowLeft,
   Users,
@@ -1748,7 +1749,7 @@ export default function CampaignDetailPage() {
                       {m.thumbnailUrl ? (
                         <>
                           <img
-                            src={m.thumbnailUrl}
+                            src={proxyImg(m.thumbnailUrl)}
                             alt={m.caption || 'Media'}
                             className="h-full w-full object-cover"
                             onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; (e.currentTarget.nextElementSibling as HTMLElement)?.classList.remove('hidden') }}
@@ -1910,7 +1911,7 @@ export default function CampaignDetailPage() {
                         <div className="relative aspect-[9/16] overflow-hidden rounded-t-xl bg-gray-100">
                           {story.thumbnailUrl ? (
                             <img
-                              src={story.thumbnailUrl}
+                              src={proxyImg(story.thumbnailUrl)}
                               alt="Story"
                               className="h-full w-full object-cover"
                               onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
