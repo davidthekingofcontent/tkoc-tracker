@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -76,12 +76,48 @@ const platformBadge = (platform: string) => {
   }
 }
 
+function getNestedValue(obj: ListInfluencer, field: string): number {
+  switch (field) {
+    case 'followers': return obj.influencer.followers || 0
+    case 'engagementRate': return obj.influencer.engagementRate || 0
+    case 'avgLikes': return obj.influencer.avgLikes || 0
+    case 'avgComments': return obj.influencer.avgComments || 0
+    case 'avgViews': return obj.influencer.avgViews || 0
+    default: return 0
+  }
+}
+
 export default function ListDetailPage() {
   const params = useParams()
   const { t } = useI18n()
   const listId = params.id as string
   const [list, setList] = useState<ListData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [sortField, setSortField] = useState<string>('followers')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  function toggleSort(field: string) {
+    if (sortField === field) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortDir('desc')
+    }
+  }
+
+  function SortHeader({ label, field }: { label: string; field: string }) {
+    return (
+      <button
+        onClick={() => toggleSort(field)}
+        className="flex items-center gap-1 text-xs font-semibold text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+      >
+        {label}
+        {sortField === field && (
+          <span className="text-purple-600">{sortDir === 'asc' ? '↑' : '↓'}</span>
+        )}
+      </button>
+    )
+  }
 
   async function fetchList() {
     try {
@@ -135,6 +171,14 @@ export default function ListDetailPage() {
   const items = list.items || []
   const combinedReach = items.reduce((sum, i) => sum + (i.influencer.followers || 0), 0)
   const withEmail = items.filter((i) => i.influencer.email).length
+
+  const sortedItems = useMemo(() => {
+    return [...items].sort((a, b) => {
+      const aVal = getNestedValue(a, sortField)
+      const bVal = getNestedValue(b, sortField)
+      return sortDir === 'asc' ? aVal - bVal : bVal - aVal
+    })
+  }, [items, sortField, sortDir])
 
   return (
     <div className="space-y-6">
@@ -190,23 +234,23 @@ export default function ListDetailPage() {
             <TableRow>
               <TableHead>{t.common.name}</TableHead>
               <TableHead>{t.campaigns.platform}</TableHead>
-              <TableHead>{t.campaigns.followers}</TableHead>
-              <TableHead>{t.campaigns.engagement}</TableHead>
-              <TableHead>{t.listDetail.avgLikes}</TableHead>
+              <TableHead><SortHeader label={t.campaigns.followers} field="followers" /></TableHead>
+              <TableHead><SortHeader label={t.campaigns.engagement} field="engagementRate" /></TableHead>
+              <TableHead><SortHeader label={t.listDetail.avgLikes} field="avgLikes" /></TableHead>
               <TableHead>{t.listDetail.location}</TableHead>
               <TableHead>{t.common.email}</TableHead>
               <TableHead className="text-right">{t.common.actions}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {items.length === 0 ? (
+            {sortedItems.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={8} className="py-12 text-center text-gray-500">
                   {t.common.noResults}
                 </TableCell>
               </TableRow>
             ) : (
-              items.map((item) => (
+              sortedItems.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell>
                     <div className="flex items-center gap-3">

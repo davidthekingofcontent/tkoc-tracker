@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import {
   Search,
   RotateCcw,
@@ -63,8 +63,45 @@ function getProfileUrl(username: string, platform: string) {
   }
 }
 
+function getDiscoverValue(obj: DiscoverResult, field: string): number {
+  switch (field) {
+    case 'followers': return obj.followers || 0
+    case 'engagementRate': return obj.engagementRate || 0
+    case 'avgLikes': return obj.avgLikes || 0
+    case 'avgComments': return obj.avgComments || 0
+    case 'avgViews': return obj.avgViews || 0
+    default: return 0
+  }
+}
+
 export default function DiscoverPage() {
   const { t } = useI18n()
+  const [sortField, setSortField] = useState<string>('followers')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  function toggleSort(field: string) {
+    if (sortField === field) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortDir('desc')
+    }
+  }
+
+  function SortHeader({ label, field }: { label: string; field: string }) {
+    return (
+      <button
+        onClick={() => toggleSort(field)}
+        className="flex items-center gap-1 text-xs font-semibold text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+      >
+        {label}
+        {sortField === field && (
+          <span className="text-purple-600">{sortDir === 'asc' ? '↑' : '↓'}</span>
+        )}
+      </button>
+    )
+  }
+
   const [filters, setFilters] = useState({
     platform: '',
     search: '',
@@ -111,6 +148,14 @@ export default function DiscoverPage() {
     setHasSearched(false)
     setResults([])
   }
+
+  const sortedResults = useMemo(() => {
+    return [...results].sort((a, b) => {
+      const aVal = getDiscoverValue(a, sortField)
+      const bVal = getDiscoverValue(b, sortField)
+      return sortDir === 'asc' ? aVal - bVal : bVal - aVal
+    })
+  }, [results, sortField, sortDir])
 
   const handleAddToList = async (listId: string) => {
     if (!addToListModal) return
@@ -358,17 +403,17 @@ export default function DiscoverPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t.analyze.username}</TableHead>
-                      <TableHead>{t.campaigns.followers}</TableHead>
-                      <TableHead>{t.discover.engRate}</TableHead>
-                      <TableHead>{t.discover.mdnLikes}</TableHead>
-                      <TableHead>{t.discover.mdnComments}</TableHead>
-                      <TableHead>{t.discover.mdnViews}</TableHead>
+                      <TableHead><SortHeader label={t.campaigns.followers} field="followers" /></TableHead>
+                      <TableHead><SortHeader label={t.discover.engRate} field="engagementRate" /></TableHead>
+                      <TableHead><SortHeader label={t.discover.mdnLikes} field="avgLikes" /></TableHead>
+                      <TableHead><SortHeader label={t.discover.mdnComments} field="avgComments" /></TableHead>
+                      <TableHead><SortHeader label={t.discover.mdnViews} field="avgViews" /></TableHead>
                       <TableHead>{t.common.email}</TableHead>
                       <TableHead className="text-right"></TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {results.map((item) => (
+                    {sortedResults.map((item) => (
                       <TableRow key={`${item.platform}-${item.username}`} className="group">
                         <TableCell>
                           <div className="flex items-center gap-3">

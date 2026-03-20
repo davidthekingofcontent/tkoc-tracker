@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { scrapeHashtag, scrapeStories, isApifyConfigured } from '@/lib/apify'
+import { scrapeHashtag, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
 
 export interface CronTrackingResults {
   campaignsProcessed: number
@@ -86,6 +86,45 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
                     ...(result.authorFollowers > 0 && { followers: result.authorFollowers }),
                   },
                 })
+
+                // Country filtering
+                if (campaign.country) {
+                  let influencerCountry = influencer.country
+
+                  // If no country in DB, try to use authorCountry from hashtag result
+                  if (!influencerCountry && result.authorCountry) {
+                    influencerCountry = result.authorCountry
+                    await prisma.influencer.update({
+                      where: { id: influencer.id },
+                      data: { country: result.authorCountry },
+                    })
+                  }
+
+                  // If still no country, try lightweight detection from post data
+                  if (!influencerCountry) {
+                    const postData = result.posts[0]
+                    if (postData) {
+                      const postAsAny = postData as unknown as Record<string, unknown>
+                      const detectedFromPost = detectCountry({
+                        locationName: (postAsAny.locationName as string) || '',
+                        location: (postAsAny.location as string) || '',
+                        biography: postData.caption || '',
+                      })
+                      if (detectedFromPost) {
+                        influencerCountry = detectedFromPost
+                        await prisma.influencer.update({
+                          where: { id: influencer.id },
+                          data: { country: detectedFromPost },
+                        })
+                      }
+                    }
+                  }
+
+                  // If we know the country and it doesn't match, skip
+                  if (influencerCountry && influencerCountry !== campaign.country) {
+                    continue
+                  }
+                }
 
                 await prisma.campaignInfluencer.upsert({
                   where: {

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import {
   Search,
   Plus,
@@ -62,11 +62,44 @@ const platformBadge = (platform: string) => {
   }
 }
 
+function getContactValue(obj: ContactData, field: string): number {
+  switch (field) {
+    case 'followers': return obj.influencer.followers || 0
+    case 'engagementRate': return obj.influencer.engagementRate || 0
+    default: return 0
+  }
+}
+
 export default function ContactsPage() {
   const { t } = useI18n()
   const [contacts, setContacts] = useState<ContactData[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [sortField, setSortField] = useState<string>('followers')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  function toggleSort(field: string) {
+    if (sortField === field) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortDir('desc')
+    }
+  }
+
+  function SortHeader({ label, field }: { label: string; field: string }) {
+    return (
+      <button
+        onClick={() => toggleSort(field)}
+        className="flex items-center gap-1 text-xs font-semibold text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+      >
+        {label}
+        {sortField === field && (
+          <span className="text-purple-600">{sortDir === 'asc' ? '↑' : '↓'}</span>
+        )}
+      </button>
+    )
+  }
 
   useEffect(() => {
     async function fetchContacts() {
@@ -91,6 +124,14 @@ export default function ContactsPage() {
       c.influencer.username.toLowerCase().includes(search.toLowerCase()) ||
       (c.influencer.email || '').toLowerCase().includes(search.toLowerCase())
   )
+
+  const sortedFiltered = useMemo(() => {
+    return [...filtered].sort((a, b) => {
+      const aVal = getContactValue(a, sortField)
+      const bVal = getContactValue(b, sortField)
+      return sortDir === 'asc' ? aVal - bVal : bVal - aVal
+    })
+  }, [filtered, sortField, sortDir])
 
   return (
     <div className="space-y-6">
@@ -140,8 +181,8 @@ export default function ContactsPage() {
               <TableRow>
                 <TableHead>{t.contacts.title}</TableHead>
                 <TableHead>{t.campaigns.platform}</TableHead>
-                <TableHead>{t.campaigns.followers}</TableHead>
-                <TableHead>{t.campaigns.engagement}</TableHead>
+                <TableHead><SortHeader label={t.campaigns.followers} field="followers" /></TableHead>
+                <TableHead><SortHeader label={t.campaigns.engagement} field="engagementRate" /></TableHead>
                 <TableHead>{t.common.email}</TableHead>
                 <TableHead>{t.contacts.phone}</TableHead>
                 <TableHead>{t.common.status}</TableHead>
@@ -149,7 +190,7 @@ export default function ContactsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.length === 0 ? (
+              {sortedFiltered.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8} className="py-12 text-center text-gray-500">
                     {contacts.length === 0
@@ -158,7 +199,7 @@ export default function ContactsPage() {
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((contact) => (
+                sortedFiltered.map((contact) => (
                   <TableRow key={contact.id}>
                     <TableCell>
                       <div className="flex items-center gap-3">

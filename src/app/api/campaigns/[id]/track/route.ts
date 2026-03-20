@@ -107,7 +107,16 @@ export async function POST(
                 // Try to detect country from the influencer's existing DB data
                 let influencerCountry = influencer.country
 
-                // If no country in DB yet, try to detect from a quick profile scrape
+                // If no country in DB, first try authorCountry from hashtag result (lightweight)
+                if (!influencerCountry && result.authorCountry) {
+                  influencerCountry = result.authorCountry
+                  await prisma.influencer.update({
+                    where: { id: influencer.id },
+                    data: { country: result.authorCountry },
+                  })
+                }
+
+                // If still no country, fall back to profile scrape
                 if (!influencerCountry) {
                   try {
                     const profileData = await scrapeProfile(

@@ -583,6 +583,7 @@ export interface HashtagResult {
   authorDisplayName: string | null
   authorAvatarUrl: string | null
   authorFollowers: number
+  authorCountry?: string | null
 }
 
 async function scrapeInstagramHashtag(hashtag: string, maxPosts = 20): Promise<HashtagResult[]> {
@@ -600,6 +601,15 @@ async function scrapeInstagramHashtag(hashtag: string, maxPosts = 20): Promise<H
     const caption = (post.caption as string) || ''
     const hashtags = caption.match(/#\w+/g) || []
     const mentions = caption.match(/@\w+/g) || []
+
+    // Extract location data from post for country detection
+    const locationName = (post.locationName as string) || ''
+    const ownerBio = (post.ownerBiography as string) || ''
+    const authorCountry = detectCountry({
+      locationName,
+      location: locationName,
+      biography: ownerBio,
+    })
 
     return {
       posts: [{
@@ -622,6 +632,7 @@ async function scrapeInstagramHashtag(hashtag: string, maxPosts = 20): Promise<H
       authorDisplayName: (post.ownerFullName as string) || null,
       authorAvatarUrl: null,
       authorFollowers: 0,
+      authorCountry,
     }
   })
 }
