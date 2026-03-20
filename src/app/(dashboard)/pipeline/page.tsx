@@ -67,6 +67,7 @@ export default function PipelinePage() {
     NEGOTIATING: t.pipeline?.negotiating || 'Negotiating',
     AGREED: t.pipeline?.agreed || 'Agreed',
     CONTRACTED: t.pipeline?.contracted || 'Contracted',
+    SHIPPING: locale === 'es' ? 'Envío' : 'Shipping',
     POSTED: t.pipeline?.posted || 'Posted',
     COMPLETED: t.pipeline?.completed || 'Completed',
   }

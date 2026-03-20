@@ -55,6 +55,10 @@ import {
   Link2,
   ExternalLink,
   Package,
+  Truck,
+  FileText,
+  Paperclip,
+  ChevronRight,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -65,6 +69,17 @@ interface CampaignInfluencer {
   status: string
   portfolioUrl: string | null
   contentDelivered: boolean
+  shippingName: string | null
+  shippingAddress1: string | null
+  shippingAddress2: string | null
+  shippingCity: string | null
+  shippingPostCode: string | null
+  shippingCountry: string | null
+  shippingPhone: string | null
+  shippingEmail: string | null
+  shippingProduct: string | null
+  shippingQty: number | null
+  shippingComments: string | null
   influencer: {
     id: string
     username: string
@@ -113,6 +128,8 @@ interface CampaignData {
   startDate: string | null
   endDate: string | null
   country: string | null
+  briefText: string | null
+  briefFiles: string[]
   influencers: CampaignInfluencer[]
   media: CampaignMedia[]
 }
@@ -315,6 +332,16 @@ export default function CampaignDetailPage() {
     status: '',
   })
   const [isSaving, setIsSaving] = useState(false)
+
+  // Brief state
+  const [showBriefEditor, setShowBriefEditor] = useState(false)
+  const [briefText, setBriefText] = useState('')
+  const [isSavingBrief, setIsSavingBrief] = useState(false)
+
+  // Shipping modal
+  const [shippingModal, setShippingModal] = useState<string | null>(null) // influencerId
+  const [shippingForm, setShippingForm] = useState<Record<string, string>>({})
+  const [isSavingShipping, setIsSavingShipping] = useState(false)
 
   async function fetchCampaign() {
     try {
@@ -548,6 +575,64 @@ export default function CampaignDetailPage() {
       }
     } catch { /* ignore */ }
     setIsSaving(false)
+  }
+
+  async function handleSaveBrief() {
+    setIsSavingBrief(true)
+    try {
+      await fetch(`/api/campaigns/${campaignId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ briefText }),
+      })
+      await fetchCampaign()
+      setShowBriefEditor(false)
+    } catch { /* ignore */ }
+    setIsSavingBrief(false)
+  }
+
+  async function handleSaveShipping(influencerId: string) {
+    setIsSavingShipping(true)
+    try {
+      await fetch(`/api/campaigns/${campaignId}/influencers`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          influencerId,
+          shippingName: shippingForm.shippingName || '',
+          shippingAddress1: shippingForm.shippingAddress1 || '',
+          shippingAddress2: shippingForm.shippingAddress2 || '',
+          shippingCity: shippingForm.shippingCity || '',
+          shippingPostCode: shippingForm.shippingPostCode || '',
+          shippingCountry: shippingForm.shippingCountry || '',
+          shippingPhone: shippingForm.shippingPhone || '',
+          shippingEmail: shippingForm.shippingEmail || '',
+          shippingProduct: shippingForm.shippingProduct || '',
+          shippingQty: shippingForm.shippingQty || '1',
+          shippingComments: shippingForm.shippingComments || '',
+        }),
+      })
+      await fetchCampaign()
+      setShippingModal(null)
+    } catch { /* ignore */ }
+    setIsSavingShipping(false)
+  }
+
+  function openShippingModal(ci: CampaignInfluencer) {
+    setShippingForm({
+      shippingName: ci.shippingName || ci.influencer.displayName || ci.influencer.username || '',
+      shippingAddress1: ci.shippingAddress1 || '',
+      shippingAddress2: ci.shippingAddress2 || '',
+      shippingCity: ci.shippingCity || '',
+      shippingPostCode: ci.shippingPostCode || '',
+      shippingCountry: ci.shippingCountry || '',
+      shippingPhone: ci.shippingPhone || '',
+      shippingEmail: ci.shippingEmail || '',
+      shippingProduct: ci.shippingProduct || '',
+      shippingQty: ci.shippingQty?.toString() || '1',
+      shippingComments: ci.shippingComments || '',
+    })
+    setShippingModal(ci.influencer.id)
   }
 
   // Derived data (must be before any conditional returns to respect Rules of Hooks)
@@ -789,6 +874,72 @@ export default function CampaignDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Campaign Brief Section */}
+      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+        <button
+          onClick={() => {
+            if (!showBriefEditor) {
+              setBriefText(campaign.briefText || '')
+            }
+            setShowBriefEditor(!showBriefEditor)
+          }}
+          className="flex w-full items-center justify-between px-5 py-4 text-left hover:bg-gray-50 transition-colors rounded-xl"
+        >
+          <div className="flex items-center gap-3">
+            <FileText className="h-5 w-5 text-purple-600" />
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">
+                {locale === 'es' ? 'Brief de la Campaña' : 'Campaign Brief'}
+              </h3>
+              {campaign.briefText && !showBriefEditor && (
+                <p className="mt-0.5 text-xs text-gray-500 line-clamp-1">{campaign.briefText}</p>
+              )}
+              {!campaign.briefText && !showBriefEditor && (
+                <p className="mt-0.5 text-xs text-gray-400 italic">
+                  {locale === 'es' ? 'No hay brief todavía. Haz click para añadir.' : 'No brief yet. Click to add.'}
+                </p>
+              )}
+            </div>
+          </div>
+          <ChevronRight className={`h-4 w-4 text-gray-400 transition-transform ${showBriefEditor ? 'rotate-90' : ''}`} />
+        </button>
+
+        {showBriefEditor && (
+          <div className="border-t border-gray-200 px-5 py-4 space-y-3">
+            <textarea
+              value={briefText}
+              onChange={(e) => setBriefText(e.target.value)}
+              placeholder={locale === 'es'
+                ? 'Describe el objetivo de la campaña, requisitos de contenido, tono, hashtags, menciones obligatorias, fechas de entrega...'
+                : 'Describe the campaign objective, content requirements, tone, hashtags, mandatory mentions, delivery dates...'}
+              rows={6}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 resize-y"
+            />
+            {campaign.briefFiles && campaign.briefFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {campaign.briefFiles.map((file, i) => (
+                  <a key={i} href={file} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100">
+                    <Paperclip className="h-3 w-3" />
+                    {file.split('/').pop() || `File ${i + 1}`}
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setShowBriefEditor(false)}>
+                {t.common.cancel}
+              </Button>
+              <Button variant="primary" size="sm" onClick={handleSaveBrief} disabled={isSavingBrief}>
+                {isSavingBrief ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                {t.common.save}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Tabs */}
       <Tabs defaultValue={campaign.type === 'UGC' ? 'creators' : 'report'}>
@@ -2099,6 +2250,7 @@ export default function CampaignDetailPage() {
                               <option value="NEGOTIATING">{t.pipeline.negotiating}</option>
                               <option value="AGREED">{t.pipeline.agreed}</option>
                               <option value="CONTRACTED">{t.pipeline.contracted}</option>
+                              <option value="SHIPPING">{locale === 'es' ? 'Envío' : 'Shipping'}</option>
                               <option value="POSTED">{t.pipeline.posted}</option>
                               <option value="COMPLETED">{t.pipeline.completed}</option>
                             </select>
@@ -2126,6 +2278,7 @@ export default function CampaignDetailPage() {
                 { key: 'NEGOTIATING', label: t.pipeline.negotiating, color: 'amber' },
                 { key: 'AGREED', label: t.pipeline.agreed, color: 'purple' },
                 { key: 'CONTRACTED', label: t.pipeline.contracted, color: 'indigo' },
+                { key: 'SHIPPING', label: locale === 'es' ? 'Envío' : 'Shipping', color: 'orange' },
                 { key: 'POSTED', label: t.pipeline.posted, color: 'cyan' },
                 { key: 'COMPLETED', label: t.pipeline.completed, color: 'green' },
               ] as const).map((col) => {
@@ -2138,6 +2291,7 @@ export default function CampaignDetailPage() {
                   amber: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', headerBg: 'bg-amber-100', dot: 'bg-amber-400' },
                   purple: { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', headerBg: 'bg-purple-100', dot: 'bg-purple-400' },
                   indigo: { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', headerBg: 'bg-indigo-100', dot: 'bg-indigo-400' },
+                  orange: { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', headerBg: 'bg-orange-100', dot: 'bg-orange-400' },
                   cyan: { bg: 'bg-cyan-50', border: 'border-cyan-200', text: 'text-cyan-700', headerBg: 'bg-cyan-100', dot: 'bg-cyan-400' },
                   green: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', headerBg: 'bg-green-100', dot: 'bg-green-400' },
                 }
@@ -2189,6 +2343,22 @@ export default function CampaignDetailPage() {
                                 <span>{ci.influencer.engagementRate.toFixed(1)}% eng.</span>
                               </div>
                             )}
+                            {/* Shipping data button for SHIPPING column */}
+                            {col.key === 'SHIPPING' && (
+                              <button
+                                onClick={() => openShippingModal(ci)}
+                                className={`mt-2 w-full flex items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition-all ${
+                                  ci.shippingAddress1
+                                    ? 'border-green-300 bg-green-50 text-green-700'
+                                    : 'border-orange-300 bg-orange-50 text-orange-700 animate-pulse'
+                                }`}
+                              >
+                                <Truck className="h-3 w-3" />
+                                {ci.shippingAddress1
+                                  ? (locale === 'es' ? 'Datos de envío ✓' : 'Shipping data ✓')
+                                  : (locale === 'es' ? 'Añadir datos envío' : 'Add shipping data')}
+                              </button>
+                            )}
                             {/* Move-to select */}
                             <select
                               className="mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-600 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400"
@@ -2212,6 +2382,7 @@ export default function CampaignDetailPage() {
                               <option value="NEGOTIATING">{t.pipeline.negotiating}</option>
                               <option value="AGREED">{t.pipeline.agreed}</option>
                               <option value="CONTRACTED">{t.pipeline.contracted}</option>
+                              <option value="SHIPPING">{locale === 'es' ? 'Envío' : 'Shipping'}</option>
                               <option value="POSTED">{t.pipeline.posted}</option>
                               <option value="COMPLETED">{t.pipeline.completed}</option>
                             </select>
@@ -2219,6 +2390,20 @@ export default function CampaignDetailPage() {
                         ))
                       )}
                     </div>
+
+                    {/* Download shipping CSV button for SHIPPING column */}
+                    {col.key === 'SHIPPING' && colInfluencers.length > 0 && (
+                      <div className="border-t border-orange-200 px-3 py-2">
+                        <a
+                          href={`/api/campaigns/${campaignId}/shipping`}
+                          download
+                          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-orange-600 px-3 py-2 text-xs font-medium text-white hover:bg-orange-700 transition-colors"
+                        >
+                          <Download className="h-3 w-3" />
+                          {locale === 'es' ? 'Descargar CSV Envíos' : 'Download Shipping CSV'}
+                        </a>
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -2369,6 +2554,78 @@ export default function CampaignDetailPage() {
                   <>
                     <Save className="h-4 w-4" />
                     {t.common.save}
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Shipping Data Modal */}
+      {shippingModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="mx-4 w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-2">
+                <Truck className="h-5 w-5 text-orange-600" />
+                <h2 className="text-lg font-bold text-gray-900">
+                  {locale === 'es' ? 'Datos de Envío' : 'Shipping Data'}
+                </h2>
+              </div>
+              <button onClick={() => setShippingModal(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <p className="mb-4 text-xs text-gray-500">
+              {locale === 'es'
+                ? 'Rellena los datos necesarios para el envío. No todos los campos son obligatorios.'
+                : 'Fill in the data needed for shipping. Not all fields are required.'}
+            </p>
+            <div className="space-y-3">
+              {[
+                { key: 'shippingName', label: locale === 'es' ? 'Nombre destinatario' : 'Recipient Name', placeholder: 'Carmen Otero' },
+                { key: 'shippingAddress1', label: locale === 'es' ? 'Dirección' : 'Address', placeholder: 'Paseo Delivias 35, 3º 4ª' },
+                { key: 'shippingAddress2', label: locale === 'es' ? 'Dirección 2 (opcional)' : 'Address Line 2 (optional)', placeholder: '' },
+                { key: 'shippingCity', label: locale === 'es' ? 'Ciudad' : 'City', placeholder: 'Madrid' },
+                { key: 'shippingPostCode', label: locale === 'es' ? 'Código Postal' : 'Post Code', placeholder: '28006' },
+                { key: 'shippingCountry', label: locale === 'es' ? 'País' : 'Country', placeholder: 'SPAIN' },
+                { key: 'shippingPhone', label: locale === 'es' ? 'Teléfono' : 'Phone', placeholder: '675859632' },
+                { key: 'shippingEmail', label: 'Email', placeholder: 'email@example.com' },
+                { key: 'shippingProduct', label: locale === 'es' ? 'Producto / SKU' : 'Product / SKU', placeholder: 'SKU1' },
+                { key: 'shippingQty', label: locale === 'es' ? 'Cantidad' : 'Quantity', placeholder: '1' },
+                { key: 'shippingComments', label: locale === 'es' ? 'Comentarios' : 'Comments', placeholder: '' },
+              ].map(({ key, label, placeholder }) => (
+                <div key={key}>
+                  <label className="mb-1 block text-xs font-medium text-gray-700">{label}</label>
+                  <input
+                    type={key === 'shippingQty' ? 'number' : 'text'}
+                    value={shippingForm[key] || ''}
+                    onChange={(e) => setShippingForm(prev => ({ ...prev, [key]: e.target.value }))}
+                    placeholder={placeholder}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <Button variant="ghost" onClick={() => setShippingModal(null)}>
+                {t.common.cancel}
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => handleSaveShipping(shippingModal)}
+                disabled={isSavingShipping}
+              >
+                {isSavingShipping ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {t.common.loading}
+                  </>
+                ) : (
+                  <>
+                    <Save className="h-4 w-4" />
+                    {locale === 'es' ? 'Guardar Datos' : 'Save Data'}
                   </>
                 )}
               </Button>

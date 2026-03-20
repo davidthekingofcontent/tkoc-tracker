@@ -68,7 +68,12 @@ export async function PATCH(
 
     const { id } = await params
     const body = await request.json()
-    const { influencerId, cost, agreedFee, notes, status, portfolioUrl, contentDelivered } = body
+    const {
+      influencerId, cost, agreedFee, notes, status, portfolioUrl, contentDelivered,
+      shippingName, shippingAddress1, shippingAddress2, shippingCity,
+      shippingPostCode, shippingCountry, shippingPhone, shippingEmail,
+      shippingProduct, shippingQty, shippingComments,
+    } = body
 
     if (!influencerId) {
       return NextResponse.json({ error: 'influencerId is required' }, { status: 400 })
@@ -95,6 +100,17 @@ export async function PATCH(
         ...(status !== undefined && { status: status as InfluencerStatus }),
         ...(portfolioUrl !== undefined && { portfolioUrl: portfolioUrl || null }),
         ...(contentDelivered !== undefined && { contentDelivered: !!contentDelivered }),
+        ...(shippingName !== undefined && { shippingName: shippingName || null }),
+        ...(shippingAddress1 !== undefined && { shippingAddress1: shippingAddress1 || null }),
+        ...(shippingAddress2 !== undefined && { shippingAddress2: shippingAddress2 || null }),
+        ...(shippingCity !== undefined && { shippingCity: shippingCity || null }),
+        ...(shippingPostCode !== undefined && { shippingPostCode: shippingPostCode || null }),
+        ...(shippingCountry !== undefined && { shippingCountry: shippingCountry || null }),
+        ...(shippingPhone !== undefined && { shippingPhone: shippingPhone || null }),
+        ...(shippingEmail !== undefined && { shippingEmail: shippingEmail || null }),
+        ...(shippingProduct !== undefined && { shippingProduct: shippingProduct || null }),
+        ...(shippingQty !== undefined && { shippingQty: shippingQty ? parseInt(shippingQty) : null }),
+        ...(shippingComments !== undefined && { shippingComments: shippingComments || null }),
       },
       include: { influencer: true },
     })

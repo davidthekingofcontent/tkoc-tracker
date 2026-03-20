@@ -91,6 +91,10 @@ model Campaign {
   country        String?        // Filter content by country (e.g. "ES", "MX")
   paymentType    String         @default("PAID") // "PAID" or "GIFTED"
 
+  // Brief
+  briefText      String?        // Campaign brief text
+  briefFiles     String[]       // URLs/paths to brief attachments
+
   // Relations
   userId        String
   user          User            @relation(fields: [userId], references: [id])
@@ -173,6 +177,7 @@ enum InfluencerStatus {
   NEGOTIATING
   AGREED
   CONTRACTED
+  SHIPPING
   POSTED
   COMPLETED
 }
@@ -196,6 +201,19 @@ model CampaignInfluencer {
   notes         String?
   portfolioUrl  String?   // UGC creator portfolio link
   contentDelivered Boolean @default(false) // Whether UGC content has been delivered
+
+  // Shipping / Fulfillment data
+  shippingName     String?   // Recipient name
+  shippingAddress1 String?   // Address line 1
+  shippingAddress2 String?   // Address line 2
+  shippingCity     String?
+  shippingPostCode String?
+  shippingCountry  String?
+  shippingPhone    String?
+  shippingEmail    String?
+  shippingProduct  String?   // SKU or product name
+  shippingQty      Int?      @default(1)
+  shippingComments String?
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt

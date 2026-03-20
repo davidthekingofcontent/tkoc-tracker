@@ -213,7 +213,7 @@ export async function PUT(
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
     }
 
-    const { name, status, budget, isPinned, startDate, endDate, platforms, targetAccounts, targetHashtags, targetKeywords, country, paymentType } = body
+    const { name, status, budget, isPinned, startDate, endDate, platforms, targetAccounts, targetHashtags, targetKeywords, country, paymentType, briefText, briefFiles } = body
 
     const campaign = await prisma.campaign.update({
       where: { id },
@@ -230,6 +230,8 @@ export async function PUT(
         ...(targetKeywords !== undefined && { targetKeywords }),
         ...(country !== undefined && { country: country || null }),
         ...(paymentType !== undefined && ['PAID', 'GIFTED'].includes(paymentType) && { paymentType }),
+        ...(briefText !== undefined && { briefText: briefText || null }),
+        ...(briefFiles !== undefined && { briefFiles }),
       },
       include: {
         _count: { select: { influencers: true, media: true } },
