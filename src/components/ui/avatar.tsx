@@ -26,10 +26,38 @@ function getInitials(name: string): string {
     .toUpperCase()
 }
 
+/** Proxy external CDN URLs through our image proxy to avoid CORS/expiration issues */
+function getProxiedUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    const externalHosts = [
+      'cdninstagram.com',
+      'fbcdn.net',
+      'googleusercontent.com',
+      'ggpht.com',
+      'ytimg.com',
+      'tiktokcdn.com',
+      'tiktokcdn-us.com',
+      'muscdn.com',
+      'pbs.twimg.com',
+    ]
+    const isExternal = externalHosts.some(
+      (host) => parsed.hostname.endsWith(host) || parsed.hostname === host
+    )
+    if (isExternal) {
+      return `/api/proxy/image?url=${encodeURIComponent(url)}`
+    }
+  } catch {
+    // Invalid URL, return as-is
+  }
+  return url
+}
+
 const Avatar = React.forwardRef<HTMLDivElement, AvatarProps>(
   ({ src, alt, name, size = 'md', className, ...props }, ref) => {
     const [imgError, setImgError] = useState(false)
-    const showImage = src && !imgError
+    const proxiedSrc = src ? getProxiedUrl(src) : null
+    const showImage = proxiedSrc && !imgError
     const initials = name ? getInitials(name) : '?'
 
     return (
@@ -44,7 +72,7 @@ const Avatar = React.forwardRef<HTMLDivElement, AvatarProps>(
       >
         {showImage ? (
           <img
-            src={src}
+            src={proxiedSrc}
             alt={alt || name || 'Avatar'}
             className="h-full w-full object-cover"
             onError={() => setImgError(true)}

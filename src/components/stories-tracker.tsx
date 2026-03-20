@@ -271,7 +271,7 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
                 <div className="flex items-center gap-3">
                   {group.influencer.avatarUrl ? (
                     <img
-                      src={group.influencer.avatarUrl}
+                      src={`/api/proxy/image?url=${encodeURIComponent(group.influencer.avatarUrl)}`}
                       alt=""
                       className="h-8 w-8 rounded-full object-cover"
                     />
