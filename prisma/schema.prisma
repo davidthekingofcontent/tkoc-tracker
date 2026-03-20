@@ -339,6 +339,25 @@ model Contact {
   @@map("contacts")
 }
 
+// ============ CAMPAIGN NOTES ============
+
+model CampaignNote {
+  id            String    @id @default(cuid())
+
+  campaignId    String
+  influencerId  String
+
+  userId        String
+  userName      String    // Denormalized for display
+
+  text          String
+
+  createdAt     DateTime  @default(now())
+
+  @@index([campaignId, influencerId])
+  @@map("campaign_notes")
+}
+
 // ============ SCRAPING JOBS ============
 
 enum JobStatus {

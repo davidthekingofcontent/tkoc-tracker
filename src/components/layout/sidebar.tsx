@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Pin,
   LogOut,
+  BarChart3,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useI18n } from '@/i18n/context'
@@ -34,6 +35,7 @@ const navItems: NavItem[] = [
   { key: "lookalikes", icon: UserCheck, href: "/lookalikes" },
   { key: "lists", icon: List, href: "/lists" },
   { key: "contacts", icon: Users, href: "/contacts" },
+  { key: "compare", icon: BarChart3, href: "/compare" },
   { key: "settings", icon: Settings, href: "/settings" },
 ]
 
@@ -64,6 +66,7 @@ function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
     case 'lookalikes': return t.nav.lookalikes
     case 'lists': return t.lists.title
     case 'contacts': return t.contacts.title
+    case 'compare': return 'Comparar'
     case 'settings': return t.settings.title
     default: return key
   }

@@ -22,6 +22,8 @@ import { formatNumber } from '@/lib/utils'
 import { useI18n } from '@/i18n/context'
 import { calculateCPM, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
+import { CampaignNotesButton } from '@/components/campaign-notes'
+import { InfluencerHistoryButton } from '@/components/influencer-history'
 import {
   ArrowLeft,
   Users,
@@ -1985,6 +1987,20 @@ export default function CampaignDetailPage() {
                               {cpm.recommendationDetail}
                             </div>
                           )}
+
+                          {/* Notes & History */}
+                          <div className="mt-3 pt-3 border-t border-gray-100 flex items-center gap-2">
+                            <CampaignNotesButton
+                              campaignId={campaignId}
+                              influencerId={ci.influencer.id}
+                              locale={locale}
+                            />
+                            <InfluencerHistoryButton
+                              influencerId={ci.influencer.id}
+                              influencerName={ci.influencer.displayName || ci.influencer.username}
+                              locale={locale}
+                            />
+                          </div>
                         </div>
                       )
                     })}
@@ -2257,6 +2273,18 @@ export default function CampaignDetailPage() {
                             {ci.notes && (
                               <span className="text-xs text-gray-400 truncate max-w-xs">{ci.notes}</span>
                             )}
+                            <div className="ml-auto flex items-center gap-2">
+                              <CampaignNotesButton
+                                campaignId={campaignId}
+                                influencerId={ci.influencer.id}
+                                locale={locale}
+                              />
+                              <InfluencerHistoryButton
+                                influencerId={ci.influencer.id}
+                                influencerName={ci.influencer.displayName || ci.influencer.username}
+                                locale={locale}
+                              />
+                            </div>
                           </div>
                         </div>
                       )
