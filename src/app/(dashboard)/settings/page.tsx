@@ -151,6 +151,10 @@ export default function SettingsPage() {
   // Integrations state
   const [integrations, setIntegrations] = useState(mockIntegrations)
   const [apifyKey, setApifyKey] = useState("")
+  const [apifySaving, setApifySaving] = useState(false)
+  const [apifySaved, setApifySaved] = useState(false)
+  const [integrationsLoading, setIntegrationsLoading] = useState(true)
+  const [integrationSaving, setIntegrationSaving] = useState<string | null>(null)
 
   // Templates state
   const [campaignTemplates, setCampaignTemplates] = useState<CampaignTemplate[]>([])
@@ -162,6 +166,7 @@ export default function SettingsPage() {
   useEffect(() => {
     fetchTeam()
     fetchTemplates()
+    fetchIntegrations()
   }, [])
 
   async function fetchTeam() {
@@ -186,6 +191,31 @@ export default function SettingsPage() {
       }
     } catch {} finally {
       setTemplatesLoading(false)
+    }
+  }
+
+  async function fetchIntegrations() {
+    try {
+      const res = await fetch('/api/settings/integrations')
+      if (res.ok) {
+        const data = await res.json()
+        const intData = data.integrations
+        // Update integrations state with real connection statuses
+        setIntegrations(prev =>
+          prev.map(i => {
+            if (i.id === 'instagram') return { ...i, connected: intData.instagram?.connected || false }
+            if (i.id === 'tiktok') return { ...i, connected: intData.tiktok?.connected || false }
+            if (i.id === 'youtube') return { ...i, connected: intData.youtube?.connected || false }
+            return i
+          })
+        )
+        // Load Apify key from DB
+        if (intData.apify?.key) {
+          setApifyKey(intData.apify.key)
+        }
+      }
+    } catch {} finally {
+      setIntegrationsLoading(false)
     }
   }
 
@@ -263,10 +293,46 @@ export default function SettingsPage() {
     }
   }
 
-  function handleToggleIntegration(id: string) {
-    setIntegrations((prev) =>
-      prev.map((i) => (i.id === id ? { ...i, connected: !i.connected } : i))
-    )
+  async function handleToggleIntegration(id: string) {
+    const integration = integrations.find(i => i.id === id)
+    if (!integration) return
+
+    const newConnected = !integration.connected
+    const settingKey = `${id}_connected`
+
+    setIntegrationSaving(id)
+    try {
+      const res = await fetch('/api/settings/integrations', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: settingKey, value: newConnected ? 'true' : 'false' }),
+      })
+      if (res.ok) {
+        setIntegrations(prev =>
+          prev.map(i => (i.id === id ? { ...i, connected: newConnected } : i))
+        )
+      }
+    } catch {} finally {
+      setIntegrationSaving(null)
+    }
+  }
+
+  async function handleSaveApifyKey() {
+    setApifySaving(true)
+    setApifySaved(false)
+    try {
+      const res = await fetch('/api/settings/integrations', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'apify_api_key', value: apifyKey }),
+      })
+      if (res.ok) {
+        setApifySaved(true)
+        setTimeout(() => setApifySaved(false), 2500)
+      }
+    } catch {} finally {
+      setApifySaving(false)
+    }
   }
 
   return (
@@ -557,6 +623,11 @@ export default function SettingsPage() {
 
         {/* ===================== INTEGRATIONS TAB ===================== */}
         <TabsContent value="integrations">
+          {integrationsLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+            </div>
+          ) : (
           <div className="grid gap-4 sm:grid-cols-2">
             {integrations.map((integration) => (
               <Card key={integration.id} variant="elevated">
@@ -582,6 +653,7 @@ export default function SettingsPage() {
                       size="sm"
                       variant={integration.connected ? "secondary" : "primary"}
                       onClick={() => handleToggleIntegration(integration.id)}
+                      loading={integrationSaving === integration.id}
                     >
                       {integration.connected ? (
                         <>{t.settings.disconnect}</>
@@ -625,13 +697,23 @@ export default function SettingsPage() {
                       onChange={(e) => setApifyKey(e.target.value)}
                     />
                   </div>
-                  <Button size="sm" variant="secondary" className="mb-[1px]">
-                    {t.common.save}
+                  <Button size="sm" variant="secondary" className="mb-[1px]" onClick={handleSaveApifyKey} loading={apifySaving}>
+                    {apifySaved ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <Check className="h-4 w-4" /> {t.common.save}
+                      </span>
+                    ) : (
+                      t.common.save
+                    )}
                   </Button>
                 </div>
+                {apifySaved && (
+                  <p className="mt-2 text-sm text-emerald-500">API key saved successfully.</p>
+                )}
               </CardContent>
             </Card>
           </div>
+          )}
         </TabsContent>
 
         {/* ===================== TEMPLATES TAB ===================== */}

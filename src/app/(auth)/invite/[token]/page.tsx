@@ -36,28 +36,28 @@ export default function AcceptInvitePage() {
           setInvitation(data)
         } else {
           const data = await res.json()
-          setError(data.error || 'Invalid invitation')
+          setError(data.error || t.invite.invalidInvitation)
         }
       } catch {
-        setError('Failed to validate invitation')
+        setError(t.invite.failedToValidate)
       } finally {
         setIsLoading(false)
       }
     }
     validateToken()
-  }, [token])
+  }, [token, t])
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setError('')
 
     if (password !== confirmPassword) {
-      setError('Passwords do not match')
+      setError(t.invite.passwordsDoNotMatch)
       return
     }
 
     if (password.length < 6) {
-      setError('Password must be at least 6 characters')
+      setError(t.invite.passwordMinLength)
       return
     }
 
@@ -84,10 +84,10 @@ export default function AcceptInvitePage() {
           router.refresh()
         }, 1500)
       } else {
-        setError(data.error || 'Failed to create account')
+        setError(data.error || t.invite.failedToCreate)
       }
     } catch {
-      setError('Network error')
+      setError(t.invite.networkError)
     } finally {
       setIsSubmitting(false)
     }
@@ -146,14 +146,14 @@ export default function AcceptInvitePage() {
                 </svg>
               </div>
               <h2 className="text-lg font-semibold text-gray-900 mb-2">
-                {error === 'Invitation has expired' ? 'Invitation Expired' : 'Invalid Invitation'}
+                {error === 'Invitation has expired' ? t.invite.invitationExpired : t.invite.invalidInvitation}
               </h2>
               <p className="text-sm text-gray-500 mb-6">{error}</p>
               <a
                 href="/login"
                 className="text-sm text-purple-600 hover:text-purple-500 font-medium"
               >
-                Go to Login
+                {t.invite.goToLogin}
               </a>
             </div>
           )}
@@ -166,8 +166,8 @@ export default function AcceptInvitePage() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
                 </svg>
               </div>
-              <h2 className="text-lg font-semibold text-gray-900 mb-2">Account Created!</h2>
-              <p className="text-sm text-gray-500">Redirecting to dashboard...</p>
+              <h2 className="text-lg font-semibold text-gray-900 mb-2">{t.invite.accountCreated}</h2>
+              <p className="text-sm text-gray-500">{t.invite.redirectingToDashboard}</p>
             </div>
           )}
 
@@ -176,7 +176,7 @@ export default function AcceptInvitePage() {
             <>
               <div className="text-center mb-6">
                 <p className="text-sm text-gray-500">
-                  <span className="font-semibold text-gray-900">{invitation.invitedBy}</span> invited you to join as
+                  <span className="font-semibold text-gray-900">{invitation.invitedBy}</span> {t.invite.invitedToJoinAs}
                 </p>
                 <span className="mt-1 inline-flex items-center rounded-full bg-purple-100 px-3 py-1 text-xs font-semibold text-purple-700">
                   {invitation.role.charAt(0) + invitation.role.slice(1).toLowerCase()}
@@ -193,7 +193,7 @@ export default function AcceptInvitePage() {
                 {/* Email (read-only) */}
                 <div>
                   <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
-                    Email
+                    {t.auth.email}
                   </label>
                   <input
                     type="email"
@@ -214,7 +214,7 @@ export default function AcceptInvitePage() {
                     required
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="Your full name"
+                    placeholder={t.invite.fullNamePlaceholder}
                     className="w-full px-4 py-3 rounded-lg bg-white border border-gray-300 text-gray-900 placeholder-gray-400 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/40 focus:border-purple-500 transition-all duration-200"
                     disabled={isSubmitting}
                   />
@@ -231,7 +231,7 @@ export default function AcceptInvitePage() {
                     required
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Min. 6 characters"
+                    placeholder={t.invite.minCharacters}
                     className="w-full px-4 py-3 rounded-lg bg-white border border-gray-300 text-gray-900 placeholder-gray-400 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/40 focus:border-purple-500 transition-all duration-200"
                     disabled={isSubmitting}
                   />
@@ -240,7 +240,7 @@ export default function AcceptInvitePage() {
                 {/* Confirm Password */}
                 <div>
                   <label htmlFor="confirmPassword" className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
-                    Confirm Password
+                    {t.invite.confirmPassword}
                   </label>
                   <input
                     id="confirmPassword"
@@ -248,7 +248,7 @@ export default function AcceptInvitePage() {
                     required
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="Repeat your password"
+                    placeholder={t.invite.repeatPassword}
                     className="w-full px-4 py-3 rounded-lg bg-white border border-gray-300 text-gray-900 placeholder-gray-400 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/40 focus:border-purple-500 transition-all duration-200"
                     disabled={isSubmitting}
                   />
@@ -265,10 +265,10 @@ export default function AcceptInvitePage() {
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                       </svg>
-                      Creating Account...
+                      {t.invite.creatingAccount}
                     </span>
                   ) : (
-                    'Create Account & Join'
+                    t.invite.createAccountJoin
                   )}
                 </button>
               </form>

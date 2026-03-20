@@ -1,10 +1,38 @@
 // Apify REST API client — uses fetch() directly, no external dependencies
 // Docs: https://docs.apify.com/api/v2
 
+import { prisma } from '@/lib/db'
+
 const APIFY_BASE = 'https://api.apify.com/v2'
+
+// Cache the DB token for 60s to avoid hitting DB on every call
+let _cachedDbToken: string | null = null
+let _cachedDbTokenAt = 0
+const DB_TOKEN_TTL = 60_000 // 60 seconds
+
+async function getTokenFromDb(): Promise<string | null> {
+  const now = Date.now()
+  if (_cachedDbToken !== null && now - _cachedDbTokenAt < DB_TOKEN_TTL) {
+    return _cachedDbToken
+  }
+  try {
+    const setting = await prisma.setting.findUnique({ where: { key: 'apify_api_key' } })
+    _cachedDbToken = setting?.value || null
+    _cachedDbTokenAt = now
+    return _cachedDbToken
+  } catch {
+    return null
+  }
+}
 
 function getToken(): string | null {
   return process.env.APIFY_API_KEY || null
+}
+
+async function getTokenWithDbFallback(): Promise<string | null> {
+  const envToken = process.env.APIFY_API_KEY
+  if (envToken) return envToken
+  return getTokenFromDb()
 }
 
 /** Run an Apify actor and return the dataset items */
@@ -13,7 +41,7 @@ async function runActor(
   input: Record<string, unknown>,
   timeoutSecs = 120
 ): Promise<Record<string, unknown>[]> {
-  const token = getToken()
+  const token = await getTokenWithDbFallback()
   if (!token) throw new Error('APIFY_API_KEY not configured')
 
   const url = `${APIFY_BASE}/acts/${actorId}/runs?token=${token.substring(0, 8)}...&waitForFinish=${timeoutSecs}`
@@ -797,4 +825,11 @@ export async function scrapeHashtag(hashtag: string, platform: 'INSTAGRAM' | 'TI
 
 export function isApifyConfigured(): boolean {
   return !!process.env.APIFY_API_KEY
+}
+
+/** Async version that also checks the DB setting */
+export async function isApifyConfiguredAsync(): Promise<boolean> {
+  if (process.env.APIFY_API_KEY) return true
+  const dbToken = await getTokenFromDb()
+  return !!dbToken
 }

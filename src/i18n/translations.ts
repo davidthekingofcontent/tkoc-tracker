@@ -43,6 +43,27 @@ export const translations = {
       logout: 'Sign out',
     },
 
+    // Invite / Registration
+    invite: {
+      passwordsDoNotMatch: 'Passwords do not match',
+      passwordMinLength: 'Password must be at least 6 characters',
+      fullNamePlaceholder: 'Your full name',
+      minCharacters: 'Min. 6 characters',
+      confirmPassword: 'Confirm Password',
+      repeatPassword: 'Repeat your password',
+      creatingAccount: 'Creating Account...',
+      createAccountJoin: 'Create Account & Join',
+      invitedToJoinAs: 'invited you to join as',
+      invitationExpired: 'Invitation Expired',
+      invalidInvitation: 'Invalid Invitation',
+      accountCreated: 'Account Created!',
+      redirectingToDashboard: 'Redirecting to dashboard...',
+      goToLogin: 'Go to Login',
+      failedToValidate: 'Failed to validate invitation',
+      failedToCreate: 'Failed to create account',
+      networkError: 'Network error',
+    },
+
     // Sidebar / Nav
     nav: {
       home: 'Home',
@@ -437,6 +458,27 @@ export const translations = {
       invalidCredentials: 'Email o contraseña incorrectos',
       signingIn: 'Iniciando sesión...',
       logout: 'Cerrar sesión',
+    },
+
+    // Invite / Registration
+    invite: {
+      passwordsDoNotMatch: 'Las contraseñas no coinciden',
+      passwordMinLength: 'La contraseña debe tener al menos 6 caracteres',
+      fullNamePlaceholder: 'Tu nombre completo',
+      minCharacters: 'Mín. 6 caracteres',
+      confirmPassword: 'Confirmar contraseña',
+      repeatPassword: 'Repite tu contraseña',
+      creatingAccount: 'Creando cuenta...',
+      createAccountJoin: 'Crear cuenta y unirme',
+      invitedToJoinAs: 'te ha invitado a unirte como',
+      invitationExpired: 'Invitación expirada',
+      invalidInvitation: 'Invitación no válida',
+      accountCreated: '¡Cuenta creada!',
+      redirectingToDashboard: 'Redirigiendo al dashboard...',
+      goToLogin: 'Ir al login',
+      failedToValidate: 'Error al validar la invitación',
+      failedToCreate: 'Error al crear la cuenta',
+      networkError: 'Error de red',
     },
 
     // Sidebar / Nav

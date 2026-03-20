@@ -395,6 +395,16 @@ model Notification {
   @@map("notifications")
 }
 
+// ============ SETTINGS (Key-Value Store) ============
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+
+  @@map("settings")
+}
+
 // ============ SCRAPING JOBS ============
 
 enum JobStatus {

@@ -165,6 +165,8 @@ export default function DiscoverPage() {
           platform: filters.platform || 'instagram',
           minFollowers: filters.followersMin ? parseInt(filters.followersMin, 10) : undefined,
           maxFollowers: filters.followersMax ? parseInt(filters.followersMax, 10) : undefined,
+          bioKeyword: filters.bioKeyword || undefined,
+          location: filters.location || undefined,
         }),
       })
 
@@ -289,7 +291,7 @@ export default function DiscoverPage() {
 
           {/* Action Buttons */}
           <div className="flex flex-col gap-2 border-t border-gray-200 pt-5">
-            <Button variant="primary" size="lg" onClick={handleSearch} disabled={searching || !filters.search.trim()} className="w-full">
+            <Button type="button" variant="primary" size="lg" onClick={handleSearch} disabled={searching || !filters.search.trim()} className="w-full">
               {searching ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -302,7 +304,7 @@ export default function DiscoverPage() {
                 </>
               )}
             </Button>
-            <Button variant="secondary" size="md" onClick={resetFilters} className="w-full">
+            <Button type="button" variant="secondary" size="md" onClick={resetFilters} className="w-full">
               <RotateCcw className="h-4 w-4" />
               {t.discover.reset}
             </Button>

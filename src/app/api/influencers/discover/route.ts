@@ -215,11 +215,13 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { query, platform, minFollowers, maxFollowers } = body as {
+    const { query, platform, minFollowers, maxFollowers, bioKeyword, location } = body as {
       query: string
       platform: string
       minFollowers?: number
       maxFollowers?: number
+      bioKeyword?: string
+      location?: string
     }
 
     if (!query || !query.trim()) {
@@ -260,18 +262,32 @@ export async function POST(request: NextRequest) {
     if (results.length === 0) {
       const queryWords = cleanQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2)
       const dbWhere: Prisma.InfluencerWhereInput = {
-        OR: [
-          { username: { contains: cleanQuery, mode: 'insensitive' } },
-          { displayName: { contains: cleanQuery, mode: 'insensitive' } },
-          { bio: { contains: cleanQuery, mode: 'insensitive' } },
-          // Also search individual words from the query across all fields
-          ...queryWords.map(word => ({
+        AND: [
+          // Main search query
+          {
             OR: [
-              { username: { contains: word, mode: 'insensitive' as const } },
-              { displayName: { contains: word, mode: 'insensitive' as const } },
-              { bio: { contains: word, mode: 'insensitive' as const } },
+              { username: { contains: cleanQuery, mode: 'insensitive' } },
+              { displayName: { contains: cleanQuery, mode: 'insensitive' } },
+              { bio: { contains: cleanQuery, mode: 'insensitive' } },
+              // Also search individual words from the query across all fields
+              ...queryWords.map(word => ({
+                OR: [
+                  { username: { contains: word, mode: 'insensitive' as const } },
+                  { displayName: { contains: word, mode: 'insensitive' as const } },
+                  { bio: { contains: word, mode: 'insensitive' as const } },
+                ],
+              })),
             ],
-          })),
+          },
+          // Bio keyword filter
+          ...(bioKeyword ? [{ bio: { contains: bioKeyword, mode: 'insensitive' as const } }] : []),
+          // Location filter (search in bio and displayName)
+          ...(location ? [{
+            OR: [
+              { bio: { contains: location, mode: 'insensitive' as const } },
+              { displayName: { contains: location, mode: 'insensitive' as const } },
+            ],
+          }] : []),
         ],
       }
 
@@ -290,19 +306,45 @@ export async function POST(request: NextRequest) {
         orderBy: { followers: 'desc' },
       })
 
-      results = influencers.map((inf) => ({
-        username: inf.username,
-        displayName: inf.displayName,
-        avatarUrl: inf.avatarUrl,
-        followers: inf.followers,
-        engagementRate: inf.engagementRate,
-        avgLikes: inf.avgLikes,
-        avgComments: inf.avgComments,
-        avgViews: inf.avgViews,
-        email: inf.email,
-        platform: inf.platform,
-        source: 'database' as const,
-      }))
+      // Score and sort results: bio matches rank highest, then displayName, then username
+      const searchLower = cleanQuery.toLowerCase()
+      const scored = influencers.map((inf) => {
+        let score = 0
+        const bioLower = (inf.bio || '').toLowerCase()
+        const displayLower = (inf.displayName || '').toLowerCase()
+        const usernameLower = inf.username.toLowerCase()
+
+        // Bio match is most relevant for niche/category searches
+        if (bioLower.includes(searchLower)) score += 30
+        // Also score individual word matches in bio
+        for (const word of queryWords) {
+          if (bioLower.includes(word)) score += 10
+        }
+        // DisplayName match is second priority
+        if (displayLower.includes(searchLower)) score += 15
+        // Username match is lowest priority (literal name match, not niche)
+        if (usernameLower.includes(searchLower)) score += 5
+
+        return {
+          username: inf.username,
+          displayName: inf.displayName,
+          avatarUrl: inf.avatarUrl,
+          followers: inf.followers,
+          engagementRate: inf.engagementRate,
+          avgLikes: inf.avgLikes,
+          avgComments: inf.avgComments,
+          avgViews: inf.avgViews,
+          email: inf.email,
+          platform: inf.platform,
+          source: 'database' as const,
+          _score: score,
+        }
+      })
+
+      // Sort by relevance score first, then by followers for ties
+      scored.sort((a, b) => b._score - a._score || b.followers - a.followers)
+
+      results = scored.map(({ _score, ...rest }) => rest)
       source = 'database'
     }
 
