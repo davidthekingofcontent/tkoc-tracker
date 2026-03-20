@@ -25,6 +25,7 @@ import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { CampaignNotesButton } from '@/components/campaign-notes'
 import { InfluencerHistoryButton } from '@/components/influencer-history'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
+import { StoriesTracker } from '@/components/stories-tracker'
 import {
   ArrowLeft,
   Users,
@@ -346,6 +347,9 @@ export default function CampaignDetailPage() {
   const [shippingModal, setShippingModal] = useState<string | null>(null) // influencerId
   const [shippingForm, setShippingForm] = useState<Record<string, string>>({})
   const [isSavingShipping, setIsSavingShipping] = useState(false)
+
+  // Export dropdown state
+  const [showExportDropdown, setShowExportDropdown] = useState(false)
 
   // Save as Template state
   const [showTemplateModal, setShowTemplateModal] = useState(false)
@@ -849,19 +853,50 @@ export default function CampaignDetailPage() {
               )}
             </Button>
           )}
-          <div className="flex items-center gap-2">
-            <a href={`/api/campaigns/${campaign.id}/export?format=pdf`} download>
-              <Button variant="primary" size="sm">
-                <Download className="h-4 w-4" />
-                {t.campaignDetail.exportPDF || 'Export PDF'}
-              </Button>
-            </a>
-            <a href={`/api/campaigns/${campaign.id}/export?format=csv`} download>
-              <Button variant="secondary" size="sm">
-                <Download className="h-4 w-4" />
-                {t.campaignDetail.exportCSV || 'Export CSV'}
-              </Button>
-            </a>
+          <div className="relative">
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setShowExportDropdown(prev => !prev)}
+            >
+              <Download className="h-4 w-4" />
+              {t.campaignDetail.exportReport || 'Export Report'}
+              <ChevronDown className="h-3 w-3 ml-1" />
+            </Button>
+            {showExportDropdown && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowExportDropdown(false)} />
+                <div className="absolute right-0 top-full mt-1 z-50 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                  <a
+                    href={`/api/campaigns/${campaign.id}/export?format=pdf`}
+                    download
+                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    onClick={() => setShowExportDropdown(false)}
+                  >
+                    <FileText className="h-4 w-4 text-red-500" />
+                    {t.campaignDetail.exportPDF || 'Export PDF'}
+                  </a>
+                  <a
+                    href={`/api/campaigns/${campaign.id}/export?format=csv`}
+                    download
+                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    onClick={() => setShowExportDropdown(false)}
+                  >
+                    <FileText className="h-4 w-4 text-green-500" />
+                    {t.campaignDetail.exportCSV || 'Export CSV'}
+                  </a>
+                  <a
+                    href={`/api/campaigns/${campaign.id}/export?format=json`}
+                    download
+                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    onClick={() => setShowExportDropdown(false)}
+                  >
+                    <FileText className="h-4 w-4 text-blue-500" />
+                    {t.campaignDetail.exportJSON || 'Export JSON'}
+                  </a>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -1689,6 +1724,14 @@ export default function CampaignDetailPage() {
 
         {/* Stories Tab */}
         <TabsContent value="stories">
+          {/* Stories Tracker - log and track stories with metrics */}
+          <StoriesTracker
+            campaignId={campaign.id}
+            locale={locale}
+            influencers={influencers.map(ci => ({ id: ci.influencer.id, username: ci.influencer.username }))}
+          />
+
+          {/* Existing discovered stories */}
           {stories.length === 0 ? (
             <div className="rounded-xl border border-gray-200 bg-white py-16 text-center shadow-sm">
               <Film className="mx-auto h-12 w-12 text-gray-300" />

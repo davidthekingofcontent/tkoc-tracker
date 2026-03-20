@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" rx="40" fill="#7c3aed"/>
+  <g transform="translate(96,96)">
+    <!-- Megaphone body -->
+    <path d="M-30 20 L-30 -10 L20 -30 L20 40 Z" fill="white" opacity="0.95"/>
+    <!-- Handle -->
+    <rect x="-38" y="-4" width="10" height="18" rx="3" fill="white" opacity="0.7"/>
+    <!-- Sound waves -->
+    <path d="M26 -20 Q48 -32 48 5 Q48 42 26 30" stroke="white" stroke-width="5" fill="none" opacity="0.6" stroke-linecap="round"/>
+    <path d="M32 -10 Q44 -18 44 5 Q44 28 32 20" stroke="white" stroke-width="4" fill="none" opacity="0.4" stroke-linecap="round"/>
+    <!-- Chart bar accents -->
+    <rect x="-24" y="28" width="8" height="16" rx="2" fill="white" opacity="0.5"/>
+    <rect x="-12" y="22" width="8" height="22" rx="2" fill="white" opacity="0.5"/>
+    <rect x="0" y="16" width="8" height="28" rx="2" fill="white" opacity="0.5"/>
+  </g>
+</svg>

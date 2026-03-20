@@ -50,9 +50,10 @@ export async function GET(
     }
 
     if (format === 'csv') return generateCSV(campaign)
+    if (format === 'json') return generateJSON(campaign)
     if (format === 'pdf') return generatePDF(campaign)
 
-    return NextResponse.json({ error: 'Unsupported format. Use csv or pdf.' }, { status: 400 })
+    return NextResponse.json({ error: 'Unsupported format. Use csv, json, or pdf.' }, { status: 400 })
   } catch (error) {
     console.error('Export campaign error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -67,11 +68,14 @@ interface CampaignData {
   type: string
   startDate: Date | null
   endDate: Date | null
+  country: string | null
   platforms: string[]
   targetHashtags: string[]
   targetAccounts: string[]
   influencers: {
     cost: number | null
+    agreedFee: number | null
+    status: string
     influencer: {
       username: string
       displayName: string | null
@@ -100,7 +104,9 @@ interface CampaignData {
     views: number
     reach: number
     impressions: number
+    mediaValue: number
     postedAt: Date | null
+    influencerId: string
     influencer: {
       username: string
       displayName: string | null
@@ -109,6 +115,52 @@ interface CampaignData {
       engagementRate: number
     } | null
   }[]
+}
+
+// ============ INFLUENCER MEDIA AGGREGATION ============
+
+interface InfluencerMediaMetrics {
+  totalLikes: number
+  totalComments: number
+  totalShares: number
+  totalSaves: number
+  totalViews: number
+  totalReach: number
+  totalImpressions: number
+  totalEMV: number
+  mediaCount: number
+}
+
+function aggregateInfluencerMedia(campaign: CampaignData): Map<string, InfluencerMediaMetrics> {
+  const map = new Map<string, InfluencerMediaMetrics>()
+
+  for (const m of campaign.media) {
+    const username = m.influencer?.username || 'unknown'
+    const existing = map.get(username) || {
+      totalLikes: 0, totalComments: 0, totalShares: 0, totalSaves: 0,
+      totalViews: 0, totalReach: 0, totalImpressions: 0, totalEMV: 0, mediaCount: 0,
+    }
+
+    existing.totalLikes += m.likes || 0
+    existing.totalComments += m.comments || 0
+    existing.totalShares += m.shares || 0
+    existing.totalSaves += m.saves || 0
+    existing.totalViews += m.views || 0
+    existing.totalReach += m.reach || 0
+    existing.totalImpressions += m.impressions || 0
+    existing.mediaCount++
+
+    const mediaEMV = calculateEMV({
+      platform: m.influencer?.platform || 'INSTAGRAM',
+      impressions: m.impressions, reach: m.reach, views: m.views,
+      clicks: 0, likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
+    })
+    existing.totalEMV += mediaEMV.extended
+
+    map.set(username, existing)
+  }
+
+  return map
 }
 
 // ============ HELPERS ============
@@ -148,18 +200,21 @@ async function fetchImageBase64(url: string): Promise<string | null> {
 
 function generateCSV(campaign: CampaignData): NextResponse {
   const lines: string[] = []
+  const influencerMetrics = aggregateInfluencerMedia(campaign)
 
   lines.push('CAMPAIGN REPORT')
   lines.push(`Campaign Name,${escapeCSV(campaign.name)}`)
+  lines.push(`Type,${escapeCSV(campaign.type)}`)
   lines.push(`Status,${escapeCSV(campaign.status)}`)
   lines.push(`Start Date,${campaign.startDate ? new Date(campaign.startDate).toLocaleDateString() : 'N/A'}`)
   lines.push(`End Date,${campaign.endDate ? new Date(campaign.endDate).toLocaleDateString() : 'N/A'}`)
+  lines.push(`Country,${escapeCSV(campaign.country || 'N/A')}`)
   lines.push(`Platforms,${escapeCSV(campaign.platforms.join(', '))}`)
   lines.push(`Hashtags,${escapeCSV(campaign.targetHashtags.join(', '))}`)
   lines.push(`Tracked Accounts,${escapeCSV(campaign.targetAccounts.join(', '))}`)
   lines.push('')
 
-  let totalReach = 0, totalLikes = 0, totalComments = 0, totalShares = 0, totalViews = 0, totalSaves = 0
+  let totalReach = 0, totalLikes = 0, totalComments = 0, totalShares = 0, totalViews = 0, totalSaves = 0, totalImpressions = 0
 
   for (const m of campaign.media) {
     totalReach += m.reach || 0
@@ -168,6 +223,7 @@ function generateCSV(campaign: CampaignData): NextResponse {
     totalShares += m.shares || 0
     totalViews += m.views || 0
     totalSaves += m.saves || 0
+    totalImpressions += m.impressions || 0
   }
 
   const totalEngagements = totalLikes + totalComments + totalShares
@@ -178,36 +234,75 @@ function generateCSV(campaign: CampaignData): NextResponse {
     likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
   })))
 
+  const totalCost = campaign.influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0)
+
   lines.push('OVERVIEW')
   lines.push(`Total Influencers,${campaign.influencers.length}`)
   lines.push(`Total Media,${campaign.media.length}`)
   lines.push(`Total Reach,${totalReach}`)
+  lines.push(`Total Impressions,${totalImpressions}`)
   lines.push(`Total Engagements,${totalEngagements}`)
   lines.push(`Engagement Rate,${engRate}%`)
   lines.push(`Total Likes,${totalLikes}`)
   lines.push(`Total Comments,${totalComments}`)
   lines.push(`Total Shares,${totalShares}`)
+  lines.push(`Total Saves,${totalSaves}`)
   lines.push(`Total Views,${totalViews}`)
+  lines.push(`Total Cost,$${totalCost.toFixed(2)}`)
   lines.push(`EMV Basic,$${emv.basic.toFixed(2)}`)
   lines.push(`EMV Extended,$${emv.extended.toFixed(2)}`)
   lines.push('')
 
-  lines.push('INFLUENCERS')
-  lines.push('Username,Display Name,Platform,Followers,Engagement Rate,Avg Likes,Avg Comments,Avg Views,Email,Website,Location')
+  // Per-influencer rows with aggregated media metrics
+  lines.push('INFLUENCER PERFORMANCE')
+  lines.push('Username,Display Name,Platform,Followers,Status,Agreed Fee,Cost,Likes,Comments,Shares,Saves,Views,Reach,Impressions,EMV,Media Count')
+
+  let totInfLikes = 0, totInfComments = 0, totInfShares = 0, totInfSaves = 0
+  let totInfViews = 0, totInfReach = 0, totInfImpressions = 0, totInfEMV = 0, totInfMedia = 0
+  let totAgreedFee = 0, totCostVal = 0
 
   for (const ci of campaign.influencers) {
     const inf = ci.influencer
+    const metrics = influencerMetrics.get(inf.username) || {
+      totalLikes: 0, totalComments: 0, totalShares: 0, totalSaves: 0,
+      totalViews: 0, totalReach: 0, totalImpressions: 0, totalEMV: 0, mediaCount: 0,
+    }
+
+    const agreedFee = ci.agreedFee || 0
+    const costVal = ci.cost || 0
+
+    totInfLikes += metrics.totalLikes
+    totInfComments += metrics.totalComments
+    totInfShares += metrics.totalShares
+    totInfSaves += metrics.totalSaves
+    totInfViews += metrics.totalViews
+    totInfReach += metrics.totalReach
+    totInfImpressions += metrics.totalImpressions
+    totInfEMV += metrics.totalEMV
+    totInfMedia += metrics.mediaCount
+    totAgreedFee += agreedFee
+    totCostVal += costVal
+
     lines.push([
       escapeCSV(inf.username), escapeCSV(inf.displayName), escapeCSV(inf.platform),
-      inf.followers, `${inf.engagementRate}%`, inf.avgLikes, inf.avgComments, inf.avgViews,
-      escapeCSV(inf.email), escapeCSV(inf.website),
-      escapeCSV([inf.city, inf.country].filter(Boolean).join(', ')),
+      inf.followers, escapeCSV(ci.status), `$${agreedFee.toFixed(2)}`, `$${costVal.toFixed(2)}`,
+      metrics.totalLikes, metrics.totalComments, metrics.totalShares, metrics.totalSaves,
+      metrics.totalViews, metrics.totalReach, metrics.totalImpressions,
+      `$${metrics.totalEMV.toFixed(2)}`, metrics.mediaCount,
     ].join(','))
   }
 
+  // Totals row
+  lines.push([
+    'TOTALS', '', '', '', '', `$${totAgreedFee.toFixed(2)}`, `$${totCostVal.toFixed(2)}`,
+    totInfLikes, totInfComments, totInfShares, totInfSaves,
+    totInfViews, totInfReach, totInfImpressions,
+    `$${totInfEMV.toFixed(2)}`, totInfMedia,
+  ].join(','))
+
   lines.push('')
   lines.push('MEDIA')
-  lines.push('Date,Influencer,Platform,Type,Likes,Comments,Shares,Saves,Views,Reach,EMV,Link,Caption')
+  lines.push('Date,Influencer,Platform,Type,Likes,Comments,Shares,Saves,Views,Reach,Impressions,EMV,Link,Caption')
 
   for (const media of campaign.media) {
     const mediaEMV = calculateEMV({
@@ -219,7 +314,7 @@ function generateCSV(campaign: CampaignData): NextResponse {
       media.postedAt ? new Date(media.postedAt).toLocaleDateString() : '',
       escapeCSV(media.influencer?.username || ''), escapeCSV(media.influencer?.platform || ''),
       escapeCSV(media.mediaType), media.likes, media.comments, media.shares, media.saves,
-      media.views, media.reach, `$${mediaEMV.extended.toFixed(2)}`,
+      media.views, media.reach, media.impressions, `$${mediaEMV.extended.toFixed(2)}`,
       escapeCSV(media.permalink), escapeCSV(media.caption?.substring(0, 200)),
     ].join(','))
   }
@@ -230,6 +325,125 @@ function generateCSV(campaign: CampaignData): NextResponse {
   return new NextResponse('\uFEFF' + csvContent, {
     headers: {
       'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    },
+  })
+}
+
+// ============ JSON ============
+
+function generateJSON(campaign: CampaignData): NextResponse {
+  const influencerMetrics = aggregateInfluencerMedia(campaign)
+
+  let totalReach = 0, totalLikes = 0, totalComments = 0, totalShares = 0
+  let totalViews = 0, totalSaves = 0, totalImpressions = 0
+
+  for (const m of campaign.media) {
+    totalReach += m.reach || 0
+    totalLikes += m.likes || 0
+    totalComments += m.comments || 0
+    totalShares += m.shares || 0
+    totalViews += m.views || 0
+    totalSaves += m.saves || 0
+    totalImpressions += m.impressions || 0
+  }
+
+  const totalEngagements = totalLikes + totalComments + totalShares
+  const engRate = totalReach > 0 ? (totalEngagements / totalReach) * 100 : 0
+  const emv = calculateCampaignEMV(campaign.media.map(m => ({
+    platform: m.influencer?.platform || 'INSTAGRAM',
+    impressions: m.impressions, reach: m.reach, views: m.views,
+    likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
+  })))
+
+  const totalCost = campaign.influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0)
+
+  const report = {
+    campaign: {
+      name: campaign.name,
+      type: campaign.type,
+      status: campaign.status,
+      startDate: campaign.startDate,
+      endDate: campaign.endDate,
+      country: campaign.country,
+      platforms: campaign.platforms,
+      targetHashtags: campaign.targetHashtags,
+      targetAccounts: campaign.targetAccounts,
+    },
+    overview: {
+      totalInfluencers: campaign.influencers.length,
+      totalMedia: campaign.media.length,
+      totalReach,
+      totalImpressions,
+      totalEngagements,
+      engagementRate: Math.round(engRate * 100) / 100,
+      totalLikes,
+      totalComments,
+      totalShares,
+      totalSaves,
+      totalViews,
+      totalCost,
+      emvBasic: Math.round(emv.basic * 100) / 100,
+      emvExtended: Math.round(emv.extended * 100) / 100,
+    },
+    influencers: campaign.influencers.map(ci => {
+      const inf = ci.influencer
+      const metrics = influencerMetrics.get(inf.username) || {
+        totalLikes: 0, totalComments: 0, totalShares: 0, totalSaves: 0,
+        totalViews: 0, totalReach: 0, totalImpressions: 0, totalEMV: 0, mediaCount: 0,
+      }
+      return {
+        username: inf.username,
+        displayName: inf.displayName,
+        platform: inf.platform,
+        followers: inf.followers,
+        status: ci.status,
+        agreedFee: ci.agreedFee || 0,
+        cost: ci.cost || 0,
+        metrics: {
+          likes: metrics.totalLikes,
+          comments: metrics.totalComments,
+          shares: metrics.totalShares,
+          saves: metrics.totalSaves,
+          views: metrics.totalViews,
+          reach: metrics.totalReach,
+          impressions: metrics.totalImpressions,
+          emv: Math.round(metrics.totalEMV * 100) / 100,
+          mediaCount: metrics.mediaCount,
+        },
+      }
+    }),
+    media: campaign.media.map(m => {
+      const mediaEMV = calculateEMV({
+        platform: m.influencer?.platform || 'INSTAGRAM',
+        impressions: m.impressions, reach: m.reach, views: m.views,
+        clicks: 0, likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
+      })
+      return {
+        postedAt: m.postedAt,
+        influencer: m.influencer?.username || null,
+        platform: m.influencer?.platform || null,
+        mediaType: m.mediaType,
+        likes: m.likes,
+        comments: m.comments,
+        shares: m.shares,
+        saves: m.saves,
+        views: m.views,
+        reach: m.reach,
+        impressions: m.impressions,
+        emv: Math.round(mediaEMV.extended * 100) / 100,
+        permalink: m.permalink,
+        caption: m.caption?.substring(0, 200) || null,
+      }
+    }),
+    generatedAt: new Date().toISOString(),
+  }
+
+  const filename = `${campaign.name.replace(/[^a-zA-Z0-9]/g, '_')}_report.json`
+
+  return new NextResponse(JSON.stringify(report, null, 2), {
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
       'Content-Disposition': `attachment; filename="${filename}"`,
     },
   })

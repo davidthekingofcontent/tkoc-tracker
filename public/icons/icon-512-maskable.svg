@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Maskable icon: full bleed background with safe zone content -->
+  <rect width="512" height="512" fill="#7c3aed"/>
+  <g transform="translate(256,250)">
+    <!-- Megaphone body (scaled down for safe zone) -->
+    <path d="M-60 42 L-60 -22 L42 -62 L42 82 Z" fill="white" opacity="0.95"/>
+    <rect x="-78" y="-8" width="20" height="38" rx="6" fill="white" opacity="0.7"/>
+    <path d="M54 -42 Q100 -66 100 10 Q100 88 54 64" stroke="white" stroke-width="10" fill="none" opacity="0.6" stroke-linecap="round"/>
+    <path d="M66 -22 Q90 -38 90 10 Q90 58 66 42" stroke="white" stroke-width="8" fill="none" opacity="0.4" stroke-linecap="round"/>
+    <rect x="-48" y="58" width="16" height="34" rx="4" fill="white" opacity="0.5"/>
+    <rect x="-24" y="46" width="16" height="46" rx="4" fill="white" opacity="0.5"/>
+    <rect x="0" y="34" width="16" height="58" rx="4" fill="white" opacity="0.5"/>
+  </g>
+</svg>
