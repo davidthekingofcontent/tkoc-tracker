@@ -358,6 +358,27 @@ model CampaignNote {
   @@map("campaign_notes")
 }
 
+// ============ CAMPAIGN TEMPLATES ============
+
+model CampaignTemplate {
+  id            String    @id @default(cuid())
+  name          String
+  type          CampaignType @default(INFLUENCER_TRACKING)
+  platforms     Platform[]  @default([INSTAGRAM])
+  country       String?
+  paymentType   String    @default("PAID")
+  targetAccounts String[]
+  targetHashtags String[]
+  briefText     String?
+
+  userId        String
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("campaign_templates")
+}
+
 // ============ SCRAPING JOBS ============
 
 enum JobStatus {

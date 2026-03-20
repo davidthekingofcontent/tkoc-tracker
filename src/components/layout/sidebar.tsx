@@ -17,9 +17,12 @@ import {
   Pin,
   LogOut,
   BarChart3,
+  Moon,
+  Sun,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useI18n } from '@/i18n/context'
+import { useTheme } from '@/components/theme-provider'
 
 interface NavItem {
   key: string
@@ -76,6 +79,7 @@ export function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
   const { t } = useI18n()
+  const { theme, toggleTheme } = useTheme()
   const [listsOpen, setListsOpen] = useState(true)
   const [campaignsOpen, setCampaignsOpen] = useState(true)
   const [campaigns, setCampaigns] = useState<SidebarCampaign[]>([])
@@ -135,14 +139,14 @@ export function Sidebar() {
     .slice(0, 2)
 
   return (
-    <aside className="fixed left-0 top-0 z-40 flex h-screen w-[260px] flex-col border-r border-gray-200 bg-white">
+    <aside className="fixed left-0 top-0 z-40 flex h-screen w-[260px] flex-col border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 transition-colors">
       {/* Logo */}
-      <div className="flex h-16 items-center gap-2 border-b border-gray-200 px-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-100">
-          <Megaphone className="h-4 w-4 text-purple-600" />
+      <div className="flex h-16 items-center gap-2 border-b border-gray-200 dark:border-gray-700 px-5">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-100 dark:bg-purple-900/40">
+          <Megaphone className="h-4 w-4 text-purple-600 dark:text-purple-400" />
         </div>
-        <span className="text-lg font-bold tracking-tight text-gray-900">
-          TKOC <span className="text-purple-600">Tracker</span>
+        <span className="text-lg font-bold tracking-tight text-gray-900 dark:text-gray-100">
+          TKOC <span className="text-purple-600 dark:text-purple-400">Tracker</span>
         </span>
       </div>
 
@@ -160,16 +164,16 @@ export function Sidebar() {
                 className={cn(
                   "group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                   isActive
-                    ? "border-l-2 border-purple-600 bg-purple-50 text-purple-700"
-                    : "border-l-2 border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                    ? "border-l-2 border-purple-600 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
+                    : "border-l-2 border-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100"
                 )}
               >
                 <item.icon
                   className={cn(
                     "h-4 w-4 shrink-0",
                     isActive
-                      ? "text-purple-600"
-                      : "text-gray-400 group-hover:text-gray-600"
+                      ? "text-purple-600 dark:text-purple-400"
+                      : "text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300"
                   )}
                 />
                 {getNavLabel(item.key, t)}
@@ -263,22 +267,29 @@ export function Sidebar() {
       </nav>
 
       {/* User Profile */}
-      <div className="border-t border-gray-200 p-3">
+      <div className="border-t border-gray-200 dark:border-gray-700 p-3">
         <div className="flex items-center gap-3 rounded-lg px-3 py-2.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-purple-100 text-sm font-semibold text-purple-700">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-purple-100 dark:bg-purple-900/40 text-sm font-semibold text-purple-700 dark:text-purple-300">
             {initials}
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-gray-900">
+            <p className="truncate text-sm font-medium text-gray-900 dark:text-gray-100">
               {user.name}
             </p>
-            <p className="truncate text-xs text-gray-500">
+            <p className="truncate text-xs text-gray-500 dark:text-gray-400">
               {user.email}
             </p>
           </div>
           <button
+            onClick={toggleTheme}
+            className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
+          <button
             onClick={handleLogout}
-            className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+            className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
             title={t.auth.logout}
           >
             <LogOut className="h-4 w-4" />
