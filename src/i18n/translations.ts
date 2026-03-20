@@ -56,6 +56,8 @@ export const translations = {
       recentCampaigns: 'Recent Campaigns',
       searchPlaceholder: 'Search campaigns, creators, lists...',
       pipeline: 'Pipeline',
+      calendar: 'Calendar',
+      brands: 'Brands',
     },
 
     // Dashboard
@@ -448,6 +450,8 @@ export const translations = {
       recentCampaigns: 'Campañas Recientes',
       searchPlaceholder: 'Buscar campañas, creadores, listas...',
       pipeline: 'Pipeline',
+      calendar: 'Calendario',
+      brands: 'Marcas',
     },
 
     // Dashboard

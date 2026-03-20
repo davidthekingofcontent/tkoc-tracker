@@ -17,10 +17,13 @@ import {
   Pin,
   LogOut,
   BarChart3,
+  Calendar,
+  Building2,
   Moon,
   Sun,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { NotificationsBell } from '@/components/notifications-bell'
 import { useI18n } from '@/i18n/context'
 import { useTheme } from '@/components/theme-provider'
 
@@ -38,6 +41,8 @@ const navItems: NavItem[] = [
   { key: "lookalikes", icon: UserCheck, href: "/lookalikes" },
   { key: "lists", icon: List, href: "/lists" },
   { key: "contacts", icon: Users, href: "/contacts" },
+  { key: "brands", icon: Building2, href: "/brands" },
+  { key: "calendar", icon: Calendar, href: "/calendar" },
   { key: "compare", icon: BarChart3, href: "/compare" },
   { key: "settings", icon: Settings, href: "/settings" },
 ]
@@ -69,6 +74,8 @@ function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
     case 'lookalikes': return t.nav.lookalikes
     case 'lists': return t.lists.title
     case 'contacts': return t.contacts.title
+    case 'brands': return t.nav.brands
+    case 'calendar': return t.nav.calendar
     case 'compare': return 'Comparar'
     case 'settings': return t.settings.title
     default: return key
@@ -280,6 +287,7 @@ export function Sidebar() {
               {user.email}
             </p>
           </div>
+          <NotificationsBell />
           <button
             onClick={toggleTheme}
             className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"

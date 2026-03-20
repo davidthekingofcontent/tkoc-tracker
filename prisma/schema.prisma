@@ -379,6 +379,22 @@ model CampaignTemplate {
   @@map("campaign_templates")
 }
 
+// ============ NOTIFICATIONS ============
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String   // campaign_created, influencer_added, media_posted, status_changed, etc.
+  title     String
+  message   String
+  link      String?  // URL to navigate to on click
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read])
+  @@map("notifications")
+}
+
 // ============ SCRAPING JOBS ============
 
 enum JobStatus {

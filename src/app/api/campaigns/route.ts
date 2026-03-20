@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus, CampaignType, Prisma } from '@/generated/prisma/client'
+import { notifyAllTeam } from '@/lib/notifications'
 
 export async function GET(request: NextRequest) {
   try {
@@ -120,6 +121,17 @@ export async function POST(request: NextRequest) {
         },
       },
     })
+
+    // Notify team about new campaign
+    notifyAllTeam(
+      {
+        type: 'campaign_created',
+        title: 'New Campaign Created',
+        message: `${session.name || 'A team member'} created campaign "${campaign.name}"`,
+        link: `/campaigns/${campaign.id}`,
+      },
+      session.id
+    ).catch(() => {})
 
     return NextResponse.json({ campaign }, { status: 201 })
   } catch (error) {

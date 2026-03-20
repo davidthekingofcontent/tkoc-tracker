@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
+import { notifyAllTeam } from '@/lib/notifications'
 
 export async function GET(
   request: NextRequest,
@@ -65,6 +66,17 @@ export async function POST(
         text: text.trim(),
       },
     })
+
+    // Notify team
+    notifyAllTeam(
+      {
+        type: 'note_added',
+        title: 'New Note Added',
+        message: `${session.name} added a note on campaign`,
+        link: `/campaigns/${id}`,
+      },
+      session.id
+    ).catch(() => {})
 
     return NextResponse.json({ note }, { status: 201 })
   } catch (error) {

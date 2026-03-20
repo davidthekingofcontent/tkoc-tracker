@@ -24,6 +24,7 @@ import { calculateCPM, type CPMResult, type Platform as CPMPlatform } from '@/li
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { CampaignNotesButton } from '@/components/campaign-notes'
 import { InfluencerHistoryButton } from '@/components/influencer-history'
+import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
 import {
   ArrowLeft,
   Users,
@@ -61,6 +62,7 @@ import {
   FileText,
   Paperclip,
   ChevronRight,
+  Copy,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -344,6 +346,15 @@ export default function CampaignDetailPage() {
   const [shippingModal, setShippingModal] = useState<string | null>(null) // influencerId
   const [shippingForm, setShippingForm] = useState<Record<string, string>>({})
   const [isSavingShipping, setIsSavingShipping] = useState(false)
+
+  // Save as Template state
+  const [showTemplateModal, setShowTemplateModal] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false)
+  const [templateResult, setTemplateResult] = useState<{
+    type: 'success' | 'error'
+    message: string
+  } | null>(null)
 
   async function fetchCampaign() {
     try {
@@ -637,6 +648,48 @@ export default function CampaignDetailPage() {
     setShippingModal(ci.influencer.id)
   }
 
+  function openTemplateModal() {
+    setTemplateName(campaign ? `${campaign.name} Template` : 'Template')
+    setTemplateResult(null)
+    setShowTemplateModal(true)
+  }
+
+  async function handleSaveTemplate() {
+    if (!campaign || !templateName.trim()) return
+    setIsSavingTemplate(true)
+    setTemplateResult(null)
+    try {
+      const res = await fetch('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: templateName.trim(),
+          type: campaign.type,
+          platforms: campaign.platforms,
+          country: campaign.country,
+          paymentType: campaign.paymentType,
+          targetAccounts: campaign.targetAccounts,
+          targetHashtags: campaign.targetHashtags,
+          briefText: campaign.briefText,
+        }),
+      })
+      if (res.ok) {
+        setTemplateResult({ type: 'success', message: locale === 'es' ? 'Plantilla guardada correctamente' : 'Template saved successfully' })
+        setTimeout(() => {
+          setShowTemplateModal(false)
+          setTemplateResult(null)
+        }, 1500)
+      } else {
+        const data = await res.json()
+        setTemplateResult({ type: 'error', message: data.error || 'Failed to save template' })
+      }
+    } catch {
+      setTemplateResult({ type: 'error', message: 'Network error' })
+    } finally {
+      setIsSavingTemplate(false)
+    }
+  }
+
   // Derived data (must be before any conditional returns to respect Rules of Hooks)
   const influencers = campaign?.influencers || []
   const media = campaign?.media || []
@@ -727,6 +780,13 @@ export default function CampaignDetailPage() {
                 title={t.common.edit}
               >
                 <Settings2 className="h-4 w-4" />
+              </button>
+              <button
+                onClick={openTemplateModal}
+                className="rounded-lg p-1.5 text-gray-400 hover:bg-purple-100 hover:text-purple-600 transition-colors"
+                title={locale === 'es' ? 'Guardar como plantilla' : 'Save as Template'}
+              >
+                <Copy className="h-4 w-4" />
               </button>
             </div>
             <div className="mt-1 flex items-center gap-2 text-sm text-gray-500">
@@ -2661,6 +2721,62 @@ export default function CampaignDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Save as Template Modal */}
+      <Modal open={showTemplateModal} onClose={() => setShowTemplateModal(false)}>
+        <ModalHeader onClose={() => setShowTemplateModal(false)}>
+          {locale === 'es' ? 'Guardar como Plantilla' : 'Save as Template'}
+        </ModalHeader>
+        <ModalBody>
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                {locale === 'es' ? 'Nombre de la plantilla' : 'Template Name'}
+              </label>
+              <input
+                type="text"
+                value={templateName}
+                onChange={(e) => setTemplateName(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                placeholder={locale === 'es' ? 'Nombre de la plantilla' : 'Template name'}
+              />
+            </div>
+            <p className="text-xs text-gray-500">
+              {locale === 'es'
+                ? 'Se guardara el tipo, plataformas, pais, tipo de pago, cuentas objetivo, hashtags y brief de esta campana.'
+                : 'This will save the type, platforms, country, payment type, target accounts, hashtags and brief from this campaign.'}
+            </p>
+            {templateResult && (
+              <div className={`rounded-lg px-4 py-3 text-sm ${
+                templateResult.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+              }`}>
+                {templateResult.message}
+              </div>
+            )}
+          </div>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="secondary" onClick={() => setShowTemplateModal(false)}>
+            {t.common.cancel}
+          </Button>
+          <Button
+            onClick={handleSaveTemplate}
+            disabled={!templateName.trim() || isSavingTemplate}
+          >
+            {isSavingTemplate ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {t.common.loading}
+              </>
+            ) : (
+              <>
+                <Save className="h-4 w-4" />
+                {locale === 'es' ? 'Guardar Plantilla' : 'Save Template'}
+              </>
+            )}
+          </Button>
+        </ModalFooter>
+      </Modal>
     </div>
   )
 }

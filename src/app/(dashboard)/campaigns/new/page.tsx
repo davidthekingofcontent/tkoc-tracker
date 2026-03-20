@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
@@ -21,7 +21,23 @@ import {
   Gift,
   Video,
   Link2,
+  FileText,
+  ChevronDown,
+  Loader2,
 } from 'lucide-react'
+
+interface Template {
+  id: string
+  name: string
+  type: string | null
+  platforms: string[]
+  country: string | null
+  paymentType: string | null
+  targetAccounts: string[]
+  targetHashtags: string[]
+  briefText: string | null
+  createdAt: string
+}
 
 type TrackingType = 'social_listening' | 'influencer_tracking' | 'ugc' | null
 type PaymentType = 'PAID' | 'GIFTED'
@@ -44,6 +60,83 @@ export default function NewCampaignPage() {
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [country, setCountry] = useState('')
+
+  // Template state
+  const [templates, setTemplates] = useState<Template[]>([])
+  const [templatesLoading, setTemplatesLoading] = useState(true)
+  const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null)
+  const [showTemplateDropdown, setShowTemplateDropdown] = useState(false)
+
+  useEffect(() => {
+    async function fetchTemplates() {
+      try {
+        const res = await fetch('/api/templates')
+        if (res.ok) {
+          const data = await res.json()
+          setTemplates(data.templates || [])
+        }
+      } catch {
+        // ignore
+      } finally {
+        setTemplatesLoading(false)
+      }
+    }
+    fetchTemplates()
+  }, [])
+
+  function applyTemplate(template: Template) {
+    setSelectedTemplate(template)
+    setShowTemplateDropdown(false)
+
+    // Map type
+    if (template.type) {
+      const typeMap: Record<string, TrackingType> = {
+        SOCIAL_LISTENING: 'social_listening',
+        INFLUENCER_TRACKING: 'influencer_tracking',
+        UGC: 'ugc',
+      }
+      setTrackingType(typeMap[template.type] || null)
+    }
+
+    // Platforms
+    if (template.platforms && template.platforms.length > 0) {
+      const newPlatforms: Record<string, boolean> = {
+        instagram: false,
+        tiktok: false,
+        youtube: false,
+      }
+      template.platforms.forEach((p: string) => {
+        const key = p.toLowerCase()
+        if (key in newPlatforms) newPlatforms[key] = true
+      })
+      setPlatforms(newPlatforms)
+    }
+
+    // Country
+    if (template.country) setCountry(template.country)
+
+    // Payment type
+    if (template.paymentType === 'PAID' || template.paymentType === 'GIFTED') {
+      setPaymentType(template.paymentType)
+    }
+
+    // Targets (accounts + hashtags combined)
+    const allTargets = [...(template.targetAccounts || []), ...(template.targetHashtags || [])]
+    if (allTargets.length > 0) setTargets(allTargets)
+  }
+
+  function clearTemplate() {
+    setSelectedTemplate(null)
+    setTrackingType(null)
+    setPaymentType('PAID')
+    setCampaignName('')
+    setTargets([])
+    setPlatforms({ instagram: false, tiktok: false, youtube: false })
+    setCountry('')
+    setInfluencers([])
+    setStartDate('')
+    setEndDate('')
+  }
 
   const addTarget = useCallback(() => {
     const value = targetInput.trim()
@@ -136,6 +229,79 @@ export default function NewCampaignPage() {
           </p>
         </div>
       </div>
+
+      {/* Load from Template */}
+      {templates.length > 0 && (
+        <Card variant="elevated">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 text-purple-600">
+                <FileText className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">
+                  {locale === 'es' ? 'Cargar desde plantilla' : 'Load from Template'}
+                </h3>
+                <p className="text-xs text-gray-500">
+                  {locale === 'es' ? 'Pre-rellena el formulario con una plantilla guardada' : 'Pre-fill the form with a saved template'}
+                </p>
+              </div>
+            </div>
+            <div className="relative">
+              {selectedTemplate ? (
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-purple-200 bg-purple-50 px-3 py-1 text-sm font-medium text-purple-700">
+                    <FileText className="h-3 w-3" />
+                    {selectedTemplate.name}
+                    <button
+                      onClick={clearTemplate}
+                      className="ml-1 text-purple-400 hover:text-purple-700 transition-colors"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setShowTemplateDropdown(!showTemplateDropdown)}
+                    className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm text-gray-700 hover:border-purple-400 hover:bg-purple-50 transition-all"
+                  >
+                    {templatesLoading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <>
+                        {locale === 'es' ? 'Seleccionar plantilla' : 'Select template'}
+                        <ChevronDown className="h-4 w-4" />
+                      </>
+                    )}
+                  </button>
+                  {showTemplateDropdown && (
+                    <div className="absolute right-0 top-full z-10 mt-1 w-72 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                      {templates.map((tpl) => (
+                        <button
+                          key={tpl.id}
+                          onClick={() => applyTemplate(tpl)}
+                          className="flex w-full items-start gap-3 px-4 py-2.5 text-left hover:bg-purple-50 transition-colors"
+                        >
+                          <FileText className="mt-0.5 h-4 w-4 shrink-0 text-purple-500" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-gray-900 truncate">{tpl.name}</p>
+                            <p className="text-xs text-gray-400">
+                              {tpl.type && (tpl.type === 'SOCIAL_LISTENING' ? (locale === 'es' ? 'Social Listening' : 'Social Listening') : tpl.type === 'INFLUENCER_TRACKING' ? (locale === 'es' ? 'Influencer Tracking' : 'Influencer Tracking') : 'UGC')}
+                              {tpl.platforms && tpl.platforms.length > 0 && ` · ${tpl.platforms.map(p => p.charAt(0) + p.slice(1).toLowerCase()).join(', ')}`}
+                            </p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Tracking Type Selection */}
       <div>

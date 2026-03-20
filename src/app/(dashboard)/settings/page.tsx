@@ -26,7 +26,14 @@ import {
   Loader2,
   RotateCcw,
   XCircle,
+  Moon,
+  Sun,
+  FileText,
+  Instagram,
+  Youtube,
 } from "lucide-react"
+import { useTheme } from '@/components/theme-provider'
+import { cn } from '@/lib/utils'
 
 // ---------- Interfaces ----------
 
@@ -47,6 +54,19 @@ interface PendingInvitation {
   expiresAt: string
   createdAt: string
   user: { name: string }
+}
+
+interface CampaignTemplate {
+  id: string
+  name: string
+  type: string | null
+  platforms: string[]
+  country: string | null
+  paymentType: string | null
+  targetAccounts: string[]
+  targetHashtags: string[]
+  briefText: string | null
+  createdAt: string
 }
 
 // ---------- Mock Data ----------
@@ -109,6 +129,7 @@ const mockIntegrations: Integration[] = [
 
 export default function SettingsPage() {
   const { t } = useI18n()
+  const { theme, toggleTheme } = useTheme()
 
   // Profile state
   const [profileName, setProfileName] = useState(mockProfile.name)
@@ -131,10 +152,16 @@ export default function SettingsPage() {
   const [integrations, setIntegrations] = useState(mockIntegrations)
   const [apifyKey, setApifyKey] = useState("")
 
+  // Templates state
+  const [campaignTemplates, setCampaignTemplates] = useState<CampaignTemplate[]>([])
+  const [templatesLoading, setTemplatesLoading] = useState(true)
+  const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null)
+
   // ---------- Team Data Fetch ----------
 
   useEffect(() => {
     fetchTeam()
+    fetchTemplates()
   }, [])
 
   async function fetchTeam() {
@@ -147,6 +174,30 @@ export default function SettingsPage() {
       }
     } catch {} finally {
       setTeamLoading(false)
+    }
+  }
+
+  async function fetchTemplates() {
+    try {
+      const res = await fetch('/api/templates')
+      if (res.ok) {
+        const data = await res.json()
+        setCampaignTemplates(data.templates || [])
+      }
+    } catch {} finally {
+      setTemplatesLoading(false)
+    }
+  }
+
+  async function handleDeleteTemplate(id: string) {
+    setDeletingTemplateId(id)
+    try {
+      const res = await fetch(`/api/templates/${id}`, { method: 'DELETE' })
+      if (res.ok) {
+        setCampaignTemplates(prev => prev.filter(t => t.id !== id))
+      }
+    } catch {} finally {
+      setDeletingTemplateId(null)
     }
   }
 
@@ -237,6 +288,9 @@ export default function SettingsPage() {
           <TabsTrigger value="integrations" className="gap-1.5">
             <Plug className="h-4 w-4" /> {t.settings.integrations}
           </TabsTrigger>
+          <TabsTrigger value="templates" className="gap-1.5">
+            <FileText className="h-4 w-4" /> Templates
+          </TabsTrigger>
           <TabsTrigger value="billing" className="gap-1.5">
             <CreditCard className="h-4 w-4" /> {t.settings.billing}
           </TabsTrigger>
@@ -287,6 +341,39 @@ export default function SettingsPage() {
                     value={profileCompany}
                     onChange={(e) => setProfileCompany(e.target.value)}
                   />
+                </div>
+
+                {/* Theme Toggle */}
+                <div className="flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+                  <div className="flex items-center gap-3">
+                    {theme === 'dark' ? (
+                      <Moon className="h-5 w-5 text-purple-500" />
+                    ) : (
+                      <Sun className="h-5 w-5 text-yellow-500" />
+                    )}
+                    <div>
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        {theme === 'dark' ? 'Dark Mode' : 'Light Mode'}
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        {theme === 'dark' ? 'Switch to light mode for a brighter interface' : 'Switch to dark mode for a darker interface'}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={toggleTheme}
+                    className={cn(
+                      "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                      theme === 'dark' ? "bg-purple-600" : "bg-gray-300"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                        theme === 'dark' ? "translate-x-6" : "translate-x-1"
+                      )}
+                    />
+                  </button>
                 </div>
 
                 {/* Save */}
@@ -545,6 +632,84 @@ export default function SettingsPage() {
               </CardContent>
             </Card>
           </div>
+        </TabsContent>
+
+        {/* ===================== TEMPLATES TAB ===================== */}
+        <TabsContent value="templates">
+          <Card variant="elevated">
+            <CardHeader>
+              <CardTitle>Campaign Templates</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {templatesLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+                </div>
+              ) : campaignTemplates.length === 0 ? (
+                <div className="py-12 text-center">
+                  <FileText className="mx-auto h-10 w-10 text-gray-300" />
+                  <p className="mt-3 text-sm text-gray-500">No templates yet.</p>
+                  <p className="mt-1 text-xs text-gray-400">
+                    Save a campaign as a template from the campaign detail page.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {campaignTemplates.map((tpl) => (
+                    <div
+                      key={tpl.id}
+                      className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-4 py-3 transition-colors hover:border-gray-300"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 text-purple-600">
+                          <FileText className="h-5 w-5" />
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-semibold text-gray-900">{tpl.name}</h4>
+                          <div className="mt-0.5 flex items-center gap-2 text-xs text-gray-400">
+                            {tpl.type && (
+                              <Badge variant="default">
+                                {tpl.type === 'SOCIAL_LISTENING' ? 'Social Listening' : tpl.type === 'INFLUENCER_TRACKING' ? 'Influencer Tracking' : 'UGC'}
+                              </Badge>
+                            )}
+                            {tpl.platforms && tpl.platforms.length > 0 && (
+                              <span className="flex items-center gap-1">
+                                {tpl.platforms.map(p => (
+                                  <span key={p} className="inline-flex items-center gap-0.5 text-gray-500">
+                                    {p === 'INSTAGRAM' && <Instagram className="h-3 w-3 text-pink-400" />}
+                                    {p === 'YOUTUBE' && <Youtube className="h-3 w-3 text-red-400" />}
+                                    {p === 'TIKTOK' && (
+                                      <svg className="h-3 w-3 text-cyan-400" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.34-6.34V9.05a8.27 8.27 0 004.76 1.5V7.12a4.83 4.83 0 01-1-.43z" />
+                                      </svg>
+                                    )}
+                                  </span>
+                                ))}
+                              </span>
+                            )}
+                            <span>&middot;</span>
+                            <span>{new Date(tpl.createdAt).toLocaleDateString()}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteTemplate(tpl.id)}
+                        disabled={deletingTemplateId === tpl.id}
+                        className="rounded-md p-2 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 disabled:opacity-50"
+                        title="Delete template"
+                      >
+                        {deletingTemplateId === tpl.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* ===================== BILLING TAB ===================== */}
