@@ -64,6 +64,9 @@ import {
   Paperclip,
   ChevronRight,
   Copy,
+  Upload,
+  Trash2,
+  File,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -342,6 +345,8 @@ export default function CampaignDetailPage() {
   const [showBriefEditor, setShowBriefEditor] = useState(false)
   const [briefText, setBriefText] = useState('')
   const [isSavingBrief, setIsSavingBrief] = useState(false)
+  const [isUploadingFiles, setIsUploadingFiles] = useState(false)
+  const [isDeletingFile, setIsDeletingFile] = useState<string | null>(null)
 
   // Shipping modal
   const [shippingModal, setShippingModal] = useState<string | null>(null) // influencerId
@@ -606,6 +611,67 @@ export default function CampaignDetailPage() {
       setShowBriefEditor(false)
     } catch { /* ignore */ }
     setIsSavingBrief(false)
+  }
+
+  async function handleBriefFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    setIsUploadingFiles(true)
+    try {
+      const formData = new FormData()
+      for (let i = 0; i < files.length; i++) {
+        formData.append('files', files[i])
+      }
+
+      const res = await fetch(`/api/campaigns/${campaignId}/brief-files`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (res.ok) {
+        await fetchCampaign()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Upload failed')
+      }
+    } catch {
+      alert('Upload failed')
+    }
+    setIsUploadingFiles(false)
+    // Reset input
+    e.target.value = ''
+  }
+
+  async function handleDeleteBriefFile(filePath: string) {
+    setIsDeletingFile(filePath)
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/brief-files`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath }),
+      })
+      if (res.ok) {
+        await fetchCampaign()
+      }
+    } catch { /* ignore */ }
+    setIsDeletingFile(null)
+  }
+
+  function getFileIcon(fileName: string) {
+    const ext = fileName.split('.').pop()?.toLowerCase()
+    if (ext === 'pdf') return '📄'
+    if (ext === 'doc' || ext === 'docx') return '📝'
+    if (ext === 'xls' || ext === 'xlsx') return '📊'
+    if (ext === 'ppt' || ext === 'pptx') return '📑'
+    if (['png', 'jpg', 'jpeg', 'webp'].includes(ext || '')) return '🖼️'
+    return '📎'
+  }
+
+  function getFileDisplayName(filePath: string) {
+    const fileName = filePath.split('/').pop() || filePath
+    // Remove the timestamp suffix (_1234567890)
+    return fileName.replace(/_\d{13}(?=\.\w+$)/, '')
   }
 
   async function handleSaveShipping(influencerId: string) {
@@ -992,9 +1058,14 @@ export default function CampaignDetailPage() {
               {campaign.briefText && !showBriefEditor && (
                 <p className="mt-0.5 text-xs text-gray-500 line-clamp-1">{campaign.briefText}</p>
               )}
-              {!campaign.briefText && !showBriefEditor && (
+              {campaign.briefFiles && campaign.briefFiles.length > 0 && !showBriefEditor && (
+                <p className="mt-0.5 text-xs text-purple-500">
+                  📎 {campaign.briefFiles.length} {locale === 'es' ? 'archivo(s) adjunto(s)' : 'attached file(s)'}
+                </p>
+              )}
+              {!campaign.briefText && (!campaign.briefFiles || campaign.briefFiles.length === 0) && !showBriefEditor && (
                 <p className="mt-0.5 text-xs text-gray-400 italic">
-                  {locale === 'es' ? 'No hay brief todavía. Haz click para añadir.' : 'No brief yet. Click to add.'}
+                  {locale === 'es' ? 'No hay brief todavía. Haz click para añadir texto o archivos.' : 'No brief yet. Click to add text or files.'}
                 </p>
               )}
             </div>
@@ -1003,7 +1074,8 @@ export default function CampaignDetailPage() {
         </button>
 
         {showBriefEditor && (
-          <div className="border-t border-gray-200 px-5 py-4 space-y-3">
+          <div className="border-t border-gray-200 px-5 py-4 space-y-4">
+            {/* Text editor */}
             <textarea
               value={briefText}
               onChange={(e) => setBriefText(e.target.value)}
@@ -1013,26 +1085,72 @@ export default function CampaignDetailPage() {
               rows={6}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 resize-y"
             />
+
+            {/* Attached files */}
             {campaign.briefFiles && campaign.briefFiles.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {campaign.briefFiles.map((file, i) => (
-                  <a key={i} href={file} target="_blank" rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100">
-                    <Paperclip className="h-3 w-3" />
-                    {file.split('/').pop() || `File ${i + 1}`}
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                ))}
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                  {locale === 'es' ? 'Archivos adjuntos' : 'Attached files'}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {campaign.briefFiles.map((file, i) => (
+                    <div key={i} className="group inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 pl-3 pr-1 py-1.5 text-xs text-gray-600">
+                      <span className="text-sm">{getFileIcon(file)}</span>
+                      <a href={file} target="_blank" rel="noopener noreferrer"
+                        className="hover:text-purple-600 hover:underline max-w-[200px] truncate">
+                        {getFileDisplayName(file)}
+                      </a>
+                      <a href={file} download target="_blank" rel="noopener noreferrer"
+                        className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600"
+                        title={locale === 'es' ? 'Descargar' : 'Download'}>
+                        <Download className="h-3 w-3" />
+                      </a>
+                      <button
+                        onClick={() => handleDeleteBriefFile(file)}
+                        disabled={isDeletingFile === file}
+                        className="p-1 rounded hover:bg-red-100 text-gray-400 hover:text-red-600"
+                        title={locale === 'es' ? 'Eliminar' : 'Delete'}>
+                        {isDeletingFile === file
+                          ? <Loader2 className="h-3 w-3 animate-spin" />
+                          : <Trash2 className="h-3 w-3" />
+                        }
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
-            <div className="flex items-center justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setShowBriefEditor(false)}>
-                {t.common.cancel}
-              </Button>
-              <Button variant="primary" size="sm" onClick={handleSaveBrief} disabled={isSavingBrief}>
-                {isSavingBrief ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                {t.common.save}
-              </Button>
+
+            {/* Upload button + action buttons */}
+            <div className="flex items-center justify-between">
+              <label className={`inline-flex items-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-2 text-xs text-gray-500 cursor-pointer hover:border-purple-400 hover:text-purple-600 hover:bg-purple-50 transition-colors ${isUploadingFiles ? 'opacity-50 pointer-events-none' : ''}`}>
+                {isUploadingFiles
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : <Upload className="h-4 w-4" />
+                }
+                {isUploadingFiles
+                  ? (locale === 'es' ? 'Subiendo...' : 'Uploading...')
+                  : (locale === 'es' ? 'Subir PDF, Word, Excel, imagen...' : 'Upload PDF, Word, Excel, image...')
+                }
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.webp"
+                  onChange={handleBriefFileUpload}
+                  className="hidden"
+                  disabled={isUploadingFiles}
+                />
+              </label>
+
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" size="sm" onClick={() => setShowBriefEditor(false)}>
+                  {t.common.cancel}
+                </Button>
+                <Button variant="primary" size="sm" onClick={handleSaveBrief} disabled={isSavingBrief}>
+                  {isSavingBrief ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  {t.common.save}
+                </Button>
+              </div>
             </div>
           </div>
         )}
