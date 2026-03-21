@@ -167,7 +167,7 @@ export async function GET(
       select: {
         likes: true, comments: true, shares: true, saves: true,
         views: true, reach: true, impressions: true,
-        influencer: { select: { platform: true } },
+        influencer: { select: { platform: true, followers: true } },
       },
     })
 
@@ -181,6 +181,7 @@ export async function GET(
         comments: m.comments || 0,
         shares: m.shares || 0,
         saves: m.saves || 0,
+        followers: m.influencer?.followers || 0,
       }))
     )
 
