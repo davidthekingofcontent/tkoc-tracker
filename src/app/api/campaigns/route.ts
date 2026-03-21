@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, type, platforms, targetAccounts, targetHashtags, targetKeywords, startDate, endDate, country, paymentType, briefText } = body
+    const { name, type, platforms, targetAccounts, targetHashtags, targetKeywords, startDate, endDate, country, paymentType, briefText, objective } = body
 
     if (!name) {
       return NextResponse.json({ error: 'Campaign name is required' }, { status: 400 })
@@ -109,6 +109,7 @@ export async function POST(request: NextRequest) {
         // UGC campaigns are always PAID
         ...(type === 'UGC' && { paymentType: 'PAID' }),
         ...(briefText !== undefined && { briefText }),
+        ...(objective && { objective }),
         userId: session.id,
         // Auto-assign creator
         assignments: {

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card } from '@/components/ui/card'
 import { useI18n } from '@/i18n/context'
+import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
 import {
   ArrowLeft,
   Radio,
@@ -60,6 +61,7 @@ export default function NewCampaignPage() {
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [country, setCountry] = useState('')
+  const [objective, setObjective] = useState('')
 
   // Template state
   const [templates, setTemplates] = useState<Template[]>([])
@@ -133,6 +135,7 @@ export default function NewCampaignPage() {
     setTargets([])
     setPlatforms({ instagram: false, tiktok: false, youtube: false })
     setCountry('')
+    setObjective('')
     setInfluencers([])
     setStartDate('')
     setEndDate('')
@@ -196,6 +199,7 @@ export default function NewCampaignPage() {
           ...(trackingType === 'influencer_tracking' && startDate && { startDate }),
           ...(trackingType === 'influencer_tracking' && endDate && { endDate }),
           ...(country && { country }),
+          ...(objective && { objective }),
         }),
       })
 
@@ -535,6 +539,30 @@ export default function NewCampaignPage() {
               </div>
             </Card>
           )}
+
+          {/* Campaign Objective */}
+          <Card variant="elevated">
+            <h3 className="mb-4 text-base font-semibold text-gray-900">
+              {locale === 'es' ? 'Objetivo de la Campaña' : 'Campaign Objective'}
+            </h3>
+            <p className="mb-4 text-sm text-gray-500">
+              {locale === 'es'
+                ? 'Selecciona el objetivo principal de esta campaña.'
+                : 'Select the main objective for this campaign.'}
+            </p>
+            <select
+              value={objective}
+              onChange={(e) => setObjective(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white"
+            >
+              <option value="">{locale === 'es' ? 'Sin objetivo específico' : 'No specific objective'}</option>
+              {CAMPAIGN_OBJECTIVES.map((obj) => (
+                <option key={obj.value} value={obj.value}>
+                  {obj.icon} {locale === 'es' ? obj.labelEs : obj.labelEn}
+                </option>
+              ))}
+            </select>
+          </Card>
 
           {/* Brand Account Targets (not for UGC) */}
           {trackingType !== 'ugc' && <Card variant="elevated">

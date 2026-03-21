@@ -26,6 +26,7 @@ import { CampaignNotesButton } from '@/components/campaign-notes'
 import { InfluencerHistoryButton } from '@/components/influencer-history'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
 import { StoriesTracker } from '@/components/stories-tracker'
+import { CampaignIntelligencePanel } from '@/components/campaign-intelligence-panel'
 import { proxyImg } from '@/lib/proxy-image'
 import {
   ArrowLeft,
@@ -144,6 +145,7 @@ interface CampaignData {
   briefText: string | null
   briefFiles: string[]
   briefAttachments?: { id: string; fileName: string; fileType: string; fileSize: number; createdAt: string }[]
+  objective: string | null
   influencers: CampaignInfluencer[]
   media: CampaignMedia[]
 }
@@ -1205,6 +1207,10 @@ export default function CampaignDetailPage() {
           <TabsTrigger value="sentiment">
             <MessageCircle className="h-3.5 w-3.5" />
             {t.sentiment.tab}
+          </TabsTrigger>
+          <TabsTrigger value="intelligence">
+            <BarChart3 className="h-3.5 w-3.5" />
+            {locale === 'es' ? 'Inteligencia' : 'Intelligence'}
           </TabsTrigger>
         </TabsList>
 
@@ -2686,6 +2692,17 @@ export default function CampaignDetailPage() {
         </TabsContent>
 
         {/* Sentiment Tab - coming soon */}
+
+        {/* Intelligence Tab */}
+        <TabsContent value="intelligence">
+          <CampaignIntelligencePanel
+            campaign={{ id: campaign.id, objective: campaign.objective, type: campaign.type }}
+            influencers={influencers}
+            media={campaign.media}
+            overview={overview || { emvExtended: 0, totalCost: 0 }}
+            locale={locale}
+          />
+        </TabsContent>
       </Tabs>
 
       {/* Edit Campaign Modal */}

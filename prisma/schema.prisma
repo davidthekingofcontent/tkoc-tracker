@@ -90,6 +90,7 @@ model Campaign {
   platforms      Platform[]     @default([INSTAGRAM])
   country        String?        // Filter content by country (e.g. "ES", "MX")
   paymentType    String         @default("PAID") // "PAID" or "GIFTED"
+  objective      String?        // Campaign objective: awareness, engagement, traffic, conversion, content
 
   // Brief
   briefText      String?        // Campaign brief text
