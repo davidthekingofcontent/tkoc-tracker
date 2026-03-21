@@ -291,6 +291,25 @@ export async function GET(request: NextRequest) {
       }
     } catch { /* defaults remain 0 */ }
 
+    // Transform platformBreakdown from object to array for frontend
+    const platformBreakdownArray = Object.entries(platformBreakdown).map(([platform, data]) => ({
+      platform,
+      influencers: data.influencers,
+      media: data.media,
+    })).filter(p => p.influencers > 0 || p.media > 0)
+
+    // Transform recentActivity to match frontend expected field names
+    const recentActivityFormatted = recentActivity.map(a => ({
+      influencerUsername: a.username,
+      platform: a.platform,
+      likes: a.likes,
+      comments: a.comments,
+      views: a.views,
+      postedAt: a.postedAt,
+      campaignName: a.campaignName || '',
+      permalink: a.permalink,
+    }))
+
     return NextResponse.json({
       stats: {
         activeCampaigns,
@@ -308,8 +327,8 @@ export async function GET(request: NextRequest) {
       campaignsByStatus,
       campaignsByType,
       topInfluencers,
-      recentActivity,
-      platformBreakdown,
+      recentActivity: recentActivityFormatted,
+      platformBreakdown: platformBreakdownArray,
       recentCampaigns,
       pinnedLists,
     })
