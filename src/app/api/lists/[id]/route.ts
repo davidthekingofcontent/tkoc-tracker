@@ -98,6 +98,45 @@ export async function POST(
   }
 }
 
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await getSession(request)
+    if (!session) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    const { id } = await params
+    const body = await request.json()
+
+    const list = await prisma.list.findUnique({ where: { id } })
+    if (!list) {
+      return NextResponse.json({ error: 'List not found' }, { status: 404 })
+    }
+
+    if (list.userId !== session.id && session.role !== 'ADMIN') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    const data: Record<string, unknown> = {}
+    if (typeof body.isPinned === 'boolean') data.isPinned = body.isPinned
+    if (typeof body.isArchived === 'boolean') data.isArchived = body.isArchived
+    if (typeof body.name === 'string' && body.name.trim()) data.name = body.name.trim()
+
+    const updated = await prisma.list.update({
+      where: { id },
+      data,
+    })
+
+    return NextResponse.json({ list: updated })
+  } catch (error) {
+    console.error('Update list error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -119,12 +158,23 @@ export async function DELETE(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    await prisma.list.update({
+    // If itemId is provided in the URL search params, remove just that item
+    const { searchParams } = new URL(request.url)
+    const itemId = searchParams.get('itemId')
+
+    if (itemId) {
+      await prisma.listItem.delete({
+        where: { id: itemId, listId: id },
+      })
+      return NextResponse.json({ message: 'Item removed from list' })
+    }
+
+    // Otherwise delete the entire list
+    await prisma.list.delete({
       where: { id },
-      data: { isArchived: true },
     })
 
-    return NextResponse.json({ message: 'List archived' })
+    return NextResponse.json({ message: 'List deleted' })
   } catch (error) {
     console.error('Delete list error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

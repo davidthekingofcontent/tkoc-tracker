@@ -138,13 +138,29 @@ export default function ListDetailPage() {
   }, [listId])
 
   const handleRemove = async (itemId: string) => {
-    // Remove from local state optimistically
+    // Optimistic update
+    const previousList = list
     if (list) {
       setList({
         ...list,
         items: list.items.filter((i) => i.id !== itemId),
         _count: { items: list._count.items - 1 },
       })
+    }
+
+    try {
+      const res = await fetch(`/api/lists/${listId}?itemId=${itemId}`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) {
+        // Revert on failure
+        setList(previousList)
+        console.error('Failed to remove item from list')
+      }
+    } catch (err) {
+      // Revert on error
+      setList(previousList)
+      console.error('Error removing item from list:', err)
     }
   }
 
@@ -194,7 +210,7 @@ export default function ListDetailPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{list.name}</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{list.name}</h1>
           <p className="mt-1 text-sm text-gray-500">
             {items.length} influencers &middot; {formatNumber(combinedReach)} {t.listDetail.combinedReach}
           </p>
@@ -228,7 +244,7 @@ export default function ListDetailPage() {
       </div>
 
       {/* Influencers Table */}
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
         <Table>
           <TableHeader>
             <TableRow>
@@ -256,7 +272,7 @@ export default function ListDetailPage() {
                     <div className="flex items-center gap-3">
                       <Avatar name={item.influencer.displayName || item.influencer.username} size="sm" src={item.influencer.avatarUrl || undefined} />
                       <div>
-                        <p className="font-medium text-gray-900">
+                        <p className="font-medium text-gray-900 dark:text-gray-100">
                           @{item.influencer.username}
                         </p>
                         <p className="text-xs text-gray-500">

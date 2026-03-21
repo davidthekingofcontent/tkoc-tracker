@@ -244,16 +244,16 @@ export default function DiscoverPage() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">{t.discover.title}</h1>
-        <p className="mt-1 text-sm text-gray-500">{t.discover.subtitle}</p>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{t.discover.title}</h1>
+        <p className="mt-1 text-sm text-gray-500 dark:text-gray-300">{t.discover.subtitle}</p>
       </div>
 
       {/* Main Layout */}
       <div className="flex gap-6">
         {/* Left Sidebar Filters */}
-        <div className="w-80 shrink-0 space-y-5 rounded-xl border border-gray-200 bg-white shadow-sm p-5">
+        <div className="w-80 shrink-0 space-y-5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-500">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300">
               {t.discover.filters}
             </h2>
             <button
@@ -286,7 +286,7 @@ export default function DiscoverPage() {
           />
 
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-gray-700">
+            <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
               {t.campaigns.followers}
             </label>
             <div className="flex items-center gap-2">
@@ -360,7 +360,7 @@ export default function DiscoverPage() {
         <div className="flex-1 min-w-0">
           {/* Loading spinner */}
           {searching && (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 bg-white shadow-sm py-32">
+            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm py-32">
               <Loader2 className="h-10 w-10 animate-spin text-purple-500 mb-4" />
               <p className="text-sm font-medium text-gray-700">{t.common.loading}...</p>
               <p className="text-xs text-gray-400 mt-1">{t.discover.subtitle}</p>
@@ -369,7 +369,7 @@ export default function DiscoverPage() {
 
           {/* Empty state before search */}
           {!hasSearched && !searching && (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 bg-white shadow-sm py-32">
+            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm py-32">
               <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gray-100 text-gray-400">
                 <Compass className="h-7 w-7" />
               </div>
@@ -381,7 +381,7 @@ export default function DiscoverPage() {
 
           {/* No results state */}
           {hasSearched && !searching && results.length === 0 && (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 bg-white shadow-sm py-32">
+            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm py-32">
               <p className="text-sm text-gray-500">{t.common.noResults}</p>
             </div>
           )}
@@ -398,7 +398,7 @@ export default function DiscoverPage() {
                 </span>
               </div>
 
-              <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+              <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -428,7 +428,7 @@ export default function DiscoverPage() {
                                   href={getProfileUrl(item.username, item.platform)}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="font-medium text-gray-900 hover:text-purple-600 transition-colors inline-flex items-center gap-1"
+                                  className="font-medium text-gray-900 dark:text-gray-100 hover:text-purple-600 transition-colors inline-flex items-center gap-1"
                                 >
                                   @{item.username}
                                   <ExternalLink className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />

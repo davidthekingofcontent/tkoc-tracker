@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { ListChecks, Pin, Archive, Search, Users, Eye, Plus, Loader2 } from 'lucide-react'
+import { ListChecks, Pin, Archive, Search, Users, Eye, Plus, Loader2, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { StatCard } from '@/components/ui/stat-card'
@@ -37,6 +37,7 @@ export default function ListsPage() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [newListName, setNewListName] = useState('')
   const [isCreating, setIsCreating] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
   async function fetchLists() {
     try {
@@ -94,6 +95,46 @@ export default function ListsPage() {
     }
   }
 
+  const handleTogglePin = async (list: ListData) => {
+    try {
+      const res = await fetch(`/api/lists/${list.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isPinned: !list.isPinned }),
+      })
+      if (res.ok) fetchLists()
+    } catch (err) {
+      console.error('Error toggling pin:', err)
+    }
+  }
+
+  const handleToggleArchive = async (list: ListData) => {
+    try {
+      const res = await fetch(`/api/lists/${list.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isArchived: !list.isArchived }),
+      })
+      if (res.ok) fetchLists()
+    } catch (err) {
+      console.error('Error toggling archive:', err)
+    }
+  }
+
+  const handleDeleteList = async (listId: string) => {
+    try {
+      const res = await fetch(`/api/lists/${listId}`, {
+        method: 'DELETE',
+      })
+      if (res.ok) {
+        setDeleteConfirm(null)
+        fetchLists()
+      }
+    } catch (err) {
+      console.error('Error deleting list:', err)
+    }
+  }
+
   const renderTable = (items: ListData[]) => (
     <Table>
       <TableHeader>
@@ -118,7 +159,7 @@ export default function ListsPage() {
               <TableCell>
                 <Link
                   href={`/lists/${list.id}`}
-                  className="font-medium text-gray-900 hover:text-purple-600 transition-colors"
+                  className="font-medium text-gray-900 dark:text-gray-100 hover:text-purple-600 transition-colors"
                 >
                   {list.isPinned ? '📌 ' : ''}{list.name}
                 </Link>
@@ -134,20 +175,29 @@ export default function ListsPage() {
               <TableCell className="text-right">
                 <div className="flex items-center justify-end gap-1">
                   <button
-                    className={`rounded-lg p-2 transition-colors hover:bg-gray-100 ${
-                      list.isPinned ? 'text-purple-600' : 'text-gray-400 hover:text-gray-900'
+                    onClick={() => handleTogglePin(list)}
+                    className={`rounded-lg p-2 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700 ${
+                      list.isPinned ? 'text-purple-600' : 'text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
                     }`}
                     title={list.isPinned ? 'Unpin' : 'Pin'}
                   >
                     <Pin className="h-4 w-4" />
                   </button>
                   <button
-                    className={`rounded-lg p-2 transition-colors hover:bg-gray-100 ${
-                      list.isArchived ? 'text-purple-600' : 'text-gray-400 hover:text-gray-900'
+                    onClick={() => handleToggleArchive(list)}
+                    className={`rounded-lg p-2 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700 ${
+                      list.isArchived ? 'text-purple-600' : 'text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
                     }`}
                     title={list.isArchived ? 'Unarchive' : 'Archive'}
                   >
                     <Archive className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={() => setDeleteConfirm(list.id)}
+                    className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
+                    title="Delete"
+                  >
+                    <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
               </TableCell>
@@ -162,7 +212,7 @@ export default function ListsPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">{t.lists.title}</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{t.lists.title}</h1>
         <Button onClick={() => setShowCreateModal(true)}>
           <Plus className="h-4 w-4" />
           {t.lists.createList}
@@ -199,7 +249,7 @@ export default function ListsPage() {
 
       {/* Tabs & Table */}
       {isLoading ? (
-        <div className="flex items-center justify-center py-16 rounded-xl border border-gray-200 bg-white">
+        <div className="flex items-center justify-center py-16 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
           <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
           <span className="ml-2 text-gray-500">{t.common.loading}</span>
         </div>
@@ -212,22 +262,46 @@ export default function ListsPage() {
           </TabsList>
 
           <TabsContent value="all">
-            <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
               {renderTable(filteredLists('all'))}
             </div>
           </TabsContent>
           <TabsContent value="pinned">
-            <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
               {renderTable(filteredLists('pinned'))}
             </div>
           </TabsContent>
           <TabsContent value="archived">
-            <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
               {renderTable(filteredLists('archived'))}
             </div>
           </TabsContent>
         </Tabs>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <Modal open={!!deleteConfirm} onClose={() => setDeleteConfirm(null)}>
+        <ModalHeader onClose={() => setDeleteConfirm(null)}>
+          {t.common.confirm || 'Confirm Delete'}
+        </ModalHeader>
+        <ModalBody>
+          <p className="text-sm text-gray-600 dark:text-gray-300">
+            {t.lists.deleteConfirm || 'Are you sure you want to delete this list? This action cannot be undone.'}
+          </p>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="ghost" onClick={() => setDeleteConfirm(null)}>
+            {t.common.cancel}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => deleteConfirm && handleDeleteList(deleteConfirm)}
+            className="bg-red-600 hover:bg-red-700"
+          >
+            {t.common.delete || 'Delete'}
+          </Button>
+        </ModalFooter>
+      </Modal>
 
       {/* Create List Modal */}
       <Modal open={showCreateModal} onClose={() => setShowCreateModal(false)}>

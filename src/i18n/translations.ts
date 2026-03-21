@@ -181,6 +181,8 @@ export const translations = {
       withEmail: 'with email',
       removeFromList: 'Remove from list',
       pinned: 'Pinned',
+      deleteConfirm: 'Are you sure you want to delete this list? This action cannot be undone.',
+      deleteList: 'Delete list',
     },
 
     // Contacts
@@ -453,6 +455,14 @@ export const translations = {
       location: 'Location',
       results: 'results',
     },
+
+    // Notifications
+    notifications: {
+      title: 'Notifications',
+      noNotifications: 'No notifications yet',
+      view: 'View',
+      markAllRead: 'Mark all as read',
+    },
   },
 
   es: {
@@ -635,6 +645,8 @@ export const translations = {
       withEmail: 'con email',
       removeFromList: 'Eliminar de la lista',
       pinned: 'Fijada',
+      deleteConfirm: '¿Estás seguro de que quieres eliminar esta lista? Esta acción no se puede deshacer.',
+      deleteList: 'Eliminar lista',
     },
 
     // Contacts
@@ -906,6 +918,14 @@ export const translations = {
       viewPost: 'Ver post',
       deletedBy: 'Eliminado por',
       missingDisclosure: 'Falta declaración de publicidad',
+    },
+
+    // Notifications
+    notifications: {
+      title: 'Notificaciones',
+      noNotifications: 'No hay notificaciones aún',
+      view: 'Ver',
+      markAllRead: 'Marcar todo como leído',
     },
   },
 }

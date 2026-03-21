@@ -137,7 +137,7 @@ export default function ContactsPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">{t.contacts.title}</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{t.contacts.title}</h1>
       </div>
 
       {/* Stats */}
@@ -170,12 +170,12 @@ export default function ContactsPage() {
 
       {/* Table */}
       {isLoading ? (
-        <div className="flex items-center justify-center py-16 rounded-xl border border-gray-200 bg-white">
+        <div className="flex items-center justify-center py-16 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
           <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
           <span className="ml-2 text-gray-500">{t.common.loading}</span>
         </div>
       ) : (
-        <div className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden shadow-sm">
           <Table>
             <TableHeader>
               <TableRow>
@@ -205,7 +205,7 @@ export default function ContactsPage() {
                       <div className="flex items-center gap-3">
                         <Avatar name={contact.influencer.displayName || contact.influencer.username} size="sm" src={contact.influencer.avatarUrl || undefined} />
                         <div>
-                          <p className="font-medium text-gray-900">@{contact.influencer.username}</p>
+                          <p className="font-medium text-gray-900 dark:text-gray-100">@{contact.influencer.username}</p>
                           <p className="text-xs text-gray-500">{contact.influencer.displayName}</p>
                         </div>
                       </div>
