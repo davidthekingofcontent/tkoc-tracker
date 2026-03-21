@@ -1,25 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { writeFile, mkdir, unlink } from 'fs/promises'
-import path from 'path'
-
-const ALLOWED_TYPES = [
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-]
 
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.png', '.jpg', '.jpeg', '.webp']
 const MAX_FILE_SIZE = 20 * 1024 * 1024 // 20MB
 
+// POST: Upload files (stored in DB as binary)
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -34,7 +20,7 @@ export async function POST(
 
     const campaign = await prisma.campaign.findUnique({
       where: { id },
-      select: { id: true, briefFiles: true },
+      select: { id: true },
     })
 
     if (!campaign) {
@@ -48,67 +34,86 @@ export async function POST(
       return NextResponse.json({ error: 'No files provided' }, { status: 400 })
     }
 
-    // Validate files
+    const uploadedFiles: { id: string; fileName: string; fileSize: number }[] = []
+
     for (const file of files) {
+      // Validate size
       if (file.size > MAX_FILE_SIZE) {
         return NextResponse.json(
-          { error: `File "${file.name}" exceeds 20MB limit` },
+          { error: `"${file.name}" excede el límite de 20MB` },
           { status: 400 }
         )
       }
 
-      const ext = path.extname(file.name).toLowerCase()
+      // Validate extension
+      const ext = '.' + file.name.split('.').pop()?.toLowerCase()
       if (!ALLOWED_EXTENSIONS.includes(ext)) {
         return NextResponse.json(
-          { error: `File type "${ext}" not allowed. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}` },
+          { error: `Tipo "${ext}" no permitido. Permitidos: ${ALLOWED_EXTENSIONS.join(', ')}` },
           { status: 400 }
         )
       }
-    }
 
-    // Ensure upload directory exists
-    const uploadDir = path.join(process.cwd(), 'public', 'uploads', 'briefs', id)
-    await mkdir(uploadDir, { recursive: true })
-
-    const uploadedPaths: string[] = []
-
-    for (const file of files) {
+      // Read file data
       const bytes = await file.arrayBuffer()
       const buffer = Buffer.from(bytes)
 
-      // Sanitize filename: remove special chars, add timestamp to avoid collisions
-      const ext = path.extname(file.name).toLowerCase()
-      const baseName = file.name
-        .replace(ext, '')
-        .replace(/[^a-zA-Z0-9_\-\s]/g, '')
-        .replace(/\s+/g, '_')
-        .substring(0, 50)
-      const timestamp = Date.now()
-      const fileName = `${baseName}_${timestamp}${ext}`
+      // Save to database
+      const briefFile = await prisma.briefFile.create({
+        data: {
+          campaignId: id,
+          fileName: file.name,
+          fileType: file.type || 'application/octet-stream',
+          fileSize: file.size,
+          fileData: buffer,
+        },
+      })
 
-      const filePath = path.join(uploadDir, fileName)
-      await writeFile(filePath, buffer)
-
-      // Store relative URL path
-      uploadedPaths.push(`/uploads/briefs/${id}/${fileName}`)
+      uploadedFiles.push({
+        id: briefFile.id,
+        fileName: briefFile.fileName,
+        fileSize: briefFile.fileSize,
+      })
     }
 
-    // Append to existing briefFiles
-    const existingFiles = campaign.briefFiles || []
-    const allFiles = [...existingFiles, ...uploadedPaths]
-
-    await prisma.campaign.update({
-      where: { id },
-      data: { briefFiles: allFiles },
-    })
-
     return NextResponse.json({
-      message: `${uploadedPaths.length} file(s) uploaded`,
-      files: uploadedPaths,
-      allFiles,
+      message: `${uploadedFiles.length} archivo(s) subido(s)`,
+      files: uploadedFiles,
     })
   } catch (error) {
     console.error('Brief file upload error:', error)
+    return NextResponse.json({ error: 'Error interno del servidor' }, { status: 500 })
+  }
+}
+
+// GET: List files for a campaign
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await getSession(request)
+    if (!session) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    const { id } = await params
+
+    const files = await prisma.briefFile.findMany({
+      where: { campaignId: id },
+      select: {
+        id: true,
+        fileName: true,
+        fileType: true,
+        fileSize: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    return NextResponse.json({ files })
+  } catch (error) {
+    console.error('Brief files list error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
@@ -125,37 +130,24 @@ export async function DELETE(
     }
 
     const { id } = await params
-    const { filePath } = await request.json()
+    const { fileId } = await request.json()
 
-    if (!filePath) {
-      return NextResponse.json({ error: 'filePath required' }, { status: 400 })
+    if (!fileId) {
+      return NextResponse.json({ error: 'fileId required' }, { status: 400 })
     }
 
-    const campaign = await prisma.campaign.findUnique({
-      where: { id },
-      select: { briefFiles: true },
+    // Verify file belongs to this campaign
+    const file = await prisma.briefFile.findFirst({
+      where: { id: fileId, campaignId: id },
     })
 
-    if (!campaign) {
-      return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
+    if (!file) {
+      return NextResponse.json({ error: 'File not found' }, { status: 404 })
     }
 
-    // Remove from DB
-    const updatedFiles = (campaign.briefFiles || []).filter(f => f !== filePath)
-    await prisma.campaign.update({
-      where: { id },
-      data: { briefFiles: updatedFiles },
-    })
+    await prisma.briefFile.delete({ where: { id: fileId } })
 
-    // Try to delete physical file
-    try {
-      const fullPath = path.join(process.cwd(), 'public', filePath)
-      await unlink(fullPath)
-    } catch {
-      // File may not exist on disk, that's OK
-    }
-
-    return NextResponse.json({ message: 'File removed', files: updatedFiles })
+    return NextResponse.json({ message: 'Archivo eliminado' })
   } catch (error) {
     console.error('Brief file delete error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

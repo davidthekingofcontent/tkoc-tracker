@@ -68,6 +68,10 @@ import {
   Upload,
   Trash2,
   File,
+  MessageCircle,
+  ThumbsUp,
+  ThumbsDown,
+  Minus,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -139,6 +143,7 @@ interface CampaignData {
   country: string | null
   briefText: string | null
   briefFiles: string[]
+  briefAttachments?: { id: string; fileName: string; fileType: string; fileSize: number; createdAt: string }[]
   influencers: CampaignInfluencer[]
   media: CampaignMedia[]
 }
@@ -388,6 +393,7 @@ export default function CampaignDetailPage() {
 
   useEffect(() => {
     fetchCampaign()
+    fetchBriefFiles()
   }, [campaignId])
 
   async function handleTrackNow() {
@@ -632,31 +638,43 @@ export default function CampaignDetailPage() {
 
       if (res.ok) {
         await fetchCampaign()
+        await fetchBriefFiles()
       } else {
         const data = await res.json()
-        alert(data.error || 'Upload failed')
+        alert(data.error || 'Error al subir')
       }
     } catch {
-      alert('Upload failed')
+      alert('Error al subir')
     }
     setIsUploadingFiles(false)
-    // Reset input
     e.target.value = ''
   }
 
-  async function handleDeleteBriefFile(filePath: string) {
-    setIsDeletingFile(filePath)
+  async function handleDeleteBriefFile(fileId: string) {
+    setIsDeletingFile(fileId)
     try {
       const res = await fetch(`/api/campaigns/${campaignId}/brief-files`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath }),
+        body: JSON.stringify({ fileId }),
       })
       if (res.ok) {
-        await fetchCampaign()
+        await fetchBriefFiles()
       }
     } catch { /* ignore */ }
     setIsDeletingFile(null)
+  }
+
+  const [briefFiles, setBriefFiles] = useState<{ id: string; fileName: string; fileType: string; fileSize: number }[]>([])
+
+  async function fetchBriefFiles() {
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/brief-files`)
+      if (res.ok) {
+        const data = await res.json()
+        setBriefFiles(data.files || [])
+      }
+    } catch { /* ignore */ }
   }
 
   function getFileIcon(fileName: string) {
@@ -669,10 +687,10 @@ export default function CampaignDetailPage() {
     return '📎'
   }
 
-  function getFileDisplayName(filePath: string) {
-    const fileName = filePath.split('/').pop() || filePath
-    // Remove the timestamp suffix (_1234567890)
-    return fileName.replace(/_\d{13}(?=\.\w+$)/, '')
+  function formatFileSize(bytes: number) {
+    if (bytes < 1024) return bytes + ' B'
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
   }
 
   async function handleSaveShipping(influencerId: string) {
@@ -1059,12 +1077,12 @@ export default function CampaignDetailPage() {
               {campaign.briefText && !showBriefEditor && (
                 <p className="mt-0.5 text-xs text-gray-500 line-clamp-1">{campaign.briefText}</p>
               )}
-              {campaign.briefFiles && campaign.briefFiles.length > 0 && !showBriefEditor && (
+              {briefFiles.length > 0 && !showBriefEditor && (
                 <p className="mt-0.5 text-xs text-purple-500">
-                  📎 {campaign.briefFiles.length} {locale === 'es' ? 'archivo(s) adjunto(s)' : 'attached file(s)'}
+                  📎 {briefFiles.length} {locale === 'es' ? 'archivo(s) adjunto(s)' : 'attached file(s)'}
                 </p>
               )}
-              {!campaign.briefText && (!campaign.briefFiles || campaign.briefFiles.length === 0) && !showBriefEditor && (
+              {!campaign.briefText && briefFiles.length === 0 && !showBriefEditor && (
                 <p className="mt-0.5 text-xs text-gray-400 italic">
                   {locale === 'es' ? 'No hay brief todavía. Haz click para añadir texto o archivos.' : 'No brief yet. Click to add text or files.'}
                 </p>
@@ -1088,30 +1106,32 @@ export default function CampaignDetailPage() {
             />
 
             {/* Attached files */}
-            {campaign.briefFiles && campaign.briefFiles.length > 0 && (
+            {briefFiles.length > 0 && (
               <div className="space-y-2">
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
                   {locale === 'es' ? 'Archivos adjuntos' : 'Attached files'}
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {campaign.briefFiles.map((file, i) => (
-                    <div key={i} className="group inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 pl-3 pr-1 py-1.5 text-xs text-gray-600">
-                      <span className="text-sm">{getFileIcon(file)}</span>
-                      <a href={file} target="_blank" rel="noopener noreferrer"
-                        className="hover:text-purple-600 hover:underline max-w-[200px] truncate">
-                        {getFileDisplayName(file)}
+                  {briefFiles.map((file) => (
+                    <div key={file.id} className="group inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 pl-3 pr-1 py-1.5 text-xs text-gray-600">
+                      <span className="text-sm">{getFileIcon(file.fileName)}</span>
+                      <a href={`/api/campaigns/${campaignId}/brief-files/${file.id}`} target="_blank" rel="noopener noreferrer"
+                        className="hover:text-purple-600 hover:underline max-w-[200px] truncate"
+                        title={`${file.fileName} (${formatFileSize(file.fileSize)})`}>
+                        {file.fileName}
                       </a>
-                      <a href={file} download target="_blank" rel="noopener noreferrer"
+                      <span className="text-[10px] text-gray-400">{formatFileSize(file.fileSize)}</span>
+                      <a href={`/api/campaigns/${campaignId}/brief-files/${file.id}?download=true`}
                         className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600"
                         title={locale === 'es' ? 'Descargar' : 'Download'}>
                         <Download className="h-3 w-3" />
                       </a>
                       <button
-                        onClick={() => handleDeleteBriefFile(file)}
-                        disabled={isDeletingFile === file}
+                        onClick={() => handleDeleteBriefFile(file.id)}
+                        disabled={isDeletingFile === file.id}
                         className="p-1 rounded hover:bg-red-100 text-gray-400 hover:text-red-600"
                         title={locale === 'es' ? 'Eliminar' : 'Delete'}>
-                        {isDeletingFile === file
+                        {isDeletingFile === file.id
                           ? <Loader2 className="h-3 w-3 animate-spin" />
                           : <Trash2 className="h-3 w-3" />
                         }
@@ -1181,6 +1201,10 @@ export default function CampaignDetailPage() {
           <TabsTrigger value="pipeline">
             <Kanban className="h-3.5 w-3.5" />
             {t.pipeline.title}
+          </TabsTrigger>
+          <TabsTrigger value="sentiment">
+            <MessageCircle className="h-3.5 w-3.5" />
+            {t.sentiment.tab}
           </TabsTrigger>
         </TabsList>
 
@@ -2660,6 +2684,8 @@ export default function CampaignDetailPage() {
             </div>
           </div>
         </TabsContent>
+
+        {/* Sentiment Tab - coming soon */}
       </Tabs>
 
       {/* Edit Campaign Modal */}

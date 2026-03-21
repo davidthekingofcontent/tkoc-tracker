@@ -102,10 +102,29 @@ model Campaign {
   media         Media[]
   assignments   CampaignAssignment[]
 
+  briefAttachments BriefFile[]
+
+  shareToken    String?         @unique
+
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 
   @@map("campaigns")
+}
+
+// ============ BRIEF FILES ============
+
+model BriefFile {
+  id         String   @id @default(cuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  fileName   String
+  fileType   String   // MIME type
+  fileSize   Int      // bytes
+  fileData   Bytes    // actual file content
+  createdAt  DateTime @default(now())
+
+  @@map("brief_files")
 }
 
 // ============ CAMPAIGN ASSIGNMENTS ============
@@ -262,6 +281,12 @@ model Media {
   mentions      String[]
   hashtags      String[]
 
+  // Compliance / Deletion tracking
+  isDeleted         Boolean   @default(false)
+  deletedAt         DateTime?
+  isPaidPartnership Boolean   @default(false)
+  isAdDisclosed     Boolean   @default(false)
+
   // Tracking
   postedAt      DateTime?
   discoveredAt  DateTime  @default(now())
@@ -276,8 +301,34 @@ model Media {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
+  commentsList  Comment[]
+
   @@unique([externalId, platform])
   @@map("media")
+}
+
+// ============ COMMENTS (Sentiment Analysis) ============
+
+model Comment {
+  id              String   @id @default(cuid())
+  externalId      String
+  platform        Platform
+  text            String
+  authorUsername  String
+  authorAvatarUrl String?
+  likes           Int      @default(0)
+  replies         Int      @default(0)
+  sentiment       String?  // 'positive', 'negative', 'neutral'
+  sentimentScore  Float?   // -1 to 1
+  postedAt        DateTime?
+  mediaId         String
+  media           Media    @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+
+  @@unique([externalId, platform])
+  @@index([mediaId])
+  @@index([sentiment])
+  @@map("comments")
 }
 
 // ============ LISTS ============
@@ -434,4 +485,52 @@ model ScrapeJob {
   createdAt     DateTime  @default(now())
 
   @@map("scrape_jobs")
+}
+
+// ============ COMPETITOR MONITORING ============
+
+model CompetitorAccount {
+  id          String   @id @default(cuid())
+  username    String
+  platform    Platform
+  displayName String?
+  avatarUrl   String?
+  bio         String?
+  followers   Int      @default(0)
+  following   Int      @default(0)
+  postsCount  Int      @default(0)
+  engagementRate Float @default(0)
+  avgLikes    Int      @default(0)
+  avgComments Int      @default(0)
+  avgViews    Int      @default(0)
+  lastScraped DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  posts       CompetitorPost[]
+
+  @@unique([username, platform])
+}
+
+model CompetitorPost {
+  id          String   @id @default(cuid())
+  externalId  String
+  platform    Platform
+  caption     String?
+  mediaUrl    String?
+  thumbnailUrl String?
+  permalink   String?
+  mediaType   String   @default("POST")
+  likes       Int      @default(0)
+  comments    Int      @default(0)
+  shares      Int      @default(0)
+  views       Int      @default(0)
+  hashtags    String[]
+  mentions    String[]
+  postedAt    DateTime?
+  competitorId String
+  competitor  CompetitorAccount @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+
+  @@unique([externalId, platform])
+  @@index([competitorId])
 }

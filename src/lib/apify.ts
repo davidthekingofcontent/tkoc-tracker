@@ -834,6 +834,57 @@ export async function scrapeHashtag(hashtag: string, platform: 'INSTAGRAM' | 'TI
   }
 }
 
+// ============ COMMENT SCRAPING ============
+
+export interface ScrapedComment {
+  externalId: string
+  text: string
+  authorUsername: string
+  authorAvatarUrl: string | null
+  likes: number
+  replies: number
+  postedAt: string | null
+}
+
+async function scrapeInstagramComments(
+  postUrls: string[],
+  maxComments = 50
+): Promise<ScrapedComment[]> {
+  const items = await runActor('apify~instagram-comment-scraper', {
+    directUrls: postUrls,
+    resultsPerPage: maxComments,
+  })
+
+  if (!items || items.length === 0) return []
+
+  return items
+    .filter((item) => (item.text as string)?.trim())
+    .map((item: Record<string, unknown>) => ({
+      externalId: (item.id as string) || (item.pk as string) || `comment_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      text: (item.text as string) || '',
+      authorUsername: (item.ownerUsername as string) || (item.username as string) || 'unknown',
+      authorAvatarUrl: (item.ownerProfilePicUrl as string) || (item.profilePicUrl as string) || null,
+      likes: (item.likesCount as number) || (item.likes as number) || 0,
+      replies: (item.repliesCount as number) || (item.replies as number) || 0,
+      postedAt: (item.timestamp as string) || (item.createdAt as string) || null,
+    }))
+}
+
+export async function scrapeComments(
+  postUrls: string[],
+  platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE',
+  maxComments = 50
+): Promise<ScrapedComment[]> {
+  switch (platform) {
+    case 'INSTAGRAM':
+      return scrapeInstagramComments(postUrls, maxComments)
+    default:
+      // Only Instagram supported for now
+      console.log(`[Apify] Comment scraping not yet supported for ${platform}`)
+      return []
+  }
+}
+
 export function isApifyConfigured(): boolean {
   return !!process.env.APIFY_API_KEY
 }

@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { scrapeHashtag, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
 
+function formatFollowers(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
+  return n.toString()
+}
+
 export interface CronTrackingResults {
   campaignsProcessed: number
   totalPostsFound: number
@@ -126,7 +132,7 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
                   }
                 }
 
-                await prisma.campaignInfluencer.upsert({
+                const campaignInfluencerResult = await prisma.campaignInfluencer.upsert({
                   where: {
                     campaignId_influencerId: {
                       campaignId: campaign.id,
@@ -136,9 +142,28 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
                   create: {
                     campaignId: campaign.id,
                     influencerId: influencer.id,
+                    ...(influencer.followers >= 1000 ? { status: 'PROSPECT' as const } : {}),
                   },
                   update: {},
                 })
+
+                // If this is a newly created link (createdAt ~ now), create a notification
+                const isNewlyCreated = (Date.now() - new Date(campaignInfluencerResult.createdAt).getTime()) < 5000
+                if (isNewlyCreated && influencer.followers >= 1000) {
+                  try {
+                    await prisma.notification.create({
+                      data: {
+                        userId: campaign.userId,
+                        type: 'creator_discovered',
+                        title: 'Nuevo creador descubierto',
+                        message: `🔍 Nuevo creador descubierto: @${influencer.username} (${formatFollowers(influencer.followers)} seguidores) en la campaña ${campaign.name}`,
+                        link: `/campaigns/${campaign.id}`,
+                      },
+                    })
+                  } catch {
+                    // Skip notification errors silently
+                  }
+                }
 
                 for (const post of result.posts) {
                   if (!post.externalId) continue

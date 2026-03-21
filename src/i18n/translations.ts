@@ -389,6 +389,43 @@ export const translations = {
       avgFollowers: 'Avg. Followers/Influencer',
     },
 
+    // Compliance
+    compliance: {
+      title: 'Compliance',
+      allCompliant: 'All compliant',
+      issuesFound: 'Issues found',
+      deletedPosts: 'deleted posts',
+      undisclosedPartnerships: 'undisclosed partnerships',
+      score: 'Compliance Score',
+      loading: 'Checking compliance...',
+      noMedia: 'No media to check',
+      viewPost: 'View post',
+      deletedBy: 'Deleted by',
+      missingDisclosure: 'Missing ad disclosure',
+    },
+
+    // Sentiment
+    sentiment: {
+      tab: 'Sentiment',
+      title: 'Comment Sentiment Analysis',
+      analyzeBtn: 'Analyze Comments',
+      analyzing: 'Analyzing...',
+      positive: 'Positive',
+      negative: 'Negative',
+      neutral: 'Neutral',
+      avgScore: 'Average Score',
+      total: 'Total Comments',
+      topPositive: 'Top Positive Comments',
+      topNegative: 'Top Negative Comments',
+      recentComments: 'Recent Comments',
+      noComments: 'No comments analyzed yet',
+      noCommentsDesc: 'Click "Analyze Comments" to scrape and analyze comment sentiment from campaign posts.',
+      analyzeSuccess: 'Analysis complete',
+      commentsAnalyzed: 'comments analyzed',
+      commentsSaved: 'comments saved',
+      likes: 'likes',
+    },
+
     // Pipeline
     pipeline: {
       title: 'Pipeline',
@@ -806,6 +843,28 @@ export const translations = {
       avgFollowers: 'Media Seguidores/Influencer',
     },
 
+    // Sentiment
+    sentiment: {
+      tab: 'Sentimiento',
+      title: 'Análisis de Sentimiento de Comentarios',
+      analyzeBtn: 'Analizar Comentarios',
+      analyzing: 'Analizando...',
+      positive: 'Positivo',
+      negative: 'Negativo',
+      neutral: 'Neutro',
+      avgScore: 'Puntuación Media',
+      total: 'Total Comentarios',
+      topPositive: 'Top Comentarios Positivos',
+      topNegative: 'Top Comentarios Negativos',
+      recentComments: 'Comentarios Recientes',
+      noComments: 'Sin comentarios analizados',
+      noCommentsDesc: 'Haz clic en "Analizar Comentarios" para escanear y analizar el sentimiento de los comentarios de los posts de la campaña.',
+      analyzeSuccess: 'Análisis completado',
+      commentsAnalyzed: 'comentarios analizados',
+      commentsSaved: 'comentarios guardados',
+      likes: 'likes',
+    },
+
     // Pipeline
     pipeline: {
       title: 'Pipeline',
@@ -832,6 +891,21 @@ export const translations = {
       avgLikes: 'Likes Medios',
       location: 'Ubicación',
       results: 'resultados',
+    },
+
+    // Compliance
+    compliance: {
+      title: 'Cumplimiento',
+      allCompliant: 'Todo conforme',
+      issuesFound: 'Problemas encontrados',
+      deletedPosts: 'posts eliminados',
+      undisclosedPartnerships: 'colaboraciones no declaradas',
+      score: 'Puntuación de cumplimiento',
+      loading: 'Comprobando cumplimiento...',
+      noMedia: 'No hay contenido que comprobar',
+      viewPost: 'Ver post',
+      deletedBy: 'Eliminado por',
+      missingDisclosure: 'Falta declaración de publicidad',
     },
   },
 }

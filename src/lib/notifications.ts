@@ -6,6 +6,7 @@ type NotificationType =
   | 'influencer_added'
   | 'influencer_status_changed'
   | 'media_posted'
+  | 'post_deleted'
   | 'note_added'
   | 'invitation_sent'
   | 'team_joined'

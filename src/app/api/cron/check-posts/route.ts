@@ -3,6 +3,20 @@ import { prisma } from '@/lib/db'
 import { isApifyConfiguredAsync, scrapeProfile } from '@/lib/apify'
 import { notifyAllTeam } from '@/lib/notifications'
 
+/** Ad disclosure markers to detect paid partnership disclosures */
+const AD_MARKERS = [
+  '#ad', '#publi', '#publicidad', '#sponsored',
+  '#colaboración', '#colaboracion', '#collab',
+  'partnership', 'paid partnership',
+  'colaboración pagada', 'colaboracion pagada',
+]
+
+function hasAdDisclosure(caption: string | null): boolean {
+  if (!caption) return false
+  const lower = caption.toLowerCase()
+  return AD_MARKERS.some(marker => lower.includes(marker))
+}
+
 /**
  * Cron job: Check for new posts from influencers in active campaigns.
  * Compares scraped posts against existing media in DB.
@@ -154,6 +168,7 @@ export async function GET(request: NextRequest) {
                   mentions: post.mentions,
                   influencerId: inf.id,
                   campaignId,
+                  isAdDisclosed: campaign.paymentType === 'PAID' ? hasAdDisclosure(post.caption) : false,
                 },
               })
               totalNewPosts++
@@ -198,7 +213,38 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    console.log(`[Cron/CheckPosts] Done. New posts: ${totalNewPosts}, Errors: ${errors.length}`)
+    // Post-processing: check ad disclosure on all media for PAID campaigns
+    let adDisclosureUpdated = 0
+    try {
+      const paidCampaignIds = activeCampaigns
+        .filter(c => c.paymentType === 'PAID')
+        .map(c => c.id)
+
+      if (paidCampaignIds.length > 0) {
+        const mediaToCheck = await prisma.media.findMany({
+          where: {
+            campaignId: { in: paidCampaignIds },
+            isDeleted: false,
+          },
+          select: { id: true, caption: true, isAdDisclosed: true },
+        })
+
+        for (const m of mediaToCheck) {
+          const disclosed = hasAdDisclosure(m.caption)
+          if (disclosed !== m.isAdDisclosed) {
+            await prisma.media.update({
+              where: { id: m.id },
+              data: { isAdDisclosed: disclosed },
+            })
+            adDisclosureUpdated++
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[Cron/CheckPosts] Ad disclosure check error:', err)
+    }
+
+    console.log(`[Cron/CheckPosts] Done. New posts: ${totalNewPosts}, Ad disclosure updated: ${adDisclosureUpdated}, Errors: ${errors.length}`)
 
     return NextResponse.json({
       success: true,
