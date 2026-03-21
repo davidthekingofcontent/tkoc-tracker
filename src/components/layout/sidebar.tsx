@@ -76,7 +76,7 @@ function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
     case 'contacts': return t.contacts.title
     case 'brands': return t.nav.brands
     case 'calendar': return t.nav.calendar
-    case 'compare': return 'Comparar'
+    case 'compare': return t.nav.compare || 'Compare'
     case 'settings': return t.settings.title
     default: return key
   }
@@ -194,7 +194,7 @@ export function Sidebar() {
           <div className="mt-6">
             <button
               onClick={() => setListsOpen(!listsOpen)}
-              className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-400 hover:text-gray-600"
+              className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
             >
               <span>{t.lists.title}</span>
               {listsOpen ? (
@@ -213,9 +213,9 @@ export function Sidebar() {
                 <Link
                   key={list.id}
                   href={`/lists/${list.id}`}
-                  className="group flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-50 hover:text-gray-900"
+                  className="group flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-gray-600 dark:text-gray-400 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100"
                 >
-                  <Pin className="h-3.5 w-3.5 shrink-0 text-gray-400 group-hover:text-gray-500" />
+                  <Pin className="h-3.5 w-3.5 shrink-0 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" />
                   <span className="truncate">{list.name}</span>
                   <span className="ml-auto text-xs text-gray-400">
                     {list._count?.items || 0}
@@ -231,7 +231,7 @@ export function Sidebar() {
           <div className="mt-4">
             <button
               onClick={() => setCampaignsOpen(!campaignsOpen)}
-              className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-400 hover:text-gray-600"
+              className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
             >
               <span>{t.nav.recentCampaigns}</span>
               {campaignsOpen ? (
@@ -250,18 +250,18 @@ export function Sidebar() {
                 <Link
                   key={campaign.id}
                   href={`/campaigns/${campaign.id}`}
-                  className="group flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-50 hover:text-gray-900"
+                  className="group flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-gray-600 dark:text-gray-400 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100"
                 >
-                  <Megaphone className="h-3.5 w-3.5 shrink-0 text-gray-400 group-hover:text-gray-500" />
+                  <Megaphone className="h-3.5 w-3.5 shrink-0 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" />
                   <span className="truncate">{campaign.name}</span>
                   <span
                     className={cn(
                       "ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
                       campaign.status === "ACTIVE"
-                        ? "bg-green-50 text-green-700"
+                        ? "bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400"
                         : campaign.status === "PAUSED"
-                          ? "bg-yellow-50 text-yellow-700"
-                          : "bg-gray-100 text-gray-500"
+                          ? "bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400"
+                          : "bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
                     )}
                   >
                     {campaign.status.toLowerCase()}

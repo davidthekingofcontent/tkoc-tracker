@@ -43,13 +43,13 @@ interface CampaignOption {
 const STATUSES = ['PROSPECT', 'OUTREACH', 'NEGOTIATING', 'AGREED', 'CONTRACTED', 'POSTED', 'COMPLETED'] as const
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string; dot: string }> = {
-  PROSPECT: { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', dot: 'bg-gray-400' },
-  OUTREACH: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', dot: 'bg-blue-500' },
-  NEGOTIATING: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', dot: 'bg-amber-500' },
-  AGREED: { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', dot: 'bg-purple-500' },
-  CONTRACTED: { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', dot: 'bg-indigo-500' },
-  POSTED: { bg: 'bg-cyan-50', border: 'border-cyan-200', text: 'text-cyan-700', dot: 'bg-cyan-500' },
-  COMPLETED: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', dot: 'bg-green-500' },
+  PROSPECT: { bg: 'bg-gray-50 dark:bg-gray-800', border: 'border-gray-200 dark:border-gray-600', text: 'text-gray-700 dark:text-gray-300', dot: 'bg-gray-400' },
+  OUTREACH: { bg: 'bg-blue-50 dark:bg-blue-900/30', border: 'border-blue-200 dark:border-blue-800', text: 'text-blue-700 dark:text-blue-300', dot: 'bg-blue-500' },
+  NEGOTIATING: { bg: 'bg-amber-50 dark:bg-amber-900/30', border: 'border-amber-200 dark:border-amber-800', text: 'text-amber-700 dark:text-amber-300', dot: 'bg-amber-500' },
+  AGREED: { bg: 'bg-purple-50 dark:bg-purple-900/30', border: 'border-purple-200 dark:border-purple-800', text: 'text-purple-700 dark:text-purple-300', dot: 'bg-purple-500' },
+  CONTRACTED: { bg: 'bg-indigo-50 dark:bg-indigo-900/30', border: 'border-indigo-200 dark:border-indigo-800', text: 'text-indigo-700 dark:text-indigo-300', dot: 'bg-indigo-500' },
+  POSTED: { bg: 'bg-cyan-50 dark:bg-cyan-900/30', border: 'border-cyan-200 dark:border-cyan-800', text: 'text-cyan-700 dark:text-cyan-300', dot: 'bg-cyan-500' },
+  COMPLETED: { bg: 'bg-green-50 dark:bg-green-900/30', border: 'border-green-200 dark:border-green-800', text: 'text-green-700 dark:text-green-300', dot: 'bg-green-500' },
 }
 
 export default function PipelinePage() {
@@ -130,15 +130,15 @@ export default function PipelinePage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{t.pipeline?.title || 'Pipeline'}</h1>
-          <p className="mt-1 text-sm text-gray-500">{t.pipeline?.subtitle || 'Track influencer journey from discovery to completion'}</p>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{t.pipeline?.title || 'Pipeline'}</h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{t.pipeline?.subtitle || 'Track influencer journey from discovery to completion'}</p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-500">{t.pipeline?.totalInPipeline || 'Total'}: <strong className="text-purple-600">{items.length}</strong></span>
+          <span className="text-sm text-gray-500 dark:text-gray-400">{t.pipeline?.totalInPipeline || 'Total'}: <strong className="text-purple-600 dark:text-purple-400">{items.length}</strong></span>
           <select
             value={selectedCampaign}
             onChange={(e) => setSelectedCampaign(e.target.value)}
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white"
+            className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white dark:bg-gray-800"
           >
             <option value="">{t.pipeline?.allCampaigns || 'All campaigns'}</option>
             {campaigns.map(c => (
@@ -178,7 +178,7 @@ export default function PipelinePage() {
                 </div>
 
                 {/* Column Body */}
-                <div className="space-y-3 rounded-b-xl border border-t-0 border-gray-200 bg-gray-50/50 p-3 min-h-[200px]">
+                <div className="space-y-3 rounded-b-xl border border-t-0 border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50 p-3 min-h-[200px]">
                   {statusItems.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-8 text-center">
                       <Users className="h-6 w-6 text-gray-300 mb-2" />
@@ -188,7 +188,7 @@ export default function PipelinePage() {
                     statusItems.map(item => (
                       <div
                         key={item.id}
-                        className="relative rounded-xl border border-gray-200 bg-white p-4 shadow-sm hover:shadow-md transition-shadow"
+                        className="relative rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm hover:shadow-md transition-shadow"
                       >
                         {/* Loading overlay */}
                         {movingId === item.id && (
@@ -201,15 +201,15 @@ export default function PipelinePage() {
                         <div className="flex items-center gap-3">
                           <Avatar name={item.influencer.displayName || item.influencer.username} size="sm" src={item.influencer.avatarUrl || undefined} />
                           <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-semibold text-gray-900">
+                            <p className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
                               {item.influencer.displayName || item.influencer.username}
                             </p>
-                            <p className="truncate text-xs text-gray-500">@{item.influencer.username}</p>
+                            <p className="truncate text-xs text-gray-500 dark:text-gray-400">@{item.influencer.username}</p>
                           </div>
                         </div>
 
                         {/* Stats */}
-                        <div className="mt-3 flex items-center gap-3 text-xs text-gray-500">
+                        <div className="mt-3 flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
                           <span>{formatNumber(item.influencer.followers)}</span>
                           <span className="text-purple-600 font-medium">{item.influencer.engagementRate}%</span>
                           {item.cost ? <span className="font-medium text-gray-900">{'\u20AC'}{item.cost}</span> : null}
@@ -222,7 +222,7 @@ export default function PipelinePage() {
                         <div className="relative mt-3">
                           <button
                             onClick={() => setShowMoveMenu(showMoveMenu === item.id ? null : item.id)}
-                            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+                            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
                           >
                             <ArrowRight className="h-3 w-3" />
                             {t.pipeline?.moveTo || 'Move to'}
@@ -231,14 +231,14 @@ export default function PipelinePage() {
 
                           {/* Move menu dropdown */}
                           {showMoveMenu === item.id && (
-                            <div className="absolute bottom-full left-0 mb-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg z-20">
+                            <div className="absolute bottom-full left-0 mb-1 w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 shadow-lg z-20">
                               {STATUSES.filter(s => s !== status).map(s => {
                                 const sc = STATUS_COLORS[s]
                                 return (
                                   <button
                                     key={s}
                                     onClick={() => moveItem(item.id, s)}
-                                    className="flex w-full items-center gap-2 px-3 py-2 text-xs text-gray-700 hover:bg-gray-50 first:rounded-t-lg last:rounded-b-lg"
+                                    className="flex w-full items-center gap-2 px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 first:rounded-t-lg last:rounded-b-lg"
                                   >
                                     <span className={`h-2 w-2 rounded-full ${sc.dot}`} />
                                     {statusLabels[s]}

@@ -258,7 +258,7 @@ export default function DiscoverPage() {
             </h2>
             <button
               onClick={resetFilters}
-              className="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-900 transition-colors"
+              className="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
             >
               <RotateCcw className="h-3 w-3" />
               {t.discover.reset}
@@ -335,7 +335,7 @@ export default function DiscoverPage() {
           />
 
           {/* Action Buttons */}
-          <div className="flex flex-col gap-2 border-t border-gray-200 pt-5">
+          <div className="flex flex-col gap-2 border-t border-gray-200 dark:border-gray-600 pt-5">
             <Button type="button" variant="primary" size="lg" onClick={handleSearch} disabled={searching || !filters.search.trim()} className="w-full">
               {searching ? (
                 <>
@@ -486,12 +486,12 @@ export default function DiscoverPage() {
       {/* Add to List Modal */}
       {addToListModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
+          <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 {t.discover.addTo} @{addToListModal.username}
               </h3>
-              <button onClick={() => { setAddToListModal(null); setAddToListResult(null) }} className="text-gray-400 hover:text-gray-600">
+              <button onClick={() => { setAddToListModal(null); setAddToListResult(null) }} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -514,7 +514,7 @@ export default function DiscoverPage() {
                     key={list.id}
                     onClick={() => handleAddToList(list.id)}
                     disabled={addingToList}
-                    className="w-full flex items-center gap-3 rounded-lg border border-gray-200 px-4 py-3 text-left text-sm font-medium text-gray-700 transition-colors hover:border-purple-300 hover:bg-purple-50 hover:text-purple-700 disabled:opacity-50"
+                    className="w-full flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-600 px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300 transition-colors hover:border-purple-300 dark:hover:border-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/30 hover:text-purple-700 dark:hover:text-purple-300 disabled:opacity-50"
                   >
                     <ListPlus className="h-4 w-4 shrink-0" />
                     {list.name}

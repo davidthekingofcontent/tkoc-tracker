@@ -12,13 +12,13 @@ interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
 }
 
 const variantStyles: Record<BadgeVariant, string> = {
-  default: 'bg-gray-100 text-gray-600 border-gray-200',
-  active: 'bg-green-50 text-green-700 border-green-200',
-  paused: 'bg-yellow-50 text-yellow-700 border-yellow-200',
-  archived: 'bg-gray-100 text-gray-600 border-gray-200',
-  instagram: 'bg-pink-50 text-pink-700 border-pink-200',
-  tiktok: 'bg-cyan-50 text-cyan-700 border-cyan-200',
-  youtube: 'bg-red-50 text-red-700 border-red-200',
+  default: 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600',
+  active: 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800',
+  paused: 'bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 border-yellow-200 dark:border-yellow-800',
+  archived: 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-600',
+  instagram: 'bg-pink-50 dark:bg-pink-900/30 text-pink-700 dark:text-pink-400 border-pink-200 dark:border-pink-800',
+  tiktok: 'bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-400 border-cyan-200 dark:border-cyan-800',
+  youtube: 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400 border-red-200 dark:border-red-800',
 }
 
 const dotColors: Partial<Record<BadgeVariant, string>> = {

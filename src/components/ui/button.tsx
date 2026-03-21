@@ -7,11 +7,11 @@ const variantStyles = {
   primary:
     'bg-purple-600 text-white hover:bg-purple-700 focus-visible:ring-purple-500/50',
   secondary:
-    'bg-white text-gray-700 border border-gray-300 hover:border-gray-400 hover:bg-gray-50 focus-visible:ring-gray-300/50',
+    'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700 focus-visible:ring-gray-300/50',
   danger:
     'bg-red-600 text-white hover:bg-red-500 focus-visible:ring-red-500/50',
   ghost:
-    'bg-transparent text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus-visible:ring-gray-300/50',
+    'bg-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100 focus-visible:ring-gray-300/50',
 } as const
 
 const sizeStyles = {

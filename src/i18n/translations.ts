@@ -79,6 +79,7 @@ export const translations = {
       pipeline: 'Pipeline',
       calendar: 'Calendar',
       brands: 'Brands',
+      compare: 'Compare',
     },
 
     // Dashboard
@@ -543,6 +544,7 @@ export const translations = {
       pipeline: 'Pipeline',
       calendar: 'Calendario',
       brands: 'Marcas',
+      compare: 'Comparar',
     },
 
     // Dashboard

@@ -227,8 +227,8 @@ export default function NewCampaignPage() {
           </Button>
         </Link>
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{t.campaigns.createCampaign}</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{t.campaigns.createCampaign}</h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             {t.campaigns.setupNew}
           </p>
         </div>
@@ -309,7 +309,7 @@ export default function NewCampaignPage() {
 
       {/* Tracking Type Selection */}
       <div>
-        <h2 className="mb-4 text-lg font-semibold text-gray-900">
+        <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
           {t.campaigns.chooseType}
         </h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -337,7 +337,7 @@ export default function NewCampaignPage() {
                   <Radio className="h-6 w-6" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-gray-900">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
                     {t.campaigns.socialListening}
                   </h3>
                   <p className="mt-1 text-sm text-gray-500">
@@ -380,7 +380,7 @@ export default function NewCampaignPage() {
                   <UserCheck className="h-6 w-6" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-gray-900">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
                     {t.campaigns.influencerTracking}
                   </h3>
                   <p className="mt-1 text-sm text-gray-500">
@@ -423,7 +423,7 @@ export default function NewCampaignPage() {
                   <Video className="h-6 w-6" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-gray-900">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
                     {locale === 'es' ? 'Campaña UGC' : 'UGC Campaign'}
                   </h3>
                   <p className="mt-1 text-sm text-gray-500">
@@ -451,7 +451,7 @@ export default function NewCampaignPage() {
         <div className="space-y-6">
           {/* Campaign Name */}
           <Card variant="elevated">
-            <h3 className="mb-4 text-base font-semibold text-gray-900">
+            <h3 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">
               {t.campaigns.campaignDetails}
             </h3>
             <Input
@@ -464,7 +464,7 @@ export default function NewCampaignPage() {
 
           {/* Payment Type (hide for UGC - always paid) */}
           {trackingType !== 'ugc' && <Card variant="elevated">
-            <h3 className="mb-4 text-base font-semibold text-gray-900">
+            <h3 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">
               {locale === 'es' ? 'Tipo de Campaña' : 'Campaign Type'}
             </h3>
             <p className="mb-4 text-sm text-gray-500">
@@ -527,7 +527,7 @@ export default function NewCampaignPage() {
                   <Video className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-gray-900">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
                     {locale === 'es' ? 'Gestión de Creadores UGC' : 'UGC Creator Management'}
                   </h3>
                   <p className="text-sm text-gray-500">
@@ -542,7 +542,7 @@ export default function NewCampaignPage() {
 
           {/* Campaign Objective */}
           <Card variant="elevated">
-            <h3 className="mb-4 text-base font-semibold text-gray-900">
+            <h3 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">
               {locale === 'es' ? 'Objetivo de la Campaña' : 'Campaign Objective'}
             </h3>
             <p className="mb-4 text-sm text-gray-500">
@@ -553,7 +553,7 @@ export default function NewCampaignPage() {
             <select
               value={objective}
               onChange={(e) => setObjective(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white"
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white dark:bg-gray-800"
             >
               <option value="">{locale === 'es' ? 'Sin objetivo específico' : 'No specific objective'}</option>
               {CAMPAIGN_OBJECTIVES.map((obj) => (
@@ -566,7 +566,7 @@ export default function NewCampaignPage() {
 
           {/* Brand Account Targets (not for UGC) */}
           {trackingType !== 'ugc' && <Card variant="elevated">
-            <h3 className="mb-4 text-base font-semibold text-gray-900">
+            <h3 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">
               {t.campaigns.brandTargets}
             </h3>
             <p className="mb-4 text-sm text-gray-500">
@@ -612,7 +612,7 @@ export default function NewCampaignPage() {
           {/* Platform Selection (not for UGC) */}
           {trackingType !== 'ugc' &&
           <Card variant="elevated">
-            <h3 className="mb-4 text-base font-semibold text-gray-900">
+            <h3 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">
               {t.campaigns.platforms}
             </h3>
             <p className="mb-4 text-sm text-gray-500">
@@ -674,7 +674,7 @@ export default function NewCampaignPage() {
 
           {/* Country Filter */}
           <Card variant="elevated">
-            <h3 className="mb-4 text-base font-semibold text-gray-900">
+            <h3 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">
               {t.campaigns.countryFilter || 'Country Filter'}
             </h3>
             <p className="mb-4 text-sm text-gray-500">
@@ -683,7 +683,7 @@ export default function NewCampaignPage() {
             <select
               value={country}
               onChange={(e) => setCountry(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white"
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white dark:bg-gray-800"
             >
               <option value="">{t.campaigns.allCountries || 'All countries (worldwide)'}</option>
               <option value="ES">Spain</option>
@@ -710,7 +710,7 @@ export default function NewCampaignPage() {
                   <Infinity className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-gray-900">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
                     {t.campaigns.alwaysOn || 'Always On'}
                   </h3>
                   <p className="text-sm text-gray-500">
@@ -725,7 +725,7 @@ export default function NewCampaignPage() {
             <Card variant="elevated">
               <div className="flex items-center gap-2 mb-4">
                 <Calendar className="h-4 w-4 text-purple-600" />
-                <h3 className="text-base font-semibold text-gray-900">
+                <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
                   {t.campaigns.campaignDuration || 'Campaign Duration'}
                 </h3>
               </div>
@@ -734,18 +734,18 @@ export default function NewCampaignPage() {
               </p>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
                     {t.campaigns.startDateLabel || 'Start Date'}
                   </label>
                   <input
                     type="date"
                     value={startDate}
                     onChange={(e) => setStartDate(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-800 outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                   />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
                     {t.campaigns.endDateLabel || 'End Date'}
                   </label>
                   <input
@@ -753,7 +753,7 @@ export default function NewCampaignPage() {
                     value={endDate}
                     onChange={(e) => setEndDate(e.target.value)}
                     min={startDate || undefined}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-800 outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                   />
                 </div>
               </div>
@@ -763,7 +763,7 @@ export default function NewCampaignPage() {
           {/* Add Influencers/Creators */}
           {(trackingType === 'influencer_tracking' || trackingType === 'ugc') && (
             <Card variant="elevated">
-              <h3 className="mb-4 text-base font-semibold text-gray-900">
+              <h3 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">
                 {t.campaigns.addInfluencers}
               </h3>
               <p className="mb-4 text-sm text-gray-500">
@@ -809,13 +809,13 @@ export default function NewCampaignPage() {
 
           {/* Error Message */}
           {error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-600">
+            <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 p-4 text-sm text-red-600 dark:text-red-400">
               {error}
             </div>
           )}
 
           {/* Action Buttons */}
-          <div className="flex items-center justify-end gap-3 border-t border-gray-200 pt-6">
+          <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-6">
             <Link href="/campaigns">
               <Button variant="ghost">{t.common.cancel}</Button>
             </Link>

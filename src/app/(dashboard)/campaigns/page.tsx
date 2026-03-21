@@ -76,14 +76,14 @@ function CampaignActionMenu({
           e.stopPropagation()
           setOpen(!open)
         }}
-        className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+        className="rounded-md p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
       >
         <MoreVertical className="h-4 w-4" />
       </button>
       {open && (
-        <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+        <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 py-1 shadow-lg">
           <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
             onClick={(e) => {
               e.preventDefault()
               e.stopPropagation()
@@ -96,7 +96,7 @@ function CampaignActionMenu({
           </button>
           {campaign.status === 'ACTIVE' ? (
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
               onClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
@@ -109,7 +109,7 @@ function CampaignActionMenu({
             </button>
           ) : campaign.status !== 'ARCHIVED' ? (
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
               onClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
@@ -123,7 +123,7 @@ function CampaignActionMenu({
           ) : null}
           {campaign.status !== 'ARCHIVED' && (
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
               onClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
@@ -135,9 +135,9 @@ function CampaignActionMenu({
               {labels.archive}
             </button>
           )}
-          <div className="my-1 border-t border-gray-100" />
+          <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
           <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
             onClick={(e) => {
               e.preventDefault()
               e.stopPropagation()
@@ -245,8 +245,8 @@ export default function CampaignsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{t.campaigns.title}</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{t.campaigns.title}</h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             {t.campaigns.subtitle}
           </p>
         </div>
@@ -307,7 +307,7 @@ export default function CampaignsPage() {
       </div>
 
       {/* Campaign Table */}
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
         {isLoading ? (
           <div className="flex items-center justify-center py-16">
             <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
@@ -332,7 +332,7 @@ export default function CampaignsPage() {
                   <TableCell>
                     <Link
                       href={`/campaigns/${campaign.id}`}
-                      className="font-medium text-gray-900 hover:text-purple-600 transition-colors"
+                      className="font-medium text-gray-900 dark:text-gray-100 hover:text-purple-600 dark:hover:text-purple-400 transition-colors"
                     >
                       {campaign.isPinned ? '📌 ' : ''}{campaign.name}
                     </Link>
@@ -350,7 +350,13 @@ export default function CampaignsPage() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <span className="text-sm text-gray-500">
+                    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                      campaign.type === 'SOCIAL_LISTENING'
+                        ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
+                        : campaign.type === 'UGC'
+                          ? 'bg-orange-50 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800'
+                          : 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800'
+                    }`}>
                       {campaign.type === 'UGC' ? 'UGC' : campaign.type === 'SOCIAL_LISTENING' ? t.campaigns.socialListening : t.campaigns.influencerTracking}
                     </span>
                   </TableCell>
