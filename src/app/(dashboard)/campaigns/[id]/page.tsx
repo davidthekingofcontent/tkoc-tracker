@@ -118,8 +118,10 @@ interface CampaignMedia {
   likes: number | null
   comments: number | null
   shares: number | null
+  saves: number | null
   views: number | null
   reach: number | null
+  platform: string | null
   postedAt: string | null
   influencer: {
     id: string
@@ -329,8 +331,10 @@ export default function CampaignDetailPage() {
   const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [hasMoreMedia, setHasMoreMedia] = useState(false)
 
-  // Media sort state
-  const [mediaSortBy, setMediaSortBy] = useState<'recent' | 'likes' | 'comments' | 'views'>('recent')
+  // Media sort & filter state
+  const [mediaSortBy, setMediaSortBy] = useState<'recent' | 'likes' | 'comments' | 'views' | 'shares' | 'saves'>('recent')
+  const [mediaFilterPlatform, setMediaFilterPlatform] = useState<string>('all')
+  const [mediaFilterInfluencer, setMediaFilterInfluencer] = useState<string>('all')
 
   // CPM fee editing
   const [editingFee, setEditingFee] = useState<Record<string, string>>({})
@@ -807,15 +811,42 @@ export default function CampaignDetailPage() {
     [influencers, influencerSortField, influencerSortDirection]
   )
 
+  // Unique platforms and influencers for filter dropdowns
+  const mediaPlatforms = useMemo(() => {
+    const platforms = new Set(nonStoryMedia.map(m => m.platform || m.influencer?.platform).filter(Boolean) as string[])
+    return Array.from(platforms).sort()
+  }, [nonStoryMedia])
+
+  const mediaInfluencers = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const m of nonStoryMedia) {
+      if (m.influencer?.username && !map.has(m.influencer.username)) {
+        map.set(m.influencer.username, m.influencer.displayName || m.influencer.username)
+      }
+    }
+    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]))
+  }, [nonStoryMedia])
+
   const sortedMedia = useMemo(() => {
-    if (mediaSortBy === 'recent') return nonStoryMedia
-    return [...nonStoryMedia].sort((a, b) => {
+    // 1. Apply filters
+    let filtered = nonStoryMedia
+    if (mediaFilterPlatform !== 'all') {
+      filtered = filtered.filter(m => (m.platform || m.influencer?.platform) === mediaFilterPlatform)
+    }
+    if (mediaFilterInfluencer !== 'all') {
+      filtered = filtered.filter(m => m.influencer?.username === mediaFilterInfluencer)
+    }
+    // 2. Apply sort
+    if (mediaSortBy === 'recent') return filtered
+    return [...filtered].sort((a, b) => {
       if (mediaSortBy === 'likes') return (b.likes || 0) - (a.likes || 0)
       if (mediaSortBy === 'comments') return (b.comments || 0) - (a.comments || 0)
       if (mediaSortBy === 'views') return (b.views || 0) - (a.views || 0)
+      if (mediaSortBy === 'shares') return (b.shares || 0) - (a.shares || 0)
+      if (mediaSortBy === 'saves') return (b.saves || 0) - (a.saves || 0)
       return 0
     })
-  }, [nonStoryMedia, mediaSortBy])
+  }, [nonStoryMedia, mediaSortBy, mediaFilterPlatform, mediaFilterInfluencer])
 
   if (isLoading) {
     return (
@@ -1709,10 +1740,10 @@ export default function CampaignDetailPage() {
         {/* Media Tab */}
         <TabsContent value="media">
           {media.length === 0 ? (
-            <div className="rounded-xl border border-gray-200 bg-white py-16 text-center shadow-sm">
-              <Image className="mx-auto h-12 w-12 text-gray-300" />
-              <h3 className="mt-4 text-lg font-semibold text-gray-700">{t.common.noResults}</h3>
-              <p className="mx-auto mt-2 max-w-md text-sm text-gray-400">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 py-16 text-center shadow-sm">
+              <Image className="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600" />
+              <h3 className="mt-4 text-lg font-semibold text-gray-700 dark:text-gray-200">{t.common.noResults}</h3>
+              <p className="mx-auto mt-2 max-w-md text-sm text-gray-400 dark:text-gray-500">
                 {t.campaignDetail.mediaEmptyDesc}
               </p>
               <div className="mt-6 flex items-center justify-center gap-3">
@@ -1739,30 +1770,80 @@ export default function CampaignDetailPage() {
               </div>
             </div>
           ) : (
-            <div className="space-y-6">
-              {/* Sort Controls */}
-              <div className="flex items-center justify-between">
-                <p className="text-sm text-gray-500">{totalMedia} {t.dashboard.media}</p>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-500">{t.campaignDetail.sortBy}:</span>
-                  {([
-                    { key: 'recent', label: t.campaignDetail.mostRecent },
-                    { key: 'likes', label: t.campaignDetail.mostLiked },
-                    { key: 'comments', label: t.campaignDetail.mostCommented },
-                    { key: 'views', label: t.campaignDetail.mostViewed },
-                  ] as const).map(opt => (
+            <div className="space-y-4">
+              {/* Filter & Sort Controls */}
+              <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-sm">
+                <div className="flex flex-wrap items-center gap-4">
+                  {/* Filters */}
+                  <div className="flex items-center gap-3">
+                    {/* Platform filter */}
+                    {mediaPlatforms.length > 1 && (
+                      <select
+                        value={mediaFilterPlatform}
+                        onChange={(e) => setMediaFilterPlatform(e.target.value)}
+                        className="rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      >
+                        <option value="all">{t.campaignDetail.allPlatforms}</option>
+                        {mediaPlatforms.map(p => (
+                          <option key={p} value={p}>{p.charAt(0) + p.slice(1).toLowerCase()}</option>
+                        ))}
+                      </select>
+                    )}
+
+                    {/* Influencer filter */}
+                    {mediaInfluencers.length > 1 && (
+                      <select
+                        value={mediaFilterInfluencer}
+                        onChange={(e) => setMediaFilterInfluencer(e.target.value)}
+                        className="rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      >
+                        <option value="all">{t.campaignDetail.allInfluencers}</option>
+                        {mediaInfluencers.map(([username, displayName]) => (
+                          <option key={username} value={username}>@{username}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+
+                  {/* Sort pills */}
+                  <div className="flex items-center gap-1.5 ml-auto">
+                    <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">{t.campaignDetail.sortBy}:</span>
+                    {([
+                      { key: 'recent', label: t.campaignDetail.mostRecent },
+                      { key: 'views', label: t.campaignDetail.mostViewed },
+                      { key: 'likes', label: t.campaignDetail.mostLiked },
+                      { key: 'comments', label: t.campaignDetail.mostCommented },
+                      { key: 'shares', label: t.campaignDetail.mostShared },
+                      { key: 'saves', label: t.campaignDetail.mostSaved },
+                    ] as const).map(opt => (
+                      <button
+                        key={opt.key}
+                        onClick={() => setMediaSortBy(opt.key)}
+                        className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                          mediaSortBy === opt.key
+                            ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
+                            : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Results count */}
+                <div className="mt-3 flex items-center justify-between border-t border-gray-100 dark:border-gray-800 pt-3">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {t.campaignDetail.showing} <span className="font-semibold text-gray-700 dark:text-gray-200">{sortedMedia.length}</span> {t.campaignDetail.of} {nonStoryMedia.length} {t.dashboard.media}
+                  </p>
+                  {(mediaFilterPlatform !== 'all' || mediaFilterInfluencer !== 'all') && (
                     <button
-                      key={opt.key}
-                      onClick={() => setMediaSortBy(opt.key)}
-                      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                        mediaSortBy === opt.key
-                          ? 'bg-purple-100 text-purple-700'
-                          : 'text-gray-500 hover:bg-gray-100'
-                      }`}
+                      onClick={() => { setMediaFilterPlatform('all'); setMediaFilterInfluencer('all') }}
+                      className="text-xs text-purple-600 dark:text-purple-400 hover:underline font-medium"
                     >
-                      {opt.label}
+                      {t.common.clearFilters || 'Clear filters'}
                     </button>
-                  ))}
+                  )}
                 </div>
               </div>
 
@@ -1773,9 +1854,9 @@ export default function CampaignDetailPage() {
                     href={m.permalink || '#'}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="group overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition-shadow hover:shadow-md"
+                    className="group overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-sm transition-all hover:shadow-md hover:border-purple-300 dark:hover:border-purple-700"
                   >
-                    <div className="relative flex h-48 items-center justify-center bg-gray-100">
+                    <div className="relative flex h-48 items-center justify-center bg-gray-100 dark:bg-gray-800">
                       {m.thumbnailUrl ? (
                         <>
                           <img
@@ -1784,16 +1865,22 @@ export default function CampaignDetailPage() {
                             className="h-full w-full object-cover"
                             onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; (e.currentTarget.nextElementSibling as HTMLElement)?.classList.remove('hidden') }}
                           />
-                          <div className="hidden flex flex-col items-center gap-2 text-gray-400">
+                          <div className="hidden flex flex-col items-center gap-2 text-gray-400 dark:text-gray-500">
                             <Image className="h-8 w-8" />
                             <span className="text-xs">{m.mediaType}</span>
                           </div>
                         </>
                       ) : (
-                        <div className="flex flex-col items-center gap-2 text-gray-400">
+                        <div className="flex flex-col items-center gap-2 text-gray-400 dark:text-gray-500">
                           <Image className="h-8 w-8" />
                           <span className="text-xs">{m.mediaType}</span>
                         </div>
+                      )}
+                      {/* Platform badge on thumbnail */}
+                      {(m.platform || m.influencer?.platform) && (
+                        <span className="absolute top-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white uppercase tracking-wider">
+                          {(m.platform || m.influencer?.platform || '').charAt(0)}{(m.platform || m.influencer?.platform || '').slice(1, 3).toLowerCase()}
+                        </span>
                       )}
                       <div className="absolute inset-0 flex items-center justify-center gap-4 bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
                         <span className="flex items-center gap-1 text-sm font-semibold text-white">
@@ -1816,19 +1903,19 @@ export default function CampaignDetailPage() {
                       <div className="flex items-center gap-2">
                         <Avatar name={m.influencer?.displayName || m.influencer?.username || '?'} size="sm" src={m.influencer?.avatarUrl || undefined} />
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-gray-900">
+                          <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
                             {m.influencer?.displayName || m.influencer?.username || 'Unknown'}
                           </p>
-                          <p className="truncate text-xs text-gray-500">
+                          <p className="truncate text-xs text-gray-500 dark:text-gray-400">
                             @{m.influencer?.username || 'unknown'}
                             {m.postedAt && ` · ${new Date(m.postedAt).toLocaleDateString()}`}
                           </p>
                         </div>
                       </div>
                       {m.caption && (
-                        <p className="mt-2 line-clamp-2 text-xs text-gray-500">{m.caption}</p>
+                        <p className="mt-2 line-clamp-2 text-xs text-gray-500 dark:text-gray-400">{m.caption}</p>
                       )}
-                      <div className="mt-3 flex items-center gap-4 text-xs text-gray-500">
+                      <div className="mt-3 flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
                         <span className="flex items-center gap-1">
                           <Heart className="h-3 w-3" />
                           {formatNumber(m.likes || 0)}
@@ -1836,6 +1923,10 @@ export default function CampaignDetailPage() {
                         <span className="flex items-center gap-1">
                           <BarChart3 className="h-3 w-3" />
                           {formatNumber(m.comments || 0)}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <Eye className="h-3 w-3" />
+                          {formatNumber(m.views || 0)}
                         </span>
                         <span className="flex items-center gap-1">
                           <TrendingUp className="h-3 w-3" />
