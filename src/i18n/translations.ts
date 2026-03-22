@@ -441,6 +441,29 @@ export const translations = {
       likes: 'likes',
     },
 
+    // Intelligence
+    intelligence: {
+      engagement: 'Engagement',
+      value: 'Value',
+      consistency: 'Consistency',
+      trackRecord: 'Track Record',
+      audience: 'Audience',
+      creatorScore: 'Creator Score',
+      dealAdvisor: 'Deal Advisor',
+      repeatRadar: 'Repeat Radar',
+      riskSignals: 'Risk Signals',
+      playbook: 'Playbook',
+      marketBenchmark: 'Market Benchmark',
+      repeat: 'Repeat',
+      consider: 'Consider',
+      skip: 'Skip',
+      excellent: 'Excellent',
+      good: 'Good',
+      average: 'Average',
+      belowAverage: 'Below Average',
+      notRecommended: 'Not Recommended',
+    },
+
     // Pipeline
     pipeline: {
       title: 'Pipeline',
@@ -901,6 +924,29 @@ export const translations = {
       commentsAnalyzed: 'comentarios analizados',
       commentsSaved: 'comentarios guardados',
       likes: 'likes',
+    },
+
+    // Intelligence
+    intelligence: {
+      engagement: 'Engagement',
+      value: 'Valor',
+      consistency: 'Consistencia',
+      trackRecord: 'Historial',
+      audience: 'Audiencia',
+      creatorScore: 'Creator Score',
+      dealAdvisor: 'Deal Advisor',
+      repeatRadar: 'Repeat Radar',
+      riskSignals: 'Señales de Riesgo',
+      playbook: 'Playbook',
+      marketBenchmark: 'Benchmark de Mercado',
+      repeat: 'Repetir',
+      consider: 'Considerar',
+      skip: 'Descartar',
+      excellent: 'Excelente',
+      good: 'Bueno',
+      average: 'Medio',
+      belowAverage: 'Por debajo de la media',
+      notRecommended: 'No Recomendado',
     },
 
     // Pipeline

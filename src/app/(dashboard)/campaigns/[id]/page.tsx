@@ -27,6 +27,10 @@ import { InfluencerHistoryButton } from '@/components/influencer-history'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
 import { StoriesTracker } from '@/components/stories-tracker'
 import { CampaignIntelligencePanel } from '@/components/campaign-intelligence-panel'
+import { CampaignPlaybookPanel } from '@/components/campaign-playbook-panel'
+import { CreatorScoreBadge } from '@/components/creator-score-badge'
+import { calculateCreatorScore } from '@/lib/creator-score'
+import { evaluateFeeClient } from '@/lib/market-benchmark-client'
 import { proxyImg } from '@/lib/proxy-image'
 import {
   ArrowLeft,
@@ -73,6 +77,7 @@ import {
   ThumbsUp,
   ThumbsDown,
   Minus,
+  BookOpen,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -1243,6 +1248,10 @@ export default function CampaignDetailPage() {
             <BarChart3 className="h-3.5 w-3.5" />
             {locale === 'es' ? 'Inteligencia' : 'Intelligence'}
           </TabsTrigger>
+          <TabsTrigger value="playbook">
+            <BookOpen className="h-3.5 w-3.5" />
+            Playbook
+          </TabsTrigger>
         </TabsList>
 
         {/* Report Tab */}
@@ -2182,6 +2191,28 @@ export default function CampaignDetailPage() {
                     {sortedInfluencers.filter(ci => ci.influencer).map((ci) => {
                       const cpm = getCPMForInfluencer(ci)
                       const feeValue = editingFee[ci.id] !== undefined ? editingFee[ci.id] : (ci.agreedFee || ci.cost || '')
+
+                      // Creator Score calculation
+                      const infMedia = media.filter(m => m.influencer?.id === ci.influencer.id)
+                      const creatorScoreResult = calculateCreatorScore({
+                        followers: ci.influencer.followers || 0,
+                        engagementRate: ci.influencer.engagementRate || 0,
+                        avgLikes: ci.influencer.avgLikes || 0,
+                        avgComments: ci.influencer.avgComments || 0,
+                        avgViews: ci.influencer.avgViews || 0,
+                        postsCount: (ci.influencer as Record<string, unknown>).postsCount as number || 0,
+                        platform: ci.influencer.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE',
+                        avgAgreedFee: ci.agreedFee,
+                        totalCampaigns: 1,
+                        completedCampaigns: ci.status === 'COMPLETED' || ci.status === 'POSTED' ? 1 : 0,
+                        contentDelivered: infMedia.length,
+                        contentExpected: 1,
+                      })
+
+                      // Market benchmark for fee
+                      const feeEval = (ci.agreedFee && ci.agreedFee > 0)
+                        ? evaluateFeeClient(ci.agreedFee, ci.influencer.platform, ci.influencer.followers || 0)
+                        : null
                       const trafficColors = {
                         green: 'bg-green-100 text-green-800 border-green-300',
                         yellow: 'bg-amber-100 text-amber-800 border-amber-300',
@@ -2211,6 +2242,17 @@ export default function CampaignDetailPage() {
                                   </Badge>
                                   <span className="text-[10px] text-gray-400 uppercase font-medium">{cpm.tier}</span>
                                 </div>
+                              </div>
+                              {/* Creator Score */}
+                              <div className="mt-2">
+                                <CreatorScoreBadge
+                                  score={creatorScoreResult.score}
+                                  grade={creatorScoreResult.grade}
+                                  signal={creatorScoreResult.signal}
+                                  summary={creatorScoreResult.summary}
+                                  components={creatorScoreResult.components}
+                                  size="sm"
+                                />
                               </div>
                             </div>
 
@@ -2328,6 +2370,18 @@ export default function CampaignDetailPage() {
                               'bg-gray-50 text-gray-600'
                             }`}>
                               {cpm.recommendationDetail}
+                            </div>
+                          )}
+
+                          {/* Market Benchmark */}
+                          {feeEval && (
+                            <div className={`mt-2 rounded-lg px-3 py-1.5 text-[11px] ${
+                              feeEval.position === 'below_market' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300' :
+                              feeEval.position === 'fair' ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300' :
+                              feeEval.position === 'above_market' ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300' :
+                              'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300'
+                            }`}>
+                              📊 Market: {feeEval.marketRange} · {feeEval.detail.split('.')[0]}
                             </div>
                           )}
 
@@ -2793,6 +2847,11 @@ export default function CampaignDetailPage() {
             overview={overview || { emvExtended: 0, totalCost: 0 }}
             locale={locale}
           />
+        </TabsContent>
+
+        {/* Playbook Tab */}
+        <TabsContent value="playbook">
+          <CampaignPlaybookPanel campaignId={campaign.id} />
         </TabsContent>
       </Tabs>
 
