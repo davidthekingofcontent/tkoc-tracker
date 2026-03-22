@@ -33,6 +33,7 @@ model User {
   contacts      Contact[]
   invitations   Invitation[]
   assignedCampaigns CampaignAssignment[]
+  socialTokens  SocialToken[]
 
   @@map("users")
 }
@@ -177,12 +178,14 @@ model Influencer {
 
   isVerified    Boolean   @default(false)
   lastScraped   DateTime?
+  dataSource    String?   // "api", "oauth", "marketplace", "apify"
 
   // Relations
   campaigns     CampaignInfluencer[]
   media         Media[]
   listItems     ListItem[]
   contactInfo   Contact[]
+  socialTokens  SocialToken[]
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -287,6 +290,7 @@ model Media {
   deletedAt         DateTime?
   isPaidPartnership Boolean   @default(false)
   isAdDisclosed     Boolean   @default(false)
+  dataSource        String?   // "api", "oauth", "marketplace", "apify"
 
   // Tracking
   postedAt      DateTime?
@@ -534,4 +538,41 @@ model CompetitorPost {
 
   @@unique([externalId, platform])
   @@index([competitorId])
+}
+
+// ============ SOCIAL API TOKENS ============
+
+model SocialToken {
+  id             String    @id @default(cuid())
+  platform       Platform
+  tokenType      String    @default("page")  // "page", "user", "api_key"
+
+  // For brand/platform tokens (Meta Page tokens, YouTube API keys)
+  userId         String?
+  user           User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // For influencer tokens (YouTube Analytics OAuth)
+  influencerId   String?
+  influencer     Influencer? @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  // Token data (encrypted AES-256-GCM)
+  accessToken    String
+  refreshToken   String?
+  expiresAt      DateTime?
+  scopes         String[]
+
+  // Platform-specific IDs
+  platformUserId String?   // Meta: IG User ID, YouTube: Channel ID
+  platformPageId String?   // Meta: Facebook Page ID
+
+  isValid        Boolean   @default(true)
+  lastUsedAt     DateTime?
+  lastError      String?
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([platform, userId, tokenType])
+  @@index([influencerId])
+  @@map("social_tokens")
 }
