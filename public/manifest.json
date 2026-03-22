@@ -1,7 +1,7 @@
 {
-  "name": "TKOC Tracker",
+  "name": "TKOC Intelligence",
   "short_name": "TKOC",
-  "description": "Influencer Marketing Campaign Tracker",
+  "description": "Creator Intelligence Platform — Decide better. Pay fair. Scale what works.",
   "start_url": "/dashboard",
   "display": "standalone",
   "background_color": "#ffffff",

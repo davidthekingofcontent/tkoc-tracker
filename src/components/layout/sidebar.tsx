@@ -153,7 +153,7 @@ export function Sidebar() {
           <Megaphone className="h-4 w-4 text-purple-600 dark:text-purple-400" />
         </div>
         <span className="text-lg font-bold tracking-tight text-gray-900 dark:text-gray-100">
-          TKOC <span className="text-purple-600 dark:text-purple-400">Tracker</span>
+          TKOC <span className="text-purple-600 dark:text-purple-400">Intelligence</span>
         </span>
       </div>
 

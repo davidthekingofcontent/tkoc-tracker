@@ -124,7 +124,7 @@ export default function AcceptInvitePage() {
                 />
               </svg>
             </div>
-            <h1 className="text-2xl font-bold text-purple-600 tracking-tight">TKOC Tracker</h1>
+            <h1 className="text-2xl font-bold text-purple-600 tracking-tight">TKOC Intelligence</h1>
           </div>
 
           {/* Loading */}

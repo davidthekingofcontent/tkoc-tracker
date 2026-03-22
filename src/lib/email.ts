@@ -35,7 +35,7 @@ export async function sendInvitationEmail({
   <div style="max-width:560px;margin:40px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
     <!-- Header -->
     <div style="background:linear-gradient(135deg,#7c3aed,#6366f1);padding:32px 40px;text-align:center;">
-      <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0;letter-spacing:-0.5px;">TKOC Tracker</h1>
+      <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0;letter-spacing:-0.5px;">TKOC Intelligence</h1>
       <p style="color:rgba(255,255,255,0.8);font-size:14px;margin:8px 0 0;">Influencer Campaign Tracker</p>
     </div>
 
@@ -43,7 +43,7 @@ export async function sendInvitationEmail({
     <div style="padding:40px;">
       <h2 style="color:#111827;font-size:20px;font-weight:600;margin:0 0 16px;">You've been invited!</h2>
       <p style="color:#6b7280;font-size:15px;line-height:1.6;margin:0 0 8px;">
-        <strong style="color:#111827;">${inviterName}</strong> has invited you to join <strong style="color:#7c3aed;">TKOC Tracker</strong> as a <strong style="color:#111827;">${roleLabel}</strong>.
+        <strong style="color:#111827;">${inviterName}</strong> has invited you to join <strong style="color:#7c3aed;">TKOC Intelligence</strong> as a <strong style="color:#111827;">${roleLabel}</strong>.
       </p>
       <p style="color:#6b7280;font-size:15px;line-height:1.6;margin:0 0 32px;">
         Click the button below to create your account and start collaborating.
@@ -69,16 +69,16 @@ export async function sendInvitationEmail({
 
     <!-- Footer -->
     <div style="padding:20px 40px;border-top:1px solid #f3f4f6;text-align:center;">
-      <p style="color:#d1d5db;font-size:12px;margin:0;">TKOC Tracker &mdash; Influencer Campaign Management</p>
+      <p style="color:#d1d5db;font-size:12px;margin:0;">TKOC Intelligence &mdash; Creator Intelligence Platform</p>
     </div>
   </div>
 </body>
 </html>`
 
   const { data, error } = await getResend().emails.send({
-    from: 'TKOC Tracker <onboarding@resend.dev>',
+    from: 'TKOC Intelligence <onboarding@resend.dev>',
     to: [to],
-    subject: `${inviterName} invited you to TKOC Tracker`,
+    subject: `${inviterName} invited you to TKOC Intelligence`,
     html,
   })
 

@@ -12,7 +12,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
-export const APP_NAME = 'TKOC Tracker'
+export const APP_NAME = 'TKOC Intelligence'
 
 export interface Platform {
   id: string

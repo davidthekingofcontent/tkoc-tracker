@@ -595,7 +595,7 @@ async function generatePDF(campaign: CampaignData): Promise<NextResponse> {
   doc.setFontSize(7)
   doc.setTextColor(180, 180, 220)
   doc.text(`Report generated on ${new Date().toLocaleDateString()}`, M, H - 12)
-  doc.text('TKOC Tracker', W - M, H - 12, { align: 'right' })
+  doc.text('TKOC Intelligence', W - M, H - 12, { align: 'right' })
 
   // ==========================================
   // PAGE 2: CAMPAIGN SUMMARY
@@ -984,7 +984,7 @@ function addFooter(doc: jsPDF, pageWidth: number, pageHeight: number, campaignNa
   doc.setFontSize(6)
   doc.setTextColor(156, 163, 175)
   doc.setFont('helvetica', 'normal')
-  doc.text(`TKOC Tracker  |  ${campaignName}  |  ${new Date().toLocaleDateString()}`, 15, footerY)
+  doc.text(`TKOC Intelligence  |  ${campaignName}  |  ${new Date().toLocaleDateString()}`, 15, footerY)
 
   const pageNum = (doc as unknown as { internal: { getNumberOfPages: () => number } }).internal.getNumberOfPages()
   doc.text(`Page ${pageNum}`, pageWidth - 15, footerY, { align: 'right' })

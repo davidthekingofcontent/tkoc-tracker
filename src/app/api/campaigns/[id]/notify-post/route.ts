@@ -116,7 +116,7 @@ export async function POST(
       const emailPromises = emailRecipients.map(async (recipient) => {
         try {
           await resend.emails.send({
-            from: 'TKOC Tracker <onboarding@resend.dev>',
+            from: 'TKOC Intelligence <onboarding@resend.dev>',
             to: [recipient.email],
             subject: `Nueva publicacion: @${username} en ${platformLabel} - ${campaignName}`,
             html: emailHtml,
@@ -163,7 +163,7 @@ function buildPostNotificationEmail(params: {
   <div style="max-width:560px;margin:40px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
     <!-- Header -->
     <div style="background:linear-gradient(135deg,#7c3aed,#6366f1);padding:32px 40px;text-align:center;">
-      <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0;letter-spacing:-0.5px;">TKOC Tracker</h1>
+      <h1 style="color:#ffffff;font-size:24px;font-weight:700;margin:0;letter-spacing:-0.5px;">TKOC Intelligence</h1>
       <p style="color:rgba(255,255,255,0.8);font-size:14px;margin:8px 0 0;">Nueva Publicacion</p>
     </div>
 
@@ -214,7 +214,7 @@ function buildPostNotificationEmail(params: {
 
     <!-- Footer -->
     <div style="padding:20px 40px;border-top:1px solid #f3f4f6;text-align:center;">
-      <p style="color:#d1d5db;font-size:12px;margin:0;">TKOC Tracker &mdash; Influencer Campaign Management</p>
+      <p style="color:#d1d5db;font-size:12px;margin:0;">TKOC Intelligence &mdash; Creator Intelligence Platform</p>
     </div>
   </div>
 </body>

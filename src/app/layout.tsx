@@ -18,13 +18,13 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "TKOC Tracker",
-  description: "Influencer campaign tracking and analytics platform",
+  title: "TKOC Intelligence",
+  description: "Creator Intelligence Platform — Decide better. Pay fair. Scale what works.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "TKOC Tracker",
+    title: "TKOC Intelligence",
   },
   other: {
     "mobile-web-app-capable": "yes",

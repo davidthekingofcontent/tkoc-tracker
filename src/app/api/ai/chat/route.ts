@@ -144,7 +144,7 @@ export async function POST(request: NextRequest) {
     // Gather platform data for context
     const platformData = await gatherPlatformContext()
 
-    const systemPrompt = `Eres el asistente de IA de TKOC Tracker, una plataforma de seguimiento de campañas de influencer marketing de la agencia TKOC. Tu nombre es TKOC AI.
+    const systemPrompt = `Eres el asistente de IA de TKOC Intelligence, una plataforma de seguimiento de campañas de influencer marketing de la agencia TKOC. Tu nombre es TKOC AI.
 
 Tu rol es:
 1. ANALIZAR datos de campañas, influencers y contenido para dar insights accionables
