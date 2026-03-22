@@ -26,6 +26,7 @@ import {
   Zap,
   Target,
 } from "lucide-react"
+import { RepeatRadarWidget } from '@/components/dashboard/repeat-radar-widget'
 
 interface DashboardStats {
   activeCampaigns: number
@@ -514,6 +515,9 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
+
+          {/* Repeat Radar */}
+          <RepeatRadarWidget />
 
           {/* Quick links */}
           <div className="grid grid-cols-2 gap-3">

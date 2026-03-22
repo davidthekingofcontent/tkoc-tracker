@@ -29,6 +29,8 @@ import { StoriesTracker } from '@/components/stories-tracker'
 import { CampaignIntelligencePanel } from '@/components/campaign-intelligence-panel'
 import { CampaignPlaybookPanel } from '@/components/campaign-playbook-panel'
 import { CreatorScoreBadge } from '@/components/creator-score-badge'
+import { DealAdvisorPanel } from '@/components/deal-advisor-panel'
+import { RiskSignalsBadge } from '@/components/risk-signals-badge'
 import { calculateCreatorScore } from '@/lib/creator-score'
 import { evaluateFeeClient } from '@/lib/market-benchmark-client'
 import { proxyImg } from '@/lib/proxy-image'
@@ -2385,8 +2387,37 @@ export default function CampaignDetailPage() {
                             </div>
                           )}
 
+                          {/* Deal Advisor + Risk Signals */}
+                          <div className="mt-3 flex items-center gap-3">
+                            <DealAdvisorPanel
+                              username={ci.influencer.username}
+                              platform={ci.influencer.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'}
+                              followers={ci.influencer.followers || 0}
+                              avgViews={ci.influencer.avgViews || 0}
+                              avgLikes={ci.influencer.avgLikes || 0}
+                              avgComments={ci.influencer.avgComments || 0}
+                              engagementRate={ci.influencer.engagementRate || 0}
+                              fee={ci.agreedFee || ci.cost || 0}
+                            />
+                            <RiskSignalsBadge
+                              influencerData={{
+                                followers: ci.influencer.followers || 0,
+                                engagementRate: ci.influencer.engagementRate || 0,
+                                avgLikes: ci.influencer.avgLikes || 0,
+                                avgComments: ci.influencer.avgComments || 0,
+                                avgViews: ci.influencer.avgViews || 0,
+                                platform: ci.influencer.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE',
+                                agreedFee: ci.agreedFee,
+                                campaignPaymentType: campaign?.paymentType,
+                                totalCampaigns: 1,
+                                completedCampaigns: ci.status === 'COMPLETED' || ci.status === 'POSTED' ? 1 : 0,
+                              }}
+                              size="md"
+                            />
+                          </div>
+
                           {/* Notes & History */}
-                          <div className="mt-3 pt-3 border-t border-gray-100 flex items-center gap-2">
+                          <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center gap-2">
                             <CampaignNotesButton
                               campaignId={campaignId}
                               influencerId={ci.influencer.id}
