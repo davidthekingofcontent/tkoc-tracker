@@ -8,6 +8,9 @@ const INTEGRATION_KEYS = [
   'instagram_connected',
   'tiktok_connected',
   'youtube_connected',
+  'youtube_api_key',
+  'meta_app_id',
+  'meta_app_secret',
 ] as const
 
 async function getSettingValue(key: string): Promise<string | null> {
@@ -50,11 +53,14 @@ export async function GET(request: NextRequest) {
     const tiktokConnected = settingsMap['tiktok_connected'] === 'true'
     const youtubeConnected = settingsMap['youtube_connected'] === 'true'
 
+    // YouTube API key from DB or env
+    const youtubeApiKey = settingsMap['youtube_api_key'] || process.env.YOUTUBE_API_KEY || ''
+
     return NextResponse.json({
       integrations: {
         instagram: { connected: instagramConnected },
         tiktok: { connected: tiktokConnected },
-        youtube: { connected: youtubeConnected },
+        youtube: { connected: youtubeConnected, apiKey: youtubeApiKey },
         apify: { connected: apifyConnected, key: apifyKey },
       },
     })

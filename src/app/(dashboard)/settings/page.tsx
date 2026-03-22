@@ -156,6 +156,14 @@ export default function SettingsPage() {
   const [integrationsLoading, setIntegrationsLoading] = useState(true)
   const [integrationSaving, setIntegrationSaving] = useState<string | null>(null)
 
+  // API Keys state
+  const [youtubeApiKey, setYoutubeApiKey] = useState("")
+  const [youtubeKeySaving, setYoutubeKeySaving] = useState(false)
+  const [youtubeKeySaved, setYoutubeKeySaved] = useState(false)
+  const [youtubeTestResult, setYoutubeTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [metaTestResult, setMetaTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [testingConnection, setTestingConnection] = useState<string | null>(null)
+
   // Templates state
   const [campaignTemplates, setCampaignTemplates] = useState<CampaignTemplate[]>([])
   const [templatesLoading, setTemplatesLoading] = useState(true)
@@ -209,9 +217,12 @@ export default function SettingsPage() {
             return i
           })
         )
-        // Load Apify key from DB
+        // Load API keys from DB
         if (intData.apify?.key) {
           setApifyKey(intData.apify.key)
+        }
+        if (intData.youtube?.apiKey) {
+          setYoutubeApiKey(intData.youtube.apiKey)
         }
       }
     } catch {} finally {
@@ -333,6 +344,50 @@ export default function SettingsPage() {
     } catch {} finally {
       setApifySaving(false)
     }
+  }
+
+  async function handleSaveYoutubeKey() {
+    setYoutubeKeySaving(true)
+    setYoutubeKeySaved(false)
+    try {
+      const res = await fetch('/api/settings/integrations', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'youtube_api_key', value: youtubeApiKey }),
+      })
+      if (res.ok) {
+        setYoutubeKeySaved(true)
+        setTimeout(() => setYoutubeKeySaved(false), 2500)
+      }
+    } catch {} finally {
+      setYoutubeKeySaving(false)
+    }
+  }
+
+  async function handleTestConnection(platform: string) {
+    setTestingConnection(platform)
+    try {
+      const res = await fetch(`/api/settings/integrations/test?platform=${platform}`)
+      const data = await res.json()
+      if (platform === 'youtube') {
+        setYoutubeTestResult({ success: data.success, message: data.message })
+        setTimeout(() => setYoutubeTestResult(null), 5000)
+      }
+      if (platform === 'meta') {
+        setMetaTestResult({ success: data.success, message: data.message })
+        setTimeout(() => setMetaTestResult(null), 5000)
+      }
+    } catch {
+      const errorResult = { success: false, message: 'Connection test failed' }
+      if (platform === 'youtube') setYoutubeTestResult(errorResult)
+      if (platform === 'meta') setMetaTestResult(errorResult)
+    } finally {
+      setTestingConnection(null)
+    }
+  }
+
+  function handleConnectMeta() {
+    window.location.href = '/api/auth/meta'
   }
 
   return (
@@ -628,90 +683,201 @@ export default function SettingsPage() {
               <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
             </div>
           ) : (
-          <div className="grid gap-4 sm:grid-cols-2">
-            {integrations.map((integration) => (
-              <Card key={integration.id} variant="elevated">
-                <CardContent>
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={`flex h-11 w-11 items-center justify-center rounded-lg bg-gray-100 ${integration.color}`}
-                      >
-                        {integration.icon}
+          <div className="space-y-6">
+            {/* Section: Official APIs */}
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">Official APIs</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Connect to official platform APIs for verified, first-party data.</p>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                {/* YouTube Data API */}
+                <Card variant="elevated">
+                  <CardContent>
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-red-50 dark:bg-red-900/20 text-red-500">
+                          <svg viewBox="0 0 24 24" className="h-6 w-6" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" /></svg>
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-gray-900 dark:text-white">YouTube Data API v3</h3>
+                          <p className="mt-0.5 text-xs text-gray-400">Public channel & video data. No OAuth needed.</p>
+                        </div>
+                      </div>
+                      <Badge variant={youtubeApiKey ? "active" : "archived"}>
+                        {youtubeApiKey ? t.settings.configured : t.settings.notConfigured}
+                      </Badge>
+                    </div>
+                    <div className="mt-4 flex items-end gap-2">
+                      <div className="flex-1">
+                        <Input
+                          label="API Key"
+                          type="password"
+                          placeholder="AIzaSy..."
+                          value={youtubeApiKey}
+                          onChange={(e) => setYoutubeApiKey(e.target.value)}
+                        />
+                      </div>
+                      <Button size="sm" variant="secondary" className="mb-[1px]" onClick={handleSaveYoutubeKey} loading={youtubeKeySaving}>
+                        {youtubeKeySaved ? (
+                          <span className="inline-flex items-center gap-1.5"><Check className="h-4 w-4" /> {t.common.save}</span>
+                        ) : t.common.save}
+                      </Button>
+                    </div>
+                    {youtubeApiKey && (
+                      <div className="mt-3">
+                        <Button size="sm" variant="ghost" onClick={() => handleTestConnection('youtube')} loading={testingConnection === 'youtube'}>
+                          {t.settings.testConnection || 'Test Connection'}
+                        </Button>
+                        {youtubeTestResult && (
+                          <p className={`mt-2 text-xs ${youtubeTestResult.success ? 'text-emerald-500' : 'text-red-500'}`}>
+                            {youtubeTestResult.message}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Meta / Instagram + Facebook */}
+                <Card variant="elevated">
+                  <CardContent>
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-600">
+                          <svg viewBox="0 0 24 24" className="h-6 w-6" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" /></svg>
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-gray-900 dark:text-white">Meta Platform</h3>
+                          <p className="mt-0.5 text-xs text-gray-400">Instagram API + Creator Marketplace + FB Discovery</p>
+                        </div>
+                      </div>
+                      <Badge variant={integrations.find(i => i.id === 'instagram')?.connected ? "active" : "archived"}>
+                        {integrations.find(i => i.id === 'instagram')?.connected ? t.settings.connected : t.settings.notConnected}
+                      </Badge>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        Connect your Facebook Page to access Instagram Graph API, Creator Marketplace discovery, and Facebook Creator Discovery.
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant={integrations.find(i => i.id === 'instagram')?.connected ? "secondary" : "primary"}
+                          onClick={handleConnectMeta}
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          {integrations.find(i => i.id === 'instagram')?.connected ? 'Reconnect' : 'Connect with Facebook'}
+                        </Button>
+                        {integrations.find(i => i.id === 'instagram')?.connected && (
+                          <Button size="sm" variant="ghost" onClick={() => handleTestConnection('meta')} loading={testingConnection === 'meta'}>
+                            {t.settings.testConnection || 'Test'}
+                          </Button>
+                        )}
+                      </div>
+                      {metaTestResult && (
+                        <p className={`text-xs ${metaTestResult.success ? 'text-emerald-500' : 'text-red-500'}`}>
+                          {metaTestResult.message}
+                        </p>
+                      )}
+                      <div className="rounded-lg border border-gray-100 dark:border-gray-700 p-3 bg-gray-50 dark:bg-gray-800">
+                        <p className="text-xs font-medium text-gray-600 dark:text-gray-300 mb-2">APIs included:</p>
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                            <span className="h-1.5 w-1.5 rounded-full bg-pink-400" /> Instagram Graph API — Profile & media insights
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                            <span className="h-1.5 w-1.5 rounded-full bg-purple-400" /> Creator Marketplace API — Discover creators with demographics
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                            <span className="h-1.5 w-1.5 rounded-full bg-blue-400" /> FB Creator Discovery — Facebook creator search & content
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+
+            {/* Section: Data Sources */}
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">Data Sources</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Scraping engine used as fallback when official APIs are not available.</p>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                {/* Apify Card */}
+                <Card variant="elevated">
+                  <CardContent>
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-purple-50 dark:bg-purple-900/20 text-purple-600">
+                          <Key className="h-6 w-6" />
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-gray-900 dark:text-white">Apify</h3>
+                          <p className="mt-0.5 text-xs text-gray-400">{t.settings.scrapingEngine}</p>
+                        </div>
+                      </div>
+                      <Badge variant={apifyKey ? "active" : "archived"}>
+                        {apifyKey ? t.settings.configured : t.settings.notConfigured}
+                      </Badge>
+                    </div>
+                    <div className="mt-4 flex items-end gap-2">
+                      <div className="flex-1">
+                        <Input
+                          label={t.settings.apiKey}
+                          type="password"
+                          placeholder="apify_api_xxxxxxxxx"
+                          value={apifyKey}
+                          onChange={(e) => setApifyKey(e.target.value)}
+                        />
+                      </div>
+                      <Button size="sm" variant="secondary" className="mb-[1px]" onClick={handleSaveApifyKey} loading={apifySaving}>
+                        {apifySaved ? (
+                          <span className="inline-flex items-center gap-1.5"><Check className="h-4 w-4" /> {t.common.save}</span>
+                        ) : t.common.save}
+                      </Button>
+                    </div>
+                    {apifySaved && (
+                      <p className="mt-2 text-sm text-emerald-500">API key saved successfully.</p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Data source priority info */}
+                <Card variant="elevated">
+                  <CardContent>
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M2 12h20" /><circle cx="12" cy="12" r="10" /></svg>
                       </div>
                       <div>
-                        <h3 className="font-semibold text-gray-900">{integration.name}</h3>
-                        <p className="mt-0.5 text-xs text-gray-400">{t.settings[integration.description as keyof typeof t.settings] || integration.description}</p>
+                        <h3 className="font-semibold text-gray-900 dark:text-white">Data Priority</h3>
+                        <p className="mt-0.5 text-xs text-gray-400">How data sources are selected</p>
                       </div>
                     </div>
-                    <Badge variant={integration.connected ? "active" : "archived"}>
-                      {integration.connected ? t.settings.connected : t.settings.notConnected}
-                    </Badge>
-                  </div>
-                  <div className="mt-4">
-                    <Button
-                      size="sm"
-                      variant={integration.connected ? "secondary" : "primary"}
-                      onClick={() => handleToggleIntegration(integration.id)}
-                      loading={integrationSaving === integration.id}
-                    >
-                      {integration.connected ? (
-                        <>{t.settings.disconnect}</>
-                      ) : (
-                        <>
-                          <ExternalLink className="h-3.5 w-3.5" /> {t.settings.connect}
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-
-            {/* Apify Card */}
-            <Card variant="elevated">
-              <CardContent>
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-gray-100 text-purple-600">
-                      <Key className="h-6 w-6" />
+                    <div className="space-y-2.5">
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-xs font-bold text-emerald-700 dark:text-emerald-300">1</span>
+                        <span className="text-sm text-gray-700 dark:text-gray-300">Official API (YouTube Data API)</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/30 text-xs font-bold text-blue-700 dark:text-blue-300">2</span>
+                        <span className="text-sm text-gray-700 dark:text-gray-300">OAuth connected (Meta APIs)</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-purple-100 dark:bg-purple-900/30 text-xs font-bold text-purple-700 dark:text-purple-300">3</span>
+                        <span className="text-sm text-gray-700 dark:text-gray-300">Creator Marketplace API</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800 text-xs font-bold text-gray-600 dark:text-gray-400">4</span>
+                        <span className="text-sm text-gray-700 dark:text-gray-300">Apify (fallback)</span>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="font-semibold text-gray-900">Apify</h3>
-                      <p className="mt-0.5 text-xs text-gray-400">
-                        {t.settings.scrapingEngine}
-                      </p>
-                    </div>
-                  </div>
-                  <Badge variant={apifyKey ? "active" : "archived"}>
-                    {apifyKey ? t.settings.configured : t.settings.notConfigured}
-                  </Badge>
-                </div>
-                <div className="mt-4 flex items-end gap-2">
-                  <div className="flex-1">
-                    <Input
-                      label={t.settings.apiKey}
-                      type="password"
-                      placeholder="apify_api_xxxxxxxxx"
-                      value={apifyKey}
-                      onChange={(e) => setApifyKey(e.target.value)}
-                    />
-                  </div>
-                  <Button size="sm" variant="secondary" className="mb-[1px]" onClick={handleSaveApifyKey} loading={apifySaving}>
-                    {apifySaved ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <Check className="h-4 w-4" /> {t.common.save}
-                      </span>
-                    ) : (
-                      t.common.save
-                    )}
-                  </Button>
-                </div>
-                {apifySaved && (
-                  <p className="mt-2 text-sm text-emerald-500">API key saved successfully.</p>
-                )}
-              </CardContent>
-            </Card>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
           </div>
           )}
         </TabsContent>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { scrapeHashtag, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
+import { searchVideos as ytSearchVideos, isYouTubeApiConfigured } from '@/lib/youtube-api'
 
 function formatFollowers(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
@@ -13,6 +14,33 @@ export interface CronTrackingResults {
   totalPostsFound: number
   storiesCaptured: number
   errors: string[]
+}
+
+import type { HashtagResult } from '@/lib/apify'
+
+/**
+ * Adapter: search YouTube videos by hashtag and return HashtagResult-compatible format.
+ * Uses YouTube Data API search endpoint (100 quota units per call).
+ */
+async function getYouTubeHashtagResults(hashtag: string): Promise<HashtagResult[]> {
+  try {
+    const cleanTag = hashtag.replace(/^#/, '')
+    const videos = await ytSearchVideos(`#${cleanTag}`, 20)
+    if (!videos.length) return []
+
+    // YouTube search doesn't give author info per video, group by channel ID approach
+    // For now, return each video as its own result with minimal author info
+    return videos.map(video => ({
+      posts: [video],
+      authorUsername: '', // Will be populated via channel lookup if needed
+      authorDisplayName: null,
+      authorAvatarUrl: null,
+      authorFollowers: 0,
+    }))
+  } catch (error) {
+    console.warn(`[Cron/Track] YouTube hashtag search failed for #${hashtag}:`, error)
+    return []
+  }
 }
 
 /**
@@ -65,7 +93,10 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
               },
             })
 
-            const hashtagResults = await scrapeHashtag(hashtag, platform, 20)
+            // Use YouTube Data API for YouTube hashtags, Apify for others
+            const hashtagResults = (platform === 'YOUTUBE' && isYouTubeApiConfigured())
+              ? await getYouTubeHashtagResults(hashtag)
+              : await scrapeHashtag(hashtag, platform, 20)
             let postsFound = 0
 
             for (const result of hashtagResults) {

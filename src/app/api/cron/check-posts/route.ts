@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { isApifyConfiguredAsync, scrapeProfile } from '@/lib/apify'
+import { isApifyConfiguredAsync } from '@/lib/apify'
+import { fetchProfile } from '@/lib/platform-client'
+import { isYouTubeApiConfigured } from '@/lib/youtube-api'
 import { notifyAllTeam } from '@/lib/notifications'
 
 /** Ad disclosure markers to detect paid partnership disclosures */
@@ -35,9 +37,10 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const isConfigured = await isApifyConfiguredAsync()
-    if (!isConfigured) {
-      return NextResponse.json({ error: 'Apify not configured' }, { status: 400 })
+    const apifyConfigured = await isApifyConfiguredAsync()
+    const youtubeConfigured = isYouTubeApiConfigured()
+    if (!apifyConfigured && !youtubeConfigured) {
+      return NextResponse.json({ error: 'No data source configured (Apify or YouTube API)' }, { status: 400 })
     }
 
     // Find active campaigns with their influencers
@@ -104,10 +107,12 @@ export async function GET(request: NextRequest) {
     // Check each influencer (rate limited to avoid overwhelming Apify)
     for (const [key, inf] of influencerMap) {
       try {
-        console.log(`[Cron/CheckPosts] Scraping @${inf.username} on ${inf.platform}...`)
-        const profile = await scrapeProfile(inf.username, inf.platform)
+        console.log(`[Cron/CheckPosts] Fetching @${inf.username} on ${inf.platform}...`)
+        const result = await fetchProfile(inf.username, inf.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
 
-        if (!profile || !profile.recentPosts.length) continue
+        if (!result || !result.profile.recentPosts.length) continue
+        const profile = result.profile
+        const dataSource = result.dataSource
 
         // Check which posts are new (not in our DB yet)
         const existingExternalIds = new Set(
@@ -168,6 +173,7 @@ export async function GET(request: NextRequest) {
                   mentions: post.mentions,
                   influencerId: inf.id,
                   campaignId,
+                  dataSource,
                   isAdDisclosed: campaign.paymentType === 'PAID' ? hasAdDisclosure(post.caption) : false,
                 },
               })
@@ -201,10 +207,12 @@ export async function GET(request: NextRequest) {
             avgViews: profile.avgViews,
             avatarUrl: profile.avatarUrl || undefined,
             bio: profile.bio || undefined,
+            dataSource,
+            lastScraped: new Date(),
           },
         })
 
-        // Small delay between profiles to be nice to Apify
+        // Small delay between profiles to respect rate limits
         await new Promise(r => setTimeout(r, 2000))
       } catch (err) {
         const errMsg = `Error checking @${inf.username}: ${err}`
