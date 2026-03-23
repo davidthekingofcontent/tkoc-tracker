@@ -147,6 +147,25 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
           if (influencerCountry && influencerCountry !== campaign.country) {
             continue
           }
+
+          // If still no country detected but campaign requires one,
+          // check caption language as a last resort heuristic
+          if (!influencerCountry && campaign.country === 'ES') {
+            const caption = result.posts[0]?.caption || ''
+            // Detect non-Spanish content by checking for common non-Spanish characters/words
+            const nonSpanishPatterns = [
+              /[\u0400-\u04FF]/, // Cyrillic (Russian, etc.)
+              /[\u4E00-\u9FFF]/, // Chinese
+              /[\u3040-\u309F\u30A0-\u30FF]/, // Japanese
+              /[\uAC00-\uD7AF]/, // Korean
+              /[\u0600-\u06FF]/, // Arabic
+              /[\u0E00-\u0E7F]/, // Thai
+              /[\u0900-\u097F]/, // Hindi/Devanagari
+            ]
+            if (nonSpanishPatterns.some(p => p.test(caption))) {
+              continue // Skip non-latin-script content
+            }
+          }
         }
 
         const campaignInfluencerResult = await prisma.campaignInfluencer.upsert({

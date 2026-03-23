@@ -141,6 +141,20 @@ export async function POST(
                   results.postsFilteredByCountry += result.posts.length
                   continue // Skip to next influencer
                 }
+
+                // If still no country detected but campaign requires ES,
+                // check caption language to filter non-Spanish content
+                if (!influencerCountry && campaign.country === 'ES') {
+                  const caption = result.posts[0]?.caption || ''
+                  const nonSpanishPatterns = [
+                    /[\u0400-\u04FF]/, /[\u4E00-\u9FFF]/, /[\u3040-\u309F\u30A0-\u30FF]/,
+                    /[\uAC00-\uD7AF]/, /[\u0600-\u06FF]/, /[\u0E00-\u0E7F]/, /[\u0900-\u097F]/,
+                  ]
+                  if (nonSpanishPatterns.some(p => p.test(caption))) {
+                    results.postsFilteredByCountry += result.posts.length
+                    continue
+                  }
+                }
               }
 
               // Link influencer to campaign if not already linked

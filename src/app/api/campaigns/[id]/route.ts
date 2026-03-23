@@ -74,7 +74,12 @@ export async function GET(
       (metrics._sum.saves || 0)
 
     const totalReach = metrics._sum.reach || 0
-    const engagementRate = totalReach > 0 ? (totalEngagements / totalReach) * 100 : 0
+    const totalViews = metrics._sum.views || 0
+    const totalImpressions = metrics._sum.impressions || 0
+
+    // Engagement rate: use reach > impressions > views as denominator (whichever has data)
+    const engagementDenominator = totalReach > 0 ? totalReach : totalImpressions > 0 ? totalImpressions : totalViews
+    const engagementRate = engagementDenominator > 0 ? (totalEngagements / engagementDenominator) * 100 : 0
 
     // Count distinct influencers who posted
     const profilesPosted = await prisma.media.findMany({
@@ -97,12 +102,12 @@ export async function GET(
     )
 
     const overview = {
-      totalReach,
-      totalImpressions: metrics._sum.impressions || 0,
+      totalReach: totalReach > 0 ? totalReach : totalViews, // fallback to views if no reach data
+      totalImpressions: totalImpressions > 0 ? totalImpressions : totalViews, // fallback to views
       totalEngagements,
       engagementRate: Math.round(engagementRate * 100) / 100,
       mediaValue: metrics._sum.mediaValue || 0,
-      totalViews: metrics._sum.views || 0,
+      totalViews,
       profilesPosted: profilesPosted.length,
       totalMedia: metrics._count,
       totalCost,
