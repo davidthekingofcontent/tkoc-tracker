@@ -26,7 +26,9 @@ function isPublicPath(pathname: string): boolean {
     pathname.startsWith('/_next') ||
     pathname.startsWith('/favicon') ||
     pathname.startsWith('/images') ||
-    pathname.startsWith('/api/')
+    pathname.startsWith('/api/') ||
+    pathname.endsWith('.txt') ||
+    pathname.endsWith('.json')
   ) {
     return true
   }
