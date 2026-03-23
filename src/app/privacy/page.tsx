@@ -30,8 +30,9 @@ export default function PrivacyPolicyPage() {
           <h2 className="text-xl font-semibold text-gray-900">2. Data Controller</h2>
           <p>
             DAMA Platforms S.L.<br />
-            Email: privacy@damaplatforms.com<br />
-            Website: damaplatforms.com
+            CIF: B56551146<br />
+            C/ Sector Pueblos 23, 5B — 28760 Tres Cantos, Madrid, Spain<br />
+            Email: admon@thekingofcontent.agency
           </p>
         </section>
 
@@ -119,7 +120,7 @@ export default function PrivacyPolicyPage() {
           </p>
           <p>
             You may request deletion of your account and all associated data at any time by contacting
-            privacy@damaplatforms.com or using the data deletion endpoint.
+            admon@thekingofcontent.agency or using the data deletion endpoint.
           </p>
         </section>
 
@@ -135,7 +136,7 @@ export default function PrivacyPolicyPage() {
             <li><strong>Object:</strong> Object to data processing based on legitimate interest</li>
             <li><strong>Withdraw Consent:</strong> Revoke any previously given consent at any time</li>
           </ul>
-          <p>To exercise these rights, contact: privacy@damaplatforms.com</p>
+          <p>To exercise these rights, contact: admon@thekingofcontent.agency</p>
         </section>
 
         <section>
@@ -156,7 +157,7 @@ export default function PrivacyPolicyPage() {
             To request deletion of all your data, you can:
           </p>
           <ul className="list-disc pl-6 space-y-1">
-            <li>Email privacy@damaplatforms.com</li>
+            <li>Email admon@thekingofcontent.agency</li>
             <li>Use the automated data deletion endpoint at /api/data-deletion</li>
             <li>Disconnect your social media accounts from Settings</li>
           </ul>
@@ -188,8 +189,9 @@ export default function PrivacyPolicyPage() {
           <p>
             For questions about this Privacy Policy or data protection:<br />
             DAMA Platforms S.L.<br />
-            Email: privacy@damaplatforms.com<br />
-            Website: damaplatforms.com
+            CIF: B56551146<br />
+            C/ Sector Pueblos 23, 5B — 28760 Tres Cantos, Madrid, Spain<br />
+            Email: admon@thekingofcontent.agency
           </p>
         </section>
       </div>

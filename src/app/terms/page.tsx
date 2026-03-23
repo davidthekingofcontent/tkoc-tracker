@@ -138,7 +138,7 @@ export default function TermsOfServicePage() {
           <p>
             We may suspend or terminate your access to the Service at any time for violation of these
             Terms. Upon termination, your data will be handled according to our Privacy Policy.
-            You may request deletion of all your data by contacting privacy@damaplatforms.com.
+            You may request deletion of all your data by contacting admon@thekingofcontent.agency.
           </p>
         </section>
 
@@ -146,7 +146,7 @@ export default function TermsOfServicePage() {
           <h2 className="text-xl font-semibold text-gray-900">13. Governing Law</h2>
           <p>
             These Terms are governed by the laws of Spain. Any disputes shall be resolved in the
-            courts of Barcelona, Spain.
+            courts of Madrid, Spain.
           </p>
         </section>
 
@@ -162,8 +162,9 @@ export default function TermsOfServicePage() {
           <h2 className="text-xl font-semibold text-gray-900">15. Contact</h2>
           <p>
             DAMA Platforms S.L.<br />
-            Email: legal@damaplatforms.com<br />
-            Website: damaplatforms.com
+            CIF: B56551146<br />
+            C/ Sector Pueblos 23, 5B — 28760 Tres Cantos, Madrid, Spain<br />
+            Email: admon@thekingofcontent.agency
           </p>
         </section>
       </div>
