@@ -13,6 +13,7 @@ enum UserRole {
   ADMIN
   EMPLOYEE
   BRAND
+  CREATOR
 }
 
 model User {
@@ -24,6 +25,23 @@ model User {
   role          UserRole  @default(EMPLOYEE)
   brandName     String?   // Only for BRAND users
   isActive      Boolean   @default(true)
+
+  // Creator profile fields (only for CREATOR role)
+  creatorUsername    String?   // @handle
+  creatorPlatform   String?   // INSTAGRAM, TIKTOK, YOUTUBE
+  creatorBio        String?
+  creatorCategory   String?   // lifestyle, beauty, tech, food, fitness, etc.
+  portfolioUrl      String?   // Link to portfolio/media kit
+  portfolioFiles    String[]  // URLs to uploaded portfolio files
+  creatorFollowers  Int?
+  creatorCountry    String?
+  creatorCity       String?
+  creatorLanguages  String[]
+  creatorType       String?   // MACRO, MICRO, NANO, UGC
+  isVerified        Boolean   @default(false)  // Admin-verified creator
+  verifiedAt        DateTime?
+  verifiedBy        String?   // Admin user ID who verified
+  linkedInfluencerId String?  // Link to Influencer model if exists
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

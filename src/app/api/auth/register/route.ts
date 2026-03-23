@@ -6,7 +6,11 @@ import { UserRole } from '@/generated/prisma/client'
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { email, password, name, role } = body
+    const { email, password, name, role,
+      creatorUsername, creatorPlatform, creatorBio, creatorCategory,
+      portfolioUrl, creatorFollowers, creatorCountry, creatorCity,
+      creatorType, creatorLanguages,
+    } = body
 
     if (!email || !password || !name) {
       return NextResponse.json(
@@ -25,12 +29,29 @@ export async function POST(request: NextRequest) {
 
     const hashedPassword = await hashPassword(password)
 
+    // Build creator fields if role is CREATOR
+    const isCreator = role === 'CREATOR'
+    const creatorData = isCreator ? {
+      creatorUsername: creatorUsername || null,
+      creatorPlatform: creatorPlatform || null,
+      creatorBio: creatorBio || null,
+      creatorCategory: creatorCategory || null,
+      portfolioUrl: portfolioUrl || null,
+      creatorFollowers: creatorFollowers ? parseInt(creatorFollowers) : null,
+      creatorCountry: creatorCountry || null,
+      creatorCity: creatorCity || null,
+      creatorType: creatorType || null,
+      creatorLanguages: creatorLanguages || [],
+      isVerified: false,
+    } : {}
+
     const user = await prisma.user.create({
       data: {
         email,
         password: hashedPassword,
         name,
         role: role && Object.values(UserRole).includes(role) ? role : UserRole.EMPLOYEE,
+        ...creatorData,
       },
       select: {
         id: true,

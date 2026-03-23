@@ -69,6 +69,10 @@ export const translations = {
     nav: {
       home: 'Home',
       campaigns: 'Campaigns',
+      creators: 'Creators',
+      pricing: 'Pricing',
+      results: 'Results',
+      methodology: 'Methodology',
       analyzeProfiles: 'Analyze Profiles',
       findCreators: 'Find Creators',
       lookalikes: 'Lookalikes',
@@ -569,6 +573,10 @@ export const translations = {
     nav: {
       home: 'Inicio',
       campaigns: 'Campañas',
+      creators: 'Creadores',
+      pricing: 'Pricing',
+      results: 'Resultados',
+      methodology: 'Metodología',
       analyzeProfiles: 'Analizar Perfiles',
       findCreators: 'Buscar Creadores',
       lookalikes: 'Similares',

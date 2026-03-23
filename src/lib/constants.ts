@@ -1,10 +1,16 @@
 import {
   Home,
+  LayoutDashboard,
   Megaphone,
+  Users,
+  DollarSign,
+  BarChart3,
+  BookOpen,
   UserSearch,
   Compass,
   ListChecks,
   Contact,
+  Kanban,
   Settings,
   Instagram,
   Youtube,
@@ -149,12 +155,21 @@ export interface NavItem {
   icon: LucideIcon
 }
 
-export const NAV_ITEMS: NavItem[] = [
-  { label: 'Home', href: '/', icon: Home },
+export const MAIN_NAV_ITEMS: NavItem[] = [
+  { label: 'Home', href: '/dashboard', icon: LayoutDashboard },
   { label: 'Campaigns', href: '/campaigns', icon: Megaphone },
-  { label: 'Analyze Profiles', href: '/analyze', icon: UserSearch },
-  { label: 'Discovery', href: '/discovery', icon: Compass },
+  { label: 'Creators', href: '/discover', icon: Users },
+  { label: 'Pricing', href: '/pricing', icon: DollarSign },
+  { label: 'Results', href: '/compare', icon: BarChart3 },
+  { label: 'Methodology', href: '/methodology', icon: BookOpen },
+]
+
+export const SECONDARY_NAV_ITEMS: NavItem[] = [
   { label: 'Lists', href: '/lists', icon: ListChecks },
   { label: 'Contacts', href: '/contacts', icon: Contact },
+  { label: 'Pipeline', href: '/pipeline', icon: Kanban },
   { label: 'Settings', href: '/settings', icon: Settings },
 ]
+
+/** @deprecated Use MAIN_NAV_ITEMS and SECONDARY_NAV_ITEMS instead */
+export const NAV_ITEMS: NavItem[] = [...MAIN_NAV_ITEMS, ...SECONDARY_NAV_ITEMS]

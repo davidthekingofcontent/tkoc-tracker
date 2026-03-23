@@ -6,19 +6,18 @@ import { usePathname, useRouter } from "next/navigation"
 import {
   LayoutDashboard,
   Megaphone,
-  Search,
-  Compass,
-  List,
   Users,
-  UserCheck,
+  DollarSign,
+  BarChart3,
+  BookOpen,
+  ListChecks,
+  Contact,
+  Kanban,
   Settings,
   ChevronDown,
   ChevronRight,
   Pin,
   LogOut,
-  BarChart3,
-  Calendar,
-  Building2,
   Moon,
   Sun,
 } from "lucide-react"
@@ -33,17 +32,19 @@ interface NavItem {
   href: string
 }
 
-const navItems: NavItem[] = [
+const mainNavItems: NavItem[] = [
   { key: "home", icon: LayoutDashboard, href: "/dashboard" },
   { key: "campaigns", icon: Megaphone, href: "/campaigns" },
-  { key: "analyzeProfiles", icon: Search, href: "/analyze" },
-  { key: "findCreators", icon: Compass, href: "/discover" },
-  { key: "lookalikes", icon: UserCheck, href: "/lookalikes" },
-  { key: "lists", icon: List, href: "/lists" },
-  { key: "contacts", icon: Users, href: "/contacts" },
-  { key: "brands", icon: Building2, href: "/brands" },
-  { key: "calendar", icon: Calendar, href: "/calendar" },
-  { key: "compare", icon: BarChart3, href: "/compare" },
+  { key: "creators", icon: Users, href: "/discover" },
+  { key: "pricing", icon: DollarSign, href: "/pricing" },
+  { key: "results", icon: BarChart3, href: "/compare" },
+  { key: "methodology", icon: BookOpen, href: "/methodology" },
+]
+
+const secondaryNavItems: NavItem[] = [
+  { key: "lists", icon: ListChecks, href: "/lists" },
+  { key: "contacts", icon: Contact, href: "/contacts" },
+  { key: "pipeline", icon: Kanban, href: "/pipeline" },
   { key: "settings", icon: Settings, href: "/settings" },
 ]
 
@@ -69,15 +70,14 @@ function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
   switch (key) {
     case 'home': return t.nav.home
     case 'campaigns': return t.nav.campaigns
-    case 'analyzeProfiles': return t.nav.analyzeProfiles
-    case 'findCreators': return t.nav.findCreators
-    case 'lookalikes': return t.nav.lookalikes
-    case 'lists': return t.lists.title
-    case 'contacts': return t.contacts.title
-    case 'brands': return t.nav.brands
-    case 'calendar': return t.nav.calendar
-    case 'compare': return t.nav.compare || 'Compare'
-    case 'settings': return t.settings.title
+    case 'creators': return t.nav.creators
+    case 'pricing': return t.nav.pricing
+    case 'results': return t.nav.results
+    case 'methodology': return t.nav.methodology
+    case 'lists': return t.lists?.title || t.nav.lists
+    case 'contacts': return t.contacts?.title || t.nav.contacts
+    case 'pipeline': return t.nav.pipeline
+    case 'settings': return t.settings?.title || t.nav.settings
     default: return key
   }
 }
@@ -145,6 +145,10 @@ export function Sidebar() {
     .toUpperCase()
     .slice(0, 2)
 
+  const isActive = (href: string) =>
+    (href === '/' && pathname === '/') ||
+    (href !== '/' && (pathname === href || pathname?.startsWith(href + "/")))
+
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-[260px] flex-col border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 transition-colors">
       {/* Logo */}
@@ -159,26 +163,57 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-3 py-4">
+        {/* Main Navigation - 6 primary items */}
         <div className="space-y-1">
-          {navItems.map((item) => {
-            const isActive =
-              (item.href === '/' && pathname === '/') ||
-              (item.href !== '/' && (pathname === item.href || pathname?.startsWith(item.href + "/")))
+          {mainNavItems.map((item) => {
+            const active = isActive(item.href)
             return (
               <Link
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                  isActive
+                  "group flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold transition-colors",
+                  active
                     ? "border-l-2 border-purple-600 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
-                    : "border-l-2 border-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100"
+                    : "border-l-2 border-transparent text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100"
+                )}
+              >
+                <item.icon
+                  className={cn(
+                    "h-5 w-5 shrink-0",
+                    active
+                      ? "text-purple-600 dark:text-purple-400"
+                      : "text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300"
+                  )}
+                />
+                {getNavLabel(item.key, t)}
+              </Link>
+            )
+          })}
+        </div>
+
+        {/* Divider between main and secondary nav */}
+        <div className="my-4 border-t border-gray-200 dark:border-gray-700" />
+
+        {/* Secondary Navigation */}
+        <div className="space-y-0.5">
+          {secondaryNavItems.map((item) => {
+            const active = isActive(item.href)
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  "group flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                  active
+                    ? "border-l-2 border-purple-600 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
+                    : "border-l-2 border-transparent text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100"
                 )}
               >
                 <item.icon
                   className={cn(
                     "h-4 w-4 shrink-0",
-                    isActive
+                    active
                       ? "text-purple-600 dark:text-purple-400"
                       : "text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300"
                   )}
