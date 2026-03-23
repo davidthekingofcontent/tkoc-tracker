@@ -149,11 +149,11 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
           }
 
           // If still no country detected but campaign requires one,
-          // check caption language as a last resort heuristic
-          if (!influencerCountry && campaign.country === 'ES') {
+          // skip by default (strict filtering) unless language heuristics allow it
+          if (!influencerCountry) {
             const caption = result.posts[0]?.caption || ''
-            // Detect non-Spanish content by checking for common non-Spanish characters/words
-            const nonSpanishPatterns = [
+            // Non-latin script patterns — always skip these regardless of target country
+            const nonLatinPatterns = [
               /[\u0400-\u04FF]/, // Cyrillic (Russian, etc.)
               /[\u4E00-\u9FFF]/, // Chinese
               /[\u3040-\u309F\u30A0-\u30FF]/, // Japanese
@@ -162,8 +162,14 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
               /[\u0E00-\u0E7F]/, // Thai
               /[\u0900-\u097F]/, // Hindi/Devanagari
             ]
-            if (nonSpanishPatterns.some(p => p.test(caption))) {
+            if (nonLatinPatterns.some(p => p.test(caption))) {
               continue // Skip non-latin-script content
+            }
+
+            // For Spanish campaigns, allow latin-script content through (could be Spanish)
+            // For all other countries, skip unknown-country content
+            if (campaign.country !== 'ES') {
+              continue // Strict: skip content with no country detected
             }
           }
         }

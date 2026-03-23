@@ -161,7 +161,7 @@ interface CampaignData {
 
 interface Overview {
   totalReach: number
-  totalImpressions: number
+  totalImpressions: number | null
   totalEngagements: number
   engagementRate: number
   mediaValue: number
@@ -1328,13 +1328,13 @@ export default function CampaignDetailPage() {
                   />
                   <StatCard
                     icon={<BarChart3 className="h-5 w-5" />}
-                    label={<span className="flex items-center gap-1">{t.campaignDetail.engagementRate} <InfoTooltip text={locale === 'es' ? 'Calculado como (likes + comentarios + shares + saves) / alcance × 100' : 'Calculated as (likes + comments + shares + saves) / reach × 100'} /></span>}
+                    label={<span className="flex items-center gap-1">{t.campaignDetail.engagementRate} <InfoTooltip text={locale === 'es' ? 'Calculado como (likes + comentarios) / alcance (o vistas) × 100' : 'Calculated as (likes + comments) / reach (or views) × 100'} /></span>}
                     value={`${overview.engagementRate}%`}
                   />
                   <StatCard
                     icon={<TrendingUp className="h-5 w-5" />}
                     label={t.campaignDetail.impressions}
-                    value={formatNumber(overview.totalImpressions)}
+                    value={overview.totalImpressions != null ? formatNumber(overview.totalImpressions) : 'N/A'}
                   />
                   <StatCard
                     icon={<Users className="h-5 w-5" />}
