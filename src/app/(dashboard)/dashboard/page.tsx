@@ -27,6 +27,7 @@ import {
   Target,
 } from "lucide-react"
 import { RepeatRadarWidget } from '@/components/dashboard/repeat-radar-widget'
+import { CampaignWizard } from '@/components/campaign-wizard'
 
 interface DashboardStats {
   activeCampaigns: number
@@ -123,6 +124,7 @@ export default function DashboardPage() {
   const [recentActivity, setRecentActivity] = useState<RecentMediaItem[]>([])
   const [platformBreakdown, setPlatformBreakdown] = useState<PlatformBreakdown[]>([])
   const [campaignsByStatus, setCampaignsByStatus] = useState<CampaignsByStatus>({ active: 0, paused: 0, archived: 0 })
+  const [showWizard, setShowWizard] = useState(false)
 
   const quickActions = [
     { title: t.dashboard.quickActions.createCampaign, description: t.dashboard.quickActions.createCampaignDesc, icon: Megaphone, href: "/campaigns/new" },
@@ -201,6 +203,13 @@ export default function DashboardPage() {
           <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">{t.dashboard.subtitle}</p>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => setShowWizard(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-purple-600 to-blue-600 px-5 py-2 text-sm font-bold text-white hover:from-purple-700 hover:to-blue-700 transition-all shadow-md"
+          >
+            <Zap className="h-4 w-4" />
+            {locale === 'es' ? 'Guíame' : 'Guide Me'}
+          </button>
           {quickActions.slice(0, 2).map((a) => (
             <Link key={a.href} href={a.href}
               className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 transition-colors shadow-sm">
@@ -533,6 +542,9 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* Campaign Wizard */}
+      <CampaignWizard isOpen={showWizard} onClose={() => setShowWizard(false)} />
     </div>
   )
 }
