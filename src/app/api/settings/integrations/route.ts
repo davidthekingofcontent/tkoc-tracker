@@ -78,6 +78,11 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
+    // Only ADMIN can modify integrations
+    if (session.role !== 'ADMIN') {
+      return NextResponse.json({ error: 'Only administrators can manage integrations' }, { status: 403 })
+    }
+
     const body = await request.json()
     const { key, value } = body as { key: string; value: string }
 

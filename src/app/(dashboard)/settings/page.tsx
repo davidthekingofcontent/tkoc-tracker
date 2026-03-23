@@ -130,6 +130,8 @@ const mockIntegrations: Integration[] = [
 export default function SettingsPage() {
   const { t } = useI18n()
   const { theme, toggleTheme } = useTheme()
+  const [currentUserRole, setCurrentUserRole] = useState<string>('')
+  const isAdmin = currentUserRole === 'ADMIN'
 
   // Profile state
   const [profileName, setProfileName] = useState(mockProfile.name)
@@ -175,6 +177,10 @@ export default function SettingsPage() {
     fetchTeam()
     fetchTemplates()
     fetchIntegrations()
+    // Fetch current user role
+    fetch('/api/auth/me').then(r => r.ok ? r.json() : null).then(d => {
+      if (d?.user?.role) setCurrentUserRole(d.user.role)
+    }).catch(() => {})
   }, [])
 
   async function fetchTeam() {
@@ -406,9 +412,11 @@ export default function SettingsPage() {
           <TabsTrigger value="team" className="gap-1.5">
             <Users className="h-4 w-4" /> {t.settings.team}
           </TabsTrigger>
-          <TabsTrigger value="integrations" className="gap-1.5">
-            <Plug className="h-4 w-4" /> {t.settings.integrations}
-          </TabsTrigger>
+          {isAdmin && (
+            <TabsTrigger value="integrations" className="gap-1.5">
+              <Plug className="h-4 w-4" /> {t.settings.integrations}
+            </TabsTrigger>
+          )}
           <TabsTrigger value="templates" className="gap-1.5">
             <FileText className="h-4 w-4" /> Templates
           </TabsTrigger>
@@ -678,7 +686,12 @@ export default function SettingsPage() {
 
         {/* ===================== INTEGRATIONS TAB ===================== */}
         <TabsContent value="integrations">
-          {integrationsLoading ? (
+          {!isAdmin ? (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 py-16 text-center">
+              <Plug className="mx-auto h-10 w-10 text-gray-300" />
+              <p className="mt-3 text-sm text-gray-500">Only administrators can manage integrations.</p>
+            </div>
+          ) : integrationsLoading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
             </div>
