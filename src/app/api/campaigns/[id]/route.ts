@@ -213,7 +213,17 @@ export async function PUT(
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
     }
 
-    const { name, status, budget, isPinned, startDate, endDate, platforms, targetAccounts, targetHashtags, targetKeywords, country, paymentType, briefText, briefFiles, objective } = body
+    const { name, status, budget, isPinned, startDate, endDate, platforms, targetAccounts, targetHashtags, targetKeywords, country, paymentType, briefText, briefFiles, objective, manualROI, manualROINotes } = body
+
+    // BRAND users cannot edit campaign data fields
+    if (session.role === 'BRAND') {
+      // Brands can only update status (pause/activate) and isPinned
+      const allowedForBrand = { status, isPinned }
+      const hasDisallowedFields = Object.keys(body).some(k => !['status', 'isPinned'].includes(k))
+      if (hasDisallowedFields) {
+        return NextResponse.json({ error: 'Brands cannot edit campaign data' }, { status: 403 })
+      }
+    }
 
     const campaign = await prisma.campaign.update({
       where: { id },
@@ -233,6 +243,8 @@ export async function PUT(
         ...(briefText !== undefined && { briefText: briefText || null }),
         ...(briefFiles !== undefined && { briefFiles }),
         ...(objective !== undefined && { objective: objective || null }),
+        ...(manualROI !== undefined && { manualROI: manualROI !== null ? parseFloat(manualROI) : null }),
+        ...(manualROINotes !== undefined && { manualROINotes: manualROINotes || null }),
       },
       include: {
         _count: { select: { influencers: true, media: true } },

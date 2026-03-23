@@ -4,6 +4,17 @@ import { getSession } from '@/lib/auth'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { calculateEMV, calculateCampaignEMV, EMV_METHODOLOGY } from '@/lib/emv'
+import * as fs from 'fs'
+import * as path from 'path'
+
+// Load TKOC logo as base64 at module level for PDF embedding
+let TKOC_LOGO_BASE64: string | null = null
+try {
+  const logoPath = path.join(process.cwd(), 'public', 'images', 'tkoc-logo-full.png')
+  if (fs.existsSync(logoPath)) {
+    TKOC_LOGO_BASE64 = fs.readFileSync(logoPath).toString('base64')
+  }
+} catch { /* logo optional */ }
 
 export async function GET(
   request: NextRequest,
@@ -49,9 +60,14 @@ export async function GET(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
+    // Custom report options from query params
+    const customTitle = request.nextUrl.searchParams.get('title') || undefined
+    const customSubtitle = request.nextUrl.searchParams.get('subtitle') || undefined
+    const coverImageUrl = request.nextUrl.searchParams.get('coverImage') || undefined
+
     if (format === 'csv') return generateCSV(campaign)
     if (format === 'json') return generateJSON(campaign)
-    if (format === 'pdf') return generatePDF(campaign)
+    if (format === 'pdf') return generatePDF(campaign, { customTitle, customSubtitle, coverImageUrl })
 
     return NextResponse.json({ error: 'Unsupported format. Use csv, json, or pdf.' }, { status: 400 })
   } catch (error) {
@@ -451,7 +467,7 @@ function generateJSON(campaign: CampaignData): NextResponse {
 
 // ============ PDF GENERATION ============
 
-async function generatePDF(campaign: CampaignData): Promise<NextResponse> {
+async function generatePDF(campaign: CampaignData, options?: { customTitle?: string; customSubtitle?: string; coverImageUrl?: string }): Promise<NextResponse> {
   const doc = new jsPDF('p', 'mm', 'a4')
   const W = doc.internal.pageSize.getWidth()   // 210
   const H = doc.internal.pageSize.getHeight()  // 297
@@ -522,22 +538,55 @@ async function generatePDF(campaign: CampaignData): Promise<NextResponse> {
   doc.setFillColor(...purple)
   doc.rect(0, 0, W, H * 0.4, 'F')
 
-  // Brand
+  // Brand logo + name
+  if (TKOC_LOGO_BASE64) {
+    try {
+      doc.addImage(`data:image/png;base64,${TKOC_LOGO_BASE64}`, 'PNG', M, 25, 40, 15)
+    } catch { /* logo optional */ }
+  }
   doc.setTextColor(...white)
   doc.setFontSize(12)
   doc.setFont('helvetica', 'normal')
-  doc.text('TKOC TRACKER', M, 40)
+  doc.text('TKOC INTELLIGENCE', M, TKOC_LOGO_BASE64 ? 50 : 40)
 
   // Divider line
   doc.setDrawColor(255, 255, 255, 80)
   doc.setLineWidth(0.5)
-  doc.line(M, 46, M + 40, 46)
+  const dividerY = TKOC_LOGO_BASE64 ? 54 : 46
+  doc.line(M, dividerY, M + 50, dividerY)
 
-  // Campaign name
+  // Cover image (if provided)
+  if (options?.coverImageUrl) {
+    try {
+      const coverImg = await fetchImageBase64(options.coverImageUrl)
+      if (coverImg) {
+        // Semi-transparent overlay on cover image
+        doc.addImage(`data:image/jpeg;base64,${coverImg}`, 'JPEG', 0, 0, W, H)
+        // Dark overlay for text readability
+        doc.setFillColor(0, 0, 0)
+        doc.setGState(new (doc as unknown as { GState: new (opts: { opacity: number }) => unknown }).GState({ opacity: 0.55 }))
+        doc.rect(0, 0, W, H, 'F')
+        doc.setGState(new (doc as unknown as { GState: new (opts: { opacity: number }) => unknown }).GState({ opacity: 1 }))
+      }
+    } catch { /* cover image optional */ }
+  }
+
+  // Campaign name (or custom title)
+  const coverTitle = options?.customTitle || campaign.name
+  doc.setTextColor(...white)
   doc.setFontSize(32)
   doc.setFont('helvetica', 'bold')
-  const nameLines = doc.splitTextToSize(campaign.name, CW)
-  doc.text(nameLines, M, 70)
+  const nameLines = doc.splitTextToSize(coverTitle, CW)
+  const nameY = TKOC_LOGO_BASE64 ? 75 : 70
+  doc.text(nameLines, M, nameY)
+
+  // Custom subtitle
+  if (options?.customSubtitle) {
+    doc.setFontSize(14)
+    doc.setFont('helvetica', 'normal')
+    doc.setTextColor(220, 220, 255)
+    doc.text(options.customSubtitle, M, nameY + nameLines.length * 14 + 4)
+  }
 
   // Campaign details
   let coverY = 70 + nameLines.length * 14
@@ -752,7 +801,7 @@ async function generatePDF(campaign: CampaignData): Promise<NextResponse> {
         7: { halign: 'center', cellWidth: 14 },
       },
       margin: { left: M, right: M },
-      didDrawPage: () => addFooter(doc, W, H, campaign.name),
+      // Footer added in final loop across all pages
     })
 
     y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable?.finalY + 8
@@ -957,12 +1006,16 @@ async function generatePDF(campaign: CampaignData): Promise<NextResponse> {
           }
         }
       },
-      didDrawPage: () => addFooter(doc, W, H, campaign.name),
+      // Footer added in final loop across all pages
     })
   }
 
-  // Footer on last page
-  addFooter(doc, W, H, campaign.name)
+  // Add footer + page numbers to ALL pages (skip cover page 1)
+  const totalPages = (doc as unknown as { internal: { getNumberOfPages: () => number } }).internal.getNumberOfPages()
+  for (let i = 2; i <= totalPages; i++) {
+    doc.setPage(i)
+    addFooter(doc, W, H, campaign.name, i, totalPages)
+  }
 
   // Generate
   const pdfOutput = doc.output('arraybuffer')
@@ -976,7 +1029,7 @@ async function generatePDF(campaign: CampaignData): Promise<NextResponse> {
   })
 }
 
-function addFooter(doc: jsPDF, pageWidth: number, pageHeight: number, campaignName: string) {
+function addFooter(doc: jsPDF, pageWidth: number, pageHeight: number, campaignName: string, pageNum: number, totalPages: number) {
   const footerY = pageHeight - 8
   doc.setFillColor(248, 246, 255)
   doc.rect(0, footerY - 4, pageWidth, 12, 'F')
@@ -985,7 +1038,5 @@ function addFooter(doc: jsPDF, pageWidth: number, pageHeight: number, campaignNa
   doc.setTextColor(156, 163, 175)
   doc.setFont('helvetica', 'normal')
   doc.text(`TKOC Intelligence  |  ${campaignName}  |  ${new Date().toLocaleDateString()}`, 15, footerY)
-
-  const pageNum = (doc as unknown as { internal: { getNumberOfPages: () => number } }).internal.getNumberOfPages()
-  doc.text(`Page ${pageNum}`, pageWidth - 15, footerY, { align: 'right' })
+  doc.text(`${pageNum} / ${totalPages}`, pageWidth - 15, footerY, { align: 'right' })
 }

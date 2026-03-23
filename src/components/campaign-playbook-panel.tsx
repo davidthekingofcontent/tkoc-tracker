@@ -108,7 +108,7 @@ export function CampaignPlaybookPanel({ campaignId }: CampaignPlaybookPanelProps
           </div>
           <div>
             <p className="text-sm font-semibold text-gray-900 dark:text-white">Campaign Grade</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400">{data.roiVerdict} ({data.roiRatio}x ROI)</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">{data.roiVerdict} ({data.roiRatio}x EMV Ratio)</p>
           </div>
         </div>
       </div>

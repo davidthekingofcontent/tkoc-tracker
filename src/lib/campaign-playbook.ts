@@ -73,14 +73,14 @@ export function generatePlaybook(input: PlaybookInput): PlaybookResult {
     return createEmptyPlaybook(input)
   }
 
-  // Calculate ROI
+  // Calculate EMV Ratio (informative, NOT used for grading decisions)
   const roiRatio = totalSpent > 0 ? Math.round((totalEMV / totalSpent) * 100) / 100 : 0
   const campaignGrade = gradeROI(roiRatio)
-  const roiVerdict = roiRatio >= 2.5 ? 'Excellent ROI' :
-                     roiRatio >= 1.5 ? 'Strong ROI' :
-                     roiRatio >= 1.0 ? 'Positive ROI' :
+  const roiVerdict = roiRatio >= 2.5 ? 'Excellent EMV Ratio' :
+                     roiRatio >= 1.5 ? 'Strong EMV Ratio' :
+                     roiRatio >= 1.0 ? 'Positive EMV Ratio' :
                      roiRatio >= 0.5 ? 'Below target' :
-                     'Poor ROI'
+                     'Low EMV Ratio'
 
   // Analyze each influencer
   const influencerAnalysis = influencers.map(inf => {

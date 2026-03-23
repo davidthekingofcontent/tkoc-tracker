@@ -92,28 +92,27 @@ export function analyzeRepeatWorthiness(input: RepeatRadarInput): RepeatRadarRes
   const avgEngagementRate = totalViews > 0 ? (totalEngagements / totalViews) * 100 :
                             input.followers > 0 ? (totalEngagements / input.followers) * 100 : 0
 
-  // Score components
+  // Score components (based on real data only, NOT ROI/EMV ratio)
   let score = 0
 
-  // 1. ROI (35% weight): EMV vs. spend
-  if (roiRatio >= 3.0) score += 35
-  else if (roiRatio >= 2.0) score += 30
-  else if (roiRatio >= 1.5) score += 25
-  else if (roiRatio >= 1.0) score += 18
-  else if (roiRatio >= 0.5) score += 10
-  else score += 3
+  // 1. Engagement quality (35% weight) — primary decision factor
+  if (avgEngagementRate >= 5.0) score += 35
+  else if (avgEngagementRate >= 3.0) score += 28
+  else if (avgEngagementRate >= 2.0) score += 20
+  else if (avgEngagementRate >= 1.0) score += 12
+  else score += 4
 
-  // 2. Engagement quality (25% weight)
-  if (avgEngagementRate >= 5.0) score += 25
-  else if (avgEngagementRate >= 3.0) score += 20
-  else if (avgEngagementRate >= 2.0) score += 15
-  else if (avgEngagementRate >= 1.0) score += 10
-  else score += 3
+  // 2. Delivery reliability (25% weight) — did they actually deliver?
+  if (deliveryRate >= 1.0) score += 25
+  else if (deliveryRate >= 0.8) score += 18
+  else if (deliveryRate >= 0.5) score += 10
+  else score += 2
 
-  // 3. Delivery reliability (20% weight)
-  if (deliveryRate >= 1.0) score += 20
-  else if (deliveryRate >= 0.8) score += 15
-  else if (deliveryRate >= 0.5) score += 8
+  // 3. CPM efficiency (20% weight) — are they worth the price?
+  if (avgCPM > 0 && avgCPM <= 10) score += 20
+  else if (avgCPM <= 15) score += 16
+  else if (avgCPM <= 20) score += 12
+  else if (avgCPM <= 30) score += 6
   else score += 2
 
   // 4. Volume / experience (10% weight)
@@ -121,11 +120,10 @@ export function analyzeRepeatWorthiness(input: RepeatRadarInput): RepeatRadarRes
   else if (totalCampaigns >= 2) score += 7
   else score += 4
 
-  // 5. CPM efficiency (10% weight)
-  if (avgCPM > 0 && avgCPM <= 10) score += 10
-  else if (avgCPM <= 15) score += 8
-  else if (avgCPM <= 20) score += 6
-  else if (avgCPM <= 30) score += 3
+  // 5. Content volume (10% weight) — did they produce enough content?
+  if (totalMedia >= 5) score += 10
+  else if (totalMedia >= 3) score += 7
+  else if (totalMedia >= 1) score += 4
   else score += 1
 
   score = Math.min(100, score)

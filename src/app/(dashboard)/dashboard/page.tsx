@@ -242,7 +242,7 @@ export default function DashboardPage() {
           format="currency"
           icon={<Zap className="h-5 w-5" />}
           iconBg="bg-yellow-100 text-yellow-600 dark:bg-yellow-900/30"
-          subtitle={emvRatio ? `${emvRatio.toFixed(1)}x ROI` : undefined}
+          subtitle={emvRatio ? `${emvRatio.toFixed(1)}x EMV Ratio` : undefined}
           subtitleColor={emvRatio && emvRatio >= 2 ? 'text-green-600' : emvRatio && emvRatio >= 1 ? 'text-yellow-600' : 'text-red-500'}
         />
       </div>

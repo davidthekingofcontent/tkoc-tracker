@@ -93,6 +93,10 @@ model Campaign {
   paymentType    String         @default("PAID") // "PAID" or "GIFTED"
   objective      String?        // Campaign objective: awareness, engagement, traffic, conversion, content
 
+  // Manual ROI data (optional, entered by admin/employee, NOT used in automatic scoring)
+  manualROI      Float?         // Manually entered ROI value (e.g. 2.5 = 2.5x return)
+  manualROINotes String?        // Notes explaining the ROI (e.g. "Based on sales data from Q1")
+
   // Brief
   briefText      String?        // Campaign brief text
   briefFiles     String[]       // URLs/paths to brief attachments
