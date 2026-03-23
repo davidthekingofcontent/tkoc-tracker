@@ -15,7 +15,7 @@ export default function PrivacyPolicyPage() {
           <h2 className="text-xl font-semibold text-gray-900">1. Introduction</h2>
           <p>
             TKOC Intelligence (&quot;we&quot;, &quot;our&quot;, &quot;us&quot;) is an influencer marketing intelligence platform
-            operated by The King of Content S.L. (&quot;TKOC&quot;). This Privacy Policy describes how we collect,
+            operated by DAMA Platforms S.L. (&quot;TKOC&quot;). This Privacy Policy describes how we collect,
             use, store, and protect personal data when you use our platform at tkoc-tracker-production.up.railway.app
             (the &quot;Service&quot;).
           </p>
@@ -29,9 +29,9 @@ export default function PrivacyPolicyPage() {
         <section>
           <h2 className="text-xl font-semibold text-gray-900">2. Data Controller</h2>
           <p>
-            The King of Content S.L.<br />
-            Email: privacy@thekingofcontent.agency<br />
-            Website: thekingofcontent.agency
+            DAMA Platforms S.L.<br />
+            Email: privacy@damaplatforms.com<br />
+            Website: damaplatforms.com
           </p>
         </section>
 
@@ -119,7 +119,7 @@ export default function PrivacyPolicyPage() {
           </p>
           <p>
             You may request deletion of your account and all associated data at any time by contacting
-            privacy@thekingofcontent.agency or using the data deletion endpoint.
+            privacy@damaplatforms.com or using the data deletion endpoint.
           </p>
         </section>
 
@@ -135,7 +135,7 @@ export default function PrivacyPolicyPage() {
             <li><strong>Object:</strong> Object to data processing based on legitimate interest</li>
             <li><strong>Withdraw Consent:</strong> Revoke any previously given consent at any time</li>
           </ul>
-          <p>To exercise these rights, contact: privacy@thekingofcontent.agency</p>
+          <p>To exercise these rights, contact: privacy@damaplatforms.com</p>
         </section>
 
         <section>
@@ -156,7 +156,7 @@ export default function PrivacyPolicyPage() {
             To request deletion of all your data, you can:
           </p>
           <ul className="list-disc pl-6 space-y-1">
-            <li>Email privacy@thekingofcontent.agency</li>
+            <li>Email privacy@damaplatforms.com</li>
             <li>Use the automated data deletion endpoint at /api/data-deletion</li>
             <li>Disconnect your social media accounts from Settings</li>
           </ul>
@@ -187,9 +187,9 @@ export default function PrivacyPolicyPage() {
           <h2 className="text-xl font-semibold text-gray-900">13. Contact</h2>
           <p>
             For questions about this Privacy Policy or data protection:<br />
-            The King of Content S.L.<br />
-            Email: privacy@thekingofcontent.agency<br />
-            Website: thekingofcontent.agency
+            DAMA Platforms S.L.<br />
+            Email: privacy@damaplatforms.com<br />
+            Website: damaplatforms.com
           </p>
         </section>
       </div>

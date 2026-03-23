@@ -76,12 +76,12 @@ async function graphFetch<T>(endpoint: string, accessToken: string, params: Reco
  * Generate the Facebook OAuth authorization URL
  */
 export function getAuthorizationUrl(appId: string, redirectUri: string, state: string): string {
+  // Only request permissions we actually use — Meta rejects unnecessary scopes
   const scopes = [
-    'instagram_basic',
-    'instagram_creator_marketplace_discovery',
-    'pages_manage_metadata',
-    'pages_show_list',
-    'business_management',
+    'instagram_basic',           // Read IG profile info + media
+    'instagram_manage_insights', // Read media insights (reach, impressions, saves)
+    'pages_show_list',           // List FB pages connected to IG
+    'pages_read_engagement',     // Read page engagement metrics
   ].join(',')
 
   return `https://www.facebook.com/${GRAPH_API_VERSION}/dialog/oauth?` +

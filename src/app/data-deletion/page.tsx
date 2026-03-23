@@ -25,7 +25,7 @@ export default function DataDeletionPage() {
           <p className="text-xs text-gray-500">
             If you have questions about your data deletion request, contact us at:
           </p>
-          <p className="mt-1 text-sm font-medium text-gray-700">privacy@thekingofcontent.agency</p>
+          <p className="mt-1 text-sm font-medium text-gray-700">privacy@damaplatforms.com</p>
         </div>
         <div className="mt-6">
           <a href="/" className="text-sm text-purple-600 hover:underline">Return to TKOC Intelligence</a>
