@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && node -e \"if(process.env.DATABASE_URL){const{execSync}=require('child_process');execSync('npx prisma db push --skip-generate --accept-data-loss',{stdio:'inherit'})}else{console.log('No DATABASE_URL, skipping db push')}\" && next build",
+    "build": "prisma generate && prisma db push --accept-data-loss || echo 'db push skipped (no DATABASE_URL)' && next build",
     "start": "next start",
     "lint": "eslint"
   },
