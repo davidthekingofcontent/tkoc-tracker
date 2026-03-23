@@ -301,7 +301,7 @@ model Media {
   influencer    Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
 
   campaignId    String?
-  campaign      Campaign?  @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  campaign      Campaign?  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt

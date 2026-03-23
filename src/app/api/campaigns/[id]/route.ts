@@ -267,13 +267,16 @@ export async function DELETE(
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
     }
 
-    // Soft delete by archiving
-    await prisma.campaign.update({
-      where: { id },
-      data: { status: CampaignStatus.ARCHIVED },
-    })
+    // Hard delete: remove ALL associated data completely
+    // Cascade-deleted: BriefFile, CampaignAssignment, CampaignInfluencer, Media (→Comments)
+    // Manually cleaned: CampaignNote (no FK), related Notifications
+    await prisma.$transaction([
+      prisma.campaignNote.deleteMany({ where: { campaignId: id } }),
+      prisma.notification.deleteMany({ where: { link: { contains: id } } }),
+      prisma.campaign.delete({ where: { id } }),
+    ])
 
-    return NextResponse.json({ message: 'Campaign archived' })
+    return NextResponse.json({ message: 'Campaign permanently deleted' })
   } catch (error) {
     console.error('Delete campaign error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

@@ -12,7 +12,10 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const campaignId = searchParams.get('campaignId')
 
-    const where = campaignId ? { campaignId } : {}
+    // Exclude archived campaigns from pipeline unless filtering by specific campaign
+    const where = campaignId
+      ? { campaignId }
+      : { campaign: { status: { not: 'ARCHIVED' as const } } }
 
     const items = await prisma.campaignInfluencer.findMany({
       where,

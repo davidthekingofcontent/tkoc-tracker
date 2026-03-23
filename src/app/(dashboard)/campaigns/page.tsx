@@ -211,8 +211,8 @@ export default function CampaignsPage() {
         break
       case 'delete': {
         const confirmMsg = locale === 'es'
-          ? 'Estas seguro de que quieres eliminar esta campana?'
-          : 'Are you sure you want to delete this campaign?'
+          ? '⚠️ BORRADO PERMANENTE\n\nEsto eliminará la campaña y TODOS sus datos:\n- Media rastreada\n- Influencers asignados\n- Brief y archivos\n- Notas y comentarios\n\n¿Estás seguro? Esta acción NO se puede deshacer.'
+          : '⚠️ PERMANENT DELETE\n\nThis will delete the campaign and ALL its data:\n- Tracked media\n- Assigned influencers\n- Brief and files\n- Notes and comments\n\nAre you sure? This action CANNOT be undone.'
         if (confirm(confirmMsg)) {
           await fetch(`/api/campaigns/${campaignId}`, { method: 'DELETE' })
           fetchCampaigns()

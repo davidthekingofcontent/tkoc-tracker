@@ -14,11 +14,14 @@ export async function GET(request: NextRequest) {
     // ADMIN sees all campaigns
     // EMPLOYEE sees own + assigned campaigns
     // BRAND sees only own campaigns
-    let campaignWhere: Record<string, unknown> = {}
+    // ALWAYS exclude archived campaigns from dashboard metrics
+    let campaignWhere: Record<string, unknown> = {
+      status: { not: CampaignStatus.ARCHIVED },
+    }
     if (session.role === 'EMPLOYEE') {
-      campaignWhere = { OR: [{ userId: session.id }, { assignments: { some: { userId: session.id } } }] }
+      campaignWhere = { ...campaignWhere, OR: [{ userId: session.id }, { assignments: { some: { userId: session.id } } }] }
     } else if (session.role === 'BRAND') {
-      campaignWhere = { userId: session.id }
+      campaignWhere = { ...campaignWhere, userId: session.id }
     }
 
     // Active campaigns count
