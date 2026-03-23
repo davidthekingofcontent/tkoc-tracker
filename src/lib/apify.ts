@@ -637,6 +637,90 @@ async function scrapeInstagramHashtag(hashtag: string, maxPosts = 20): Promise<H
   })
 }
 
+// ============ ACCOUNT MENTIONS / TAGGED POSTS ============
+
+/**
+ * Scrape posts where a specific account is tagged/mentioned.
+ * Uses Instagram Hashtag Scraper with @mention search + account's own tagged posts.
+ * This captures: posts where someone tags @account in caption or photo tag.
+ */
+async function scrapeInstagramAccountMentions(username: string, maxPosts = 50): Promise<HashtagResult[]> {
+  const cleanUsername = username.replace(/^@/, '')
+
+  // Strategy 1: Scrape the account's tagged posts (posts where they are tagged in photos)
+  try {
+    const items = await runActor('apify~instagram-scraper', {
+      directUrls: [`https://www.instagram.com/${cleanUsername}/tagged/`],
+      resultsType: 'posts',
+      resultsLimit: maxPosts,
+    }, 180) // 3 min timeout
+
+    if (items && items.length > 0) {
+      return items.map((post: Record<string, unknown>) => {
+        const owner = (post.ownerUsername as string) || ''
+        // Skip the brand's own posts
+        if (owner.toLowerCase() === cleanUsername.toLowerCase()) return null
+
+        const caption = (post.caption as string) || ''
+        const hashtags = caption.match(/#\w+/g) || []
+        const mentions = caption.match(/@\w+/g) || []
+        const locationName = (post.locationName as string) || ''
+        const ownerBio = (post.ownerBiography as string) || ''
+        const authorCountry = detectCountry({
+          locationName,
+          location: locationName,
+          biography: ownerBio,
+        })
+
+        return {
+          posts: [{
+            externalId: (post.id as string) || (post.shortCode as string) || '',
+            caption,
+            mediaUrl: (post.displayUrl as string) || null,
+            thumbnailUrl: (post.thumbnailUrl as string) || (post.displayUrl as string) || null,
+            permalink: post.shortCode ? `https://instagram.com/p/${post.shortCode}` : null,
+            mediaType: ((post.type as string) || '').includes('Video') ? 'REEL' as const : 'POST' as const,
+            likes: (post.likesCount as number) || 0,
+            comments: (post.commentsCount as number) || 0,
+            shares: 0,
+            saves: 0,
+            views: (post.videoViewCount as number) || 0,
+            postedAt: (post.timestamp as string) || null,
+            hashtags,
+            mentions,
+          }],
+          authorUsername: owner,
+          authorDisplayName: (post.ownerFullName as string) || null,
+          authorAvatarUrl: (post.ownerProfilePicUrl as string) || null,
+          authorFollowers: (post.ownerFollowerCount as number) || 0,
+          authorCountry,
+        } as HashtagResult
+      }).filter((r): r is HashtagResult => r !== null)
+    }
+  } catch (err) {
+    console.warn(`[Apify] Tagged posts scraping for @${cleanUsername} failed:`, err)
+  }
+
+  return []
+}
+
+/**
+ * Scrape mentions of an account across platforms.
+ */
+export async function scrapeAccountMentions(
+  username: string,
+  platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE',
+  maxPosts = 50
+): Promise<HashtagResult[]> {
+  switch (platform) {
+    case 'INSTAGRAM':
+      return scrapeInstagramAccountMentions(username, maxPosts)
+    default:
+      console.log(`[Apify] Account mention scraping not supported for ${platform}`)
+      return []
+  }
+}
+
 // ============ INSTAGRAM STORIES ============
 
 export interface ScrapedStory {

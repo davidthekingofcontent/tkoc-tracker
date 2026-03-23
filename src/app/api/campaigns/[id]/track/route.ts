@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { scrapeHashtag, scrapeProfile, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
+import { scrapeHashtag, scrapeAccountMentions, scrapeProfile, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
+import type { HashtagResult } from '@/lib/apify'
 import { Platform } from '@/generated/prisma/client'
 
 export async function POST(
@@ -157,9 +158,12 @@ export async function POST(
                 update: {},
               })
 
-              // Save the posts
+              // Save the posts (respecting campaign start date)
+              const campaignStart = campaign.startDate ? new Date(campaign.startDate) : null
               for (const post of result.posts) {
                 if (!post.externalId) continue
+                // Skip posts before campaign start date
+                if (campaignStart && post.postedAt && new Date(post.postedAt) < campaignStart) continue
                 try {
                   await prisma.media.upsert({
                     where: {
@@ -222,6 +226,99 @@ export async function POST(
           const errorMsg = `Failed to scrape ${hashtag} on ${platform}: ${err instanceof Error ? err.message : 'Unknown error'}`
           results.errors.push(errorMsg)
           console.error(errorMsg)
+        }
+      }
+    }
+
+    // ===== ACCOUNT MENTIONS TRACKING =====
+    // Find posts where targetAccounts are tagged/mentioned
+    for (const account of campaign.targetAccounts) {
+      for (const platform of campaign.platforms) {
+        try {
+          const job = await prisma.scrapeJob.create({
+            data: {
+              jobType: 'mentions',
+              platform,
+              targetUsername: account,
+              campaignId: id,
+              status: 'RUNNING',
+              startedAt: new Date(),
+            },
+          })
+
+          const mentionResults = await scrapeAccountMentions(account, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 50)
+          let postsInThisBatch = 0
+          const campaignStartDate = campaign.startDate ? new Date(campaign.startDate) : null
+
+          for (const result of mentionResults) {
+            if (!result.authorUsername) continue
+            try {
+              const influencer = await prisma.influencer.upsert({
+                where: { username_platform: { username: result.authorUsername, platform } },
+                create: {
+                  username: result.authorUsername,
+                  platform,
+                  displayName: result.authorDisplayName,
+                  avatarUrl: result.authorAvatarUrl,
+                  followers: result.authorFollowers,
+                },
+                update: {
+                  ...(result.authorDisplayName && { displayName: result.authorDisplayName }),
+                  ...(result.authorAvatarUrl && { avatarUrl: result.authorAvatarUrl }),
+                  ...(result.authorFollowers > 0 && { followers: result.authorFollowers }),
+                },
+              })
+
+              // Country filtering
+              if (campaign.country) {
+                let influencerCountry = influencer.country
+                if (!influencerCountry && result.authorCountry) {
+                  influencerCountry = result.authorCountry
+                  await prisma.influencer.update({ where: { id: influencer.id }, data: { country: result.authorCountry } })
+                }
+                if (influencerCountry && influencerCountry !== campaign.country) {
+                  results.postsFilteredByCountry += result.posts.length
+                  continue
+                }
+              }
+
+              await prisma.campaignInfluencer.upsert({
+                where: { campaignId_influencerId: { campaignId: id, influencerId: influencer.id } },
+                create: { campaignId: id, influencerId: influencer.id },
+                update: {},
+              })
+
+              for (const post of result.posts) {
+                if (!post.externalId) continue
+                // Date filter
+                if (campaignStartDate && post.postedAt) {
+                  if (new Date(post.postedAt) < campaignStartDate) continue
+                }
+                try {
+                  await prisma.media.upsert({
+                    where: { externalId_platform: { externalId: post.externalId, platform } },
+                    create: {
+                      externalId: post.externalId, platform, mediaType: post.mediaType,
+                      caption: post.caption, mediaUrl: post.mediaUrl, thumbnailUrl: post.thumbnailUrl,
+                      permalink: post.permalink, likes: post.likes, comments: post.comments,
+                      shares: post.shares, saves: post.saves, views: post.views,
+                      hashtags: post.hashtags, mentions: post.mentions,
+                      postedAt: post.postedAt ? new Date(post.postedAt) : null,
+                      influencerId: influencer.id, campaignId: id,
+                    },
+                    update: { likes: post.likes, comments: post.comments, shares: post.shares, saves: post.saves, views: post.views, campaignId: id },
+                  })
+                  postsInThisBatch++
+                } catch { /* skip */ }
+              }
+              results.influencersFound++
+            } catch { /* skip */ }
+          }
+
+          results.postsFound += postsInThisBatch
+          await prisma.scrapeJob.update({ where: { id: job.id }, data: { status: 'COMPLETED', itemsFound: postsInThisBatch, completedAt: new Date() } })
+        } catch (err) {
+          results.errors.push(`Failed to scrape mentions @${account} on ${platform}: ${err instanceof Error ? err.message : 'Unknown error'}`)
         }
       }
     }

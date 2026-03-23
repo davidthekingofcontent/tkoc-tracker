@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { scrapeHashtag, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
+import { scrapeHashtag, scrapeAccountMentions, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
 import { searchVideos as ytSearchVideos, isYouTubeApiConfigured } from '@/lib/youtube-api'
 
 function formatFollowers(n: number): string {
@@ -52,11 +52,14 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
     throw new Error('Apify not configured')
   }
 
-  // Find all active campaigns with hashtags to track
+  // Find all active campaigns with hashtags OR accounts to track
   const campaigns = await prisma.campaign.findMany({
     where: {
       status: 'ACTIVE',
-      targetHashtags: { isEmpty: false },
+      OR: [
+        { targetHashtags: { isEmpty: false } },
+        { targetAccounts: { isEmpty: false } },
+      ],
     },
   })
 
@@ -77,8 +80,159 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
     errors: [],
   }
 
+  // Helper: process scraped results for a campaign
+  async function processResults(
+    scrapedResults: HashtagResult[],
+    campaign: typeof campaigns[0],
+    platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE',
+    source: string
+  ): Promise<number> {
+    let postsFound = 0
+    const campaignStartDate = campaign.startDate ? new Date(campaign.startDate) : null
+
+    for (const result of scrapedResults) {
+      if (!result.authorUsername) continue
+
+      try {
+        const influencer = await prisma.influencer.upsert({
+          where: {
+            username_platform: { username: result.authorUsername, platform },
+          },
+          create: {
+            username: result.authorUsername,
+            platform,
+            displayName: result.authorDisplayName,
+            avatarUrl: result.authorAvatarUrl,
+            followers: result.authorFollowers,
+          },
+          update: {
+            ...(result.authorDisplayName && { displayName: result.authorDisplayName }),
+            ...(result.authorAvatarUrl && { avatarUrl: result.authorAvatarUrl }),
+            ...(result.authorFollowers > 0 && { followers: result.authorFollowers }),
+          },
+        })
+
+        // Country filtering
+        if (campaign.country) {
+          let influencerCountry = influencer.country
+
+          if (!influencerCountry && result.authorCountry) {
+            influencerCountry = result.authorCountry
+            await prisma.influencer.update({
+              where: { id: influencer.id },
+              data: { country: result.authorCountry },
+            })
+          }
+
+          if (!influencerCountry) {
+            const postData = result.posts[0]
+            if (postData) {
+              const postAsAny = postData as unknown as Record<string, unknown>
+              const detectedFromPost = detectCountry({
+                locationName: (postAsAny.locationName as string) || '',
+                location: (postAsAny.location as string) || '',
+                biography: postData.caption || '',
+              })
+              if (detectedFromPost) {
+                influencerCountry = detectedFromPost
+                await prisma.influencer.update({
+                  where: { id: influencer.id },
+                  data: { country: detectedFromPost },
+                })
+              }
+            }
+          }
+
+          // Skip if country doesn't match
+          if (influencerCountry && influencerCountry !== campaign.country) {
+            continue
+          }
+        }
+
+        const campaignInfluencerResult = await prisma.campaignInfluencer.upsert({
+          where: {
+            campaignId_influencerId: {
+              campaignId: campaign.id,
+              influencerId: influencer.id,
+            },
+          },
+          create: {
+            campaignId: campaign.id,
+            influencerId: influencer.id,
+            ...(influencer.followers >= 1000 ? { status: 'PROSPECT' as const } : {}),
+          },
+          update: {},
+        })
+
+        // Notify on new creator discovery
+        const isNewlyCreated = (Date.now() - new Date(campaignInfluencerResult.createdAt).getTime()) < 5000
+        if (isNewlyCreated && influencer.followers >= 1000) {
+          try {
+            await prisma.notification.create({
+              data: {
+                userId: campaign.userId,
+                type: 'creator_discovered',
+                title: 'Nuevo creador descubierto',
+                message: `🔍 @${influencer.username} (${formatFollowers(influencer.followers)}) descubierto via ${source} en ${campaign.name}`,
+                link: `/campaigns/${campaign.id}`,
+              },
+            })
+          } catch { /* skip */ }
+        }
+
+        for (const post of result.posts) {
+          if (!post.externalId) continue
+
+          // Date filter: skip posts older than campaign start date
+          if (campaignStartDate && post.postedAt) {
+            const postDate = new Date(post.postedAt)
+            if (postDate < campaignStartDate) continue
+          }
+
+          try {
+            await prisma.media.upsert({
+              where: {
+                externalId_platform: { externalId: post.externalId, platform },
+              },
+              create: {
+                externalId: post.externalId,
+                platform,
+                mediaType: post.mediaType,
+                caption: post.caption,
+                mediaUrl: post.mediaUrl,
+                thumbnailUrl: post.thumbnailUrl,
+                permalink: post.permalink,
+                likes: post.likes,
+                comments: post.comments,
+                shares: post.shares,
+                saves: post.saves,
+                views: post.views,
+                hashtags: post.hashtags,
+                mentions: post.mentions,
+                postedAt: post.postedAt ? new Date(post.postedAt) : null,
+                influencerId: influencer.id,
+                campaignId: campaign.id,
+              },
+              update: {
+                likes: post.likes,
+                comments: post.comments,
+                shares: post.shares,
+                saves: post.saves,
+                views: post.views,
+                campaignId: campaign.id,
+              },
+            })
+            postsFound++
+          } catch { /* skip duplicate */ }
+        }
+      } catch { /* skip */ }
+    }
+    return postsFound
+  }
+
   for (const campaign of campaigns) {
     try {
+      // ===== 1. HASHTAG TRACKING =====
       for (const hashtag of campaign.targetHashtags) {
         for (const platform of campaign.platforms) {
           try {
@@ -93,172 +247,52 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
               },
             })
 
-            // Use YouTube Data API for YouTube hashtags, Apify for others
             const hashtagResults = (platform === 'YOUTUBE' && isYouTubeApiConfigured())
               ? await getYouTubeHashtagResults(hashtag)
-              : await scrapeHashtag(hashtag, platform, 20)
-            let postsFound = 0
+              : await scrapeHashtag(hashtag, platform, 30)
 
-            for (const result of hashtagResults) {
-              if (!result.authorUsername) continue
-
-              try {
-                const influencer = await prisma.influencer.upsert({
-                  where: {
-                    username_platform: {
-                      username: result.authorUsername,
-                      platform,
-                    },
-                  },
-                  create: {
-                    username: result.authorUsername,
-                    platform,
-                    displayName: result.authorDisplayName,
-                    avatarUrl: result.authorAvatarUrl,
-                    followers: result.authorFollowers,
-                  },
-                  update: {
-                    ...(result.authorDisplayName && { displayName: result.authorDisplayName }),
-                    ...(result.authorAvatarUrl && { avatarUrl: result.authorAvatarUrl }),
-                    ...(result.authorFollowers > 0 && { followers: result.authorFollowers }),
-                  },
-                })
-
-                // Country filtering
-                if (campaign.country) {
-                  let influencerCountry = influencer.country
-
-                  // If no country in DB, try to use authorCountry from hashtag result
-                  if (!influencerCountry && result.authorCountry) {
-                    influencerCountry = result.authorCountry
-                    await prisma.influencer.update({
-                      where: { id: influencer.id },
-                      data: { country: result.authorCountry },
-                    })
-                  }
-
-                  // If still no country, try lightweight detection from post data
-                  if (!influencerCountry) {
-                    const postData = result.posts[0]
-                    if (postData) {
-                      const postAsAny = postData as unknown as Record<string, unknown>
-                      const detectedFromPost = detectCountry({
-                        locationName: (postAsAny.locationName as string) || '',
-                        location: (postAsAny.location as string) || '',
-                        biography: postData.caption || '',
-                      })
-                      if (detectedFromPost) {
-                        influencerCountry = detectedFromPost
-                        await prisma.influencer.update({
-                          where: { id: influencer.id },
-                          data: { country: detectedFromPost },
-                        })
-                      }
-                    }
-                  }
-
-                  // If we know the country and it doesn't match, skip
-                  if (influencerCountry && influencerCountry !== campaign.country) {
-                    continue
-                  }
-                }
-
-                const campaignInfluencerResult = await prisma.campaignInfluencer.upsert({
-                  where: {
-                    campaignId_influencerId: {
-                      campaignId: campaign.id,
-                      influencerId: influencer.id,
-                    },
-                  },
-                  create: {
-                    campaignId: campaign.id,
-                    influencerId: influencer.id,
-                    ...(influencer.followers >= 1000 ? { status: 'PROSPECT' as const } : {}),
-                  },
-                  update: {},
-                })
-
-                // If this is a newly created link (createdAt ~ now), create a notification
-                const isNewlyCreated = (Date.now() - new Date(campaignInfluencerResult.createdAt).getTime()) < 5000
-                if (isNewlyCreated && influencer.followers >= 1000) {
-                  try {
-                    await prisma.notification.create({
-                      data: {
-                        userId: campaign.userId,
-                        type: 'creator_discovered',
-                        title: 'Nuevo creador descubierto',
-                        message: `🔍 Nuevo creador descubierto: @${influencer.username} (${formatFollowers(influencer.followers)} seguidores) en la campaña ${campaign.name}`,
-                        link: `/campaigns/${campaign.id}`,
-                      },
-                    })
-                  } catch {
-                    // Skip notification errors silently
-                  }
-                }
-
-                for (const post of result.posts) {
-                  if (!post.externalId) continue
-                  try {
-                    await prisma.media.upsert({
-                      where: {
-                        externalId_platform: {
-                          externalId: post.externalId,
-                          platform,
-                        },
-                      },
-                      create: {
-                        externalId: post.externalId,
-                        platform,
-                        mediaType: post.mediaType,
-                        caption: post.caption,
-                        mediaUrl: post.mediaUrl,
-                        thumbnailUrl: post.thumbnailUrl,
-                        permalink: post.permalink,
-                        likes: post.likes,
-                        comments: post.comments,
-                        shares: post.shares,
-                        saves: post.saves,
-                        views: post.views,
-                        hashtags: post.hashtags,
-                        mentions: post.mentions,
-                        postedAt: post.postedAt ? new Date(post.postedAt) : null,
-                        influencerId: influencer.id,
-                        campaignId: campaign.id,
-                      },
-                      update: {
-                        likes: post.likes,
-                        comments: post.comments,
-                        shares: post.shares,
-                        saves: post.saves,
-                        views: post.views,
-                        campaignId: campaign.id,
-                      },
-                    })
-                    postsFound++
-                  } catch {
-                    // Skip
-                  }
-                }
-              } catch {
-                // Skip
-              }
-            }
+            const postsFound = await processResults(hashtagResults, campaign, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', `#${hashtag}`)
 
             await prisma.scrapeJob.update({
               where: { id: job.id },
-              data: {
-                status: 'COMPLETED',
-                itemsFound: postsFound,
-                completedAt: new Date(),
-              },
+              data: { status: 'COMPLETED', itemsFound: postsFound, completedAt: new Date() },
             })
-
             results.totalPostsFound += postsFound
           } catch (err) {
             results.errors.push(`${campaign.name}: ${hashtag}@${platform} - ${err instanceof Error ? err.message : 'Error'}`)
           }
         }
       }
+
+      // ===== 2. ACCOUNT MENTIONS TRACKING (tagged posts) =====
+      for (const account of campaign.targetAccounts) {
+        for (const platform of campaign.platforms) {
+          try {
+            const job = await prisma.scrapeJob.create({
+              data: {
+                jobType: 'cron-mentions',
+                platform,
+                targetUsername: account,
+                campaignId: campaign.id,
+                status: 'RUNNING',
+                startedAt: new Date(),
+              },
+            })
+
+            const mentionResults = await scrapeAccountMentions(account, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 50)
+            const postsFound = await processResults(mentionResults, campaign, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', `@${account}`)
+
+            await prisma.scrapeJob.update({
+              where: { id: job.id },
+              data: { status: 'COMPLETED', itemsFound: postsFound, completedAt: new Date() },
+            })
+            results.totalPostsFound += postsFound
+          } catch (err) {
+            results.errors.push(`${campaign.name}: @${account}@${platform} - ${err instanceof Error ? err.message : 'Error'}`)
+          }
+        }
+      }
+
       results.campaignsProcessed++
     } catch (err) {
       results.errors.push(`Campaign ${campaign.name}: ${err instanceof Error ? err.message : 'Error'}`)
