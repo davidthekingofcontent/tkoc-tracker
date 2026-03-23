@@ -2,9 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 
 const publicPaths = [
   '/login',
+  '/privacy',
+  '/terms',
+  '/data-deletion',
   '/api/auth/login',
   '/api/auth/register',
   '/api/seed',
+  '/api/data-deletion',
 ]
 
 function isPublicPath(pathname: string): boolean {
