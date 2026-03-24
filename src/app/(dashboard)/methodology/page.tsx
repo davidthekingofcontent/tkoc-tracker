@@ -318,6 +318,21 @@ export default function MethodologyPage() {
         />
 
         <H3>
+          <Users className="h-4 w-4 text-purple-600" />
+          {es ? "Estrategia de Creator Mix" : "Creator Mix Strategy"}
+        </H3>
+        <P>
+          {es
+            ? "No pongas todo el presupuesto en 1-2 creadores grandes. Diversifica entre tiers para maximizar alcance, credibilidad y volumen de contenido."
+            : "Don't put all your budget on 1-2 big creators. Diversify across tiers to maximize reach, credibility, and content volume."}
+        </P>
+        <TipBox>
+          {es
+            ? "Mix recomendado para awareness (presupuesto 10K EUR): 1 Macro (3-4K EUR) para alcance masivo + 3-5 Mid (1-1.5K EUR cada uno) para credibilidad + 10-15 Micro (200-400 EUR cada uno) para comunidad y volumen de contenido."
+            : "Recommended mix for awareness (budget 10K EUR): 1 Macro (3-4K EUR) for massive reach + 3-5 Mid (1-1.5K EUR each) for credibility + 10-15 Micro (200-400 EUR each) for community and content volume."}
+        </TipBox>
+
+        <H3>
           <BarChart3 className="h-4 w-4 text-purple-600" />
           {es ? "4. Define KPIs que importen" : "4. Define KPIs That Matter"}
         </H3>
@@ -426,6 +441,11 @@ export default function MethodologyPage() {
             ? "Un ER bajo no siempre es malo. Los mega-influencers tienen ER mas bajo pero mucho mas alcance. Evalua siempre en contexto del tier."
             : "A low ER isn't always bad. Mega-influencers have lower ER but much more reach. Always evaluate in the context of the tier."}
         </TipBox>
+        <TipBox>
+          {es
+            ? "Importante: este ER se calcula sobre seguidores (formula de perfil). En campana, el engagement rate se calcula sobre views o reach, lo que da numeros diferentes. TKOC Intelligence usa automaticamente la formula correcta segun el contexto."
+            : "Important: this ER is calculated on followers (profile formula). In campaigns, engagement rate is calculated on views or reach, which gives different numbers. TKOC Intelligence automatically uses the correct formula based on context."}
+        </TipBox>
 
         <H3>
           <AlertTriangle className="h-4 w-4 text-amber-500" />
@@ -449,6 +469,52 @@ export default function MethodologyPage() {
                   "History of controversies or problematic content.",
                   "Audience in countries that aren't your target (check demographics).",
                   "Inorganic growth: many followers, little real engagement.",
+                ]
+          }
+        />
+
+        <H3>
+          <Users className="h-4 w-4 text-purple-600" />
+          {es ? "Calidad de audiencia" : "Audience Quality"}
+        </H3>
+        <BulletList
+          items={
+            es
+              ? [
+                  "Comprueba la geografia de la audiencia: el 80% deberia estar en tu mercado objetivo.",
+                  "Verifica que la edad y genero de la audiencia coincidan con el target de tu marca.",
+                  "Vigila el solapamiento de audiencia entre influencers: evita pagar dos veces por los mismos ojos.",
+                  "Deteccion de seguidores falsos: picos repentinos de seguidores sin contenido viral que lo justifique.",
+                ]
+              : [
+                  "Check audience geography: 80% of the audience should be in your target market.",
+                  "Verify audience age and gender alignment with your brand's target.",
+                  "Watch for audience overlap between influencers: avoid paying twice for the same eyeballs.",
+                  "Fake followers detection: sudden follower spikes without viral content to justify them.",
+                ]
+          }
+        />
+
+        <H3>
+          <Star className="h-4 w-4 text-purple-600" />
+          {es ? "Calidad del contenido" : "Content Quality"}
+        </H3>
+        <BulletList
+          items={
+            es
+              ? [
+                  "Revisa los ultimos 10-15 posts: estan bien producidos? Son naturales?",
+                  "La estetica del creador encaja con tu marca?",
+                  "Los captions son atractivos? Cuentan historias o solo promocionan?",
+                  "El creador ha hecho colaboraciones con marcas antes? Como se veian?",
+                  "Podrias reutilizar este contenido para paid ads? (alto valor de produccion = bonus).",
+                ]
+              : [
+                  "Review the last 10-15 posts: are they well-produced? Natural?",
+                  "Does the creator's aesthetic match your brand?",
+                  "Are captions engaging? Do they tell stories or just promote?",
+                  "Has the creator done brand collabs before? How did they look?",
+                  "Could you reuse this content for paid ads? (high production value = bonus).",
                 ]
           }
         />
@@ -495,12 +561,44 @@ export default function MethodologyPage() {
             es ? "YouTube (por video)" : "YouTube (per video)",
           ]}
           rows={[
-            ["Nano", "<10K", "50-150 EUR", "50-200 EUR", "100-300 EUR"],
-            ["Micro", "10K-50K", "150-500 EUR", "200-600 EUR", "300-800 EUR"],
-            ["Mid", "50K-250K", "500-2,000 EUR", "500-2,500 EUR", "800-3,000 EUR"],
-            ["Macro", "250K-1M", "2,000-8,000 EUR", "2,000-10,000 EUR", "3,000-15,000 EUR"],
-            ["Mega", "1M+", "8,000-50,000+ EUR", "10,000-50,000+ EUR", "15,000-100,000+ EUR"],
+            ["Nano", "<10K", "30-150 EUR", "30-100 EUR", "50-200 EUR"],
+            ["Micro", "10K-50K", "100-400 EUR", "100-350 EUR", "200-600 EUR"],
+            ["Mid", "50K-250K", "400-1,500 EUR", "400-1,200 EUR", "600-2,000 EUR"],
+            ["Macro", "250K-1M", "1,500-5,000 EUR", "1,200-4,000 EUR", "2,000-8,000 EUR"],
+            ["Mega", "1M+", "5,000-25,000 EUR", "4,000-20,000 EUR", "8,000-50,000 EUR"],
           ]}
+        />
+
+        <H3>
+          <FileText className="h-4 w-4 text-purple-600" />
+          {es ? "Valor por formato" : "Value by Format"}
+        </H3>
+        <DataTable
+          headers={[
+            es ? "Formato" : "Format",
+            es ? "Duracion" : "Duration",
+            es ? "Valor" : "Value",
+            es ? "Notas" : "Notes",
+          ]}
+          rows={
+            es
+              ? [
+                  ["Reel / TikTok video", "15-90s", "Alto", "Mejor alcance y potencial de viralidad"],
+                  ["Story (IG)", "24h", "Bajo-Medio", "Efimero, bueno para trafico con swipe-up"],
+                  ["Post estatico", "Permanente", "Medio", "Bueno para imagen de marca, bajo alcance"],
+                  ["YouTube video", "5-15min", "Muy alto", "Valor SEO, evergreen, engagement profundo"],
+                  ["YouTube Short", "15-60s", "Medio", "Alcance creciente, menor coste de produccion"],
+                  ["Carousel", "Permanente", "Medio-Alto", "Alta tasa de guardados, bueno para educacion"],
+                ]
+              : [
+                  ["Reel / TikTok video", "15-90s", "High", "Best reach and virality potential"],
+                  ["Story (IG)", "24h", "Low-Medium", "Ephemeral, good for traffic with swipe-up"],
+                  ["Static post", "Permanent", "Medium", "Good for brand image, low reach"],
+                  ["YouTube video", "5-15min", "Very high", "SEO value, evergreen, deep engagement"],
+                  ["YouTube Short", "15-60s", "Medium", "Growing reach, lower production cost"],
+                  ["Carousel", "Permanent", "Medium-High", "High saves rate, good for education"],
+                ]
+          }
         />
 
         <H3>
@@ -543,6 +641,35 @@ export default function MethodologyPage() {
                   "Offer long-term relationships: 3-6 month collabs in exchange for better rates.",
                   "Negotiate usage rights separately. Paid media rights typically cost 30-50% extra.",
                   "If the resulting CPM is too high, find another creator. Don't overpay for 'name value'.",
+                ]
+          }
+        />
+
+        <H3>
+          <Shield className="h-4 w-4 text-purple-600" />
+          {es ? "Exclusividad" : "Exclusivity"}
+        </H3>
+        <P>
+          {es
+            ? "La exclusividad significa que el creador no puede trabajar con competidores directos durante un periodo determinado. Es una herramienta poderosa pero tiene un coste."
+            : "Exclusivity means the creator cannot work with direct competitors for a set period. It's a powerful tool but it comes at a cost."}
+        </P>
+        <BulletList
+          items={
+            es
+              ? [
+                  "Exclusividad de categoria: el creador no puede trabajar con competidores durante X semanas/meses.",
+                  "Coste tipico: 20-50% de prima sobre el fee base.",
+                  "La duracion importa: 2 semanas es razonable, 6 meses es caro.",
+                  "Solo pide exclusividad con creadores Macro/Mega o en mercados muy competitivos.",
+                  "Siempre pon los terminos de exclusividad por escrito con nombres especificos de competidores.",
+                ]
+              : [
+                  "Category exclusivity: creator can't work with competitors for X weeks/months.",
+                  "Typical cost: 20-50% premium on top of base fee.",
+                  "Duration matters: 2 weeks is reasonable, 6 months is expensive.",
+                  "Only ask for exclusivity with Macro/Mega creators or in very competitive markets.",
+                  "Always put exclusivity terms in writing with specific competitor names.",
                 ]
           }
         />
@@ -686,6 +813,40 @@ export default function MethodologyPage() {
         />
 
         <H3>
+          <TrendingUp className="h-4 w-4 text-purple-600" />
+          {es ? "Whitelisting, Spark Ads y Partnership Ads" : "Whitelisting, Spark Ads & Partnership Ads"}
+        </H3>
+        <P>
+          {es
+            ? "Esta es la tendencia #1 de 2024-2026. Las marcas pueden amplificar el contenido del creador via paid media usando el handle del creador, combinando la autenticidad del influencer con la precision del paid."
+            : "This is the #1 trend of 2024-2026. Brands can boost creator content via paid media using the creator's handle, combining influencer authenticity with paid media precision."}
+        </P>
+        <BulletList
+          items={
+            es
+              ? [
+                  "Instagram Partnership Ads: el creador te da permisos de publicidad via la herramienta de Branded Content.",
+                  "TikTok Spark Ads: el creador comparte un codigo de autorizacion que te permite amplificar su video.",
+                  "YouTube BrandConnect: promocion integrada de contenido de marca.",
+                  "Coste de whitelisting: tipicamente 20-40% adicional sobre el fee organico.",
+                  "Negocia siempre los derechos de whitelisting antes de que el contenido este en vivo, no despues.",
+                ]
+              : [
+                  "Instagram Partnership Ads: the creator gives you ad permissions via the Branded Content tool.",
+                  "TikTok Spark Ads: the creator shares an authorization code that lets you boost their video.",
+                  "YouTube BrandConnect: integrated brand content promotion.",
+                  "Whitelisting costs: typically 20-40% on top of the organic fee.",
+                  "Always negotiate whitelisting rights upfront, not after the content is live.",
+                ]
+          }
+        />
+        <TipBox>
+          {es
+            ? "TKOC Intelligence permite a los creadores conectar sus cuentas para facilitar permisos de whitelisting y Spark Ads directamente desde la plataforma."
+            : "TKOC Intelligence allows creators to connect their accounts to facilitate whitelisting and Spark Ads permissions directly from the platform."}
+        </TipBox>
+
+        <H3>
           <AlertTriangle className="h-4 w-4 text-amber-500" />
           {es ? "Errores comunes" : "Common Mistakes"}
         </H3>
@@ -695,7 +856,7 @@ export default function MethodologyPage() {
               ? [
                   "Micro-gestionar el contenido: el creador conoce a su audiencia mejor que tu.",
                   "No tener contrato escrito: siempre, aunque sea gifting.",
-                  "Pagar antes de recibir el contenido: paga 50% al aprobar, 50% al publicar.",
+                  "Estructura de pago recomendada: Nano/Micro: 100% al aprobar contenido. Mid: 50% al firmar, 50% al publicar. Macro/Mega: 30% al firmar, 40% al aprobar, 30% al publicar. Adapta segun la relacion y el tier.",
                   "No dar suficiente tiempo: el contenido apresurado se nota.",
                   "Ignorar el disclosure: es un riesgo legal real.",
                   "No trackear nada: si no mides, no aprendes.",
@@ -703,7 +864,7 @@ export default function MethodologyPage() {
               : [
                   "Micro-managing content: the creator knows their audience better than you.",
                   "No written contract: always have one, even for gifting.",
-                  "Paying before receiving content: pay 50% on approval, 50% on publication.",
+                  "Recommended payment structure: Nano/Micro: 100% on content approval. Mid: 50% on signing, 50% on publication. Macro/Mega: 30% on signing, 40% on approval, 30% on publication. Adapt based on relationship and tier.",
                   "Not allowing enough time: rushed content shows.",
                   "Ignoring disclosure: it's a real legal risk.",
                   "Not tracking anything: if you don't measure, you don't learn.",
@@ -735,13 +896,13 @@ export default function MethodologyPage() {
               ? [
                   "EMV es util para: comparar campanas entre si, justificar inversion vs paid media, benchmarking.",
                   "EMV NO es: dinero real ganado, una garantia de ventas, ni un calculo exacto.",
-                  "TKOC Intelligence calcula EMV usando CPMs de mercado por plataforma: Instagram EUR 8/CPM, TikTok EUR 6/CPM, YouTube EUR 12/CPM.",
+                  "TKOC Intelligence calcula EMV usando CPMs de referencia de paid media: Instagram EUR 8, TikTok EUR 6, YouTube EUR 12. Estos son CPMs de publicidad pagada, no de influencer marketing. Se usan como comparativa: si el EMV supera tu inversion, significa que el alcance organico del influencer te ha salido mas barato que comprarlo via ads.",
                   "Un EMV Ratio (EMV/Inversion) de 2x o superior se considera buen resultado.",
                 ]
               : [
                   "EMV is useful for: comparing campaigns, justifying investment vs paid media, benchmarking.",
                   "EMV is NOT: real money earned, a guarantee of sales, or an exact calculation.",
-                  "TKOC Intelligence calculates EMV using market CPMs per platform: Instagram $8/CPM, TikTok $6/CPM, YouTube $12/CPM.",
+                  "TKOC Intelligence calculates EMV using paid media reference CPMs: Instagram $8, TikTok $6, YouTube $12. These are paid advertising CPMs, not influencer marketing CPMs. They are used as a benchmark: if the EMV exceeds your investment, it means the influencer's organic reach cost you less than buying it through ads.",
                   "An EMV Ratio (EMV/Investment) of 2x or higher is considered a good result.",
                 ]
           }

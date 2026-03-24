@@ -56,6 +56,14 @@ export default function NewCampaignPage() {
     tiktok: false,
     youtube: false,
   })
+  const [formats, setFormats] = useState<Record<string, boolean>>({
+    reel: false,
+    story: false,
+    post: false,
+    video: false,
+    short: false,
+    carousel: false,
+  })
   const [influencers, setInfluencers] = useState<string[]>([])
   const [influencerInput, setInfluencerInput] = useState('')
   const [startDate, setStartDate] = useState('')
@@ -134,6 +142,7 @@ export default function NewCampaignPage() {
     setCampaignName('')
     setTargets([])
     setPlatforms({ instagram: false, tiktok: false, youtube: false })
+    setFormats({ reel: false, story: false, post: false, video: false, short: false, carousel: false })
     setCountry('')
     setObjective('')
     setInfluencers([])
@@ -169,6 +178,10 @@ export default function NewCampaignPage() {
     setPlatforms((prev) => ({ ...prev, [platform]: !prev[platform] }))
   }
 
+  const toggleFormat = (format: string) => {
+    setFormats((prev) => ({ ...prev, [format]: !prev[format] }))
+  }
+
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState('')
 
@@ -181,6 +194,10 @@ export default function NewCampaignPage() {
     const selectedPlatforms = Object.entries(platforms)
       .filter(([, enabled]) => enabled)
       .map(([platform]) => platform.toUpperCase())
+
+    const selectedFormats = Object.entries(formats)
+      .filter(([, enabled]) => enabled)
+      .map(([format]) => format.toUpperCase())
 
     const targetAccounts = targets.filter((t) => t.startsWith('@'))
     const targetHashtags = targets.filter((t) => t.startsWith('#'))
@@ -196,6 +213,7 @@ export default function NewCampaignPage() {
           targetAccounts,
           targetHashtags,
           paymentType,
+          ...(selectedFormats.length > 0 && { formats: selectedFormats }),
           ...(trackingType === 'influencer_tracking' && startDate && { startDate }),
           ...(trackingType === 'influencer_tracking' && endDate && { endDate }),
           ...(country && { country }),
@@ -671,6 +689,49 @@ export default function NewCampaignPage() {
               </button>
             </div>
           </Card>}
+
+          {/* Format Selection */}
+          <Card variant="elevated">
+            <h3 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">
+              {locale === 'es' ? 'Formatos de Contenido' : 'Content Formats'}
+            </h3>
+            <p className="mb-4 text-sm text-gray-500">
+              {locale === 'es'
+                ? 'Selecciona los formatos de contenido que esperas de los creadores.'
+                : 'Select the content formats you expect from creators.'}
+            </p>
+            <div className="flex flex-wrap gap-3">
+              {[
+                { key: 'reel', label: 'Reel', icon: '🎬' },
+                { key: 'story', label: 'Story', icon: '📱' },
+                { key: 'post', label: 'Post', icon: '🖼️' },
+                { key: 'video', label: 'Video', icon: '🎥' },
+                { key: 'short', label: 'Short', icon: '⚡' },
+                { key: 'carousel', label: 'Carousel', icon: '🎠' },
+              ].map(({ key, label, icon }) => (
+                <button
+                  key={key}
+                  onClick={() => toggleFormat(key)}
+                  className={`flex items-center gap-2 rounded-lg border px-4 py-3 transition-all ${
+                    formats[key]
+                      ? 'border-purple-500/50 bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
+                      : 'border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                  }`}
+                >
+                  <span className="text-base">{icon}</span>
+                  <span className="text-sm font-medium">{label}</span>
+                  {formats[key] && (
+                    <div className="ml-1 h-2 w-2 rounded-full bg-purple-500" />
+                  )}
+                </button>
+              ))}
+            </div>
+            {Object.values(formats).some(Boolean) && (
+              <p className="mt-3 text-xs text-purple-600 dark:text-purple-400">
+                {Object.entries(formats).filter(([, v]) => v).map(([k]) => k.charAt(0).toUpperCase() + k.slice(1)).join(', ')}
+              </p>
+            )}
+          </Card>
 
           {/* Country Filter */}
           <Card variant="elevated">

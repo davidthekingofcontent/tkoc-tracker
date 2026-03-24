@@ -434,6 +434,75 @@ export default function CreatorRegisterPage() {
           </div>
         </div>
 
+        {/* Ad Permissions Section (skeleton for logged-in creators) */}
+        <div className="mt-10 rounded-2xl border border-gray-200 bg-white p-8 shadow-sm max-w-3xl mx-auto">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-100 border border-purple-200">
+              <Shield className="h-5 w-5 text-purple-600" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">
+                {lang === 'es' ? 'Gestionar Permisos de Anuncios' : 'Manage Ad Permissions'}
+              </h2>
+              <p className="text-xs text-gray-500">
+                {lang === 'es'
+                  ? 'Otorga permisos a marcas para impulsar tu contenido via Spark Ads (TikTok) o Partnership Ads (Instagram)'
+                  : 'Grant brands permission to boost your content via Spark Ads (TikTok) or Partnership Ads (Instagram)'}
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {/* TikTok Spark Ads */}
+            <div className="flex items-center justify-between rounded-xl border border-gray-100 bg-gray-50 p-4">
+              <div className="flex items-center gap-3">
+                <span className="text-xl">🎵</span>
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">Spark Ads</p>
+                  <p className="text-xs text-gray-500">TikTok</p>
+                </div>
+              </div>
+              <span className="inline-flex items-center rounded-full bg-gray-200 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gray-500">
+                {lang === 'es' ? 'Inicia sesion para gestionar' : 'Sign in to manage'}
+              </span>
+            </div>
+
+            {/* Instagram Partnership Ads */}
+            <div className="flex items-center justify-between rounded-xl border border-gray-100 bg-gray-50 p-4">
+              <div className="flex items-center gap-3">
+                <span className="text-xl">📸</span>
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">Partnership Ads</p>
+                  <p className="text-xs text-gray-500">Instagram</p>
+                </div>
+              </div>
+              <span className="inline-flex items-center rounded-full bg-gray-200 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gray-500">
+                {lang === 'es' ? 'Inicia sesion para gestionar' : 'Sign in to manage'}
+              </span>
+            </div>
+
+            {/* YouTube BrandConnect */}
+            <div className="flex items-center justify-between rounded-xl border border-gray-100 bg-gray-50 p-4">
+              <div className="flex items-center gap-3">
+                <span className="text-xl">▶️</span>
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">BrandConnect</p>
+                  <p className="text-xs text-gray-500">YouTube</p>
+                </div>
+              </div>
+              <span className="inline-flex items-center rounded-full bg-gray-200 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gray-500">
+                {lang === 'es' ? 'Inicia sesion para gestionar' : 'Sign in to manage'}
+              </span>
+            </div>
+          </div>
+
+          <p className="mt-4 text-center text-xs text-gray-400">
+            {lang === 'es'
+              ? 'Registrate primero. Podras gestionar permisos desde tu panel de creador.'
+              : 'Register first. You can manage permissions from your creator dashboard.'}
+          </p>
+        </div>
+
         {/* Footer */}
         <div className="mt-12 text-center">
           <p className="text-xs text-gray-400">Powered by TKOC Intelligence · DAMA Platforms S.L.</p>

@@ -350,6 +350,8 @@ export default function CampaignDetailPage() {
 
   // CPM fee editing
   const [editingFee, setEditingFee] = useState<Record<string, string>>({})
+  const [whitelistingAds, setWhitelistingAds] = useState<Record<string, boolean>>({})
+  const [exclusivity, setExclusivity] = useState<Record<string, boolean>>({})
   const [savingFee, setSavingFee] = useState<string | null>(null)
 
   // Edit campaign modal
@@ -1443,6 +1445,74 @@ export default function CampaignDetailPage() {
                           ))}
                         </div>
                       </div>
+                    )}
+                  </div>
+                )
+              })()}
+
+              {/* Creator Mix Suggestion */}
+              {(() => {
+                const totalBudget = overview?.totalCost || influencers.reduce((sum, ci) => sum + (ci.agreedFee || 0), 0)
+                if (totalBudget <= 0 && influencers.length === 0) return null
+
+                const budgetK = totalBudget / 1000
+                let suggestion = ''
+                let macroCount = 0, midCount = 0, microCount = 0
+                let macroRange = '', midRange = '', microRange = ''
+
+                if (totalBudget >= 20000) {
+                  macroCount = Math.floor(budgetK / 10)
+                  midCount = Math.floor((budgetK - macroCount * 4) / 1.5)
+                  microCount = Math.floor((budgetK - macroCount * 4 - midCount * 1.5) / 0.3)
+                  macroRange = '€3-5K'
+                  midRange = '€1-1.5K'
+                  microRange = '€200-400'
+                  suggestion = locale === 'es'
+                    ? `Presupuesto €${budgetK.toFixed(0)}K → Sugerido: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                    : `Budget €${budgetK.toFixed(0)}K → Suggested: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                } else if (totalBudget >= 10000) {
+                  macroCount = 1
+                  midCount = Math.max(2, Math.floor((budgetK - 4) / 1.25))
+                  microCount = Math.max(3, Math.floor((budgetK - 4 - midCount * 1.25) / 0.3))
+                  macroRange = '€3-4K'
+                  midRange = '€1-1.5K'
+                  microRange = '€200-400'
+                  suggestion = locale === 'es'
+                    ? `Presupuesto €${budgetK.toFixed(0)}K → Sugerido: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                    : `Budget €${budgetK.toFixed(0)}K → Suggested: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                } else if (totalBudget >= 3000) {
+                  midCount = Math.max(1, Math.floor(budgetK / 1.5))
+                  microCount = Math.max(2, Math.floor((budgetK - midCount * 1.25) / 0.3))
+                  midRange = '€1-1.5K'
+                  microRange = '€200-400'
+                  suggestion = locale === 'es'
+                    ? `Presupuesto €${budgetK.toFixed(0)}K → Sugerido: ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                    : `Budget €${budgetK.toFixed(0)}K → Suggested: ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                } else if (totalBudget > 0) {
+                  microCount = Math.max(1, Math.floor(budgetK / 0.3))
+                  microRange = '€200-400'
+                  suggestion = locale === 'es'
+                    ? `Presupuesto €${budgetK.toFixed(1)}K → Sugerido: ${microCount} Micro (${microRange})`
+                    : `Budget €${budgetK.toFixed(1)}K → Suggested: ${microCount} Micro (${microRange})`
+                } else {
+                  suggestion = locale === 'es'
+                    ? 'Añade fees acordados para ver la sugerencia de mix de creadores.'
+                    : 'Add agreed fees to see the creator mix suggestion.'
+                }
+
+                return (
+                  <div className="rounded-xl border border-purple-200 dark:border-purple-800 bg-purple-50/50 dark:bg-purple-900/10 p-4 shadow-sm">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Target className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                      <h3 className="text-sm font-semibold text-purple-700 dark:text-purple-300">
+                        {locale === 'es' ? 'Sugerencia Creator Mix' : 'Creator Mix Suggestion'}
+                      </h3>
+                    </div>
+                    <p className="text-sm text-purple-600 dark:text-purple-400">{suggestion}</p>
+                    {totalBudget > 0 && campaign.objective && (
+                      <p className="mt-1 text-xs text-purple-400 dark:text-purple-500">
+                        {locale === 'es' ? 'Basado en presupuesto y objetivo de campaña' : 'Based on campaign budget and objective'}
+                      </p>
                     )}
                   </div>
                 )
@@ -2632,6 +2702,44 @@ export default function CampaignDetailPage() {
                               }}
                               size="md"
                             />
+                          </div>
+
+                          {/* Whitelisting / Exclusivity Toggles */}
+                          <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center gap-4 flex-wrap">
+                            {/* Whitelisting / Spark Ads */}
+                            <label className="flex items-center gap-2 cursor-pointer select-none group">
+                              <input
+                                type="checkbox"
+                                checked={whitelistingAds[ci.id] || false}
+                                onChange={() => setWhitelistingAds(prev => ({ ...prev, [ci.id]: !prev[ci.id] }))}
+                                className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500 cursor-pointer"
+                              />
+                              <span className="text-xs text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors">
+                                {locale === 'es' ? 'Derechos Ads / Spark Ads' : 'Whitelisting / Spark Ads'}
+                              </span>
+                              {whitelistingAds[ci.id] && (
+                                <span className="inline-flex items-center rounded-full bg-purple-100 dark:bg-purple-900/30 px-2 py-0.5 text-[10px] font-bold text-purple-700 dark:text-purple-300 uppercase tracking-wider">
+                                  ADS
+                                </span>
+                              )}
+                            </label>
+                            {/* Exclusivity */}
+                            <label className="flex items-center gap-2 cursor-pointer select-none group">
+                              <input
+                                type="checkbox"
+                                checked={exclusivity[ci.id] || false}
+                                onChange={() => setExclusivity(prev => ({ ...prev, [ci.id]: !prev[ci.id] }))}
+                                className="h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                              />
+                              <span className="text-xs text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors">
+                                {locale === 'es' ? 'Exclusividad' : 'Exclusivity'}
+                              </span>
+                              {exclusivity[ci.id] && (
+                                <span className="inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:text-amber-300 uppercase tracking-wider">
+                                  EXCL
+                                </span>
+                              )}
+                            </label>
                           </div>
 
                           {/* Notes & History */}

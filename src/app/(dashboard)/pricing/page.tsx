@@ -61,10 +61,12 @@ const FORMAT_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: 'REEL', label: 'Reel' },
     { value: 'POST', label: 'Post' },
     { value: 'STORY', label: 'Story' },
+    { value: 'CAROUSEL', label: 'Carousel' },
   ],
   TIKTOK: [
     { value: 'VIDEO', label: 'Video' },
     { value: 'SHORT', label: 'Short' },
+    { value: 'CAROUSEL', label: 'Carousel' },
   ],
   YOUTUBE: [
     { value: 'VIDEO', label: 'Video' },
