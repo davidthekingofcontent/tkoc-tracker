@@ -20,6 +20,7 @@ function isPublicPath(pathname: string): boolean {
   // Invitation accept pages and creator registration
   if (pathname.startsWith('/invite/')) return true
   if (pathname.startsWith('/creators/register')) return true
+  if (pathname.startsWith('/creators/connect')) return true
 
   // Static assets, Next.js internals, and ALL API routes
   // (API routes handle their own authentication via getSession)

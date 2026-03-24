@@ -87,6 +87,7 @@ import {
   Wallet,
   Play,
   Search,
+  Send,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -394,6 +395,52 @@ export default function CampaignDetailPage() {
     type: 'success' | 'error'
     message: string
   } | null>(null)
+
+  // Influencer invite state
+  const [inviteModalInfluencer, setInviteModalInfluencer] = useState<string | null>(null) // ci.id
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [isSendingInvite, setIsSendingInvite] = useState(false)
+  const [inviteResult, setInviteResult] = useState<{
+    type: 'success' | 'error'
+    message: string
+  } | null>(null)
+
+  async function handleSendInfluencerInvite(ciId: string) {
+    if (!inviteEmail.trim()) return
+    setIsSendingInvite(true)
+    setInviteResult(null)
+    try {
+      const res = await fetch('/api/influencers/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: inviteEmail.trim(),
+          campaignId: campaignId,
+          locale,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to send invitation')
+      }
+      setInviteResult({
+        type: 'success',
+        message: locale === 'es' ? 'Invitación enviada correctamente' : 'Invitation sent successfully',
+      })
+      setInviteEmail('')
+      setTimeout(() => {
+        setInviteModalInfluencer(null)
+        setInviteResult(null)
+      }, 2000)
+    } catch (err) {
+      setInviteResult({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Error',
+      })
+    } finally {
+      setIsSendingInvite(false)
+    }
+  }
 
   async function fetchCampaign() {
     try {
@@ -2767,6 +2814,69 @@ export default function CampaignDetailPage() {
                               influencerName={ci.influencer.displayName || ci.influencer.username}
                               locale={locale}
                             />
+                            {/* Invite to connect button - only for non-oauth influencers, only for editors */}
+                            {canEdit && (
+                              <div className="relative ml-auto">
+                                <button
+                                  onClick={() => {
+                                    setInviteModalInfluencer(inviteModalInfluencer === ci.id ? null : ci.id)
+                                    setInviteEmail('')
+                                    setInviteResult(null)
+                                  }}
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 px-2.5 py-1.5 text-xs font-medium text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/40 transition-colors"
+                                  title={locale === 'es' ? 'Invitar a conectar' : 'Invite to connect'}
+                                >
+                                  <Send className="h-3 w-3" />
+                                  {locale === 'es' ? 'Invitar a conectar' : 'Invite to connect'}
+                                </button>
+                                {inviteModalInfluencer === ci.id && (
+                                  <div className="absolute right-0 top-full mt-2 z-50 w-80 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-lg">
+                                    <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                                      {locale === 'es'
+                                        ? `Enviar invitación a ${ci.influencer.displayName || ci.influencer.username}`
+                                        : `Send invitation to ${ci.influencer.displayName || ci.influencer.username}`}
+                                    </p>
+                                    <input
+                                      type="email"
+                                      value={inviteEmail}
+                                      onChange={(e) => setInviteEmail(e.target.value)}
+                                      onKeyDown={(e) => e.key === 'Enter' && inviteEmail.trim() && handleSendInfluencerInvite(ci.id)}
+                                      placeholder={locale === 'es' ? 'Email del influencer' : 'Influencer email'}
+                                      className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-900 dark:text-white outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                                      autoFocus
+                                    />
+                                    {inviteResult && (
+                                      <div className={`mt-2 flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs ${
+                                        inviteResult.type === 'success'
+                                          ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400'
+                                          : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'
+                                      }`}>
+                                        {inviteResult.type === 'success'
+                                          ? <CheckCircle2 className="h-3 w-3" />
+                                          : <AlertCircle className="h-3 w-3" />}
+                                        {inviteResult.message}
+                                      </div>
+                                    )}
+                                    <div className="mt-2 flex items-center justify-end gap-2">
+                                      <button
+                                        onClick={() => { setInviteModalInfluencer(null); setInviteResult(null) }}
+                                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                                      >
+                                        {locale === 'es' ? 'Cancelar' : 'Cancel'}
+                                      </button>
+                                      <button
+                                        onClick={() => handleSendInfluencerInvite(ci.id)}
+                                        disabled={isSendingInvite || !inviteEmail.trim()}
+                                        className="rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
+                                      >
+                                        {isSendingInvite ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+                                        {locale === 'es' ? 'Enviar' : 'Send'}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                       )
