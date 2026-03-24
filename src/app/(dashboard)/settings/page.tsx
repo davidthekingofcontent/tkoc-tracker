@@ -134,6 +134,7 @@ export default function SettingsPage() {
   const { t } = useI18n()
   const { theme, toggleTheme } = useTheme()
   const [currentUserRole, setCurrentUserRole] = useState<string>('')
+  const [currentUserId, setCurrentUserId] = useState<string>('')
   const isAdmin = currentUserRole === 'ADMIN'
 
   // Profile state
@@ -202,6 +203,7 @@ export default function SettingsPage() {
     // Fetch current user role
     fetch('/api/auth/me').then(r => r.ok ? r.json() : null).then(d => {
       if (d?.user?.role) setCurrentUserRole(d.user.role)
+      if (d?.user?.id) setCurrentUserId(d.user.id)
     }).catch(() => {})
   }, [])
 
@@ -690,12 +692,57 @@ export default function SettingsPage() {
                           </td>
                           <td className="py-3 text-right">
                             <div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                              <button
-                                className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-900"
-                                title={t.common.edit}
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </button>
+                              {isAdmin && user.id !== currentUserId && (
+                                <button
+                                  className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-900"
+                                  title="Change role"
+                                  onClick={async () => {
+                                    const newRole = prompt(`Change role for ${user.name}?\nCurrent: ${user.role}\n\nType: ADMIN, EMPLOYEE, or BRAND`)
+                                    if (!newRole || !['ADMIN', 'EMPLOYEE', 'BRAND'].includes(newRole.toUpperCase())) return
+                                    try {
+                                      const res = await fetch(`/api/team/users/${user.id}`, {
+                                        method: 'PATCH',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ role: newRole.toUpperCase() }),
+                                      })
+                                      if (res.ok) {
+                                        setTeamUsers(prev => prev.map(u => u.id === user.id ? { ...u, role: newRole.toUpperCase() } : u))
+                                        setInviteResult({ type: 'success', message: `${user.name} role changed to ${newRole.toUpperCase()}` })
+                                      } else {
+                                        const data = await res.json()
+                                        setInviteResult({ type: 'error', message: data.error || 'Failed to update role' })
+                                      }
+                                    } catch {
+                                      setInviteResult({ type: 'error', message: 'Failed to update role' })
+                                    }
+                                  }}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                              {isAdmin && user.id !== currentUserId && (
+                                <button
+                                  className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500"
+                                  title="Delete user"
+                                  onClick={async () => {
+                                    if (!confirm(`Are you sure you want to delete ${user.name} (${user.email})? This cannot be undone.`)) return
+                                    try {
+                                      const res = await fetch(`/api/team/users/${user.id}`, { method: 'DELETE' })
+                                      if (res.ok) {
+                                        setTeamUsers(prev => prev.filter(u => u.id !== user.id))
+                                        setInviteResult({ type: 'success', message: `${user.email} deleted` })
+                                      } else {
+                                        const data = await res.json()
+                                        setInviteResult({ type: 'error', message: data.error || 'Failed to delete user' })
+                                      }
+                                    } catch {
+                                      setInviteResult({ type: 'error', message: 'Failed to delete user' })
+                                    }
+                                  }}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
