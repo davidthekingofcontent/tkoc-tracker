@@ -224,21 +224,14 @@ export async function POST(request: NextRequest) {
       location?: string
     }
 
-    if (!query || !query.trim()) {
-      return NextResponse.json(
-        { error: 'Search query is required' },
-        { status: 400 }
-      )
-    }
-
-    const cleanQuery = query.trim()
+    const cleanQuery = (query || '').trim()
     const normalizedPlatform = platform?.toUpperCase() || 'INSTAGRAM'
 
     let results: DiscoverResult[] = []
     let source: 'apify' | 'database' = 'database'
 
-    // Try Apify for external search
-    if (isApifyConfigured()) {
+    // Try Apify for external search (only if there's a search query)
+    if (cleanQuery && isApifyConfigured()) {
       try {
         if (looksLikeUsername(cleanQuery)) {
           // Direct profile lookup
@@ -260,16 +253,15 @@ export async function POST(request: NextRequest) {
     // Fallback to internal database if Apify returned no results or is not configured
     // Use relaxed search: OR across username, displayName, bio, and also match category/niche keywords
     if (results.length === 0) {
-      const queryWords = cleanQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2)
+      const queryWords = cleanQuery ? cleanQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2) : []
       const dbWhere: Prisma.InfluencerWhereInput = {
         AND: [
-          // Main search query
-          {
+          // Main search query (only if provided)
+          ...(cleanQuery ? [{
             OR: [
-              { username: { contains: cleanQuery, mode: 'insensitive' } },
-              { displayName: { contains: cleanQuery, mode: 'insensitive' } },
-              { bio: { contains: cleanQuery, mode: 'insensitive' } },
-              // Also search individual words from the query across all fields
+              { username: { contains: cleanQuery, mode: 'insensitive' as const } },
+              { displayName: { contains: cleanQuery, mode: 'insensitive' as const } },
+              { bio: { contains: cleanQuery, mode: 'insensitive' as const } },
               ...queryWords.map(word => ({
                 OR: [
                   { username: { contains: word, mode: 'insensitive' as const } },
@@ -278,7 +270,7 @@ export async function POST(request: NextRequest) {
                 ],
               })),
             ],
-          },
+          }] : []),
           // Bio keyword filter
           ...(bioKeyword ? [{ bio: { contains: bioKeyword, mode: 'insensitive' as const } }] : []),
           // Location filter (search in bio and displayName)

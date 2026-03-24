@@ -196,10 +196,11 @@ export default function DiscoverPage() {
   }
 
   const handleSearch = async () => {
-    if (!filters.search.trim()) return
+    if (!filters.search.trim() && !filters.platform) return
 
     setSearching(true)
     setHasSearched(true)
+    setResults([]) // Clear previous results
 
     try {
       const res = await fetch('/api/influencers/discover', {
@@ -336,23 +337,32 @@ export default function DiscoverPage() {
 
           {/* Action Buttons */}
           <div className="flex flex-col gap-2 border-t border-gray-200 dark:border-gray-600 pt-5">
-            <Button type="button" variant="primary" size="lg" onClick={handleSearch} disabled={searching || !filters.search.trim()} className="w-full">
+            <button
+              type="button"
+              onClick={handleSearch}
+              disabled={searching || (!filters.search.trim() && !filters.platform)}
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-purple-600 px-6 py-3.5 text-sm font-semibold text-white shadow-lg hover:bg-purple-700 active:bg-purple-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
               {searching ? (
                 <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {t.common.loading}
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  {t.common.loading}...
                 </>
               ) : (
                 <>
-                  <Search className="h-4 w-4" />
+                  <Search className="h-5 w-5" />
                   {t.common.search}
                 </>
               )}
-            </Button>
-            <Button type="button" variant="secondary" size="md" onClick={resetFilters} className="w-full">
+            </button>
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="w-full flex items-center justify-center gap-2 rounded-xl border-2 border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-6 py-3 text-sm font-semibold text-gray-700 dark:text-gray-300 hover:border-gray-400 dark:hover:border-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
+            >
               <RotateCcw className="h-4 w-4" />
               {t.discover.reset}
-            </Button>
+            </button>
           </div>
         </div>
 
