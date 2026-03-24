@@ -75,8 +75,8 @@ export async function sendInvitationEmail({
 </body>
 </html>`
 
-  // Use onboarding@resend.dev as fallback until custom domain DNS is fully propagated
-  const fromEmail = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev'
+  // Use verified domain noreplay.thekingofcontent.agency
+  const fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@noreplay.thekingofcontent.agency'
   const fromAddress = `TKOC Intelligence <${fromEmail}>`
 
   console.log(`[Email] Sending invitation to ${to} from ${fromAddress}`)
