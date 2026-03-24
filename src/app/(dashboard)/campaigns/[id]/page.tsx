@@ -30,10 +30,12 @@ import { CampaignIntelligencePanel } from '@/components/campaign-intelligence-pa
 import { CampaignPlaybookPanel } from '@/components/campaign-playbook-panel'
 import { CreatorScoreBadge } from '@/components/creator-score-badge'
 import { DealAdvisorPanel } from '@/components/deal-advisor-panel'
+import { ReportPreviewModal } from '@/components/report-preview-modal'
 import { RiskSignalsBadge } from '@/components/risk-signals-badge'
 import { calculateCreatorScore } from '@/lib/creator-score'
 import { evaluateFeeClient } from '@/lib/market-benchmark-client'
 import { proxyImg } from '@/lib/proxy-image'
+import { useRole } from '@/hooks/use-role'
 import {
   ArrowLeft,
   Users,
@@ -313,6 +315,7 @@ function sortInfluencers(
 export default function CampaignDetailPage() {
   const params = useParams()
   const { t, locale } = useI18n()
+  const { isBrand, canEdit } = useRole()
   const campaignId = params.id as string
   const [campaign, setCampaign] = useState<CampaignData | null>(null)
   const [overview, setOverview] = useState<Overview | null>(null)
@@ -381,6 +384,7 @@ export default function CampaignDetailPage() {
 
   // Export dropdown state
   const [showExportDropdown, setShowExportDropdown] = useState(false)
+  const [showReportModal, setShowReportModal] = useState(false)
 
   // Save as Template state
   const [showTemplateModal, setShowTemplateModal] = useState(false)
@@ -910,20 +914,24 @@ export default function CampaignDetailPage() {
                   {locale === 'es' ? 'Pago' : 'Paid'}
                 </span>
               )}
-              <button
-                onClick={openEditModal}
-                className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-                title={t.common.edit}
-              >
-                <Settings2 className="h-4 w-4" />
-              </button>
-              <button
-                onClick={openTemplateModal}
-                className="rounded-lg p-1.5 text-gray-400 hover:bg-purple-100 hover:text-purple-600 transition-colors"
-                title={locale === 'es' ? 'Guardar como plantilla' : 'Save as Template'}
-              >
-                <Copy className="h-4 w-4" />
-              </button>
+              {canEdit && (
+                <button
+                  onClick={openEditModal}
+                  className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+                  title={t.common.edit}
+                >
+                  <Settings2 className="h-4 w-4" />
+                </button>
+              )}
+              {canEdit && (
+                <button
+                  onClick={openTemplateModal}
+                  className="rounded-lg p-1.5 text-gray-400 hover:bg-purple-100 hover:text-purple-600 transition-colors"
+                  title={locale === 'es' ? 'Guardar como plantilla' : 'Save as Template'}
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              )}
             </div>
             <div className="mt-1 flex items-center gap-2 text-sm text-gray-500">
               <span>{campaign.type === 'UGC' ? (locale === 'es' ? 'Campaña UGC' : 'UGC Campaign') : campaign.type === 'INFLUENCER_TRACKING' ? t.campaigns.influencerTracking : t.campaigns.socialListening}</span>
@@ -989,11 +997,10 @@ export default function CampaignDetailPage() {
             <Button
               variant="primary"
               size="sm"
-              onClick={() => setShowExportDropdown(prev => !prev)}
+              onClick={() => setShowReportModal(true)}
             >
               <Download className="h-4 w-4" />
               {t.campaignDetail.exportReport || 'Export Report'}
-              <ChevronDown className="h-3 w-3 ml-1" />
             </Button>
             {showExportDropdown && (
               <>
@@ -2266,8 +2273,9 @@ export default function CampaignDetailPage() {
                               </button>
                             )}
                             <select
-                              className="mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-600 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400"
+                              className={`mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-600 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400 ${!canEdit ? 'cursor-not-allowed opacity-60' : ''}`}
                               value={ci.status || 'PROSPECT'}
+                              disabled={!canEdit}
                               onChange={async (e) => {
                                 const newStatus = e.target.value
                                 try {
@@ -2387,6 +2395,7 @@ export default function CampaignDetailPage() {
         <TabsContent value="elegir">
           <div className="space-y-4">
             {/* Add Influencer Section */}
+            {canEdit && (
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
               <div className="flex items-center gap-2 mb-3">
                 <UserPlus className="h-4 w-4 text-purple-600" />
@@ -2442,6 +2451,7 @@ export default function CampaignDetailPage() {
                 </div>
               )}
             </div>
+            )}
 
             {/* Influencers Table */}
             <Card variant="elevated">
@@ -2584,20 +2594,22 @@ export default function CampaignDetailPage() {
                                 <input
                                   type="number"
                                   value={feeValue}
-                                  onChange={(e) => setEditingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
+                                  onChange={(e) => canEdit && setEditingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
                                   onBlur={() => {
+                                    if (!canEdit) return
                                     const val = editingFee[ci.id]
                                     if (val !== undefined && val !== String(ci.agreedFee || ci.cost || '')) {
                                       handleSaveFee(ci.id, ci.influencer.id, val)
                                     }
                                   }}
                                   onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
+                                    if (canEdit && e.key === 'Enter') {
                                       handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0')
                                     }
                                   }}
+                                  readOnly={!canEdit}
                                   placeholder={ci.influencer.standardFee ? `Std: €${ci.influencer.standardFee}` : '0'}
-                                  className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-medium text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                                  className={`w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-medium text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 ${!canEdit ? 'bg-gray-100 cursor-not-allowed' : ''}`}
                                 />
                                 {savingFee === ci.id && <Loader2 className="h-3 w-3 animate-spin text-purple-500 shrink-0" />}
                               </div>
@@ -2748,6 +2760,7 @@ export default function CampaignDetailPage() {
                               campaignId={campaignId}
                               influencerId={ci.influencer.id}
                               locale={locale}
+                              readOnly={isBrand}
                             />
                             <InfluencerHistoryButton
                               influencerId={ci.influencer.id}
@@ -2768,6 +2781,7 @@ export default function CampaignDetailPage() {
           {campaign.type === 'UGC' && (
           <div className="space-y-4">
             {/* Add Creator Section */}
+            {canEdit && (
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
               <div className="flex items-center gap-2 mb-3">
                 <UserPlus className="h-4 w-4 text-purple-600" />
@@ -2829,6 +2843,7 @@ export default function CampaignDetailPage() {
                 </div>
               )}
             </div>
+            )}
 
             {/* UGC Summary Stats */}
             {influencers.length > 0 && (
@@ -2905,20 +2920,22 @@ export default function CampaignDetailPage() {
                                   <input
                                     type="number"
                                     value={feeValue}
-                                    onChange={(e) => setEditingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
+                                    onChange={(e) => canEdit && setEditingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
                                     onBlur={() => {
+                                      if (!canEdit) return
                                       const val = editingFee[ci.id]
                                       if (val !== undefined && val !== String(ci.agreedFee || ci.cost || '')) {
                                         handleSaveFee(ci.id, ci.influencer.id, val)
                                       }
                                     }}
                                     onKeyDown={(e) => {
-                                      if (e.key === 'Enter') {
+                                      if (canEdit && e.key === 'Enter') {
                                         handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0')
                                       }
                                     }}
+                                    readOnly={!canEdit}
                                     placeholder="0"
-                                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-medium text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                                    className={`w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-medium text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 ${!canEdit ? 'bg-gray-100 cursor-not-allowed' : ''}`}
                                   />
                                   {savingFee === ci.id && <Loader2 className="h-3 w-3 animate-spin text-purple-500 shrink-0" />}
                                 </div>
@@ -3031,6 +3048,7 @@ export default function CampaignDetailPage() {
                                 campaignId={campaignId}
                                 influencerId={ci.influencer.id}
                                 locale={locale}
+                                readOnly={isBrand}
                               />
                               <InfluencerHistoryButton
                                 influencerId={ci.influencer.id}
@@ -3097,16 +3115,18 @@ export default function CampaignDetailPage() {
                             <input
                               type="number"
                               value={feeValue}
-                              onChange={(e) => setEditingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
+                              onChange={(e) => canEdit && setEditingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
                               onBlur={() => {
+                                if (!canEdit) return
                                 const val = editingFee[ci.id]
                                 if (val !== undefined && val !== String(ci.agreedFee || ci.cost || '')) {
                                   handleSaveFee(ci.id, ci.influencer.id, val)
                                 }
                               }}
-                              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0') }}
+                              onKeyDown={(e) => { if (canEdit && e.key === 'Enter') handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0') }}
+                              readOnly={!canEdit}
                               placeholder="0"
-                              className="w-28 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm font-bold text-gray-900 dark:text-white outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                              className={`w-28 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm font-bold text-gray-900 dark:text-white outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 ${!canEdit ? 'bg-gray-100 dark:bg-gray-800 cursor-not-allowed' : ''}`}
                             />
                             {savingFee === ci.id && <Loader2 className="h-4 w-4 animate-spin text-purple-500" />}
                           </div>
@@ -3505,6 +3525,24 @@ export default function CampaignDetailPage() {
           </Button>
         </ModalFooter>
       </Modal>
+
+      {/* Report Preview Modal */}
+      {campaign && (
+        <ReportPreviewModal
+          open={showReportModal}
+          onClose={() => setShowReportModal(false)}
+          campaign={{
+            ...campaign,
+            influencers: campaign.influencers.map(ci => ({
+              influencer: ci.influencer,
+              status: ci.status,
+              cost: ci.cost,
+              agreedFee: ci.agreedFee,
+            })),
+          }}
+          overview={overview}
+        />
+      )}
     </div>
   )
 }

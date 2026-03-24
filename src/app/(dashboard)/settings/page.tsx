@@ -516,9 +516,11 @@ export default function SettingsPage() {
           <TabsTrigger value="profile" className="gap-1.5">
             <User className="h-4 w-4" /> {t.settings.profile}
           </TabsTrigger>
-          <TabsTrigger value="team" className="gap-1.5">
-            <Users className="h-4 w-4" /> {t.settings.team}
-          </TabsTrigger>
+          {currentUserRole !== 'BRAND' && (
+            <TabsTrigger value="team" className="gap-1.5">
+              <Users className="h-4 w-4" /> {t.settings.team}
+            </TabsTrigger>
+          )}
           {isAdmin && (
             <TabsTrigger value="integrations" className="gap-1.5">
               <Plug className="h-4 w-4" /> {t.settings.integrations}
@@ -529,9 +531,11 @@ export default function SettingsPage() {
               <BarChart3 className="h-4 w-4" /> {t.settings.benchmarks}
             </TabsTrigger>
           )}
-          <TabsTrigger value="templates" className="gap-1.5">
-            <FileText className="h-4 w-4" /> Templates
-          </TabsTrigger>
+          {currentUserRole !== 'BRAND' && (
+            <TabsTrigger value="templates" className="gap-1.5">
+              <FileText className="h-4 w-4" /> Templates
+            </TabsTrigger>
+          )}
           <TabsTrigger value="billing" className="gap-1.5">
             <CreditCard className="h-4 w-4" /> {t.settings.billing}
           </TabsTrigger>

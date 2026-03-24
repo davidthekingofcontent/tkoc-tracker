@@ -15,9 +15,10 @@ interface CampaignNotesProps {
   campaignId: string
   influencerId: string
   locale: string
+  readOnly?: boolean
 }
 
-export function CampaignNotesButton({ campaignId, influencerId, locale }: CampaignNotesProps) {
+export function CampaignNotesButton({ campaignId, influencerId, locale, readOnly }: CampaignNotesProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [notes, setNotes] = useState<Note[]>([])
   const [newNote, setNewNote] = useState('')
@@ -117,6 +118,7 @@ export function CampaignNotesButton({ campaignId, influencerId, locale }: Campai
           </div>
 
           {/* Input */}
+          {!readOnly && (
           <div className="border-t border-gray-100 p-2">
             <div className="flex items-center gap-1.5">
               <input
@@ -136,6 +138,7 @@ export function CampaignNotesButton({ campaignId, influencerId, locale }: Campai
               </button>
             </div>
           </div>
+          )}
         </div>
       )}
     </div>

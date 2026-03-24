@@ -76,6 +76,82 @@ export async function GET(
   }
 }
 
+// ============ POST: Export with editable fields from report modal ============
+
+interface ExportPostBody {
+  format: 'pdf' | 'csv' | 'json'
+  title?: string
+  summary?: string
+  notes?: string
+  sections?: string[]
+  coverImageBase64?: string
+}
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await getSession(request)
+    if (!session) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    const { id } = await params
+    const body: ExportPostBody = await request.json()
+    const { format, title, summary, notes, sections, coverImageBase64 } = body
+
+    const campaign = await prisma.campaign.findUnique({
+      where: { id },
+      include: {
+        influencers: {
+          include: { influencer: true },
+        },
+        media: {
+          orderBy: { postedAt: 'desc' },
+          include: {
+            influencer: {
+              select: {
+                username: true,
+                displayName: true,
+                platform: true,
+                followers: true,
+                engagementRate: true,
+              },
+            },
+          },
+        },
+      },
+    })
+
+    if (!campaign) {
+      return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
+    }
+
+    if (session.role === 'BRAND' && campaign.userId !== session.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    if (format === 'csv') return generateCSV(campaign)
+    if (format === 'json') return generateJSON(campaign)
+    if (format === 'pdf') {
+      return generatePDF(campaign, {
+        customTitle: title,
+        customSubtitle: summary,
+        coverImageUrl: undefined,
+        coverImageBase64,
+        notes,
+        sections,
+      })
+    }
+
+    return NextResponse.json({ error: 'Unsupported format. Use csv, json, or pdf.' }, { status: 400 })
+  } catch (error) {
+    console.error('Export campaign POST error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
 // ============ TYPES ============
 
 interface CampaignData {
@@ -467,7 +543,7 @@ function generateJSON(campaign: CampaignData): NextResponse {
 
 // ============ PDF GENERATION ============
 
-async function generatePDF(campaign: CampaignData, options?: { customTitle?: string; customSubtitle?: string; coverImageUrl?: string }): Promise<NextResponse> {
+async function generatePDF(campaign: CampaignData, options?: { customTitle?: string; customSubtitle?: string; coverImageUrl?: string; coverImageBase64?: string; notes?: string; sections?: string[] }): Promise<NextResponse> {
   const doc = new jsPDF('p', 'mm', 'a4')
   const W = doc.internal.pageSize.getWidth()   // 210
   const H = doc.internal.pageSize.getHeight()  // 297
@@ -555,19 +631,17 @@ async function generatePDF(campaign: CampaignData, options?: { customTitle?: str
   const dividerY = TKOC_LOGO_BASE64 ? 54 : 46
   doc.line(M, dividerY, M + 50, dividerY)
 
-  // Cover image (if provided)
-  if (options?.coverImageUrl) {
+  // Cover image (if provided via URL or base64)
+  const coverImgData = options?.coverImageBase64 || (options?.coverImageUrl ? await fetchImageBase64(options.coverImageUrl) : null)
+  if (coverImgData) {
     try {
-      const coverImg = await fetchImageBase64(options.coverImageUrl)
-      if (coverImg) {
-        // Semi-transparent overlay on cover image
-        doc.addImage(`data:image/jpeg;base64,${coverImg}`, 'JPEG', 0, 0, W, H)
-        // Dark overlay for text readability
-        doc.setFillColor(0, 0, 0)
-        doc.setGState(new (doc as unknown as { GState: new (opts: { opacity: number }) => unknown }).GState({ opacity: 0.55 }))
-        doc.rect(0, 0, W, H, 'F')
-        doc.setGState(new (doc as unknown as { GState: new (opts: { opacity: number }) => unknown }).GState({ opacity: 1 }))
-      }
+      const imgSrc = coverImgData.startsWith('data:') ? coverImgData : `data:image/jpeg;base64,${coverImgData}`
+      doc.addImage(imgSrc, 'JPEG', 0, 0, W, H)
+      // Dark overlay for text readability
+      doc.setFillColor(0, 0, 0)
+      doc.setGState(new (doc as unknown as { GState: new (opts: { opacity: number }) => unknown }).GState({ opacity: 0.55 }))
+      doc.rect(0, 0, W, H, 'F')
+      doc.setGState(new (doc as unknown as { GState: new (opts: { opacity: number }) => unknown }).GState({ opacity: 1 }))
     } catch { /* cover image optional */ }
   }
 
@@ -1008,6 +1082,25 @@ async function generatePDF(campaign: CampaignData, options?: { customTitle?: str
       },
       // Footer added in final loop across all pages
     })
+  }
+
+  // Notes page (if provided from report modal)
+  if (options?.notes) {
+    doc.addPage()
+    let ny = 20
+    doc.setFillColor(...purple)
+    doc.rect(0, 0, W, 14, 'F')
+    doc.setFontSize(9)
+    doc.setTextColor(...white)
+    doc.setFont('helvetica', 'bold')
+    doc.text('ADDITIONAL NOTES', M, 9)
+    doc.text(options?.customTitle || campaign.name, W - M, 9, { align: 'right' })
+    ny = 24
+    doc.setFontSize(10)
+    doc.setTextColor(...gray900)
+    doc.setFont('helvetica', 'normal')
+    const noteLines = doc.splitTextToSize(options.notes, CW)
+    doc.text(noteLines, M, ny)
   }
 
   // Add footer + page numbers to ALL pages (skip cover page 1)

@@ -19,6 +19,7 @@ import {
 import { formatNumber, formatDate } from '@/lib/utils'
 import { useI18n } from '@/i18n/context'
 import { Megaphone, Users, FileText, Camera, Plus, Search, Loader2, MoreVertical, Pause, Play, Archive, Trash2 } from 'lucide-react'
+import { useRole } from '@/hooks/use-role'
 
 interface Campaign {
   id: string
@@ -157,6 +158,7 @@ function CampaignActionMenu({
 export default function CampaignsPage() {
   const { t, locale } = useI18n()
   const router = useRouter()
+  const { canEdit } = useRole()
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -250,12 +252,14 @@ export default function CampaignsPage() {
             {t.campaigns.subtitle}
           </p>
         </div>
-        <Link href="/campaigns/new">
-          <Button>
-            <Plus className="h-4 w-4" />
-            {t.campaigns.newCampaign}
-          </Button>
-        </Link>
+        {canEdit && (
+          <Link href="/campaigns/new">
+            <Button>
+              <Plus className="h-4 w-4" />
+              {t.campaigns.newCampaign}
+            </Button>
+          </Link>
+        )}
       </div>
 
       {/* Stats Row */}
@@ -366,11 +370,13 @@ export default function CampaignsPage() {
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <CampaignActionMenu
-                      campaign={campaign}
-                      onAction={handleAction}
-                      lang={locale}
-                    />
+                    {canEdit && (
+                      <CampaignActionMenu
+                        campaign={campaign}
+                        onAction={handleAction}
+                        lang={locale}
+                      />
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
