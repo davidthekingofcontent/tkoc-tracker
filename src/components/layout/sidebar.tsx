@@ -50,6 +50,17 @@ const secondaryNavItems: NavItem[] = [
   { key: "settings", icon: Settings, href: "/settings" },
 ]
 
+// Simplified nav for CREATOR role
+const creatorMainNavItems: NavItem[] = [
+  { key: "home", icon: LayoutDashboard, href: "/dashboard" },
+  { key: "campaigns", icon: Megaphone, href: "/campaigns" },
+  { key: "methodology", icon: BookOpen, href: "/methodology" },
+]
+
+const creatorSecondaryNavItems: NavItem[] = [
+  { key: "settings", icon: Settings, href: "/settings" },
+]
+
 interface SidebarCampaign {
   id: string
   name: string
@@ -96,6 +107,8 @@ export function Sidebar() {
   const [lists, setLists] = useState<SidebarList[]>([])
   const [user, setUser] = useState<UserData>({ name: 'User', email: '', role: 'ADMIN' })
 
+  const isCreator = user.role === 'CREATOR'
+
   useEffect(() => {
     // Load user from localStorage
     try {
@@ -110,7 +123,7 @@ export function Sidebar() {
       }
     } catch {}
 
-    // Fetch recent campaigns
+    // Fetch recent campaigns (skip for creators)
     fetch('/api/campaigns?limit=5')
       .then(res => res.ok ? res.json() : null)
       .then(data => {
@@ -166,9 +179,9 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-3 py-4">
-        {/* Main Navigation - 6 primary items */}
+        {/* Main Navigation */}
         <div className="space-y-1">
-          {mainNavItems.map((item) => {
+          {(isCreator ? creatorMainNavItems : mainNavItems).map((item) => {
             const active = isActive(item.href)
             return (
               <Link
@@ -200,7 +213,7 @@ export function Sidebar() {
 
         {/* Secondary Navigation */}
         <div className="space-y-0.5">
-          {secondaryNavItems.map((item) => {
+          {(isCreator ? creatorSecondaryNavItems : secondaryNavItems).map((item) => {
             const active = isActive(item.href)
             return (
               <Link
@@ -227,8 +240,8 @@ export function Sidebar() {
           })}
         </div>
 
-        {/* Lists */}
-        {lists.length > 0 && (
+        {/* Lists — hidden for creators */}
+        {!isCreator && lists.length > 0 && (
           <div className="mt-6">
             <button
               onClick={() => setListsOpen(!listsOpen)}
@@ -264,8 +277,8 @@ export function Sidebar() {
           </div>
         )}
 
-        {/* Recent Campaigns */}
-        {campaigns.length > 0 && (
+        {/* Recent Campaigns — hidden for creators */}
+        {!isCreator && campaigns.length > 0 && (
           <div className="mt-4">
             <button
               onClick={() => setCampaignsOpen(!campaignsOpen)}
