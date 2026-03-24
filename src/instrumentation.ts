@@ -1,4 +1,4 @@
-const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000
+const FOUR_HOURS_MS = 4 * 60 * 60 * 1000
 const FIVE_MINUTES_MS = 5 * 60 * 1000
 
 async function executeTracking() {
@@ -24,10 +24,10 @@ export async function register() {
     executeTracking()
   }, FIVE_MINUTES_MS)
 
-  // Recurring run every 12 hours
+  // Recurring run every 4 hours (dedup logic in runCronTracking prevents duplicate scrapes)
   setInterval(() => {
     executeTracking()
-  }, TWELVE_HOURS_MS)
+  }, FOUR_HOURS_MS)
 
-  console.log('[TKOC Auto-Tracker] Scheduled: initial run in 5 min, then every 12 hours')
+  console.log('[TKOC Auto-Tracker] Scheduled: initial run in 5 min, then every 4 hours')
 }

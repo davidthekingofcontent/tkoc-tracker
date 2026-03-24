@@ -741,51 +741,84 @@ export interface StoryResult {
   stories: ScrapedStory[]
 }
 
-async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[]> {
-  try {
-    const items = await runActor('apify~instagram-story-scraper', {
-      usernames: usernames.slice(0, 20), // Max 20 at a time
-      resultsLimit: 100,
-    }, 300) // 5 min timeout for stories
+async function parseStoryItems(items: Record<string, unknown>[]): Promise<StoryResult[]> {
+  const storyMap = new Map<string, ScrapedStory[]>()
 
-    if (!items || items.length === 0) return []
+  for (const item of items) {
+    const owner = item.owner as Record<string, unknown> | undefined
+    const username = (item.ownerUsername as string) || (owner?.username as string) || (item.user as Record<string, unknown>)?.username as string || ''
+    if (!username) continue
 
-    // Group by username
-    const storyMap = new Map<string, ScrapedStory[]>()
-
-    for (const item of items) {
-      const owner = item.owner as Record<string, unknown> | undefined
-      const username = (item.ownerUsername as string) || (owner?.username as string) || (item.user as Record<string, unknown>)?.username as string || ''
-      if (!username) continue
-
-      const story: ScrapedStory = {
-        externalId: (item.id as string) || (item.pk as number | string)?.toString() || `story_${username}_${(item.takenAtTimestamp as number) || Date.now()}`,
-        mediaUrl: (item.videoUrl as string) || (item.displayUrl as string) || (item.imageUrl as string) || null,
-        thumbnailUrl: (item.displayUrl as string) || (item.imageUrl as string) || (item.thumbnailUrl as string) || null,
-        mediaType: 'STORY',
-        views: (item.viewerCount as number) || (item.views as number) || 0,
-        postedAt: (item.takenAtTimestamp as number)
-          ? new Date((item.takenAtTimestamp as number) * 1000).toISOString()
-          : (item.timestamp as string) || (item.takenAt as string) || null,
-        expiresAt: (item.expiringAtTimestamp as number)
-          ? new Date((item.expiringAtTimestamp as number) * 1000).toISOString()
-          : null,
-        mentions: ((item.mentions as string[]) || []),
-        hashtags: ((item.hashtags as string[]) || []),
-        stickers: ((item.stickers as string[]) || []),
-      }
-
-      const existing = storyMap.get(username) || []
-      existing.push(story)
-      storyMap.set(username, existing)
+    const story: ScrapedStory = {
+      externalId: (item.id as string) || (item.pk as number | string)?.toString() || `story_${username}_${(item.takenAtTimestamp as number) || Date.now()}`,
+      mediaUrl: (item.videoUrl as string) || (item.displayUrl as string) || (item.imageUrl as string) || null,
+      thumbnailUrl: (item.displayUrl as string) || (item.imageUrl as string) || (item.thumbnailUrl as string) || null,
+      mediaType: 'STORY',
+      views: (item.viewerCount as number) || (item.views as number) || 0,
+      postedAt: (item.takenAtTimestamp as number)
+        ? new Date((item.takenAtTimestamp as number) * 1000).toISOString()
+        : (item.timestamp as string) || (item.takenAt as string) || null,
+      expiresAt: (item.expiringAtTimestamp as number)
+        ? new Date((item.expiringAtTimestamp as number) * 1000).toISOString()
+        : null,
+      mentions: ((item.mentions as string[]) || []),
+      hashtags: ((item.hashtags as string[]) || []),
+      stickers: ((item.stickers as string[]) || []),
     }
 
-    return Array.from(storyMap.entries()).map(([username, stories]) => ({
-      username,
-      stories,
-    }))
+    const existing = storyMap.get(username) || []
+    existing.push(story)
+    storyMap.set(username, existing)
+  }
+
+  return Array.from(storyMap.entries()).map(([username, stories]) => ({
+    username,
+    stories,
+  }))
+}
+
+async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[]> {
+  const usernameSlice = usernames.slice(0, 20) // Max 20 at a time
+  console.log(`[Apify] Story scrape requested for ${usernameSlice.length} usernames: ${usernameSlice.join(', ')}`)
+
+  // Primary attempt: dedicated story scraper
+  try {
+    console.log('[Apify] Trying primary actor: apify~instagram-story-scraper')
+    const items = await runActor('apify~instagram-story-scraper', {
+      usernames: usernameSlice,
+      resultsLimit: 100,
+    }, 600) // 10 min timeout for stories
+
+    if (items && items.length > 0) {
+      console.log(`[Apify] Primary story scraper returned ${items.length} items`)
+      return parseStoryItems(items)
+    }
+
+    console.warn(`[Apify] Primary story scraper returned 0 results for ${usernameSlice.length} usernames — trying fallback`)
   } catch (err) {
-    console.error('[Apify] Story scraping error:', err)
+    console.error('[Apify] Primary story scraper failed:', err instanceof Error ? err.message : err)
+    console.warn('[Apify] Attempting fallback actor for stories...')
+  }
+
+  // Fallback: use general instagram-scraper with storiesOnly
+  try {
+    console.log('[Apify] Trying fallback actor: apify~instagram-scraper with storiesOnly=true')
+    const fallbackItems = await runActor('apify~instagram-scraper', {
+      usernames: usernameSlice,
+      resultsType: 'stories',
+      storiesOnly: true,
+      resultsLimit: 100,
+    }, 600) // 10 min timeout
+
+    if (!fallbackItems || fallbackItems.length === 0) {
+      console.warn(`[Apify] Fallback story scraper also returned 0 results for: ${usernameSlice.join(', ')}`)
+      return []
+    }
+
+    console.log(`[Apify] Fallback story scraper returned ${fallbackItems.length} items`)
+    return parseStoryItems(fallbackItems)
+  } catch (fallbackErr) {
+    console.error('[Apify] Fallback story scraper also failed:', fallbackErr instanceof Error ? fallbackErr.message : fallbackErr)
     return []
   }
 }

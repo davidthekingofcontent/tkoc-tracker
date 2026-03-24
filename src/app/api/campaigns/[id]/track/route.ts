@@ -50,10 +50,13 @@ export async function POST(
 
     const results = {
       hashtagsScraped: 0,
+      postsFromHashtags: 0,
+      postsFromMentions: 0,
       postsFound: 0,
       postsFilteredByCountry: 0,
       influencersFound: 0,
       storiesCaptured: 0,
+      storyError: null as string | null,
       errors: [] as string[],
     }
 
@@ -227,6 +230,7 @@ export async function POST(
           }
 
           results.postsFound += postsInThisBatch
+          results.postsFromHashtags += postsInThisBatch
 
           await prisma.scrapeJob.update({
             where: { id: job.id },
@@ -330,6 +334,7 @@ export async function POST(
           }
 
           results.postsFound += postsInThisBatch
+          results.postsFromMentions += postsInThisBatch
           await prisma.scrapeJob.update({ where: { id: job.id }, data: { status: 'COMPLETED', itemsFound: postsInThisBatch, completedAt: new Date() } })
         } catch (err) {
           results.errors.push(`Failed to scrape mentions @${account} on ${platform}: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -450,6 +455,7 @@ export async function POST(
         })
       } catch (err) {
         const errorMsg = `Failed to scrape stories: ${err instanceof Error ? err.message : 'Unknown error'}`
+        results.storyError = errorMsg
         results.errors.push(errorMsg)
         console.error(errorMsg)
       }
@@ -457,6 +463,12 @@ export async function POST(
 
     return NextResponse.json({
       message: 'Tracking completed',
+      summary: {
+        postsFromHashtags: results.postsFromHashtags,
+        postsFromMentions: results.postsFromMentions,
+        storiesCaptured: results.storiesCaptured,
+        storyError: results.storyError,
+      },
       results,
     })
   } catch (error) {

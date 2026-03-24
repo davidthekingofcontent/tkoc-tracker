@@ -43,6 +43,31 @@ async function getYouTubeHashtagResults(hashtag: string): Promise<HashtagResult[
   }
 }
 
+const DEDUP_WINDOW_MS = 3 * 60 * 60 * 1000 // 3 hours
+
+/**
+ * Check if a scrape job for the same campaign+target was already run recently.
+ * Returns true if a duplicate job exists within the dedup window (3 hours).
+ */
+async function wasRecentlyScraped(campaignId: string, jobType: string, target: string): Promise<boolean> {
+  const cutoff = new Date(Date.now() - DEDUP_WINDOW_MS)
+  const recentJob = await prisma.scrapeJob.findFirst({
+    where: {
+      campaignId,
+      jobType,
+      targetUsername: target,
+      status: 'COMPLETED',
+      completedAt: { gte: cutoff },
+    },
+    orderBy: { completedAt: 'desc' },
+  })
+  if (recentJob) {
+    console.log(`[Cron/Track] Skipping ${jobType} for "${target}" in campaign ${campaignId} — already scraped at ${recentJob.completedAt?.toISOString()}`)
+    return true
+  }
+  return false
+}
+
 /**
  * Core tracking logic extracted for reuse by both the HTTP endpoint and
  * the instrumentation auto-tracker.
@@ -51,6 +76,8 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
   if (!isApifyConfigured()) {
     throw new Error('Apify not configured')
   }
+
+  console.log('[Cron/Track] Starting cron tracking run at', new Date().toISOString())
 
   // Find all active campaigns with hashtags OR accounts to track
   const campaigns = await prisma.campaign.findMany({
@@ -145,6 +172,7 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
 
           // Skip if country doesn't match
           if (influencerCountry && influencerCountry !== campaign.country) {
+            console.log(`[Cron/Track] Country filter: skipping @${result.authorUsername} (country=${influencerCountry}) — campaign requires ${campaign.country}`)
             continue
           }
 
@@ -163,12 +191,14 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
               /[\u0900-\u097F]/, // Hindi/Devanagari
             ]
             if (nonLatinPatterns.some(p => p.test(caption))) {
+              console.log(`[Cron/Track] Country filter: skipping @${result.authorUsername} — non-latin script detected in caption`)
               continue // Skip non-latin-script content
             }
 
             // For Spanish campaigns, allow latin-script content through (could be Spanish)
             // For all other countries, skip unknown-country content
             if (campaign.country !== 'ES') {
+              console.log(`[Cron/Track] Country filter: skipping @${result.authorUsername} — no country detected, strict mode for ${campaign.country}`)
               continue // Strict: skip content with no country detected
             }
           }
@@ -261,6 +291,9 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
       for (const hashtag of campaign.targetHashtags) {
         for (const platform of campaign.platforms) {
           try {
+            // Idempotency: skip if already scraped within the dedup window
+            if (await wasRecentlyScraped(campaign.id, 'cron-hashtag', hashtag)) continue
+
             const job = await prisma.scrapeJob.create({
               data: {
                 jobType: 'cron-hashtag',
@@ -293,6 +326,9 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
       for (const account of campaign.targetAccounts) {
         for (const platform of campaign.platforms) {
           try {
+            // Idempotency: skip if already scraped within the dedup window
+            if (await wasRecentlyScraped(campaign.id, 'cron-mentions', account)) continue
+
             const job = await prisma.scrapeJob.create({
               data: {
                 jobType: 'cron-mentions',
@@ -324,12 +360,18 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
     }
   }
 
+  console.log(`[Cron/Track] Post/mention tracking done: ${results.campaignsProcessed} campaigns, ${results.totalPostsFound} posts found`)
+
   // Story tracking for campaigns with Instagram influencers
   for (const campaign of campaignsWithInfluencers) {
     const igInfluencers = campaign.influencers.filter(ci => ci.influencer.platform === 'INSTAGRAM')
     if (igInfluencers.length === 0) continue
 
     try {
+      // Idempotency: skip stories if already scraped within the dedup window
+      const storyTarget = igInfluencers.map(ci => ci.influencer.username).sort().join(',')
+      if (await wasRecentlyScraped(campaign.id, 'cron-stories', storyTarget)) continue
+
       const usernames = igInfluencers.map(ci => ci.influencer.username)
       const storyResults = await scrapeStories(usernames, 'INSTAGRAM')
 
@@ -372,6 +414,7 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
     }
   }
 
+  console.log(`[Cron/Track] Run complete: ${results.campaignsProcessed} campaigns, ${results.totalPostsFound} posts, ${results.storiesCaptured} stories, ${results.errors.length} errors`)
   return results
 }
 
