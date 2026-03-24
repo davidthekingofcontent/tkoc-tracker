@@ -75,9 +75,8 @@ export async function sendInvitationEmail({
 </body>
 </html>`
 
-  // Use custom domain if available, fallback to resend.dev (limited to owner email only)
-  const fromDomain = process.env.RESEND_FROM_DOMAIN || 'onboarding@resend.dev'
-  const fromEmail = fromDomain.includes('@') ? fromDomain : `noreply@${fromDomain}`
+  // Use verified domain noreply.thekingofcontent.agency
+  const fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@noreply.thekingofcontent.agency'
   const fromAddress = `TKOC Intelligence <${fromEmail}>`
 
   console.log(`[Email] Sending invitation to ${to} from ${fromAddress}`)
