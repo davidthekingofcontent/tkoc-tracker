@@ -12,14 +12,36 @@ export async function GET(request: NextRequest) {
     }
 
     // ADMIN sees all campaigns
-    // EMPLOYEE sees own + assigned campaigns
+    // EMPLOYEE sees own + assigned campaigns + campaigns from assigned brands
     // BRAND sees only own campaigns
     // ALWAYS exclude archived campaigns from dashboard metrics
     let campaignWhere: Record<string, unknown> = {
       status: { not: CampaignStatus.ARCHIVED },
     }
     if (session.role === 'EMPLOYEE') {
-      campaignWhere = { ...campaignWhere, OR: [{ userId: session.id }, { assignments: { some: { userId: session.id } } }] }
+      // Look up brands assigned to this employee
+      const brandAssignmentSettings = await prisma.setting.findMany({
+        where: { key: { startsWith: 'brand_assignment_' } },
+      })
+      const assignedBrandIds: string[] = []
+      for (const setting of brandAssignmentSettings) {
+        try {
+          const employeeIds = JSON.parse(setting.value) as string[]
+          if (employeeIds.includes(session.id)) {
+            const brandUserId = setting.key.replace('brand_assignment_', '')
+            assignedBrandIds.push(brandUserId)
+          }
+        } catch { /* skip malformed entries */ }
+      }
+
+      const orConditions: Record<string, unknown>[] = [
+        { userId: session.id },
+        { assignments: { some: { userId: session.id } } },
+      ]
+      if (assignedBrandIds.length > 0) {
+        orConditions.push({ user: { id: { in: assignedBrandIds } } })
+      }
+      campaignWhere = { ...campaignWhere, OR: orConditions }
     } else if (session.role === 'BRAND') {
       campaignWhere = { ...campaignWhere, userId: session.id }
     }

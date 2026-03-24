@@ -175,6 +175,18 @@ export default function SettingsPage() {
   const [templatesLoading, setTemplatesLoading] = useState(true)
   const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null)
 
+  // Brand Assignments state
+  interface BrandAssignment {
+    brandId: string
+    brandName: string
+    brandEmail: string
+    employees: { id: string; name: string; email: string }[]
+  }
+  const [brandAssignments, setBrandAssignments] = useState<BrandAssignment[]>([])
+  const [allEmployees, setAllEmployees] = useState<{ id: string; name: string; email: string }[]>([])
+  const [brandAssignmentsLoading, setBrandAssignmentsLoading] = useState(true)
+  const [brandAssignmentSaving, setBrandAssignmentSaving] = useState<string | null>(null)
+
   // Benchmarks state
   type FeeRangesData = Record<string, Record<string, Record<string, [number, number, number, number]>>>
   type CpmRateEntry = { platform: string; tier: string; cpmTarget: number; cpmMax: number }
@@ -200,6 +212,7 @@ export default function SettingsPage() {
     fetchTemplates()
     fetchIntegrations()
     fetchBenchmarks()
+    fetchBrandAssignments()
     // Fetch current user role
     fetch('/api/auth/me').then(r => r.ok ? r.json() : null).then(d => {
       if (d?.user?.role) setCurrentUserRole(d.user.role)
@@ -271,6 +284,47 @@ export default function SettingsPage() {
       }
     } catch {} finally {
       setBenchmarksLoading(false)
+    }
+  }
+
+  async function fetchBrandAssignments() {
+    try {
+      const res = await fetch('/api/team/brand-assignments')
+      if (res.ok) {
+        const data = await res.json()
+        setBrandAssignments(data.assignments || [])
+        setAllEmployees(data.allEmployees || [])
+      }
+    } catch {} finally {
+      setBrandAssignmentsLoading(false)
+    }
+  }
+
+  async function handleToggleBrandEmployee(brandId: string, employeeId: string, assigned: boolean) {
+    setBrandAssignmentSaving(`${brandId}_${employeeId}`)
+    try {
+      const res = await fetch('/api/team/brand-assignments', {
+        method: assigned ? 'DELETE' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brandId, employeeId }),
+      })
+      if (res.ok) {
+        // Update local state
+        setBrandAssignments(prev =>
+          prev.map(ba => {
+            if (ba.brandId !== brandId) return ba
+            if (assigned) {
+              return { ...ba, employees: ba.employees.filter(e => e.id !== employeeId) }
+            } else {
+              const emp = allEmployees.find(e => e.id === employeeId)
+              if (!emp) return ba
+              return { ...ba, employees: [...ba.employees, emp] }
+            }
+          })
+        )
+      }
+    } catch {} finally {
+      setBrandAssignmentSaving(null)
     }
   }
 
@@ -845,6 +899,74 @@ export default function SettingsPage() {
               </Button>
             </ModalFooter>
           </Modal>
+
+          {/* ===================== BRAND ASSIGNMENTS (Admin only) ===================== */}
+          {isAdmin && (
+            <Card variant="elevated" className="mt-6">
+              <CardHeader>
+                <CardTitle>Brand Assignments</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-gray-500 mb-4">
+                  Assign employees to brands so they automatically see all campaigns from those brands.
+                </p>
+                {brandAssignmentsLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+                  </div>
+                ) : brandAssignments.length === 0 ? (
+                  <div className="py-8 text-center text-sm text-gray-400">
+                    No brand users found. Invite a user with the Brand role to get started.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {brandAssignments.map((ba) => (
+                      <div key={ba.brandId} className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+                        <div className="flex items-center gap-3 mb-3">
+                          <Avatar name={ba.brandName} size="sm" />
+                          <div>
+                            <p className="font-medium text-gray-900 dark:text-white">{ba.brandName}</p>
+                            <p className="text-xs text-gray-400">{ba.brandEmail}</p>
+                          </div>
+                          <Badge variant="default" className="ml-auto">Brand</Badge>
+                        </div>
+                        <div className="ml-1">
+                          <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Assigned Employees</p>
+                          {allEmployees.length === 0 ? (
+                            <p className="text-sm text-gray-400">No employees available.</p>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {allEmployees.map((emp) => {
+                                const isAssigned = ba.employees.some(e => e.id === emp.id)
+                                const isSaving = brandAssignmentSaving === `${ba.brandId}_${emp.id}`
+                                return (
+                                  <label
+                                    key={emp.id}
+                                    className="flex items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer transition-colors"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={isAssigned}
+                                      disabled={isSaving}
+                                      onChange={() => handleToggleBrandEmployee(ba.brandId, emp.id, isAssigned)}
+                                      className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                                    />
+                                    <span className="text-sm text-gray-700 dark:text-gray-300">{emp.name}</span>
+                                    <span className="text-xs text-gray-400">{emp.email}</span>
+                                    {isSaving && <Loader2 className="h-3 w-3 animate-spin text-purple-500 ml-auto" />}
+                                  </label>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         {/* ===================== INTEGRATIONS TAB ===================== */}
@@ -1440,33 +1562,45 @@ export default function SettingsPage() {
             {/* Current Plan */}
             <Card variant="elevated">
               <CardHeader>
-                <CardTitle>{t.settings.currentPlan}</CardTitle>
-                <Badge variant="active">Pro</Badge>
+                <CardTitle>Billing &amp; Subscription</CardTitle>
+                <Badge variant="active">Free (Beta)</Badge>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-gray-500 mb-4" dangerouslySetInnerHTML={{ __html: t.settings.planDescription }} />
-                <div className="flex gap-3">
-                  <Button size="sm">
-                    <Zap className="h-3.5 w-3.5" /> {t.settings.upgradeEnterprise}
-                  </Button>
-                  <Button size="sm" variant="ghost">
-                    {t.settings.manageSubscription}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+                <div className="space-y-6">
+                  <div className="rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 p-4">
+                    <p className="text-sm font-medium text-purple-900 dark:text-purple-200 mb-1">Current Plan: Free (Beta)</p>
+                    <p className="text-sm text-purple-700 dark:text-purple-300">
+                      You are currently on the free beta plan. To upgrade or discuss custom plans, please contact:
+                    </p>
+                    <a
+                      href="mailto:admon@thekingofcontent.agency"
+                      className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-purple-600 hover:text-purple-800 dark:text-purple-400 dark:hover:text-purple-200 transition-colors"
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                      admon@thekingofcontent.agency
+                    </a>
+                  </div>
 
-            {/* Usage Stats */}
-            <Card variant="elevated">
-              <CardHeader>
-                <CardTitle>{t.settings.usageThisPeriod}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-                  <UsageStat label={t.settings.campaignsUsed} used={12} limit={25} />
-                  <UsageStat label={t.settings.profilesTracked} used={348} limit={500} />
-                  <UsageStat label={t.settings.apiCalls} used={8420} limit={50000} />
-                  <UsageStat label={t.settings.teamMembersUsage} used={4} limit={10} />
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">What&apos;s Included</h3>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {[
+                        'Unlimited campaigns',
+                        'Influencer tracking & discovery',
+                        'Instagram, TikTok & YouTube monitoring',
+                        'Media collection & analytics',
+                        'EMV calculation',
+                        'Team collaboration',
+                        'Campaign templates',
+                        'AI-powered insights',
+                      ].map((feature) => (
+                        <div key={feature} className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                          <Check className="h-4 w-4 text-emerald-500 flex-shrink-0" />
+                          {feature}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </CardContent>
             </Card>

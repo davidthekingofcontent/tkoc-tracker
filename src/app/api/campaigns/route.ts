@@ -20,13 +20,33 @@ export async function GET(request: NextRequest) {
     const where: Prisma.CampaignWhereInput = {}
 
     // ADMIN sees all campaigns
-    // EMPLOYEE sees campaigns they created OR are assigned to
+    // EMPLOYEE sees campaigns they created OR are assigned to OR from assigned brands
     // BRAND sees only campaigns they created
     if (session.role === 'EMPLOYEE') {
-      where.OR = [
+      // Look up brands assigned to this employee
+      const brandAssignmentSettings = await prisma.setting.findMany({
+        where: { key: { startsWith: 'brand_assignment_' } },
+      })
+      const assignedBrandIds: string[] = []
+      for (const setting of brandAssignmentSettings) {
+        try {
+          const employeeIds = JSON.parse(setting.value) as string[]
+          if (employeeIds.includes(session.id)) {
+            // Extract brand user ID from key pattern: brand_assignment_{brandUserId}
+            const brandUserId = setting.key.replace('brand_assignment_', '')
+            assignedBrandIds.push(brandUserId)
+          }
+        } catch { /* skip malformed entries */ }
+      }
+
+      const orConditions: Prisma.CampaignWhereInput[] = [
         { userId: session.id },
         { assignments: { some: { userId: session.id } } },
       ]
+      if (assignedBrandIds.length > 0) {
+        orConditions.push({ user: { id: { in: assignedBrandIds } } })
+      }
+      where.OR = orConditions
     } else if (session.role === 'BRAND') {
       where.userId = session.id
     }
