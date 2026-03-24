@@ -131,7 +131,7 @@ const mockIntegrations: Integration[] = [
 // ---------- Component ----------
 
 export default function SettingsPage() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { theme, toggleTheme } = useTheme()
   const [currentUserRole, setCurrentUserRole] = useState<string>('')
   const [currentUserId, setCurrentUserId] = useState<string>('')
@@ -376,7 +376,7 @@ export default function SettingsPage() {
       const res = await fetch('/api/team/invite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: inviteEmail, role: inviteRole.toUpperCase() }),
+        body: JSON.stringify({ email: inviteEmail, role: inviteRole.toUpperCase(), locale }),
       })
       const data = await res.json()
       if (res.ok) {
