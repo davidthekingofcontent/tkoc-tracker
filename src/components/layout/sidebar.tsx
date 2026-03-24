@@ -20,6 +20,7 @@ import {
   LogOut,
   Moon,
   Sun,
+  Building2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { NotificationsBell } from '@/components/notifications-bell'
@@ -34,6 +35,7 @@ interface NavItem {
 
 const mainNavItems: NavItem[] = [
   { key: "home", icon: LayoutDashboard, href: "/dashboard" },
+  { key: "brands", icon: Building2, href: "/brands" },
   { key: "campaigns", icon: Megaphone, href: "/campaigns" },
   { key: "creators", icon: Users, href: "/discover" },
   { key: "pricing", icon: DollarSign, href: "/pricing" },
@@ -69,6 +71,7 @@ interface UserData {
 function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
   switch (key) {
     case 'home': return t.nav.home
+    case 'brands': return t.nav.brands
     case 'campaigns': return t.nav.campaigns
     case 'creators': return t.nav.creators
     case 'pricing': return t.nav.pricing

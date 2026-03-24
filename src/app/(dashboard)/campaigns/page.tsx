@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/table'
 import { formatNumber, formatDate } from '@/lib/utils'
 import { useI18n } from '@/i18n/context'
-import { Megaphone, Users, FileText, Camera, Plus, Search, Loader2, MoreVertical, Pause, Play, Archive, Trash2 } from 'lucide-react'
+import { Megaphone, Users, FileText, Camera, Plus, Search, Loader2, MoreVertical, Pause, Play, Archive, Trash2, Building2 } from 'lucide-react'
 import { useRole } from '@/hooks/use-role'
 
 interface Campaign {
@@ -31,6 +31,8 @@ interface Campaign {
   targetAccounts: string[]
   targetHashtags: string[]
   createdAt: string
+  brandId?: string | null
+  brandName?: string | null
   _count: {
     influencers: number
     media: number
@@ -163,6 +165,7 @@ export default function CampaignsPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [activeFilter, setActiveFilter] = useState('all')
+  const [groupByBrand, setGroupByBrand] = useState(false)
 
   const fetchCampaigns = useCallback(async () => {
     try {
@@ -235,6 +238,27 @@ export default function CampaignsPage() {
     })
   }, [campaigns, search, activeFilter])
 
+  const groupedCampaigns = useMemo(() => {
+    if (!groupByBrand) return null
+    const groups: Record<string, { brandName: string; campaigns: Campaign[] }> = {}
+    const noBrand: Campaign[] = []
+    for (const c of filteredCampaigns) {
+      if (c.brandName) {
+        if (!groups[c.brandName]) {
+          groups[c.brandName] = { brandName: c.brandName, campaigns: [] }
+        }
+        groups[c.brandName].campaigns.push(c)
+      } else {
+        noBrand.push(c)
+      }
+    }
+    const sorted = Object.values(groups).sort((a, b) => a.brandName.localeCompare(b.brandName))
+    if (noBrand.length > 0) {
+      sorted.push({ brandName: locale === 'es' ? 'Sin marca' : 'No brand', campaigns: noBrand })
+    }
+    return sorted
+  }, [filteredCampaigns, groupByBrand, locale])
+
   const stats = useMemo(() => {
     const active = campaigns.filter((c) => c.status === 'ACTIVE').length
     const profiles = campaigns.reduce((sum, c) => sum + (c._count?.influencers || 0), 0)
@@ -300,13 +324,26 @@ export default function CampaignsPage() {
             <TabsTrigger value="ARCHIVED">{t.common.archived}</TabsTrigger>
           </TabsList>
         </Tabs>
-        <div className="w-full sm:w-72">
-          <Input
-            placeholder={t.campaigns.searchCampaigns}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            icon={<Search className="h-4 w-4" />}
-          />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setGroupByBrand(!groupByBrand)}
+            className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+              groupByBrand
+                ? 'border-purple-300 bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-700'
+                : 'border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
+            }`}
+          >
+            <Building2 className="h-3.5 w-3.5" />
+            {locale === 'es' ? 'Agrupar por Marca' : 'Group by Brand'}
+          </button>
+          <div className="w-full sm:w-72">
+            <Input
+              placeholder={t.campaigns.searchCampaigns}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              icon={<Search className="h-4 w-4" />}
+            />
+          </div>
         </div>
       </div>
 
@@ -331,55 +368,129 @@ export default function CampaignsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredCampaigns.map((campaign) => (
-                <TableRow key={campaign.id}>
-                  <TableCell>
-                    <Link
-                      href={`/campaigns/${campaign.id}`}
-                      className="font-medium text-gray-900 dark:text-gray-100 hover:text-purple-600 dark:hover:text-purple-400 transition-colors"
-                    >
-                      {campaign.isPinned ? '📌 ' : ''}{campaign.name}
-                    </Link>
-                  </TableCell>
-                  <TableCell>{campaign._count?.influencers || 0} {t.dashboard.influencers}</TableCell>
-                  <TableCell>{formatDate(campaign.createdAt)}</TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap gap-1">
-                      {campaign.targetHashtags.slice(0, 2).map((tag) => (
-                        <Badge key={tag} variant="default">{tag}</Badge>
+              {groupByBrand && groupedCampaigns ? (
+                <>
+                  {groupedCampaigns.map((group) => (
+                    <React.Fragment key={group.brandName}>
+                      {/* Brand group header */}
+                      <TableRow>
+                        <TableCell colSpan={7} className="bg-gray-50 dark:bg-gray-700/50 py-2">
+                          <div className="flex items-center gap-2">
+                            <Building2 className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                              {group.brandName}
+                            </span>
+                            <span className="text-xs text-gray-400 dark:text-gray-500">
+                              ({group.campaigns.length} {locale === 'es' ? 'campañas' : 'campaigns'})
+                            </span>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {group.campaigns.map((campaign) => (
+                        <TableRow key={campaign.id}>
+                          <TableCell>
+                            <Link
+                              href={`/campaigns/${campaign.id}`}
+                              className="font-medium text-gray-900 dark:text-gray-100 hover:text-purple-600 dark:hover:text-purple-400 transition-colors pl-6"
+                            >
+                              {campaign.isPinned ? '\uD83D\uDCCC ' : ''}{campaign.name}
+                            </Link>
+                          </TableCell>
+                          <TableCell>{campaign._count?.influencers || 0} {t.dashboard.influencers}</TableCell>
+                          <TableCell>{formatDate(campaign.createdAt)}</TableCell>
+                          <TableCell>
+                            <div className="flex flex-wrap gap-1">
+                              {campaign.targetHashtags.slice(0, 2).map((tag) => (
+                                <Badge key={tag} variant="default">{tag}</Badge>
+                              ))}
+                              {campaign.targetHashtags.length > 2 && (
+                                <Badge variant="default">+{campaign.targetHashtags.length - 2}</Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              campaign.type === 'SOCIAL_LISTENING'
+                                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
+                                : campaign.type === 'UGC'
+                                  ? 'bg-orange-50 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800'
+                                  : 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800'
+                            }`}>
+                              {campaign.type === 'UGC' ? 'UGC' : campaign.type === 'SOCIAL_LISTENING' ? t.campaigns.socialListening : t.campaigns.influencerTracking}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={campaign.status.toLowerCase() as 'active' | 'paused' | 'archived'}>
+                              {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            {canEdit && (
+                              <CampaignActionMenu
+                                campaign={campaign}
+                                onAction={handleAction}
+                                lang={locale}
+                              />
+                            )}
+                          </TableCell>
+                        </TableRow>
                       ))}
-                      {campaign.targetHashtags.length > 2 && (
-                        <Badge variant="default">+{campaign.targetHashtags.length - 2}</Badge>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                      campaign.type === 'SOCIAL_LISTENING'
-                        ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
-                        : campaign.type === 'UGC'
-                          ? 'bg-orange-50 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800'
-                          : 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800'
-                    }`}>
-                      {campaign.type === 'UGC' ? 'UGC' : campaign.type === 'SOCIAL_LISTENING' ? t.campaigns.socialListening : t.campaigns.influencerTracking}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={campaign.status.toLowerCase() as 'active' | 'paused' | 'archived'}>
-                      {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {canEdit && (
-                      <CampaignActionMenu
-                        campaign={campaign}
-                        onAction={handleAction}
-                        lang={locale}
-                      />
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
+                    </React.Fragment>
+                  ))}
+                </>
+              ) : (
+                <>
+                  {filteredCampaigns.map((campaign) => (
+                    <TableRow key={campaign.id}>
+                      <TableCell>
+                        <Link
+                          href={`/campaigns/${campaign.id}`}
+                          className="font-medium text-gray-900 dark:text-gray-100 hover:text-purple-600 dark:hover:text-purple-400 transition-colors"
+                        >
+                          {campaign.isPinned ? '\uD83D\uDCCC ' : ''}{campaign.name}
+                        </Link>
+                      </TableCell>
+                      <TableCell>{campaign._count?.influencers || 0} {t.dashboard.influencers}</TableCell>
+                      <TableCell>{formatDate(campaign.createdAt)}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
+                          {campaign.targetHashtags.slice(0, 2).map((tag) => (
+                            <Badge key={tag} variant="default">{tag}</Badge>
+                          ))}
+                          {campaign.targetHashtags.length > 2 && (
+                            <Badge variant="default">+{campaign.targetHashtags.length - 2}</Badge>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                          campaign.type === 'SOCIAL_LISTENING'
+                            ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
+                            : campaign.type === 'UGC'
+                              ? 'bg-orange-50 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800'
+                              : 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800'
+                        }`}>
+                          {campaign.type === 'UGC' ? 'UGC' : campaign.type === 'SOCIAL_LISTENING' ? t.campaigns.socialListening : t.campaigns.influencerTracking}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={campaign.status.toLowerCase() as 'active' | 'paused' | 'archived'}>
+                          {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {canEdit && (
+                          <CampaignActionMenu
+                            campaign={campaign}
+                            onAction={handleAction}
+                            lang={locale}
+                          />
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </>
+              )}
               {filteredCampaigns.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-12">

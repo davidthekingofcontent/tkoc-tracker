@@ -86,7 +86,41 @@ export async function GET(request: NextRequest) {
       orderBy: [{ isPinned: 'desc' }, { updatedAt: 'desc' }],
     })
 
-    return NextResponse.json({ campaigns })
+    // Look up brand names for campaigns
+    const campaignBrandSettings = await prisma.setting.findMany({
+      where: { key: { startsWith: 'campaign_brand_' } },
+    })
+    const campaignBrandMap = new Map<string, string>()
+    for (const s of campaignBrandSettings) {
+      const campaignId = s.key.replace('campaign_brand_', '')
+      campaignBrandMap.set(campaignId, s.value)
+    }
+
+    // Fetch brand names
+    const brandIds = new Set(campaignBrandMap.values())
+    const brandNameMap = new Map<string, string>()
+    if (brandIds.size > 0) {
+      const brandSettings = await prisma.setting.findMany({
+        where: { key: { in: Array.from(brandIds) } },
+      })
+      for (const bs of brandSettings) {
+        try {
+          const data = JSON.parse(bs.value)
+          brandNameMap.set(bs.key, data.name)
+        } catch { /* skip */ }
+      }
+    }
+
+    const campaignsWithBrand = campaigns.map((c) => {
+      const brandId = campaignBrandMap.get(c.id)
+      return {
+        ...c,
+        brandId: brandId || null,
+        brandName: brandId ? brandNameMap.get(brandId) || null : null,
+      }
+    })
+
+    return NextResponse.json({ campaigns: campaignsWithBrand })
   } catch (error) {
     console.error('List campaigns error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -108,7 +142,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, type, platforms, targetAccounts, targetHashtags, targetKeywords, startDate, endDate, country, paymentType, briefText, objective } = body
+    const { name, type, platforms, targetAccounts, targetHashtags, targetKeywords, startDate, endDate, country, paymentType, briefText, objective, brandId } = body
 
     if (!name) {
       return NextResponse.json({ error: 'Campaign name is required' }, { status: 400 })
@@ -141,6 +175,15 @@ export async function POST(request: NextRequest) {
         },
       },
     })
+
+    // Store brand association if provided
+    if (brandId) {
+      await prisma.setting.upsert({
+        where: { key: `campaign_brand_${campaign.id}` },
+        update: { value: brandId },
+        create: { key: `campaign_brand_${campaign.id}`, value: brandId },
+      })
+    }
 
     // Notify team about new campaign
     notifyAllTeam(

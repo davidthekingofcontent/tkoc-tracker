@@ -25,6 +25,7 @@ import {
   FileText,
   ChevronDown,
   Loader2,
+  Building2,
 } from 'lucide-react'
 
 interface Template {
@@ -71,6 +72,11 @@ export default function NewCampaignPage() {
   const [country, setCountry] = useState('')
   const [objective, setObjective] = useState('')
 
+  // Brand state
+  const [brands, setBrands] = useState<Array<{ id: string; name: string }>>([])
+  const [brandsLoading, setBrandsLoading] = useState(true)
+  const [selectedBrandId, setSelectedBrandId] = useState('')
+
   // Template state
   const [templates, setTemplates] = useState<Template[]>([])
   const [templatesLoading, setTemplatesLoading] = useState(true)
@@ -92,6 +98,21 @@ export default function NewCampaignPage() {
       }
     }
     fetchTemplates()
+
+    async function fetchBrands() {
+      try {
+        const res = await fetch('/api/brands')
+        if (res.ok) {
+          const data = await res.json()
+          setBrands((data.brands || []).map((b: { id: string; name: string }) => ({ id: b.id, name: b.name })))
+        }
+      } catch {
+        // ignore
+      } finally {
+        setBrandsLoading(false)
+      }
+    }
+    fetchBrands()
   }, [])
 
   function applyTemplate(template: Template) {
@@ -218,6 +239,7 @@ export default function NewCampaignPage() {
           ...(trackingType === 'influencer_tracking' && endDate && { endDate }),
           ...(country && { country }),
           ...(objective && { objective }),
+          ...(selectedBrandId && { brandId: selectedBrandId }),
         }),
       })
 
@@ -324,6 +346,50 @@ export default function NewCampaignPage() {
           </div>
         </Card>
       )}
+
+      {/* Brand Selection */}
+      <Card variant="elevated">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400">
+            <Building2 className="h-5 w-5" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {locale === 'es' ? 'Marca / Cliente' : 'Brand / Client'}
+            </h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {locale === 'es' ? 'Asocia esta campaña a una marca' : 'Associate this campaign with a brand'}
+            </p>
+          </div>
+        </div>
+        {brandsLoading ? (
+          <div className="flex items-center gap-2 text-sm text-gray-400">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {locale === 'es' ? 'Cargando marcas...' : 'Loading brands...'}
+          </div>
+        ) : brands.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 p-4 text-center">
+            <Building2 className="mx-auto h-8 w-8 text-gray-300 dark:text-gray-600" />
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+              {locale === 'es' ? 'No hay marcas creadas todavía.' : 'No brands created yet.'}
+            </p>
+            <Link href="/brands" className="mt-2 inline-block text-sm font-medium text-purple-600 dark:text-purple-400 hover:underline">
+              {locale === 'es' ? 'Crear una marca primero' : 'Create a brand first'}
+            </Link>
+          </div>
+        ) : (
+          <select
+            value={selectedBrandId}
+            onChange={(e) => setSelectedBrandId(e.target.value)}
+            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white dark:bg-gray-800"
+          >
+            <option value="">{locale === 'es' ? 'Seleccionar marca (opcional)' : 'Select brand (optional)'}</option>
+            {brands.map((brand) => (
+              <option key={brand.id} value={brand.id}>{brand.name}</option>
+            ))}
+          </select>
+        )}
+      </Card>
 
       {/* Tracking Type Selection */}
       <div>
