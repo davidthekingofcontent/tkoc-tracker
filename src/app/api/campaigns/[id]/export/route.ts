@@ -1084,6 +1084,119 @@ async function generatePDF(campaign: CampaignData, options?: { customTitle?: str
     })
   }
 
+  // ==========================================
+  // INSIGHTS & RECOMMENDATIONS (if sections include them)
+  // ==========================================
+  const activeSections = options?.sections || ['overview', 'influencers', 'media', 'insights', 'recommendations']
+
+  if (activeSections.includes('insights') || activeSections.includes('recommendations')) {
+    doc.addPage()
+    let iry = 20
+
+    // Header bar
+    doc.setFillColor(...purple)
+    doc.rect(0, 0, W, 14, 'F')
+    doc.setFontSize(9)
+    doc.setTextColor(...white)
+    doc.setFont('helvetica', 'bold')
+    doc.text('KEY INSIGHTS & RECOMMENDATIONS', M, 9)
+    doc.text(options?.customTitle || campaign.name, W - M, 9, { align: 'right' })
+
+    iry = 24
+
+    if (activeSections.includes('insights')) {
+      // Section title
+      doc.setFillColor(...purple)
+      doc.roundedRect(M, iry, CW, 10, 2, 2, 'F')
+      doc.setFontSize(10)
+      doc.setTextColor(...white)
+      doc.setFont('helvetica', 'bold')
+      doc.text('KEY INSIGHTS', M + 5, iry + 7)
+      iry += 14
+
+      // Generate insights
+      const insights: string[] = []
+      if (campaign.media.length > 0) {
+        const uniqueCreators = new Set(campaign.media.map(m => m.influencer?.username).filter(Boolean))
+        insights.push(`The campaign generated ${campaign.media.length} pieces of content from ${uniqueCreators.size} creators.`)
+      }
+      const engRateNum = parseFloat(engRate)
+      if (engRateNum > 3) {
+        insights.push(`Engagement rate of ${engRate}% is above industry average (typically 1-3%).`)
+      } else if (engRateNum > 0) {
+        insights.push(`Engagement rate of ${engRate}% is within industry benchmarks.`)
+      }
+      if (totalReach > 0) {
+        insights.push(`Total reach of ${fmt(totalReach)} across all content.`)
+      }
+      const totalCost = campaign.influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0)
+      if (emv.extended > 0 && totalCost > 0) {
+        const roi = (emv.extended / totalCost).toFixed(1)
+        insights.push(`EMV-to-cost ratio of ${roi}x indicates ${parseFloat(roi) >= 1 ? 'strong' : 'below-target'} return on investment.`)
+      }
+      const platformsUsed = [...new Set(campaign.media.map(m => m.influencer?.platform).filter(Boolean))]
+      if (platformsUsed.length > 1) {
+        insights.push(`Content distributed across multiple platforms: ${platformsUsed.join(', ')}.`)
+      }
+      if (insights.length === 0) {
+        insights.push('Track the campaign to generate performance insights.')
+      }
+
+      doc.setFontSize(9)
+      doc.setFont('helvetica', 'normal')
+      doc.setTextColor(...gray900)
+      for (const insight of insights) {
+        if (iry > H - 30) { doc.addPage(); iry = 20 }
+        const bulletLines = doc.splitTextToSize(`•  ${insight}`, CW - 4)
+        doc.text(bulletLines, M + 2, iry)
+        iry += bulletLines.length * 5 + 3
+      }
+      iry += 6
+    }
+
+    if (activeSections.includes('recommendations')) {
+      if (iry > H - 60) { doc.addPage(); iry = 20 }
+
+      doc.setFillColor(236, 253, 245)
+      doc.setDrawColor(167, 243, 208)
+      doc.roundedRect(M, iry, CW, 10, 2, 2, 'FD')
+      doc.setFontSize(10)
+      doc.setTextColor(...green600)
+      doc.setFont('helvetica', 'bold')
+      doc.text('RECOMMENDATIONS', M + 5, iry + 7)
+      iry += 14
+
+      // Generate recommendations
+      const recs: string[] = []
+      const engRateNum = parseFloat(engRate)
+      if (engRateNum < 2 && campaign.media.length > 0) {
+        recs.push('Consider content with stronger calls-to-action to improve engagement rates.')
+      }
+      if (campaign.influencers.length < 5) {
+        recs.push('Expand the influencer roster to increase reach and content diversity.')
+      }
+      const hasVideo = campaign.media.some(m => m.mediaType === 'REEL' || m.mediaType === 'VIDEO')
+      if (!hasVideo && campaign.media.length > 0) {
+        recs.push('Incorporate video content (Reels/Shorts) for higher engagement potential.')
+      }
+      const totalCostR = campaign.influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0)
+      if (totalCostR > 0 && emv.extended > 0 && emv.extended / totalCostR < 1) {
+        recs.push('Review budget allocation to improve EMV-to-cost ratio.')
+      }
+      recs.push('Continue tracking regularly to capture all campaign content.')
+
+      doc.setFontSize(9)
+      doc.setFont('helvetica', 'normal')
+      doc.setTextColor(...gray900)
+      for (const rec of recs) {
+        if (iry > H - 30) { doc.addPage(); iry = 20 }
+        const recLines = doc.splitTextToSize(`✓  ${rec}`, CW - 4)
+        doc.text(recLines, M + 2, iry)
+        iry += recLines.length * 5 + 3
+      }
+    }
+  }
+
   // Notes page (if provided from report modal)
   if (options?.notes) {
     doc.addPage()

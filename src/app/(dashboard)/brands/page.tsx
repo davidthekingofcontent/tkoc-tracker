@@ -502,7 +502,7 @@ export default function BrandsPage() {
                 ) : (
                   <div className="space-y-1.5 max-h-48 overflow-y-auto">
                     {teamMembers
-                      .filter((m) => m.role === "ADMIN" || m.role === "EMPLOYEE")
+                      .filter((m) => m.role === "ADMIN" || m.role === "EMPLOYEE" || m.role === "BRAND")
                       .map((member) => (
                         <label
                           key={member.id}

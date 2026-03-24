@@ -48,7 +48,7 @@ export function CreatorScoreBadge({
   expandable = true,
 }: CreatorScoreBadgeProps) {
   const [expanded, setExpanded] = useState(false)
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
 
   if (score === null) {
     return (
@@ -56,7 +56,7 @@ export function CreatorScoreBadge({
         <div className={`${SIZE_MAP[size].circle} flex items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800`}>
           <span className={`${SIZE_MAP[size].font} font-bold text-gray-400`}>—</span>
         </div>
-        {showLabel && <span className={`${SIZE_MAP[size].label} text-gray-400`}>Score</span>}
+        {showLabel && <span className={`${SIZE_MAP[size].label} text-gray-400`}>{locale === 'es' ? 'Puntuación' : 'Score'}</span>}
       </div>
     )
   }
@@ -76,7 +76,7 @@ export function CreatorScoreBadge({
         {showLabel && (
           <div className="flex flex-col">
             <span className={`${SIZE_MAP[size].label} font-semibold ${colors.text}`}>{grade || ''}</span>
-            {size !== 'sm' && <span className="text-[10px] text-gray-400">Score</span>}
+            {size !== 'sm' && <span className="text-[10px] text-gray-400">{locale === 'es' ? 'Puntuación' : 'Score'}</span>}
           </div>
         )}
       </button>

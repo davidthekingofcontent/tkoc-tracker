@@ -888,11 +888,21 @@ export default function NewCampaignPage() {
           )}
 
           {/* Add Influencers/Creators */}
-          {(trackingType === 'influencer_tracking' || trackingType === 'ugc') && (
+          {(trackingType === 'influencer_tracking' || trackingType === 'ugc' || trackingType === 'social_listening') && (
             <Card variant="elevated">
               <h3 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">
                 {t.campaigns.addInfluencers}
+                {trackingType === 'social_listening' && (
+                  <span className="ml-2 text-xs font-normal text-gray-400">({locale === 'es' ? 'opcional' : 'optional'})</span>
+                )}
               </h3>
+              {trackingType === 'social_listening' && (
+                <div className="mb-4 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-xs text-blue-700 dark:text-blue-300">
+                  {locale === 'es'
+                    ? 'En Social Listening, se rastrea todo el contenido que mencione las cuentas o hashtags configurados, sin necesidad de añadir influencers específicos.'
+                    : 'In Social Listening, all content mentioning the configured accounts or hashtags is tracked, without needing to add specific influencers.'}
+                </div>
+              )}
               <p className="mb-4 text-sm text-gray-500">
                 {t.campaigns.addInfluencersDesc}
               </p>

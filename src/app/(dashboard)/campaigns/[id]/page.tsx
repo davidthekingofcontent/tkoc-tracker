@@ -499,8 +499,45 @@ export default function CampaignDetailPage() {
     }
   }
 
+  /**
+   * Extract username from a plain handle or a full profile URL.
+   * Supports:
+   *   @vileda.es  /  vileda.es
+   *   https://www.instagram.com/vileda.es/
+   *   https://www.tiktok.com/@vileda.es
+   *   https://youtube.com/@vileda.es
+   */
+  function extractUsername(input: string): string {
+    const trimmed = input.trim()
+
+    // Try to parse as URL
+    try {
+      const url = new URL(trimmed)
+      const hostname = url.hostname.replace(/^www\./, '')
+
+      if (
+        hostname === 'instagram.com' ||
+        hostname === 'tiktok.com' ||
+        hostname === 'youtube.com' ||
+        hostname === 'm.youtube.com'
+      ) {
+        // Get path segments, filter out empty strings
+        const segments = url.pathname.split('/').filter(Boolean)
+        if (segments.length > 0) {
+          // Take the first meaningful segment and strip leading @
+          return segments[0].replace(/^@/, '')
+        }
+      }
+    } catch {
+      // Not a valid URL — treat as plain username
+    }
+
+    // Plain username: strip leading @
+    return trimmed.replace(/^@/, '')
+  }
+
   async function handleAddInfluencer() {
-    const username = addInfluencerUsername.trim().replace(/^@/, '')
+    const username = extractUsername(addInfluencerUsername)
     if (!username) return
 
     setIsAddingInfluencer(true)
@@ -2910,7 +2947,7 @@ export default function CampaignDetailPage() {
                   value={addInfluencerUsername}
                   onChange={(e) => setAddInfluencerUsername(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleAddInfluencer()}
-                  placeholder="@creator_handle"
+                  placeholder="@creator_handle or profile URL"
                   className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                 />
                 <Button

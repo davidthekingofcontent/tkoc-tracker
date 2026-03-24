@@ -32,10 +32,10 @@ export async function GET(request: NextRequest) {
       select: { id: true, name: true, email: true },
     })
 
-    // Get all employees
+    // Get all employees (EMPLOYEE, ADMIN, and BRAND users)
     const employees = await prisma.user.findMany({
-      where: { role: { in: ['EMPLOYEE', 'ADMIN'] }, isActive: true },
-      select: { id: true, name: true, email: true },
+      where: { role: { in: ['EMPLOYEE', 'ADMIN', 'BRAND'] }, isActive: true },
+      select: { id: true, name: true, email: true, role: true },
     })
 
     // Get assignments for each brand

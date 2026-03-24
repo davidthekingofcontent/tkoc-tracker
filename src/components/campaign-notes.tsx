@@ -80,7 +80,7 @@ export function CampaignNotesButton({ campaignId, influencerId, locale, readOnly
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-8 z-30 w-80 rounded-xl border border-gray-200 bg-white shadow-xl">
+        <div className="absolute right-0 top-8 z-[100] w-80 rounded-xl border border-gray-200 bg-white shadow-xl">
           {/* Header */}
           <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2">
             <span className="text-xs font-semibold text-gray-700">

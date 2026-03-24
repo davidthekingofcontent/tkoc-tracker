@@ -82,7 +82,7 @@ export function InfluencerHistoryButton({ influencerId, influencerName, locale }
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-8 z-30 w-96 rounded-xl border border-gray-200 bg-white shadow-xl">
+        <div className="absolute right-0 top-8 z-[100] w-96 rounded-xl border border-gray-200 bg-white shadow-xl">
           {/* Header */}
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
             <div>

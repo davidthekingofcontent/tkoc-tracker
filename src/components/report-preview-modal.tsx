@@ -4,6 +4,7 @@ import React, { useState, useCallback, useRef } from 'react'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { formatNumber } from '@/lib/utils'
+import { proxyImg } from '@/lib/proxy-image'
 import { useI18n } from '@/i18n/context'
 import {
   Megaphone,
@@ -471,14 +472,26 @@ export function ReportPreviewModal({ open, onClose, campaign, overview }: Report
                     key={m.id}
                     className="flex items-start gap-3 rounded-lg border border-gray-100 dark:border-gray-700 p-2"
                   >
-                    {m.thumbnailUrl && (
+                    {m.thumbnailUrl ? (
                       /* eslint-disable-next-line @next/next/no-img-element */
                       <img
-                        src={m.thumbnailUrl}
+                        src={proxyImg(m.thumbnailUrl)}
                         alt=""
                         className="h-12 w-12 rounded object-cover flex-shrink-0"
+                        onError={(e) => {
+                          const target = e.currentTarget
+                          target.style.display = 'none'
+                          const placeholder = target.nextElementSibling as HTMLElement | null
+                          if (placeholder) placeholder.style.display = 'flex'
+                        }}
                       />
-                    )}
+                    ) : null}
+                    <div
+                      className="h-12 w-12 rounded bg-gray-100 dark:bg-gray-700 flex-shrink-0 items-center justify-center text-gray-400"
+                      style={{ display: m.thumbnailUrl ? 'none' : 'flex' }}
+                    >
+                      <ImageIcon className="h-5 w-5" />
+                    </div>
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate">
                         @{m.influencer.username}

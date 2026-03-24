@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { AlertTriangle, ShieldAlert, ShieldCheck, ChevronDown, ChevronUp, AlertCircle, Info, XCircle } from 'lucide-react'
+import { useI18n } from '@/i18n/context'
 
 /**
  * Risk Signals™ Badge — Shows risk level and expandable signal details.
@@ -48,9 +49,9 @@ interface RiskResult {
 }
 
 const RISK_STYLES = {
-  low: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-700 dark:text-emerald-300', icon: ShieldCheck, label: 'Low Risk' },
-  medium: { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-700 dark:text-amber-300', icon: AlertTriangle, label: 'Medium Risk' },
-  high: { bg: 'bg-red-100 dark:bg-red-900/30', text: 'text-red-700 dark:text-red-300', icon: ShieldAlert, label: 'High Risk' },
+  low: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-700 dark:text-emerald-300', icon: ShieldCheck, label: 'Low Risk', labelEs: 'Riesgo Bajo' },
+  medium: { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-700 dark:text-amber-300', icon: AlertTriangle, label: 'Medium Risk', labelEs: 'Riesgo Medio' },
+  high: { bg: 'bg-red-100 dark:bg-red-900/30', text: 'text-red-700 dark:text-red-300', icon: ShieldAlert, label: 'High Risk', labelEs: 'Riesgo Alto' },
 }
 
 const LEVEL_STYLES = {
@@ -60,6 +61,7 @@ const LEVEL_STYLES = {
 }
 
 export function RiskSignalsBadge({ influencerData, size = 'sm' }: RiskSignalsBadgeProps) {
+  const { locale } = useI18n()
   const [result, setResult] = useState<RiskResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -106,14 +108,14 @@ export function RiskSignalsBadge({ influencerData, size = 'sm' }: RiskSignalsBad
             ? `${riskStyle?.bg} ${riskStyle?.text}`
             : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
         }`}
-        title="Risk Signals™ — Check risk factors"
+        title={locale === 'es' ? 'Risk Signals™ — Verificar factores de riesgo' : 'Risk Signals™ — Check risk factors'}
       >
         {loading ? (
           <span className="animate-pulse">...</span>
         ) : result ? (
           <>
             <RiskIcon className="h-3 w-3" />
-            {size !== 'sm' && <span>{riskStyle?.label}</span>}
+            {size !== 'sm' && <span>{locale === 'es' ? riskStyle?.labelEs : riskStyle?.label}</span>}
             {result.signals.length > 0 && (
               <span className="ml-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white dark:bg-gray-900 text-[8px] font-bold">
                 {result.signals.length}
@@ -124,7 +126,7 @@ export function RiskSignalsBadge({ influencerData, size = 'sm' }: RiskSignalsBad
         ) : (
           <>
             <ShieldCheck className="h-3 w-3" />
-            {size !== 'sm' && <span>Check Risk</span>}
+            {size !== 'sm' && <span>{locale === 'es' ? 'Verificar Riesgo' : 'Check Risk'}</span>}
           </>
         )}
       </button>
@@ -135,8 +137,8 @@ export function RiskSignalsBadge({ influencerData, size = 'sm' }: RiskSignalsBad
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <RiskIcon className={`h-4 w-4 ${riskStyle?.text}`} />
-              <span className={`text-sm font-bold ${riskStyle?.text}`}>{riskStyle?.label}</span>
-              <span className="text-[10px] text-gray-400">Score: {result.riskScore}/100</span>
+              <span className={`text-sm font-bold ${riskStyle?.text}`}>{locale === 'es' ? riskStyle?.labelEs : riskStyle?.label}</span>
+              <span className="text-[10px] text-gray-400">{locale === 'es' ? 'Puntuación' : 'Score'}: {result.riskScore}/100</span>
             </div>
             <button onClick={() => setExpanded(false)} className="text-gray-400 hover:text-gray-600 text-xs">✕</button>
           </div>
@@ -144,7 +146,7 @@ export function RiskSignalsBadge({ influencerData, size = 'sm' }: RiskSignalsBad
           {result.signals.length === 0 ? (
             <div className="text-center py-3">
               <ShieldCheck className="mx-auto h-8 w-8 text-emerald-400" />
-              <p className="mt-2 text-xs text-gray-500">No risk signals detected. This creator looks safe.</p>
+              <p className="mt-2 text-xs text-gray-500">{locale === 'es' ? 'No se detectaron señales de riesgo. Este creador parece seguro.' : 'No risk signals detected. This creator looks safe.'}</p>
             </div>
           ) : (
             <div className="space-y-2 max-h-64 overflow-y-auto">

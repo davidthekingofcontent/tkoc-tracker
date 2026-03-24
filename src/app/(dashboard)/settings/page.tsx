@@ -1229,13 +1229,13 @@ export default function SettingsPage() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-gray-200 dark:border-gray-700">
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.platform}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.tier}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.format}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.min}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.target}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.max}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.ceiling}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.platform}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.tier}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.format}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.min}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.target}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.max}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.ceiling}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -1301,10 +1301,10 @@ export default function SettingsPage() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-gray-200 dark:border-gray-700">
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.platform}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.tier}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.cpmTarget}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.cpmMax}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.platform}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.tier}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.cpmTarget}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.cpmMax}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -1377,9 +1377,9 @@ export default function SettingsPage() {
                         <table className="w-full text-sm">
                           <thead>
                             <tr className="border-b border-gray-200 dark:border-gray-700">
-                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.platform}</th>
-                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.format}</th>
-                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">CPM (EUR)</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.platform}</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.format}</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">CPM (EUR)</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -1427,11 +1427,11 @@ export default function SettingsPage() {
                         <table className="w-full text-sm">
                           <thead>
                             <tr className="border-b border-gray-200 dark:border-gray-700">
-                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.platform}</th>
-                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Like (EUR)</th>
-                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Comment (EUR)</th>
-                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Share (EUR)</th>
-                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Save (EUR)</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.platform}</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Like (EUR)</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Comment (EUR)</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Share (EUR)</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Save (EUR)</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">

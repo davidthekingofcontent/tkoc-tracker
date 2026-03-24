@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { TrendingUp, TrendingDown, DollarSign, Target, ChevronDown, ChevronUp, MessageSquare } from 'lucide-react'
+import { useI18n } from '@/i18n/context'
 
 /**
  * Deal Advisor™ Panel — Shows pricing intelligence when viewing/editing an influencer fee.
@@ -48,6 +49,7 @@ const VERDICT_STYLES: Record<string, { bg: string; text: string; icon: string }>
 }
 
 export function DealAdvisorPanel({ username, platform, followers, avgViews, avgLikes, avgComments, engagementRate, fee, compact = false }: DealAdvisorPanelProps) {
+  const { locale } = useI18n()
   const [result, setResult] = useState<DealResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -94,7 +96,7 @@ export function DealAdvisorPanel({ username, platform, followers, avgViews, avgL
           className="text-[10px] text-purple-600 dark:text-purple-400 hover:underline font-medium"
           title="Deal Advisor™ — Analyze this fee"
         >
-          {loading ? '...' : result ? `${style?.icon} ${result.verdictLabel}` : '💡 Analyze'}
+          {loading ? '...' : result ? `${style?.icon} ${result.verdictLabel}` : (locale === 'es' ? '💡 Analizar' : '💡 Analyze')}
         </button>
         {expanded && result && (
           <div className="absolute z-50 mt-1 right-0 top-full w-80 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-xl">
@@ -115,7 +117,7 @@ export function DealAdvisorPanel({ username, platform, followers, avgViews, avgL
         }`}
       >
         {loading ? (
-          <span className="animate-pulse">Analyzing deal...</span>
+          <span className="animate-pulse">{locale === 'es' ? 'Analizando oferta...' : 'Analyzing deal...'}</span>
         ) : result ? (
           <>
             <span>{style?.icon}</span>
