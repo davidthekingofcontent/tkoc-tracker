@@ -31,6 +31,9 @@ import {
   FileText,
   Instagram,
   Youtube,
+  BarChart3,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react"
 import { useTheme } from '@/components/theme-provider'
 import { cn } from '@/lib/utils'
@@ -171,12 +174,31 @@ export default function SettingsPage() {
   const [templatesLoading, setTemplatesLoading] = useState(true)
   const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null)
 
+  // Benchmarks state
+  type FeeRangesData = Record<string, Record<string, Record<string, [number, number, number, number]>>>
+  type CpmRateEntry = { platform: string; tier: string; cpmTarget: number; cpmMax: number }
+  type EmvRatesData = {
+    cpmRates: Record<string, Record<string, number>>
+    cpc: number
+    engagementValues: Record<string, Record<string, number>>
+  }
+  const [benchmarkFeeRanges, setBenchmarkFeeRanges] = useState<FeeRangesData | null>(null)
+  const [benchmarkCpmRates, setBenchmarkCpmRates] = useState<CpmRateEntry[] | null>(null)
+  const [benchmarkEmvRates, setBenchmarkEmvRates] = useState<EmvRatesData | null>(null)
+  const [benchmarksLoading, setBenchmarksLoading] = useState(true)
+  const [benchmarkSaving, setBenchmarkSaving] = useState<string | null>(null)
+  const [benchmarkSaveResult, setBenchmarkSaveResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [feeRangesOpen, setFeeRangesOpen] = useState(true)
+  const [cpmThresholdsOpen, setCpmThresholdsOpen] = useState(false)
+  const [emvRatesOpen, setEmvRatesOpen] = useState(false)
+
   // ---------- Team Data Fetch ----------
 
   useEffect(() => {
     fetchTeam()
     fetchTemplates()
     fetchIntegrations()
+    fetchBenchmarks()
     // Fetch current user role
     fetch('/api/auth/me').then(r => r.ok ? r.json() : null).then(d => {
       if (d?.user?.role) setCurrentUserRole(d.user.role)
@@ -234,6 +256,91 @@ export default function SettingsPage() {
     } catch {} finally {
       setIntegrationsLoading(false)
     }
+  }
+
+  async function fetchBenchmarks() {
+    try {
+      const res = await fetch('/api/settings/benchmarks')
+      if (res.ok) {
+        const data = await res.json()
+        setBenchmarkFeeRanges(data.feeRanges)
+        setBenchmarkCpmRates(data.cpmRates)
+        setBenchmarkEmvRates(data.emvRates)
+      }
+    } catch {} finally {
+      setBenchmarksLoading(false)
+    }
+  }
+
+  async function saveBenchmark(key: string, value: unknown) {
+    setBenchmarkSaving(key)
+    setBenchmarkSaveResult(null)
+    try {
+      const res = await fetch('/api/settings/benchmarks', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, value }),
+      })
+      if (res.ok) {
+        setBenchmarkSaveResult({ type: 'success', message: t.settings.savedSuccessfully })
+        setTimeout(() => setBenchmarkSaveResult(null), 3000)
+      } else {
+        setBenchmarkSaveResult({ type: 'error', message: t.settings.saveFailed })
+      }
+    } catch {
+      setBenchmarkSaveResult({ type: 'error', message: t.settings.saveFailed })
+    } finally {
+      setBenchmarkSaving(null)
+    }
+  }
+
+  function updateFeeRange(platform: string, tier: string, format: string, index: number, value: number) {
+    setBenchmarkFeeRanges(prev => {
+      if (!prev) return prev
+      const next = JSON.parse(JSON.stringify(prev)) as FeeRangesData
+      if (!next[platform]?.[tier]?.[format]) return prev
+      next[platform][tier][format][index] = value
+      return next
+    })
+  }
+
+  function updateCpmRate(idx: number, field: 'cpmTarget' | 'cpmMax', value: number) {
+    setBenchmarkCpmRates(prev => {
+      if (!prev) return prev
+      const next = [...prev]
+      next[idx] = { ...next[idx], [field]: value }
+      return next
+    })
+  }
+
+  function updateEmvCpmRate(platform: string, format: string, value: number) {
+    setBenchmarkEmvRates(prev => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        cpmRates: {
+          ...prev.cpmRates,
+          [platform]: { ...prev.cpmRates[platform], [format]: value },
+        },
+      }
+    })
+  }
+
+  function updateEmvCpc(value: number) {
+    setBenchmarkEmvRates(prev => prev ? { ...prev, cpc: value } : prev)
+  }
+
+  function updateEmvEngagement(platform: string, action: string, value: number) {
+    setBenchmarkEmvRates(prev => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        engagementValues: {
+          ...prev.engagementValues,
+          [platform]: { ...prev.engagementValues[platform], [action]: value },
+        },
+      }
+    })
   }
 
   async function handleDeleteTemplate(id: string) {
@@ -415,6 +522,11 @@ export default function SettingsPage() {
           {isAdmin && (
             <TabsTrigger value="integrations" className="gap-1.5">
               <Plug className="h-4 w-4" /> {t.settings.integrations}
+            </TabsTrigger>
+          )}
+          {isAdmin && (
+            <TabsTrigger value="benchmarks" className="gap-1.5">
+              <BarChart3 className="h-4 w-4" /> {t.settings.benchmarks}
             </TabsTrigger>
           )}
           <TabsTrigger value="templates" className="gap-1.5">
@@ -891,6 +1003,304 @@ export default function SettingsPage() {
                 </Card>
               </div>
             </div>
+          </div>
+          )}
+        </TabsContent>
+
+        {/* ===================== BENCHMARKS TAB ===================== */}
+        <TabsContent value="benchmarks">
+          {!isAdmin ? (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 py-16 text-center">
+              <BarChart3 className="mx-auto h-10 w-10 text-gray-300" />
+              <p className="mt-3 text-sm text-gray-500">Only administrators can manage benchmarks.</p>
+            </div>
+          ) : benchmarksLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+            </div>
+          ) : (
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm text-gray-500 dark:text-gray-400">{t.settings.benchmarksSubtitle}</p>
+            </div>
+
+            {/* Save result notification */}
+            {benchmarkSaveResult && (
+              <div className={cn(
+                "rounded-lg px-4 py-2 text-sm font-medium",
+                benchmarkSaveResult.type === 'success'
+                  ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                  : "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+              )}>
+                {benchmarkSaveResult.message}
+              </div>
+            )}
+
+            {/* ---- Section 1: Fee Ranges ---- */}
+            <Card variant="elevated">
+              <button
+                onClick={() => setFeeRangesOpen(!feeRangesOpen)}
+                className="flex w-full items-center justify-between px-6 py-4 text-left"
+              >
+                <div className="flex items-center gap-3">
+                  {feeRangesOpen ? <ChevronDown className="h-5 w-5 text-purple-500" /> : <ChevronRight className="h-5 w-5 text-gray-400" />}
+                  <div>
+                    <h3 className="text-base font-semibold text-gray-900 dark:text-white">{t.settings.feeRanges}</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t.settings.feeRangesDesc}</p>
+                  </div>
+                </div>
+              </button>
+              {feeRangesOpen && benchmarkFeeRanges && (
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200 dark:border-gray-700">
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.platform}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.tier}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.format}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.min}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.target}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.max}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.ceiling}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                        {Object.entries(benchmarkFeeRanges).map(([platform, tiers]) =>
+                          Object.entries(tiers).map(([tier, formats]) =>
+                            Object.entries(formats).map(([format, values]) => (
+                              <tr key={`${platform}-${tier}-${format}`} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                <td className="px-3 py-1.5 font-medium text-gray-900 dark:text-white">{platform}</td>
+                                <td className="px-3 py-1.5 text-gray-600 dark:text-gray-300">{tier}</td>
+                                <td className="px-3 py-1.5 text-gray-600 dark:text-gray-300">{format}</td>
+                                {[0, 1, 2, 3].map(i => (
+                                  <td key={i} className="px-3 py-1.5">
+                                    <Input
+                                      type="number"
+                                      value={values[i]}
+                                      onChange={e => updateFeeRange(platform, tier, format, i, Number(e.target.value))}
+                                      className="w-24 h-8 text-sm"
+                                    />
+                                  </td>
+                                ))}
+                              </tr>
+                            ))
+                          )
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="flex justify-end mt-4">
+                    <Button
+                      onClick={() => saveBenchmark('benchmark_fee_ranges', benchmarkFeeRanges)}
+                      disabled={benchmarkSaving === 'benchmark_fee_ranges'}
+                      className="gap-2"
+                    >
+                      {benchmarkSaving === 'benchmark_fee_ranges' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Check className="h-4 w-4" />
+                      )}
+                      {t.common.save}
+                    </Button>
+                  </div>
+                </CardContent>
+              )}
+            </Card>
+
+            {/* ---- Section 2: CPM Thresholds ---- */}
+            <Card variant="elevated">
+              <button
+                onClick={() => setCpmThresholdsOpen(!cpmThresholdsOpen)}
+                className="flex w-full items-center justify-between px-6 py-4 text-left"
+              >
+                <div className="flex items-center gap-3">
+                  {cpmThresholdsOpen ? <ChevronDown className="h-5 w-5 text-purple-500" /> : <ChevronRight className="h-5 w-5 text-gray-400" />}
+                  <div>
+                    <h3 className="text-base font-semibold text-gray-900 dark:text-white">{t.settings.cpmThresholds}</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t.settings.cpmThresholdsDesc}</p>
+                  </div>
+                </div>
+              </button>
+              {cpmThresholdsOpen && benchmarkCpmRates && (
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200 dark:border-gray-700">
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.platform}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.tier}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.cpmTarget}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.cpmMax}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                        {benchmarkCpmRates.map((entry, idx) => (
+                          <tr key={`${entry.platform}-${entry.tier}`} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                            <td className="px-3 py-1.5 font-medium text-gray-900 dark:text-white">{entry.platform}</td>
+                            <td className="px-3 py-1.5 text-gray-600 dark:text-gray-300">{entry.tier}</td>
+                            <td className="px-3 py-1.5">
+                              <Input
+                                type="number"
+                                step="0.5"
+                                value={entry.cpmTarget}
+                                onChange={e => updateCpmRate(idx, 'cpmTarget', Number(e.target.value))}
+                                className="w-24 h-8 text-sm"
+                              />
+                            </td>
+                            <td className="px-3 py-1.5">
+                              <Input
+                                type="number"
+                                step="0.5"
+                                value={entry.cpmMax}
+                                onChange={e => updateCpmRate(idx, 'cpmMax', Number(e.target.value))}
+                                className="w-24 h-8 text-sm"
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="flex justify-end mt-4">
+                    <Button
+                      onClick={() => saveBenchmark('benchmark_cpm_rates', benchmarkCpmRates)}
+                      disabled={benchmarkSaving === 'benchmark_cpm_rates'}
+                      className="gap-2"
+                    >
+                      {benchmarkSaving === 'benchmark_cpm_rates' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Check className="h-4 w-4" />
+                      )}
+                      {t.common.save}
+                    </Button>
+                  </div>
+                </CardContent>
+              )}
+            </Card>
+
+            {/* ---- Section 3: EMV Rates ---- */}
+            <Card variant="elevated">
+              <button
+                onClick={() => setEmvRatesOpen(!emvRatesOpen)}
+                className="flex w-full items-center justify-between px-6 py-4 text-left"
+              >
+                <div className="flex items-center gap-3">
+                  {emvRatesOpen ? <ChevronDown className="h-5 w-5 text-purple-500" /> : <ChevronRight className="h-5 w-5 text-gray-400" />}
+                  <div>
+                    <h3 className="text-base font-semibold text-gray-900 dark:text-white">{t.settings.emvRates}</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t.settings.emvRatesDesc}</p>
+                  </div>
+                </div>
+              </button>
+              {emvRatesOpen && benchmarkEmvRates && (
+                <CardContent>
+                  <div className="space-y-6">
+                    {/* EMV CPM Rates */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">{t.settings.emvCpmRates}</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-gray-200 dark:border-gray-700">
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.platform}</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.format}</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">CPM (EUR)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                            {Object.entries(benchmarkEmvRates.cpmRates).map(([platform, formats]) =>
+                              Object.entries(formats).map(([format, value]) => (
+                                <tr key={`${platform}-${format}`} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                  <td className="px-3 py-1.5 font-medium text-gray-900 dark:text-white">{platform}</td>
+                                  <td className="px-3 py-1.5 text-gray-600 dark:text-gray-300">{format}</td>
+                                  <td className="px-3 py-1.5">
+                                    <Input
+                                      type="number"
+                                      step="0.50"
+                                      value={value}
+                                      onChange={e => updateEmvCpmRate(platform, format, Number(e.target.value))}
+                                      className="w-28 h-8 text-sm"
+                                    />
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* CPC */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">{t.settings.emvCpc}</h4>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm text-gray-600 dark:text-gray-400">CPC (EUR)</span>
+                        <Input
+                          type="number"
+                          step="0.10"
+                          value={benchmarkEmvRates.cpc}
+                          onChange={e => updateEmvCpc(Number(e.target.value))}
+                          className="w-28 h-8 text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Engagement Values */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">{t.settings.emvEngagement}</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-gray-200 dark:border-gray-700">
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{t.settings.platform}</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Like (EUR)</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Comment (EUR)</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Share (EUR)</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Save (EUR)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                            {Object.entries(benchmarkEmvRates.engagementValues).map(([platform, actions]) => (
+                              <tr key={platform} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                <td className="px-3 py-1.5 font-medium text-gray-900 dark:text-white">{platform}</td>
+                                {['like', 'comment', 'share', 'save'].map(action => (
+                                  <td key={action} className="px-3 py-1.5">
+                                    <Input
+                                      type="number"
+                                      step="0.05"
+                                      value={(actions as Record<string, number>)[action] ?? 0}
+                                      onChange={e => updateEmvEngagement(platform, action, Number(e.target.value))}
+                                      className="w-24 h-8 text-sm"
+                                    />
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end mt-4">
+                    <Button
+                      onClick={() => saveBenchmark('benchmark_emv_rates', benchmarkEmvRates)}
+                      disabled={benchmarkSaving === 'benchmark_emv_rates'}
+                      className="gap-2"
+                    >
+                      {benchmarkSaving === 'benchmark_emv_rates' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Check className="h-4 w-4" />
+                      )}
+                      {t.common.save}
+                    </Button>
+                  </div>
+                </CardContent>
+              )}
+            </Card>
           </div>
           )}
         </TabsContent>

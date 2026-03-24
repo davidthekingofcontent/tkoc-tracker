@@ -80,6 +80,11 @@ import {
   ThumbsDown,
   Minus,
   BookOpen,
+  Target,
+  GraduationCap,
+  Wallet,
+  Play,
+  Search,
 } from 'lucide-react'
 
 interface CampaignInfluencer {
@@ -1217,47 +1222,33 @@ export default function CampaignDetailPage() {
         )}
       </div>
 
-      {/* Tabs */}
-      <Tabs defaultValue={campaign.type === 'UGC' ? 'creators' : 'report'}>
+      {/* Tabs - 5 Campaign Phases */}
+      <Tabs defaultValue="planificar">
         <TabsList>
-          {campaign.type !== 'UGC' && (
-            <>
-              <TabsTrigger value="report">{t.campaigns.report}</TabsTrigger>
-              <TabsTrigger value="media">{t.campaigns.mediaTab} ({nonStoryMedia.length})</TabsTrigger>
-              <TabsTrigger value="stories">
-                <Film className="h-3.5 w-3.5" />
-                {t.campaignDetail.storiesTab || 'Stories'} ({stories.length})
-              </TabsTrigger>
-            </>
-          )}
-          {campaign.type === 'UGC' ? (
-            <TabsTrigger value="creators">
-              <Video className="h-3.5 w-3.5" />
-              {locale === 'es' ? 'Creadores' : 'Creators'} ({influencers.length})
-            </TabsTrigger>
-          ) : (
-            <TabsTrigger value="influencers">{t.campaigns.influencersTab} ({influencers.length})</TabsTrigger>
-          )}
-          <TabsTrigger value="pipeline">
-            <Kanban className="h-3.5 w-3.5" />
-            {t.pipeline.title}
+          <TabsTrigger value="planificar">
+            <Target className="h-3.5 w-3.5" />
+            {t.campaignDetail.phasePlan}
           </TabsTrigger>
-          <TabsTrigger value="sentiment">
-            <MessageCircle className="h-3.5 w-3.5" />
-            {t.sentiment.tab}
+          <TabsTrigger value="elegir">
+            <Search className="h-3.5 w-3.5" />
+            {t.campaignDetail.phaseChoose} ({influencers.length})
           </TabsTrigger>
-          <TabsTrigger value="intelligence">
-            <BarChart3 className="h-3.5 w-3.5" />
-            {locale === 'es' ? 'Inteligencia' : 'Intelligence'}
+          <TabsTrigger value="pagar">
+            <Wallet className="h-3.5 w-3.5" />
+            {t.campaignDetail.phasePay}
           </TabsTrigger>
-          <TabsTrigger value="playbook">
-            <BookOpen className="h-3.5 w-3.5" />
-            Playbook
+          <TabsTrigger value="ejecutar">
+            <Play className="h-3.5 w-3.5" />
+            {t.campaignDetail.phaseExecute}
+          </TabsTrigger>
+          <TabsTrigger value="aprender">
+            <GraduationCap className="h-3.5 w-3.5" />
+            {t.campaignDetail.phaseLearn}
           </TabsTrigger>
         </TabsList>
 
-        {/* Report Tab */}
-        <TabsContent value="report">
+        {/* ========== PHASE 1: PLANIFICAR (Plan) ========== */}
+        <TabsContent value="planificar">
           {isEmpty ? (
             <div className="rounded-xl border border-gray-200 bg-white py-16 text-center shadow-sm">
               <BarChart3 className="mx-auto h-12 w-12 text-gray-300" />
@@ -1748,8 +1739,30 @@ export default function CampaignDetailPage() {
           )}
         </TabsContent>
 
-        {/* Media Tab */}
-        <TabsContent value="media">
+        {/* ========== PHASE 4: EJECUTAR (Execute) ========== */}
+        <TabsContent value="ejecutar">
+          <Tabs defaultValue="sub-media">
+            <TabsList>
+              <TabsTrigger value="sub-media">
+                <Image className="h-3.5 w-3.5" />
+                {t.campaignDetail.subTabMedia} ({nonStoryMedia.length})
+              </TabsTrigger>
+              <TabsTrigger value="sub-stories">
+                <Film className="h-3.5 w-3.5" />
+                {t.campaignDetail.subTabStories} ({stories.length})
+              </TabsTrigger>
+              <TabsTrigger value="sub-pipeline">
+                <Kanban className="h-3.5 w-3.5" />
+                {t.campaignDetail.subTabPipeline}
+              </TabsTrigger>
+              <TabsTrigger value="sub-shipping">
+                <Truck className="h-3.5 w-3.5" />
+                {t.campaignDetail.subTabShipping}
+              </TabsTrigger>
+            </TabsList>
+
+          {/* Sub-tab: Media */}
+          <TabsContent value="sub-media">
           {media.length === 0 ? (
             <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 py-16 text-center shadow-sm">
               <Image className="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600" />
@@ -1973,8 +1986,8 @@ export default function CampaignDetailPage() {
           )}
         </TabsContent>
 
-        {/* Stories Tab */}
-        <TabsContent value="stories">
+          {/* Sub-tab: Stories */}
+          <TabsContent value="sub-stories">
           {/* Stories Tracker - log and track stories with metrics */}
           <StoriesTracker
             campaignId={campaign.id}
@@ -2095,8 +2108,213 @@ export default function CampaignDetailPage() {
           )}
         </TabsContent>
 
-        {/* Influencers Tab */}
-        <TabsContent value="influencers">
+          {/* Sub-tab: Pipeline */}
+          <TabsContent value="sub-pipeline">
+          <div className="overflow-x-auto pb-4">
+            <div className="flex gap-4" style={{ minWidth: 'max-content' }}>
+              {([
+                { key: 'PROSPECT', label: t.pipeline.prospect, color: 'gray' },
+                { key: 'OUTREACH', label: t.pipeline.outreach, color: 'blue' },
+                { key: 'NEGOTIATING', label: t.pipeline.negotiating, color: 'amber' },
+                { key: 'AGREED', label: t.pipeline.agreed, color: 'purple' },
+                { key: 'CONTRACTED', label: t.pipeline.contracted, color: 'indigo' },
+                { key: 'SHIPPING', label: locale === 'es' ? 'Envio' : 'Shipping', color: 'orange' },
+                { key: 'POSTED', label: t.pipeline.posted, color: 'cyan' },
+                { key: 'COMPLETED', label: t.pipeline.completed, color: 'green' },
+              ] as const).map((col) => {
+                const colInfluencers = influencers.filter(
+                  (ci) => (ci.status || 'PROSPECT') === col.key
+                )
+                const colorMap: Record<string, { bg: string; border: string; text: string; headerBg: string; dot: string }> = {
+                  gray: { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', headerBg: 'bg-gray-100', dot: 'bg-gray-400' },
+                  blue: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', headerBg: 'bg-blue-100', dot: 'bg-blue-400' },
+                  amber: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', headerBg: 'bg-amber-100', dot: 'bg-amber-400' },
+                  purple: { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', headerBg: 'bg-purple-100', dot: 'bg-purple-400' },
+                  indigo: { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', headerBg: 'bg-indigo-100', dot: 'bg-indigo-400' },
+                  orange: { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', headerBg: 'bg-orange-100', dot: 'bg-orange-400' },
+                  cyan: { bg: 'bg-cyan-50', border: 'border-cyan-200', text: 'text-cyan-700', headerBg: 'bg-cyan-100', dot: 'bg-cyan-400' },
+                  green: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', headerBg: 'bg-green-100', dot: 'bg-green-400' },
+                }
+                const colors = colorMap[col.color]
+                return (
+                  <div
+                    key={col.key}
+                    className={`w-[280px] shrink-0 rounded-xl border ${colors.border} ${colors.bg} shadow-sm`}
+                  >
+                    <div className={`flex items-center justify-between rounded-t-xl px-4 py-3 ${colors.headerBg}`}>
+                      <div className="flex items-center gap-2">
+                        <span className={`h-2.5 w-2.5 rounded-full ${colors.dot}`} />
+                        <span className={`text-sm font-semibold ${colors.text}`}>{col.label}</span>
+                      </div>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${colors.text} ${colors.bg}`}>
+                        {colInfluencers.length}
+                      </span>
+                    </div>
+                    <div className="space-y-3 p-3" style={{ minHeight: '120px' }}>
+                      {colInfluencers.length === 0 ? (
+                        <p className="py-6 text-center text-xs text-gray-400">{t.pipeline.noInfluencers}</p>
+                      ) : (
+                        colInfluencers.map((ci) => (
+                          <div key={ci.id} className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                            <div className="flex items-center gap-2.5">
+                              <Avatar
+                                src={ci.influencer.avatarUrl || undefined}
+                                name={ci.influencer.displayName || ci.influencer.username}
+                                size="sm"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-gray-900">
+                                  @{ci.influencer.username}
+                                </p>
+                                <div className="flex items-center gap-2 text-xs text-gray-500">
+                                  <Badge variant={ci.influencer.platform === 'INSTAGRAM' ? 'instagram' : ci.influencer.platform === 'YOUTUBE' ? 'youtube' : ci.influencer.platform === 'TIKTOK' ? 'tiktok' : 'default'} className="text-[10px] px-1.5 py-0">
+                                    {ci.influencer.platform === 'INSTAGRAM' ? 'IG' : ci.influencer.platform === 'YOUTUBE' ? 'YT' : ci.influencer.platform === 'TIKTOK' ? 'TT' : ci.influencer.platform}
+                                  </Badge>
+                                  <span>{formatNumber(ci.influencer.followers)}</span>
+                                </div>
+                              </div>
+                            </div>
+                            {ci.influencer.engagementRate != null && (
+                              <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
+                                <TrendingUp className="h-3 w-3" />
+                                <span>{ci.influencer.engagementRate.toFixed(1)}% eng.</span>
+                              </div>
+                            )}
+                            {col.key === 'SHIPPING' && (
+                              <button
+                                onClick={() => openShippingModal(ci)}
+                                className={`mt-2 w-full flex items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition-all ${
+                                  ci.shippingAddress1
+                                    ? 'border-green-300 bg-green-50 text-green-700'
+                                    : 'border-orange-300 bg-orange-50 text-orange-700 animate-pulse'
+                                }`}
+                              >
+                                <Truck className="h-3 w-3" />
+                                {ci.shippingAddress1
+                                  ? (locale === 'es' ? 'Datos de envio ✓' : 'Shipping data ✓')
+                                  : (locale === 'es' ? 'Anadir datos envio' : 'Add shipping data')}
+                              </button>
+                            )}
+                            <select
+                              className="mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-600 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400"
+                              value={ci.status || 'PROSPECT'}
+                              onChange={async (e) => {
+                                const newStatus = e.target.value
+                                try {
+                                  await fetch(`/api/campaigns/${campaignId}/influencers`, {
+                                    method: 'PATCH',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ influencerId: ci.influencer.id, status: newStatus }),
+                                  })
+                                  await fetchCampaign()
+                                } catch (err) {
+                                  console.error('Error updating status:', err)
+                                }
+                              }}
+                            >
+                              <option value="PROSPECT">{t.pipeline.prospect}</option>
+                              <option value="OUTREACH">{t.pipeline.outreach}</option>
+                              <option value="NEGOTIATING">{t.pipeline.negotiating}</option>
+                              <option value="AGREED">{t.pipeline.agreed}</option>
+                              <option value="CONTRACTED">{t.pipeline.contracted}</option>
+                              <option value="SHIPPING">{locale === 'es' ? 'Envio' : 'Shipping'}</option>
+                              <option value="POSTED">{t.pipeline.posted}</option>
+                              <option value="COMPLETED">{t.pipeline.completed}</option>
+                            </select>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    {col.key === 'SHIPPING' && colInfluencers.length > 0 && (
+                      <div className="border-t border-orange-200 px-3 py-2">
+                        <a
+                          href={`/api/campaigns/${campaignId}/shipping`}
+                          download
+                          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-orange-600 px-3 py-2 text-xs font-medium text-white hover:bg-orange-700 transition-colors"
+                        >
+                          <Download className="h-3 w-3" />
+                          {locale === 'es' ? 'Descargar CSV Envios' : 'Download Shipping CSV'}
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+          </TabsContent>
+
+          {/* Sub-tab: Shipping */}
+          <TabsContent value="sub-shipping">
+            <div className="space-y-4">
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-2 mb-4">
+                  <Truck className="h-5 w-5 text-orange-600" />
+                  <h3 className="text-sm font-semibold text-gray-900">
+                    {locale === 'es' ? 'Datos de Envio' : 'Shipping Data'}
+                  </h3>
+                </div>
+                {influencers.filter(ci => ci.status === 'SHIPPING' || ci.shippingAddress1).length === 0 ? (
+                  <div className="py-8 text-center">
+                    <Package className="mx-auto h-10 w-10 text-gray-300" />
+                    <p className="mt-3 text-sm text-gray-500">
+                      {locale === 'es'
+                        ? 'No hay influencers en fase de envio. Mueve influencers al estado "Envio" en el Pipeline para gestionar envios.'
+                        : 'No influencers in shipping phase. Move influencers to "Shipping" status in Pipeline to manage shipments.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {influencers.filter(ci => ci.influencer && (ci.status === 'SHIPPING' || ci.shippingAddress1)).map(ci => (
+                      <div key={ci.id} className="flex items-center justify-between rounded-lg border border-gray-100 p-3">
+                        <div className="flex items-center gap-3">
+                          <Avatar name={ci.influencer.displayName || ci.influencer.username} size="sm" src={ci.influencer.avatarUrl || undefined} />
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">@{ci.influencer.username}</p>
+                            <p className="text-xs text-gray-500">
+                              {ci.shippingAddress1
+                                ? `${ci.shippingCity || ''} ${ci.shippingCountry || ''}`
+                                : (locale === 'es' ? 'Sin datos de envio' : 'No shipping data')}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => openShippingModal(ci)}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+                            ci.shippingAddress1
+                              ? 'border border-green-300 bg-green-50 text-green-700'
+                              : 'border border-orange-300 bg-orange-50 text-orange-700'
+                          }`}
+                        >
+                          <Truck className="inline h-3 w-3 mr-1" />
+                          {ci.shippingAddress1
+                            ? (locale === 'es' ? 'Editar envio' : 'Edit shipping')
+                            : (locale === 'es' ? 'Anadir envio' : 'Add shipping')}
+                        </button>
+                      </div>
+                    ))}
+                    {/* Download CSV */}
+                    <div className="pt-3 border-t border-gray-100">
+                      <a
+                        href={`/api/campaigns/${campaignId}/shipping`}
+                        download
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-orange-600 px-4 py-2 text-xs font-medium text-white hover:bg-orange-700 transition-colors"
+                      >
+                        <Download className="h-3 w-3" />
+                        {locale === 'es' ? 'Descargar CSV Envios' : 'Download Shipping CSV'}
+                      </a>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </TabsContent>
+
+          </Tabs>
+        </TabsContent>
+
+        {/* ========== PHASE 2: ELEGIR (Choose) ========== */}
+        <TabsContent value="elegir">
           <div className="space-y-4">
             {/* Add Influencer Section */}
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -2437,10 +2655,9 @@ export default function CampaignDetailPage() {
               </CardContent>
             </Card>
           </div>
-        </TabsContent>
 
-        {/* UGC Creators Tab */}
-        <TabsContent value="creators">
+          {/* UGC Creators Section (for UGC campaigns) */}
+          {campaign.type === 'UGC' && (
           <div className="space-y-4">
             {/* Add Creator Section */}
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -2722,167 +2939,184 @@ export default function CampaignDetailPage() {
               </CardContent>
             </Card>
           </div>
+          )}
         </TabsContent>
 
-        {/* Pipeline Kanban Tab */}
-        <TabsContent value="pipeline">
-          <div className="overflow-x-auto pb-4">
-            <div className="flex gap-4" style={{ minWidth: 'max-content' }}>
-              {([
-                { key: 'PROSPECT', label: t.pipeline.prospect, color: 'gray' },
-                { key: 'OUTREACH', label: t.pipeline.outreach, color: 'blue' },
-                { key: 'NEGOTIATING', label: t.pipeline.negotiating, color: 'amber' },
-                { key: 'AGREED', label: t.pipeline.agreed, color: 'purple' },
-                { key: 'CONTRACTED', label: t.pipeline.contracted, color: 'indigo' },
-                { key: 'SHIPPING', label: locale === 'es' ? 'Envío' : 'Shipping', color: 'orange' },
-                { key: 'POSTED', label: t.pipeline.posted, color: 'cyan' },
-                { key: 'COMPLETED', label: t.pipeline.completed, color: 'green' },
-              ] as const).map((col) => {
-                const colInfluencers = influencers.filter(
-                  (ci) => (ci.status || 'PROSPECT') === col.key
-                )
-                const colorMap: Record<string, { bg: string; border: string; text: string; headerBg: string; dot: string }> = {
-                  gray: { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', headerBg: 'bg-gray-100', dot: 'bg-gray-400' },
-                  blue: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', headerBg: 'bg-blue-100', dot: 'bg-blue-400' },
-                  amber: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', headerBg: 'bg-amber-100', dot: 'bg-amber-400' },
-                  purple: { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', headerBg: 'bg-purple-100', dot: 'bg-purple-400' },
-                  indigo: { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', headerBg: 'bg-indigo-100', dot: 'bg-indigo-400' },
-                  orange: { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', headerBg: 'bg-orange-100', dot: 'bg-orange-400' },
-                  cyan: { bg: 'bg-cyan-50', border: 'border-cyan-200', text: 'text-cyan-700', headerBg: 'bg-cyan-100', dot: 'bg-cyan-400' },
-                  green: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', headerBg: 'bg-green-100', dot: 'bg-green-400' },
-                }
-                const colors = colorMap[col.color]
-                return (
-                  <div
-                    key={col.key}
-                    className={`w-[280px] shrink-0 rounded-xl border ${colors.border} ${colors.bg} shadow-sm`}
-                  >
-                    {/* Column Header */}
-                    <div className={`flex items-center justify-between rounded-t-xl px-4 py-3 ${colors.headerBg}`}>
-                      <div className="flex items-center gap-2">
-                        <span className={`h-2.5 w-2.5 rounded-full ${colors.dot}`} />
-                        <span className={`text-sm font-semibold ${colors.text}`}>{col.label}</span>
-                      </div>
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${colors.text} ${colors.bg}`}>
-                        {colInfluencers.length}
-                      </span>
-                    </div>
+        {/* ========== PHASE 3: PAGAR (Pay) ========== */}
+        <TabsContent value="pagar">
+          <div className="space-y-6">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-6 shadow-sm">
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2 mb-4">
+                <DollarSign className="h-5 w-5 text-purple-600" />
+                {locale === 'es' ? 'Análisis de Pricing por Influencer' : 'Influencer Pricing Analysis'}
+              </h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+                {locale === 'es'
+                  ? 'Revisa y ajusta los fees de cada influencer. El sistema analiza si el precio es justo comparado con el mercado.'
+                  : 'Review and adjust fees for each influencer. The system analyzes if the price is fair compared to market rates.'}
+              </p>
 
-                    {/* Column Cards */}
-                    <div className="space-y-3 p-3" style={{ minHeight: '120px' }}>
-                      {colInfluencers.length === 0 ? (
-                        <p className="py-6 text-center text-xs text-gray-400">{t.pipeline.noInfluencers}</p>
-                      ) : (
-                        colInfluencers.map((ci) => (
-                          <div key={ci.id} className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
-                            <div className="flex items-center gap-2.5">
-                              <Avatar
-                                src={ci.influencer.avatarUrl || undefined}
-                                name={ci.influencer.displayName || ci.influencer.username}
-                                size="sm"
-                              />
-                              <div className="min-w-0 flex-1">
-                                <p className="truncate text-sm font-medium text-gray-900">
-                                  @{ci.influencer.username}
-                                </p>
-                                <div className="flex items-center gap-2 text-xs text-gray-500">
-                                  <Badge variant={ci.influencer.platform === 'INSTAGRAM' ? 'instagram' : ci.influencer.platform === 'YOUTUBE' ? 'youtube' : ci.influencer.platform === 'TIKTOK' ? 'tiktok' : 'default'} className="text-[10px] px-1.5 py-0">
-                                    {ci.influencer.platform === 'INSTAGRAM' ? 'IG' : ci.influencer.platform === 'YOUTUBE' ? 'YT' : ci.influencer.platform === 'TIKTOK' ? 'TT' : ci.influencer.platform}
-                                  </Badge>
-                                  <span>{formatNumber(ci.influencer.followers)}</span>
-                                </div>
-                              </div>
+              {influencers.filter(ci => ci.influencer).length === 0 ? (
+                <div className="text-center py-12">
+                  <DollarSign className="mx-auto h-10 w-10 text-gray-300" />
+                  <p className="mt-3 text-sm text-gray-400">{locale === 'es' ? 'Añade influencers en la pestaña "Elegir" primero' : 'Add influencers in the "Choose" tab first'}</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {influencers.filter(ci => ci.influencer).map((ci) => {
+                    const cpm = getCPMForInfluencer(ci)
+                    const feeValue = editingFee[ci.id] !== undefined ? editingFee[ci.id] : (ci.agreedFee || ci.cost || '')
+
+                    return (
+                      <div key={ci.id} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-4">
+                        <div className="flex items-center gap-4">
+                          {/* Profile */}
+                          <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={ci.influencer.avatarUrl || undefined} />
+                          <div className="flex-1 min-w-0">
+                            <p className="font-semibold text-gray-900 dark:text-white">@{ci.influencer.username}</p>
+                            <div className="flex items-center gap-2 text-xs text-gray-500">
+                              <span>{ci.influencer.platform}</span>
+                              <span>·</span>
+                              <span>{formatNumber(ci.influencer.followers)} followers</span>
+                              <span>·</span>
+                              <span>{formatNumber(ci.influencer.avgViews || 0)} avg views</span>
                             </div>
-                            {ci.influencer.engagementRate != null && (
-                              <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
-                                <TrendingUp className="h-3 w-3" />
-                                <span>{ci.influencer.engagementRate.toFixed(1)}% eng.</span>
-                              </div>
-                            )}
-                            {/* Shipping data button for SHIPPING column */}
-                            {col.key === 'SHIPPING' && (
-                              <button
-                                onClick={() => openShippingModal(ci)}
-                                className={`mt-2 w-full flex items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition-all ${
-                                  ci.shippingAddress1
-                                    ? 'border-green-300 bg-green-50 text-green-700'
-                                    : 'border-orange-300 bg-orange-50 text-orange-700 animate-pulse'
-                                }`}
-                              >
-                                <Truck className="h-3 w-3" />
-                                {ci.shippingAddress1
-                                  ? (locale === 'es' ? 'Datos de envío ✓' : 'Shipping data ✓')
-                                  : (locale === 'es' ? 'Añadir datos envío' : 'Add shipping data')}
-                              </button>
-                            )}
-                            {/* Move-to select */}
-                            <select
-                              className="mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-600 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400"
-                              value={ci.status || 'PROSPECT'}
-                              onChange={async (e) => {
-                                const newStatus = e.target.value
-                                try {
-                                  await fetch(`/api/campaigns/${campaignId}/influencers`, {
-                                    method: 'PATCH',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ influencerId: ci.influencer.id, status: newStatus }),
-                                  })
-                                  await fetchCampaign()
-                                } catch (err) {
-                                  console.error('Error updating status:', err)
+                          </div>
+
+                          {/* Fee Input */}
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-gray-500">€</span>
+                            <input
+                              type="number"
+                              value={feeValue}
+                              onChange={(e) => setEditingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
+                              onBlur={() => {
+                                const val = editingFee[ci.id]
+                                if (val !== undefined && val !== String(ci.agreedFee || ci.cost || '')) {
+                                  handleSaveFee(ci.id, ci.influencer.id, val)
                                 }
                               }}
-                            >
-                              <option value="PROSPECT">{t.pipeline.prospect}</option>
-                              <option value="OUTREACH">{t.pipeline.outreach}</option>
-                              <option value="NEGOTIATING">{t.pipeline.negotiating}</option>
-                              <option value="AGREED">{t.pipeline.agreed}</option>
-                              <option value="CONTRACTED">{t.pipeline.contracted}</option>
-                              <option value="SHIPPING">{locale === 'es' ? 'Envío' : 'Shipping'}</option>
-                              <option value="POSTED">{t.pipeline.posted}</option>
-                              <option value="COMPLETED">{t.pipeline.completed}</option>
-                            </select>
+                              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0') }}
+                              placeholder="0"
+                              className="w-28 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm font-bold text-gray-900 dark:text-white outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                            />
+                            {savingFee === ci.id && <Loader2 className="h-4 w-4 animate-spin text-purple-500" />}
                           </div>
-                        ))
-                      )}
-                    </div>
 
-                    {/* Download shipping CSV button for SHIPPING column */}
-                    {col.key === 'SHIPPING' && colInfluencers.length > 0 && (
-                      <div className="border-t border-orange-200 px-3 py-2">
-                        <a
-                          href={`/api/campaigns/${campaignId}/shipping`}
-                          download
-                          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-orange-600 px-3 py-2 text-xs font-medium text-white hover:bg-orange-700 transition-colors"
-                        >
-                          <Download className="h-3 w-3" />
-                          {locale === 'es' ? 'Descargar CSV Envíos' : 'Download Shipping CSV'}
-                        </a>
+                          {/* Traffic Light */}
+                          <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${
+                            cpm.trafficLight === 'green' ? 'border-green-300 bg-green-50 text-green-700' :
+                            cpm.trafficLight === 'yellow' ? 'border-amber-300 bg-amber-50 text-amber-700' :
+                            cpm.trafficLight === 'red' ? 'border-red-300 bg-red-50 text-red-700' :
+                            'border-gray-300 bg-gray-50 text-gray-600'
+                          }`}>
+                            <span className={`h-3 w-3 rounded-full ${
+                              cpm.trafficLight === 'green' ? 'bg-green-500' :
+                              cpm.trafficLight === 'yellow' ? 'bg-amber-500' :
+                              cpm.trafficLight === 'red' ? 'bg-red-500' : 'bg-gray-400'
+                            }`} />
+                            <span className="text-xs font-bold">{cpm.recommendation}</span>
+                          </div>
+                        </div>
+
+                        {/* CPM Details */}
+                        <div className="mt-3 grid grid-cols-4 gap-3 text-center text-xs">
+                          <div>
+                            <p className="text-gray-400">CPM Real</p>
+                            <p className="font-bold text-gray-700 dark:text-gray-200">{cpm.cpmReal !== null ? `€${cpm.cpmReal.toFixed(2)}` : '—'}</p>
+                          </div>
+                          <div>
+                            <p className="text-gray-400">CPM Target</p>
+                            <p className="font-medium text-gray-600 dark:text-gray-300">{cpm.cpmTarget !== null ? `€${cpm.cpmTarget}` : '—'}</p>
+                          </div>
+                          <div>
+                            <p className="text-gray-400">Fee Rec.</p>
+                            <p className="font-bold text-green-600">{cpm.feeRecommended !== null ? `€${cpm.feeRecommended.toLocaleString()}` : '—'}</p>
+                          </div>
+                          <div>
+                            <p className="text-gray-400">{locale === 'es' ? 'Diferencia' : 'Diff'}</p>
+                            {cpm.savingsOrOvercost !== null ? (
+                              <p className={`font-bold ${cpm.savingsOrOvercost > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                {cpm.savingsOrOvercost > 0 ? '+' : '-'}€{Math.abs(cpm.savingsOrOvercost).toLocaleString()}
+                              </p>
+                            ) : <p className="text-gray-400">—</p>}
+                          </div>
+                        </div>
+
+                        {/* Deal Advisor + Risk Signals */}
+                        <div className="mt-3 flex items-center gap-3">
+                          <DealAdvisorPanel
+                            username={ci.influencer.username}
+                            platform={ci.influencer.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'}
+                            followers={ci.influencer.followers || 0}
+                            avgViews={ci.influencer.avgViews || 0}
+                            avgLikes={ci.influencer.avgLikes || 0}
+                            avgComments={ci.influencer.avgComments || 0}
+                            engagementRate={ci.influencer.engagementRate || 0}
+                            fee={ci.agreedFee || ci.cost || 0}
+                          />
+                          <RiskSignalsBadge
+                            influencerData={{
+                              followers: ci.influencer.followers || 0,
+                              engagementRate: ci.influencer.engagementRate || 0,
+                              avgLikes: ci.influencer.avgLikes || 0,
+                              avgComments: ci.influencer.avgComments || 0,
+                              avgViews: ci.influencer.avgViews || 0,
+                              platform: ci.influencer.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE',
+                              agreedFee: ci.agreedFee,
+                              campaignPaymentType: campaign?.paymentType,
+                            }}
+                            size="md"
+                          />
+                        </div>
                       </div>
-                    )}
+                    )
+                  })}
+
+                  {/* Total Investment Summary */}
+                  <div className="rounded-xl border-2 border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-semibold text-purple-700 dark:text-purple-300">
+                        {locale === 'es' ? 'Inversión Total' : 'Total Investment'}
+                      </span>
+                      <span className="text-xl font-black text-purple-700 dark:text-purple-300">
+                        €{influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0).toLocaleString()}
+                      </span>
+                    </div>
                   </div>
-                )
-              })}
+                </div>
+              )}
             </div>
           </div>
         </TabsContent>
 
-        {/* Sentiment Tab - coming soon */}
+        {/* ========== PHASE 5: APRENDER (Learn) ========== */}
+        <TabsContent value="aprender">
+          <div className="space-y-8">
+            {/* Intelligence Section */}
+            <div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2 mb-4">
+                <BarChart3 className="h-5 w-5 text-purple-600" />
+                {locale === 'es' ? 'Inteligencia de Campaña' : 'Campaign Intelligence'}
+              </h3>
+              <CampaignIntelligencePanel
+                campaign={{ id: campaign.id, objective: campaign.objective, type: campaign.type }}
+                influencers={influencers}
+                media={campaign.media}
+                overview={overview || { emvExtended: 0, totalCost: 0 }}
+                locale={locale}
+              />
+            </div>
 
-        {/* Intelligence Tab */}
-        <TabsContent value="intelligence">
-          <CampaignIntelligencePanel
-            campaign={{ id: campaign.id, objective: campaign.objective, type: campaign.type }}
-            influencers={influencers}
-            media={campaign.media}
-            overview={overview || { emvExtended: 0, totalCost: 0 }}
-            locale={locale}
-          />
-        </TabsContent>
-
-        {/* Playbook Tab */}
-        <TabsContent value="playbook">
-          <CampaignPlaybookPanel campaignId={campaign.id} />
+            {/* Playbook Section */}
+            <div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2 mb-4">
+                <Target className="h-5 w-5 text-purple-600" />
+                {locale === 'es' ? 'Playbook — Qué hacer a continuación' : 'Playbook — What to do next'}
+              </h3>
+              <CampaignPlaybookPanel campaignId={campaign.id} />
+            </div>
+          </div>
         </TabsContent>
       </Tabs>
 
