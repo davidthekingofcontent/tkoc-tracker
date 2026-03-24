@@ -8,7 +8,7 @@ function getResend() {
   return _resend
 }
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://tkoc-tracker-production.up.railway.app'
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://intelligence.thekingofcontent.agency'
 
 export async function sendInvitationEmail({
   to,
@@ -75,17 +75,35 @@ export async function sendInvitationEmail({
 </body>
 </html>`
 
-  const { data, error } = await getResend().emails.send({
-    from: 'TKOC Intelligence <onboarding@resend.dev>',
-    to: [to],
-    subject: `${inviterName} invited you to TKOC Intelligence`,
-    html,
-  })
+  // Use custom domain if available, fallback to resend.dev (limited to owner email only)
+  const fromDomain = process.env.RESEND_FROM_DOMAIN || 'onboarding@resend.dev'
+  const fromEmail = fromDomain.includes('@') ? fromDomain : `noreply@${fromDomain}`
+  const fromAddress = `TKOC Intelligence <${fromEmail}>`
 
-  if (error) {
-    console.error('Failed to send invitation email:', error)
-    throw new Error(`Failed to send email: ${error.message}`)
+  console.log(`[Email] Sending invitation to ${to} from ${fromAddress}`)
+
+  try {
+    const { data, error } = await getResend().emails.send({
+      from: fromAddress,
+      to: [to],
+      subject: `${inviterName} invited you to TKOC Intelligence`,
+      html,
+    })
+
+    if (error) {
+      console.error('[Email] Resend API error:', JSON.stringify(error))
+      // If it's a domain error, give a helpful message
+      if (error.message?.includes('not verified') || error.message?.includes('not a valid')) {
+        throw new Error(`Email domain not verified in Resend. Add RESEND_FROM_DOMAIN env variable or verify your domain at resend.com/domains`)
+      }
+      throw new Error(`Failed to send email: ${error.message}`)
+    }
+
+    console.log(`[Email] Sent successfully, id: ${data?.id}`)
+    return data
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('Failed to send')) throw err
+    console.error('[Email] Unexpected error:', err)
+    throw new Error(`Email service error: ${err instanceof Error ? err.message : 'Unknown error'}`)
   }
-
-  return data
 }
