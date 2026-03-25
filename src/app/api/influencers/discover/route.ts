@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { Platform, Prisma } from '@/generated/prisma/client'
-import { isApifyConfigured, scrapeProfile, scrapeHashtag, searchInstagramAccounts } from '@/lib/apify'
+import { isApifyConfigured, scrapeProfile, scrapeHashtag } from '@/lib/apify'
 
 interface DiscoverResult {
   username: string
@@ -16,16 +16,45 @@ interface DiscoverResult {
   email: string | null
   platform: string
   source: 'apify' | 'database'
+  enriched?: boolean
 }
 
 function looksLikeUsername(query: string): boolean {
-  // Usernames: no spaces, starts with @, or is a single word with dots/underscores
-  return query.startsWith('@') || (/^[\w.]+$/.test(query) && !query.includes(' '))
+  // Usernames: starts with @, or is a single word with dots/underscores/periods, or looks like a URL
+  return (
+    query.startsWith('@') ||
+    query.includes('instagram.com/') ||
+    query.includes('tiktok.com/') ||
+    query.includes('youtube.com/') ||
+    (/^[\w.]+$/.test(query) && !query.includes(' ') && query.length <= 30)
+  )
 }
 
-async function searchViaApifyProfile(query: string, platform: string, minFollowers?: number, maxFollowers?: number): Promise<DiscoverResult[]> {
+function extractUsernameFromUrl(query: string): string {
+  // Extract username from Instagram/TikTok/YouTube URLs
+  const patterns = [
+    /instagram\.com\/([^/?]+)/,
+    /tiktok\.com\/@?([^/?]+)/,
+    /youtube\.com\/@?([^/?]+)/,
+  ]
+  for (const p of patterns) {
+    const m = query.match(p)
+    if (m) return m[1]
+  }
+  return query.replace(/^@/, '')
+}
+
+/**
+ * Mode 1: Direct profile lookup by username (fast, ~10s)
+ */
+async function searchViaApifyProfile(
+  query: string,
+  platform: string,
+  minFollowers?: number,
+  maxFollowers?: number
+): Promise<DiscoverResult[]> {
   try {
-    const cleanUsername = query.replace(/^@/, '')
+    const cleanUsername = extractUsernameFromUrl(query)
     const scraped = await scrapeProfile(cleanUsername, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
     if (!scraped) return []
     if (minFollowers && scraped.followers < minFollowers) return []
@@ -42,199 +71,234 @@ async function searchViaApifyProfile(query: string, platform: string, minFollowe
       email: scraped.email,
       platform,
       source: 'apify',
+      enriched: true,
     }]
-  } catch {
-    return []
-  }
-}
-
-async function searchViaApifyDiscovery(query: string, platform: string, minFollowers?: number, maxFollowers?: number): Promise<DiscoverResult[]> {
-  if (platform !== 'INSTAGRAM') return []
-  try {
-    const searchResults = await searchInstagramAccounts(query, { limit: 30 })
-    if (!searchResults || searchResults.length === 0) return []
-
-    const results: DiscoverResult[] = []
-    for (const r of searchResults) {
-      if (!r.username) continue
-      if (minFollowers && r.followers > 0 && r.followers < minFollowers) continue
-      if (maxFollowers && r.followers > 0 && r.followers > maxFollowers) continue
-      results.push({
-        username: r.username,
-        displayName: r.displayName,
-        avatarUrl: r.avatarUrl,
-        followers: r.followers,
-        engagementRate: 0,
-        avgLikes: 0,
-        avgComments: 0,
-        avgViews: 0,
-        email: null,
-        platform,
-        source: 'apify',
-      })
-    }
-
-    // Enrich with local DB data if available
-    const usernames = results.map(r => r.username)
-    if (usernames.length > 0) {
-      const dbProfiles = await prisma.influencer.findMany({
-        where: { username: { in: usernames }, platform: platform as Platform },
-      })
-      for (const db of dbProfiles) {
-        const existing = results.find(r => r.username === db.username)
-        if (existing) {
-          existing.followers = db.followers || existing.followers
-          existing.engagementRate = db.engagementRate || 0
-          existing.avgLikes = db.avgLikes || existing.avgLikes
-          existing.avgComments = db.avgComments || existing.avgComments
-          existing.avgViews = db.avgViews || existing.avgViews
-          existing.avatarUrl = db.avatarUrl || existing.avatarUrl
-          existing.displayName = db.displayName || existing.displayName
-          existing.email = db.email || null
-        }
-      }
-    }
-
-    return results.sort((a, b) => b.followers - a.followers)
   } catch (err) {
-    console.error('Instagram discovery search error:', err)
+    console.error('[Discover] Profile scrape error:', err)
     return []
   }
 }
 
-async function searchViaApifyHashtag(query: string, platform: string, minFollowers?: number, maxFollowers?: number): Promise<DiscoverResult[]> {
+/**
+ * Mode 2: Hashtag-based category search (slower, ~1-2 min)
+ * Scrapes #keyword posts, extracts unique authors, enriches top 10
+ */
+async function searchViaApifyHashtag(
+  query: string,
+  platform: string,
+  minFollowers?: number,
+  maxFollowers?: number
+): Promise<DiscoverResult[]> {
   try {
-    // Search by hashtag to discover creators in a niche/category
-    const cleanTag = query.replace(/^#/, '').replace(/\s+/g, '')
-    const hashtagResults = await scrapeHashtag(cleanTag, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 50)
-    if (!hashtagResults || hashtagResults.length === 0) return []
+    const cleanTag = query.replace(/^#/, '').replace(/\s+/g, '').toLowerCase()
+    console.log(`[Discover] Hashtag search: #${cleanTag} on ${platform}, fetching 100 posts`)
 
-    // Collect unique authors
-    const authorMap = new Map<string, DiscoverResult>()
-    for (const result of hashtagResults) {
-      const username = result.authorUsername
-      if (!username || authorMap.has(username)) continue
-      const followers = result.authorFollowers || 0
-      if (minFollowers && followers < minFollowers && followers > 0) continue
-      if (maxFollowers && followers > maxFollowers && followers > 0) continue
+    const hashtagResults = await scrapeHashtag(cleanTag, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 100)
+    if (!hashtagResults || hashtagResults.length === 0) {
+      console.log('[Discover] Hashtag search returned 0 posts')
+      return []
+    }
+
+    console.log(`[Discover] Got ${hashtagResults.length} posts from hashtag`)
+
+    // Collect unique authors, track their best post engagement for sorting
+    const authorMap = new Map<string, {
+      result: DiscoverResult
+      bestEngagement: number
+    }>()
+
+    for (const hr of hashtagResults) {
+      const username = hr.authorUsername
+      if (!username) continue
+
+      const postLikes = hr.posts[0]?.likes || 0
+      const postComments = hr.posts[0]?.comments || 0
+      const postViews = hr.posts[0]?.views || 0
+      const engagement = postLikes + postComments
+
+      const existing = authorMap.get(username)
+      if (existing) {
+        // Keep highest engagement post stats
+        if (engagement > existing.bestEngagement) {
+          existing.bestEngagement = engagement
+          existing.result.avgLikes = postLikes
+          existing.result.avgComments = postComments
+          existing.result.avgViews = postViews
+        }
+        continue
+      }
+
       authorMap.set(username, {
-        username,
-        displayName: result.authorDisplayName,
-        avatarUrl: result.authorAvatarUrl,
-        followers,
-        engagementRate: 0,
-        avgLikes: result.posts[0]?.likes || 0,
-        avgComments: result.posts[0]?.comments || 0,
-        avgViews: result.posts[0]?.views || 0,
-        email: null,
-        platform,
-        source: 'apify',
+        bestEngagement: engagement,
+        result: {
+          username,
+          displayName: hr.authorDisplayName,
+          avatarUrl: hr.authorAvatarUrl,
+          followers: hr.authorFollowers || 0,
+          engagementRate: 0,
+          avgLikes: postLikes,
+          avgComments: postComments,
+          avgViews: postViews,
+          email: null,
+          platform,
+          source: 'apify',
+          enriched: false,
+        },
       })
     }
 
-    // Enrich with DB data first
+    console.log(`[Discover] Found ${authorMap.size} unique authors from hashtag posts`)
+
+    // Enrich with DB data first (cheap)
     const usernames = Array.from(authorMap.keys())
     if (usernames.length > 0) {
       const dbProfiles = await prisma.influencer.findMany({
         where: { username: { in: usernames }, platform: platform as Platform },
       })
       for (const db of dbProfiles) {
-        const existing = authorMap.get(db.username)
-        if (existing) {
-          existing.followers = db.followers || existing.followers
-          existing.engagementRate = db.engagementRate || 0
-          existing.avgLikes = db.avgLikes || existing.avgLikes
-          existing.avgComments = db.avgComments || existing.avgComments
-          existing.avgViews = db.avgViews || existing.avgViews
-          existing.avatarUrl = db.avatarUrl || existing.avatarUrl
-          existing.displayName = db.displayName || existing.displayName
-          existing.email = db.email || null
+        const entry = authorMap.get(db.username)
+        if (entry) {
+          entry.result.followers = db.followers || entry.result.followers
+          entry.result.engagementRate = db.engagementRate || 0
+          entry.result.avgLikes = db.avgLikes || entry.result.avgLikes
+          entry.result.avgComments = db.avgComments || entry.result.avgComments
+          entry.result.avgViews = db.avgViews || entry.result.avgViews
+          entry.result.avatarUrl = db.avatarUrl || entry.result.avatarUrl
+          entry.result.displayName = db.displayName || entry.result.displayName
+          entry.result.email = db.email || null
+          entry.result.enriched = true
         }
       }
     }
 
-    // For top authors without full data, enrich via Apify profile scraping (max 5 to keep it fast)
-    const needsEnrichment = Array.from(authorMap.values())
-      .filter(r => r.followers === 0 || r.engagementRate === 0)
-      .slice(0, 5)
+    // Sort by post engagement to pick the top creators for enrichment
+    const sortedEntries = Array.from(authorMap.values())
+      .sort((a, b) => b.bestEngagement - a.bestEngagement)
+
+    // Enrich TOP 10 that are not already enriched, via Apify profile scraping in parallel
+    const needsEnrichment = sortedEntries
+      .filter(e => !e.result.enriched)
+      .slice(0, 20)
 
     if (needsEnrichment.length > 0) {
-      console.log(`[Discover] Enriching ${needsEnrichment.length} profiles via Apify...`)
-      const enrichPromises = needsEnrichment.map(async (r) => {
+      console.log(`[Discover] Enriching ${needsEnrichment.length} profiles via Apify in parallel...`)
+      const enrichPromises = needsEnrichment.map(async (entry) => {
         try {
-          const profile = await scrapeProfile(r.username, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
+          const profile = await scrapeProfile(entry.result.username, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
           if (profile) {
-            r.followers = profile.followers || r.followers
-            r.engagementRate = profile.engagementRate || r.engagementRate
-            r.avgLikes = profile.avgLikes || r.avgLikes
-            r.avgComments = profile.avgComments || r.avgComments
-            r.avgViews = profile.avgViews || r.avgViews
-            r.avatarUrl = profile.avatarUrl || r.avatarUrl
-            r.displayName = profile.displayName || r.displayName
-            r.email = profile.email || r.email
+            entry.result.followers = profile.followers || entry.result.followers
+            entry.result.engagementRate = profile.engagementRate || entry.result.engagementRate
+            entry.result.avgLikes = profile.avgLikes || entry.result.avgLikes
+            entry.result.avgComments = profile.avgComments || entry.result.avgComments
+            entry.result.avgViews = profile.avgViews || entry.result.avgViews
+            entry.result.avatarUrl = profile.avatarUrl || entry.result.avatarUrl
+            entry.result.displayName = profile.displayName || entry.result.displayName
+            entry.result.email = profile.email || entry.result.email
+            entry.result.enriched = true
           }
         } catch { /* skip enrichment errors */ }
       })
       await Promise.allSettled(enrichPromises)
+      console.log('[Discover] Enrichment complete')
     }
 
-    // Apply follower filters after enrichment
-    let enrichedResults = Array.from(authorMap.values())
-    if (minFollowers) enrichedResults = enrichedResults.filter(r => r.followers >= minFollowers || r.followers === 0)
-    if (maxFollowers) enrichedResults = enrichedResults.filter(r => r.followers <= maxFollowers || r.followers === 0)
+    // Build final results: enriched first, then non-enriched
+    let allResults = sortedEntries.map(e => e.result)
 
-    return enrichedResults.sort((a, b) => b.followers - a.followers).slice(0, 50)
+    // Apply follower filters after enrichment
+    if (minFollowers) allResults = allResults.filter(r => r.followers >= minFollowers || r.followers === 0)
+    if (maxFollowers) allResults = allResults.filter(r => r.followers <= maxFollowers || r.followers === 0)
+
+    // Sort: enriched profiles first (sorted by followers), then non-enriched (sorted by engagement)
+    const enriched = allResults.filter(r => r.enriched).sort((a, b) => b.followers - a.followers)
+    const notEnriched = allResults.filter(r => !r.enriched).sort((a, b) => (b.avgLikes + b.avgComments) - (a.avgLikes + a.avgComments))
+
+    return [...enriched, ...notEnriched].slice(0, 50)
   } catch (err) {
-    console.error('Hashtag search error:', err)
+    console.error('[Discover] Hashtag search error:', err)
     return []
   }
 }
 
+/**
+ * Fallback: Search internal database
+ */
 async function searchInternalDatabase(
   query: string,
   platform: string | undefined,
   minFollowers?: number,
   maxFollowers?: number
 ): Promise<DiscoverResult[]> {
-  const where: Prisma.InfluencerWhereInput = {}
+  const cleanQuery = (query || '').trim()
+  const queryWords = cleanQuery ? cleanQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2) : []
 
-  if (query) {
-    where.OR = [
-      { username: { contains: query, mode: 'insensitive' } },
-      { displayName: { contains: query, mode: 'insensitive' } },
-      { bio: { contains: query, mode: 'insensitive' } },
-    ]
+  const dbWhere: Prisma.InfluencerWhereInput = {
+    AND: [
+      ...(cleanQuery ? [{
+        OR: [
+          { username: { contains: cleanQuery, mode: 'insensitive' as const } },
+          { displayName: { contains: cleanQuery, mode: 'insensitive' as const } },
+          { bio: { contains: cleanQuery, mode: 'insensitive' as const } },
+          ...queryWords.map(word => ({
+            OR: [
+              { username: { contains: word, mode: 'insensitive' as const } },
+              { displayName: { contains: word, mode: 'insensitive' as const } },
+              { bio: { contains: word, mode: 'insensitive' as const } },
+            ],
+          })),
+        ],
+      }] : []),
+    ],
   }
 
   if (platform && Object.values(Platform).includes(platform as Platform)) {
-    where.platform = platform as Platform
+    dbWhere.platform = platform as Platform
   }
-
   if (minFollowers || maxFollowers) {
-    where.followers = {}
-    if (minFollowers) where.followers.gte = minFollowers
-    if (maxFollowers) where.followers.lte = maxFollowers
+    dbWhere.followers = {}
+    if (minFollowers) dbWhere.followers.gte = minFollowers
+    if (maxFollowers) dbWhere.followers.lte = maxFollowers
   }
 
   const influencers = await prisma.influencer.findMany({
-    where,
+    where: dbWhere,
     take: 50,
     orderBy: { followers: 'desc' },
   })
 
-  return influencers.map((inf) => ({
-    username: inf.username,
-    displayName: inf.displayName,
-    avatarUrl: inf.avatarUrl,
-    followers: inf.followers,
-    engagementRate: inf.engagementRate,
-    avgLikes: inf.avgLikes,
-    avgComments: inf.avgComments,
-    avgViews: inf.avgViews,
-    email: inf.email,
-    platform: inf.platform,
-    source: 'database' as const,
-  }))
+  // Score and sort results
+  const searchLower = cleanQuery.toLowerCase()
+  const scored = influencers.map((inf) => {
+    let score = 0
+    const bioLower = (inf.bio || '').toLowerCase()
+    const displayLower = (inf.displayName || '').toLowerCase()
+    const usernameLower = inf.username.toLowerCase()
+
+    if (bioLower.includes(searchLower)) score += 30
+    for (const word of queryWords) {
+      if (bioLower.includes(word)) score += 10
+    }
+    if (displayLower.includes(searchLower)) score += 15
+    if (usernameLower.includes(searchLower)) score += 5
+
+    return {
+      username: inf.username,
+      displayName: inf.displayName,
+      avatarUrl: inf.avatarUrl,
+      followers: inf.followers,
+      engagementRate: inf.engagementRate,
+      avgLikes: inf.avgLikes,
+      avgComments: inf.avgComments,
+      avgViews: inf.avgViews,
+      email: inf.email,
+      platform: inf.platform,
+      source: 'database' as const,
+      _score: score,
+    }
+  })
+
+  scored.sort((a, b) => b._score - a._score || b.followers - a.followers)
+  return scored.map(({ _score, ...rest }) => rest)
 }
 
 export async function POST(request: NextRequest) {
@@ -245,13 +309,12 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { query, platform, minFollowers, maxFollowers, bioKeyword, location } = body as {
+    const { query, platform, minFollowers, maxFollowers, mode } = body as {
       query: string
       platform: string
       minFollowers?: number
       maxFollowers?: number
-      bioKeyword?: string
-      location?: string
+      mode?: 'username' | 'category'
     }
 
     const cleanQuery = (query || '').trim()
@@ -259,129 +322,39 @@ export async function POST(request: NextRequest) {
 
     let results: DiscoverResult[] = []
     let source: 'apify' | 'database' = 'database'
+    let searchMode: 'username' | 'category' = mode || 'category'
 
-    // Try Apify for external search (only if there's a search query)
-    if (cleanQuery && isApifyConfigured()) {
-      try {
-        if (looksLikeUsername(cleanQuery)) {
-          // Direct profile lookup
-          results = await searchViaApifyProfile(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
-        } else {
-          // Run BOTH discovery and hashtag search in parallel for speed
-          console.log(`[Discover] Searching "${cleanQuery}" on ${normalizedPlatform} — running discovery + hashtag in parallel`)
-          const [discoveryResults, hashtagResults] = await Promise.allSettled([
-            searchViaApifyDiscovery(cleanQuery, normalizedPlatform, minFollowers, maxFollowers),
-            searchViaApifyHashtag(cleanQuery, normalizedPlatform, minFollowers, maxFollowers),
-          ])
-
-          const discovery = discoveryResults.status === 'fulfilled' ? discoveryResults.value : []
-          const hashtag = hashtagResults.status === 'fulfilled' ? hashtagResults.value : []
-
-          // Merge and deduplicate by username
-          const mergedMap = new Map<string, DiscoverResult>()
-          for (const r of [...discovery, ...hashtag]) {
-            const existing = mergedMap.get(r.username)
-            if (!existing || r.followers > existing.followers) {
-              mergedMap.set(r.username, r)
-            }
-          }
-          results = Array.from(mergedMap.values()).sort((a, b) => b.followers - a.followers)
-
-          console.log(`[Discover] Found ${discovery.length} via discovery, ${hashtag.length} via hashtag, ${results.length} merged`)
-        }
-        if (results.length > 0) source = 'apify'
-      } catch (apifyError) {
-        console.error('Apify discover error, falling back to database:', apifyError)
+    // Auto-detect mode if not explicitly set
+    if (!mode && cleanQuery) {
+      if (looksLikeUsername(cleanQuery)) {
+        searchMode = 'username'
       }
     }
 
-    // Fallback to internal database if Apify returned no results or is not configured
-    // Use relaxed search: OR across username, displayName, bio, and also match category/niche keywords
+    // Try Apify search
+    if (cleanQuery && isApifyConfigured()) {
+      try {
+        if (searchMode === 'username') {
+          // Mode 1: Direct profile lookup (fast)
+          console.log(`[Discover] Mode: username lookup for "${cleanQuery}" on ${normalizedPlatform}`)
+          results = await searchViaApifyProfile(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
+        } else {
+          // Mode 2: Hashtag/category search (slower but finds many creators)
+          console.log(`[Discover] Mode: category search for "${cleanQuery}" on ${normalizedPlatform}`)
+          results = await searchViaApifyHashtag(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
+        }
+
+        if (results.length > 0) source = 'apify'
+        console.log(`[Discover] Apify returned ${results.length} results`)
+      } catch (apifyError) {
+        console.error('[Discover] Apify error, falling back to database:', apifyError)
+      }
+    }
+
+    // Fallback to internal database if Apify returned nothing
     if (results.length === 0) {
-      const queryWords = cleanQuery ? cleanQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2) : []
-      const dbWhere: Prisma.InfluencerWhereInput = {
-        AND: [
-          // Main search query (only if provided)
-          ...(cleanQuery ? [{
-            OR: [
-              { username: { contains: cleanQuery, mode: 'insensitive' as const } },
-              { displayName: { contains: cleanQuery, mode: 'insensitive' as const } },
-              { bio: { contains: cleanQuery, mode: 'insensitive' as const } },
-              ...queryWords.map(word => ({
-                OR: [
-                  { username: { contains: word, mode: 'insensitive' as const } },
-                  { displayName: { contains: word, mode: 'insensitive' as const } },
-                  { bio: { contains: word, mode: 'insensitive' as const } },
-                ],
-              })),
-            ],
-          }] : []),
-          // Bio keyword filter
-          ...(bioKeyword ? [{ bio: { contains: bioKeyword, mode: 'insensitive' as const } }] : []),
-          // Location filter (search in bio and displayName)
-          ...(location ? [{
-            OR: [
-              { bio: { contains: location, mode: 'insensitive' as const } },
-              { displayName: { contains: location, mode: 'insensitive' as const } },
-            ],
-          }] : []),
-        ],
-      }
-
-      if (normalizedPlatform && Object.values(Platform).includes(normalizedPlatform as Platform)) {
-        dbWhere.platform = normalizedPlatform as Platform
-      }
-      if (minFollowers || maxFollowers) {
-        dbWhere.followers = {}
-        if (minFollowers) dbWhere.followers.gte = minFollowers
-        if (maxFollowers) dbWhere.followers.lte = maxFollowers
-      }
-
-      const influencers = await prisma.influencer.findMany({
-        where: dbWhere,
-        take: 50,
-        orderBy: { followers: 'desc' },
-      })
-
-      // Score and sort results: bio matches rank highest, then displayName, then username
-      const searchLower = cleanQuery.toLowerCase()
-      const scored = influencers.map((inf) => {
-        let score = 0
-        const bioLower = (inf.bio || '').toLowerCase()
-        const displayLower = (inf.displayName || '').toLowerCase()
-        const usernameLower = inf.username.toLowerCase()
-
-        // Bio match is most relevant for niche/category searches
-        if (bioLower.includes(searchLower)) score += 30
-        // Also score individual word matches in bio
-        for (const word of queryWords) {
-          if (bioLower.includes(word)) score += 10
-        }
-        // DisplayName match is second priority
-        if (displayLower.includes(searchLower)) score += 15
-        // Username match is lowest priority (literal name match, not niche)
-        if (usernameLower.includes(searchLower)) score += 5
-
-        return {
-          username: inf.username,
-          displayName: inf.displayName,
-          avatarUrl: inf.avatarUrl,
-          followers: inf.followers,
-          engagementRate: inf.engagementRate,
-          avgLikes: inf.avgLikes,
-          avgComments: inf.avgComments,
-          avgViews: inf.avgViews,
-          email: inf.email,
-          platform: inf.platform,
-          source: 'database' as const,
-          _score: score,
-        }
-      })
-
-      // Sort by relevance score first, then by followers for ties
-      scored.sort((a, b) => b._score - a._score || b.followers - a.followers)
-
-      results = scored.map(({ _score, ...rest }) => rest)
+      console.log('[Discover] Falling back to database search')
+      results = await searchInternalDatabase(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
       source = 'database'
     }
 
@@ -389,6 +362,7 @@ export async function POST(request: NextRequest) {
       results,
       total: results.length,
       source,
+      mode: searchMode,
     })
   } catch (error) {
     console.error('Discover influencers error:', error)

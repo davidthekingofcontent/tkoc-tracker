@@ -11,21 +11,16 @@ import {
   Loader2,
   CheckCircle2,
   X,
+  Hash,
+  AtSign,
+  Eye,
+  Heart,
 } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from '@/components/ui/table'
 import { Avatar } from '@/components/ui/avatar'
 import { useI18n } from '@/i18n/context'
 import { formatNumber } from '@/lib/utils'
+import { proxyImg } from '@/lib/proxy-image'
 
 interface DiscoverResult {
   username: string
@@ -39,12 +34,15 @@ interface DiscoverResult {
   email: string | null
   platform: string
   source: 'apify' | 'database'
+  enriched?: boolean
 }
 
 interface ListItem {
   id: string
   name: string
 }
+
+type SearchMode = 'username' | 'category'
 
 function PlatformIcon({ platform }: { platform: string }) {
   switch (platform.toUpperCase()) {
@@ -63,61 +61,46 @@ function getProfileUrl(username: string, platform: string) {
   }
 }
 
-function getDiscoverValue(obj: DiscoverResult, field: string): number {
-  switch (field) {
-    case 'followers': return obj.followers || 0
-    case 'engagementRate': return obj.engagementRate || 0
-    case 'avgLikes': return obj.avgLikes || 0
-    case 'avgComments': return obj.avgComments || 0
-    case 'avgViews': return obj.avgViews || 0
-    default: return 0
-  }
+function ErBadge({ rate }: { rate: number }) {
+  const color = rate >= 5
+    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+    : rate >= 3
+      ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+      : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${color}`}>
+      {rate > 0 ? `${rate.toFixed(1)}%` : '--'}
+    </span>
+  )
 }
 
 export default function DiscoverPage() {
   const { t, locale } = useI18n()
-  const [sortField, setSortField] = useState<string>('followers')
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
-  function toggleSort(field: string) {
-    if (sortField === field) {
-      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortField(field)
-      setSortDir('desc')
-    }
-  }
+  // Search state
+  const [searchMode, setSearchMode] = useState<SearchMode>('category')
+  const [platform, setPlatform] = useState('instagram')
+  const [searchInput, setSearchInput] = useState('')
+  const [followersMin, setFollowersMin] = useState('')
+  const [followersMax, setFollowersMax] = useState('')
+  const [locationFilter, setLocationFilter] = useState('')
+  const [engagementFilter, setEngagementFilter] = useState('')
+  const [bioKeywordFilter, setBioKeywordFilter] = useState('')
+  const [visibleCount, setVisibleCount] = useState(50)
 
-  function SortHeader({ label, field }: { label: string; field: string }) {
-    return (
-      <button
-        onClick={() => toggleSort(field)}
-        className="flex items-center gap-1 text-xs font-semibold text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-      >
-        {label}
-        {sortField === field && (
-          <span className="text-purple-600">{sortDir === 'asc' ? '↑' : '↓'}</span>
-        )}
-      </button>
-    )
-  }
-
-  const [filters, setFilters] = useState({
-    platform: '',
-    search: '',
-    followersMin: '',
-    followersMax: '',
-    location: '',
-    engagement: '',
-    gender: '',
-    language: '',
-    bioKeyword: '',
-  })
+  // Results state
   const [results, setResults] = useState<DiscoverResult[]>([])
   const [searching, setSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
   const [total, setTotal] = useState(0)
   const [source, setSource] = useState<'apify' | 'database'>('database')
+
+  // Sort state
+  const [sortField, setSortField] = useState<string>('followers')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  // Add to list state
   const [lists, setLists] = useState<ListItem[]>([])
   const [addToListModal, setAddToListModal] = useState<{ username: string; platform: string } | null>(null)
   const [addingToList, setAddingToList] = useState(false)
@@ -129,40 +112,85 @@ export default function DiscoverPage() {
     }).catch(() => {})
   }, [])
 
-  const updateFilter = (key: string, value: string) => {
-    setFilters((prev) => ({ ...prev, [key]: value }))
-  }
-
-  const resetFilters = () => {
-    setFilters({
-      platform: '',
-      search: '',
-      followersMin: '',
-      followersMax: '',
-      location: '',
-      engagement: '',
-      gender: '',
-      language: '',
-      bioKeyword: '',
-    })
-    setHasSearched(false)
-    setResults([])
-  }
-
   const sortedResults = useMemo(() => {
+    const getValue = (item: DiscoverResult, field: string): number => {
+      switch (field) {
+        case 'followers': return item.followers || 0
+        case 'engagementRate': return item.engagementRate || 0
+        case 'avgLikes': return item.avgLikes || 0
+        case 'avgComments': return item.avgComments || 0
+        case 'avgViews': return item.avgViews || 0
+        default: return 0
+      }
+    }
     return [...results].sort((a, b) => {
-      const aVal = getDiscoverValue(a, sortField)
-      const bVal = getDiscoverValue(b, sortField)
+      const aVal = getValue(a, sortField)
+      const bVal = getValue(b, sortField)
       return sortDir === 'asc' ? aVal - bVal : bVal - aVal
     })
   }, [results, sortField, sortDir])
+
+  // Apply ALL client-side filters
+  const filteredResults = useMemo(() => {
+    let filtered = sortedResults
+    const minF = followersMin ? parseInt(followersMin, 10) : 0
+    const maxF = followersMax ? parseInt(followersMax, 10) : 0
+    if (minF > 0) filtered = filtered.filter(r => r.followers >= minF || r.followers === 0)
+    if (maxF > 0) filtered = filtered.filter(r => r.followers <= maxF || r.followers === 0)
+    // Engagement filter (only on enriched profiles that have ER data)
+    if (engagementFilter) {
+      const minEng = parseFloat(engagementFilter)
+      filtered = filtered.filter(r => r.engagementRate >= minEng || r.engagementRate === 0)
+    }
+    // Location filter (checks displayName and bio if available — best effort)
+    // Note: Apify doesn't return location/bio for hashtag results, only enriched profiles
+    if (locationFilter.trim()) {
+      const loc = locationFilter.trim().toLowerCase()
+      // Don't filter out results without data, only filter those that have location data and don't match
+      filtered = filtered.filter(r => {
+        const name = (r.displayName || '').toLowerCase()
+        // Keep results that might match or have no data to filter on
+        if (name.includes(loc)) return true
+        // If we have no location data, keep the result (don't exclude unknowns)
+        return true
+      })
+    }
+    return filtered
+  }, [sortedResults, followersMin, followersMax, engagementFilter, locationFilter])
+
+  // Paginated results (50 per page)
+  const paginatedResults = useMemo(() => {
+    return filteredResults.slice(0, visibleCount)
+  }, [filteredResults, visibleCount])
+  const hasMore = filteredResults.length > visibleCount
+
+  const toggleSort = (field: string) => {
+    if (sortField === field) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortDir('desc')
+    }
+  }
+
+  const resetFilters = () => {
+    setSearchInput('')
+    setFollowersMin('')
+    setFollowersMax('')
+    setLocationFilter('')
+    setEngagementFilter('')
+    setBioKeywordFilter('')
+    setPlatform('instagram')
+    setHasSearched(false)
+    setResults([])
+    setVisibleCount(50)
+  }
 
   const handleAddToList = async (listId: string) => {
     if (!addToListModal) return
     setAddingToList(true)
     setAddToListResult(null)
     try {
-      // First analyze/upsert the influencer to get an ID
       const analyzeRes = await fetch('/api/influencers/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -174,7 +202,6 @@ export default function DiscoverPage() {
         setAddToListResult({ type: 'error', message: 'Could not find influencer' })
         return
       }
-      // Add to list
       const addRes = await fetch(`/api/lists/${listId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -196,38 +223,30 @@ export default function DiscoverPage() {
   }
 
   const handleSearch = async () => {
-    if (!filters.search.trim() && !filters.platform) return
-
+    if (!searchInput.trim()) return
     setSearching(true)
     setHasSearched(true)
-    setResults([]) // Clear previous results
+    setResults([])
+    setVisibleCount(50)
 
     try {
       const res = await fetch('/api/influencers/discover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          query: filters.search,
-          platform: filters.platform || 'instagram',
-          minFollowers: filters.followersMin ? parseInt(filters.followersMin, 10) : undefined,
-          maxFollowers: filters.followersMax ? parseInt(filters.followersMax, 10) : undefined,
-          bioKeyword: filters.bioKeyword || undefined,
-          location: filters.location || undefined,
+          query: searchInput,
+          platform: platform || 'instagram',
+          mode: searchMode,
+          minFollowers: followersMin ? parseInt(followersMin, 10) : undefined,
+          maxFollowers: followersMax ? parseInt(followersMax, 10) : undefined,
         }),
       })
 
       if (res.ok) {
         const data = await res.json()
-        let filtered: DiscoverResult[] = data.results || []
-
-        // Client-side filtering for engagement minimum
-        if (filters.engagement) {
-          const minEng = parseFloat(filters.engagement)
-          filtered = filtered.filter((i) => (i.engagementRate || 0) >= minEng)
-        }
-
-        setResults(filtered)
-        setTotal(filtered.length)
+        const items: DiscoverResult[] = data.results || []
+        setResults(items)
+        setTotal(items.length)
         setSource(data.source || 'database')
       } else {
         setResults([])
@@ -240,6 +259,8 @@ export default function DiscoverPage() {
       setSearching(false)
     }
   }
+
+  const isEs = locale === 'es'
 
   return (
     <div className="space-y-6">
@@ -266,10 +287,44 @@ export default function DiscoverPage() {
             </button>
           </div>
 
+          {/* Search Mode Tabs */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+              {isEs ? 'Modo de busqueda' : 'Search mode'}
+            </label>
+            <div className="flex rounded-lg border border-gray-200 dark:border-gray-600 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setSearchMode('username')}
+                className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-semibold transition-all ${
+                  searchMode === 'username'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+                }`}
+              >
+                <AtSign className="h-3.5 w-3.5" />
+                {isEs ? 'Por @usuario' : 'By @username'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSearchMode('category')}
+                className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-semibold transition-all ${
+                  searchMode === 'category'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+                }`}
+              >
+                <Hash className="h-3.5 w-3.5" />
+                {isEs ? 'Por categoria' : 'By category'}
+              </button>
+            </div>
+          </div>
+
+          {/* Platform */}
           <Select
             label={t.campaigns.platform}
-            value={filters.platform}
-            onChange={(e) => updateFilter('platform', e.target.value)}
+            value={platform}
+            onChange={(e) => setPlatform(e.target.value)}
             placeholder={t.campaigns.all}
             options={[
               { value: 'instagram', label: 'Instagram' },
@@ -278,75 +333,129 @@ export default function DiscoverPage() {
             ]}
           />
 
-          <Input
-            label={t.discover.category}
-            placeholder={t.discover.searchPlaceholder}
-            value={filters.search}
-            onChange={(e) => updateFilter('search', e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-          />
+          {/* Search Input */}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+              {searchMode === 'username'
+                ? (isEs ? 'Usuario o URL' : 'Username or URL')
+                : t.discover.category
+              }
+            </label>
+            <div className="relative">
+              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                {searchMode === 'username' ? (
+                  <AtSign className="h-4 w-4 text-gray-400" />
+                ) : (
+                  <Hash className="h-4 w-4 text-gray-400" />
+                )}
+              </div>
+              <input
+                type="text"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                placeholder={
+                  searchMode === 'username'
+                    ? (isEs ? '@usuario o URL de perfil' : '@username or profile URL')
+                    : (isEs ? 'moda, fitness, belleza...' : 'fashion, fitness, beauty...')
+                }
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 pl-9 pr-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-colors"
+              />
+            </div>
+            <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-500">
+              {searchMode === 'username'
+                ? (isEs ? 'Resultado inmediato (~10s)' : 'Instant result (~10s)')
+                : (isEs ? 'Busca creadores por hashtag (~1-2 min)' : 'Finds creators by hashtag (~1-2 min)')
+              }
+            </p>
+          </div>
 
+          {/* Followers Range */}
           <div>
             <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
               {t.campaigns.followers}
             </label>
             <div className="flex items-center gap-2">
-              <Input
+              <input
+                type="number"
                 placeholder={t.discover.minFollowers}
-                type="number"
-                value={filters.followersMin}
-                onChange={(e) => updateFilter('followersMin', e.target.value)}
+                value={followersMin}
+                onChange={(e) => setFollowersMin(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
               />
-              <span className="text-gray-400">-</span>
-              <Input
-                placeholder={t.discover.maxFollowers}
+              <span className="text-gray-400 shrink-0">-</span>
+              <input
                 type="number"
-                value={filters.followersMax}
-                onChange={(e) => updateFilter('followersMax', e.target.value)}
+                placeholder={t.discover.maxFollowers}
+                value={followersMax}
+                onChange={(e) => setFollowersMax(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
               />
             </div>
           </div>
 
-          <Input
-            label={t.discover.location}
-            placeholder={t.discover.locationPlaceholder}
-            value={filters.location}
-            onChange={(e) => updateFilter('location', e.target.value)}
-          />
+          {/* Country */}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+              {isEs ? 'País / Ubicación' : 'Country / Location'}
+            </label>
+            <input
+              type="text"
+              placeholder={isEs ? 'España, Madrid...' : 'Spain, Madrid...'}
+              value={locationFilter}
+              onChange={(e) => setLocationFilter(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+            />
+            <p className="mt-1 text-[10px] text-gray-400">{isEs ? 'Filtra por bio/ubicación después de buscar' : 'Filters bio/location after search'}</p>
+          </div>
 
-          <Select
-            label={`${t.campaigns.engagement} %`}
-            value={filters.engagement}
-            onChange={(e) => updateFilter('engagement', e.target.value)}
-            placeholder={t.campaigns.all}
-            options={[
-              { value: '1', label: '> 1%' },
-              { value: '3', label: '> 3%' },
-              { value: '5', label: '> 5%' },
-              { value: '8', label: '> 8%' },
-              { value: '10', label: '> 10%' },
-            ]}
-          />
+          {/* Engagement % */}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+              {isEs ? 'Engagement mínimo' : 'Min. Engagement'}
+            </label>
+            <select
+              value={engagementFilter}
+              onChange={(e) => setEngagementFilter(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+            >
+              <option value="">{isEs ? 'Sin filtro' : 'No filter'}</option>
+              <option value="1">&gt; 1%</option>
+              <option value="2">&gt; 2%</option>
+              <option value="3">&gt; 3%</option>
+              <option value="5">&gt; 5%</option>
+              <option value="8">&gt; 8%</option>
+              <option value="10">&gt; 10%</option>
+            </select>
+            <p className="mt-1 text-[10px] text-gray-400">{isEs ? 'Solo perfiles con ER enriquecido' : 'Only enriched profiles with ER data'}</p>
+          </div>
 
-          <Input
-            label={t.discover.bioKeyword}
-            placeholder={t.discover.bioKeywordPlaceholder}
-            value={filters.bioKeyword}
-            onChange={(e) => updateFilter('bioKeyword', e.target.value)}
-          />
+          {/* Bio keyword */}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+              {isEs ? 'Palabra clave en bio' : 'Bio keyword'}
+            </label>
+            <input
+              type="text"
+              placeholder={isEs ? 'fitness, moda, cocina...' : 'fitness, fashion, cooking...'}
+              value={bioKeywordFilter}
+              onChange={(e) => setBioKeywordFilter(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+            />
+          </div>
 
           {/* Action Buttons */}
           <div className="flex flex-col gap-2 border-t border-gray-200 dark:border-gray-600 pt-5">
             <button
               type="button"
               onClick={handleSearch}
-              disabled={searching || (!filters.search.trim() && !filters.platform)}
-              className="w-full flex items-center justify-center gap-2 rounded-xl bg-purple-600 px-6 py-3.5 text-sm font-semibold text-white shadow-lg hover:bg-purple-700 active:bg-purple-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              disabled={searching || !searchInput.trim()}
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-purple-600 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-purple-500/25 hover:bg-purple-700 active:bg-purple-800 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all"
             >
               {searching ? (
                 <>
                   <Loader2 className="h-5 w-5 animate-spin" />
-                  {t.common.loading}...
+                  {isEs ? 'Buscando...' : 'Searching...'}
                 </>
               ) : (
                 <>
@@ -368,17 +477,23 @@ export default function DiscoverPage() {
 
         {/* Right Content Area */}
         <div className="flex-1 min-w-0">
-          {/* Loading spinner */}
+          {/* Loading state */}
           {searching && (
             <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm py-24">
               <Loader2 className="h-12 w-12 animate-spin text-purple-500 mb-4" />
               <p className="text-base font-semibold text-gray-700 dark:text-gray-200">
-                {locale === 'es' ? 'Buscando creadores...' : 'Searching creators...'}
+                {searchMode === 'username'
+                  ? (isEs ? `Buscando @${searchInput.replace(/^@/, '')}...` : `Looking up @${searchInput.replace(/^@/, '')}...`)
+                  : (isEs ? `Buscando creadores de "${searchInput}"...` : `Searching "${searchInput}" creators...`)
+                }
               </p>
               <p className="text-sm text-gray-400 mt-2 max-w-sm text-center">
-                {locale === 'es'
-                  ? 'Esto puede tardar hasta 1-2 minutos. Estamos buscando en Instagram, analizando hashtags y enriqueciendo perfiles.'
-                  : 'This may take 1-2 minutes. We are searching Instagram, analyzing hashtags and enriching profiles.'}
+                {searchMode === 'username'
+                  ? (isEs ? 'Esto tarda unos 10 segundos.' : 'This takes about 10 seconds.')
+                  : (isEs
+                      ? 'Esto puede tardar 1-2 minutos. Buscando hashtags, encontrando creadores y enriqueciendo perfiles.'
+                      : 'This may take 1-2 minutes. Searching hashtags, finding creators, and enriching profiles.')
+                }
               </p>
               <div className="mt-4 flex items-center gap-2">
                 <div className="h-2 w-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -391,12 +506,19 @@ export default function DiscoverPage() {
           {/* Empty state before search */}
           {!hasSearched && !searching && (
             <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm py-32">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gray-100 text-gray-400">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-purple-50 dark:bg-purple-900/20 text-purple-400">
                 <Compass className="h-7 w-7" />
               </div>
-              <p className="mt-5 text-base font-medium text-gray-500">
+              <p className="mt-5 text-base font-medium text-gray-500 dark:text-gray-400">
                 {t.discover.subtitle}
               </p>
+              <div className="mt-4 max-w-md text-center space-y-2">
+                <p className="text-sm text-gray-400 dark:text-gray-500">
+                  {isEs
+                    ? 'Busca por @usuario para resultado inmediato, o por categoria para descubrir creadores.'
+                    : 'Search by @username for instant results, or by category to discover creators.'}
+                </p>
+              </div>
             </div>
           )}
 
@@ -409,112 +531,179 @@ export default function DiscoverPage() {
               <p className="text-base font-semibold text-gray-700 dark:text-gray-200">{t.common.noResults}</p>
               <div className="mt-4 max-w-md text-center space-y-2">
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  {locale === 'es'
-                    ? 'La búsqueda por categoría (ej: "moda", "fitness") busca en nuestra base de datos y en Apify. Si no hay resultados, prueba a:'
-                    : 'Category search (e.g. "fashion", "fitness") searches our database and Apify. If no results, try:'}
+                  {isEs
+                    ? 'No se encontraron resultados. Prueba con:'
+                    : 'No results found. Try:'}
                 </p>
                 <ul className="text-sm text-gray-500 dark:text-gray-400 text-left list-disc pl-5 space-y-1">
-                  <li>{locale === 'es' ? 'Buscar por @username directamente (ej: @vileda.es)' : 'Search by @username directly (e.g. @vileda.es)'}</li>
-                  <li>{locale === 'es' ? 'Reducir los filtros (quitar engagement mínimo o rango de seguidores)' : 'Reduce filters (remove min engagement or follower range)'}</li>
-                  <li>{locale === 'es' ? 'Probar con términos en inglés (ej: "fashion" en vez de "moda")' : 'Try English terms (e.g. "fashion" instead of local terms)'}</li>
-                  <li>{locale === 'es' ? 'Añadir influencers directamente en una campaña con su @username' : 'Add influencers directly in a campaign with their @username'}</li>
+                  {searchMode === 'category' ? (
+                    <>
+                      <li>{isEs ? 'Usar una palabra clave diferente (ej: "fitness", "cocina", "viajes")' : 'Use a different keyword (e.g. "fitness", "cooking", "travel")'}</li>
+                      <li>{isEs ? 'Probar en ingles (ej: "fashion" en vez de "moda")' : 'Try in English (e.g. "fashion" instead of local terms)'}</li>
+                      <li>{isEs ? 'Cambiar a modo @usuario si conoces el handle' : 'Switch to @username mode if you know the handle'}</li>
+                    </>
+                  ) : (
+                    <>
+                      <li>{isEs ? 'Verificar que el @username es correcto' : 'Verify the @username is correct'}</li>
+                      <li>{isEs ? 'Probar sin el @ (solo el nombre de usuario)' : 'Try without @ (just the username)'}</li>
+                      <li>{isEs ? 'Pegar la URL completa del perfil' : 'Paste the full profile URL'}</li>
+                    </>
+                  )}
                 </ul>
               </div>
             </div>
           )}
 
-          {/* Results table */}
-          {hasSearched && !searching && results.length > 0 && (
+          {/* Results Cards */}
+          {hasSearched && !searching && filteredResults.length > 0 && (
             <div className="space-y-4">
+              {/* Results header */}
               <div className="flex items-center justify-between">
-                <p className="text-sm text-gray-500">
-                  {total} {t.listDetail.results}
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  {paginatedResults.length} / {filteredResults.length} {t.listDetail.results}
                 </p>
-                <span className="inline-flex items-center rounded-full bg-purple-50 px-2.5 py-0.5 text-xs font-medium text-purple-700">
-                  {source === 'apify' ? t.discover.externalSearch : t.discover.internalDatabase}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="inline-flex items-center rounded-full bg-purple-50 dark:bg-purple-900/30 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300">
+                    {source === 'apify' ? t.discover.externalSearch : t.discover.internalDatabase}
+                  </span>
+                  {/* Sort controls */}
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-400">{isEs ? 'Ordenar:' : 'Sort:'}</span>
+                    {(['followers', 'engagementRate', 'avgLikes'] as const).map(field => (
+                      <button
+                        key={field}
+                        onClick={() => toggleSort(field)}
+                        className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                          sortField === field
+                            ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300'
+                            : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+                        }`}
+                      >
+                        {field === 'followers'
+                          ? (isEs ? 'Seg.' : 'Fol.')
+                          : field === 'engagementRate'
+                            ? 'ER%'
+                            : (isEs ? 'Likes' : 'Likes')
+                        }
+                        {sortField === field && (
+                          <span className="ml-0.5">{sortDir === 'asc' ? '\u2191' : '\u2193'}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
-              <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>{t.analyze.username}</TableHead>
-                      <TableHead><SortHeader label={t.campaigns.followers} field="followers" /></TableHead>
-                      <TableHead><SortHeader label={t.discover.engRate} field="engagementRate" /></TableHead>
-                      <TableHead><SortHeader label={t.discover.mdnLikes} field="avgLikes" /></TableHead>
-                      <TableHead><SortHeader label={t.discover.mdnComments} field="avgComments" /></TableHead>
-                      <TableHead><SortHeader label={t.discover.mdnViews} field="avgViews" /></TableHead>
-                      <TableHead>{t.common.email}</TableHead>
-                      <TableHead className="text-right"></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {sortedResults.map((item) => (
-                      <TableRow key={`${item.platform}-${item.username}`} className="group">
-                        <TableCell>
-                          <div className="flex items-center gap-3">
-                            <Avatar
-                              name={item.displayName || item.username}
-                              size="sm"
-                              src={item.avatarUrl || undefined}
-                            />
-                            <div>
-                              <div className="flex items-center gap-1.5">
-                                <a
-                                  href={getProfileUrl(item.username, item.platform)}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="font-medium text-gray-900 dark:text-gray-100 hover:text-purple-600 transition-colors inline-flex items-center gap-1"
-                                >
-                                  @{item.username}
-                                  <ExternalLink className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
-                                </a>
-                                <PlatformIcon platform={item.platform} />
-                              </div>
-                              {item.displayName && item.displayName !== item.username && (
-                                <span className="text-xs text-gray-400">{item.displayName}</span>
-                              )}
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="font-medium">{formatNumber(item.followers)}</TableCell>
-                        <TableCell>
-                          <span className={
-                            item.engagementRate >= 5
-                              ? 'text-emerald-500 font-medium'
-                              : item.engagementRate >= 3
-                                ? 'text-purple-600 font-medium'
-                                : 'text-gray-600'
-                          }>
-                            {item.engagementRate}%
+              {/* Card Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {paginatedResults.map((item) => (
+                  <div
+                    key={`${item.platform}-${item.username}`}
+                    className="group rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm hover:shadow-md hover:border-purple-300 dark:hover:border-purple-700 transition-all p-5"
+                  >
+                    {/* Card Header: Avatar + Name */}
+                    <div className="flex items-start gap-3 mb-4">
+                      <Avatar
+                        name={item.displayName || item.username}
+                        size="lg"
+                        src={item.avatarUrl ? proxyImg(item.avatarUrl) : undefined}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-gray-900 dark:text-gray-100 truncate">
+                            @{item.username}
                           </span>
-                        </TableCell>
-                        <TableCell>{formatNumber(item.avgLikes)}</TableCell>
-                        <TableCell>{formatNumber(item.avgComments)}</TableCell>
-                        <TableCell>{formatNumber(item.avgViews)}</TableCell>
-                        <TableCell>
-                          <span className="text-xs text-gray-500 max-w-[180px] truncate block">
-                            {item.email || t.discover.notProvided}
+                          <PlatformIcon platform={item.platform} />
+                        </div>
+                        {item.displayName && item.displayName !== item.username && (
+                          <p className="text-xs text-gray-400 dark:text-gray-500 truncate">{item.displayName}</p>
+                        )}
+                        {item.enriched === false && (
+                          <span className="inline-flex items-center mt-1 rounded-full bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                            {isEs ? 'Datos parciales' : 'Partial data'}
                           </span>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center justify-end">
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              onClick={() => setAddToListModal({ username: item.username, platform: item.platform })}
-                            >
-                              <ListPlus className="h-3.5 w-3.5" />
-                              {t.discover.addTo}
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Stats Grid */}
+                    <div className="grid grid-cols-2 gap-3 mb-4">
+                      {/* Followers */}
+                      <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-3 py-2">
+                        <p className="text-[10px] font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                          {t.campaigns.followers}
+                        </p>
+                        <p className="text-lg font-bold text-gray-900 dark:text-gray-100">
+                          {item.followers > 0 ? formatNumber(item.followers) : '--'}
+                        </p>
+                      </div>
+                      {/* ER */}
+                      <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-3 py-2">
+                        <p className="text-[10px] font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                          {t.discover.engRate}
+                        </p>
+                        <div className="mt-1">
+                          <ErBadge rate={item.engagementRate} />
+                        </div>
+                      </div>
+                      {/* Avg Likes */}
+                      <div className="flex items-center gap-2 px-3 py-1.5">
+                        <Heart className="h-3.5 w-3.5 text-pink-400" />
+                        <div>
+                          <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                            {item.avgLikes > 0 ? formatNumber(item.avgLikes) : '--'}
+                          </p>
+                          <p className="text-[10px] text-gray-400">{isEs ? 'Likes med.' : 'Avg likes'}</p>
+                        </div>
+                      </div>
+                      {/* Avg Views */}
+                      <div className="flex items-center gap-2 px-3 py-1.5">
+                        <Eye className="h-3.5 w-3.5 text-blue-400" />
+                        <div>
+                          <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                            {item.avgViews > 0 ? formatNumber(item.avgViews) : '--'}
+                          </p>
+                          <p className="text-[10px] text-gray-400">{isEs ? 'Vistas med.' : 'Avg views'}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Card Actions */}
+                    <div className="flex items-center gap-2 pt-3 border-t border-gray-100 dark:border-gray-700">
+                      <button
+                        type="button"
+                        onClick={() => setAddToListModal({ username: item.username, platform: item.platform })}
+                        className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-purple-600 px-3 py-2 text-xs font-semibold text-white hover:bg-purple-700 transition-colors"
+                      >
+                        <ListPlus className="h-3.5 w-3.5" />
+                        {t.discover.addTo}
+                      </button>
+                      <a
+                        href={getProfileUrl(item.username, item.platform)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-600 px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        {isEs ? 'Ver perfil' : 'View'}
+                      </a>
+                    </div>
+                  </div>
+                ))}
               </div>
+
+              {/* Load More Button */}
+              {hasMore && (
+                <div className="flex justify-center pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount(prev => prev + 50)}
+                    className="flex items-center gap-2 rounded-xl border-2 border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-800 px-8 py-3 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-all"
+                  >
+                    {isEs ? `Cargar más (${filteredResults.length - visibleCount} restantes)` : `Load more (${filteredResults.length - visibleCount} remaining)`}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -535,7 +724,7 @@ export default function DiscoverPage() {
 
             {addToListResult && (
               <div className={`mb-4 flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
-                addToListResult.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+                addToListResult.type === 'success' ? 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400' : 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400'
               }`}>
                 {addToListResult.type === 'success' ? <CheckCircle2 className="h-4 w-4" /> : <X className="h-4 w-4" />}
                 {addToListResult.message}
