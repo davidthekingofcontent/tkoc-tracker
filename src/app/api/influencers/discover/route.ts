@@ -17,6 +17,9 @@ interface DiscoverResult {
   platform: string
   source: 'apify' | 'database'
   enriched?: boolean
+  bio?: string | null
+  country?: string | null
+  city?: string | null
 }
 
 function looksLikeUsername(query: string): boolean {
@@ -72,6 +75,9 @@ async function searchViaApifyProfile(
       platform,
       source: 'apify',
       enriched: true,
+      bio: scraped.bio || null,
+      country: scraped.country || null,
+      city: scraped.city || null,
     }]
   } catch (err) {
     console.error('[Discover] Profile scrape error:', err)
@@ -91,9 +97,9 @@ async function searchViaApifyHashtag(
 ): Promise<DiscoverResult[]> {
   try {
     const cleanTag = query.replace(/^#/, '').replace(/\s+/g, '').toLowerCase()
-    console.log(`[Discover] Hashtag search: #${cleanTag} on ${platform}, fetching 100 posts`)
+    console.log(`[Discover] Hashtag search: #${cleanTag} on ${platform}, fetching 200 posts`)
 
-    const hashtagResults = await scrapeHashtag(cleanTag, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 100)
+    const hashtagResults = await scrapeHashtag(cleanTag, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 200)
     if (!hashtagResults || hashtagResults.length === 0) {
       console.log('[Discover] Hashtag search returned 0 posts')
       return []
@@ -143,6 +149,9 @@ async function searchViaApifyHashtag(
           platform,
           source: 'apify',
           enriched: false,
+          bio: null,
+          country: null,
+          city: null,
         },
       })
     }
@@ -166,6 +175,9 @@ async function searchViaApifyHashtag(
           entry.result.avatarUrl = db.avatarUrl || entry.result.avatarUrl
           entry.result.displayName = db.displayName || entry.result.displayName
           entry.result.email = db.email || null
+          entry.result.bio = db.bio || entry.result.bio
+          entry.result.country = db.country || entry.result.country
+          entry.result.city = db.city || entry.result.city
           entry.result.enriched = true
         }
       }
@@ -194,6 +206,9 @@ async function searchViaApifyHashtag(
             entry.result.avatarUrl = profile.avatarUrl || entry.result.avatarUrl
             entry.result.displayName = profile.displayName || entry.result.displayName
             entry.result.email = profile.email || entry.result.email
+            entry.result.bio = profile.bio || entry.result.bio
+            entry.result.country = profile.country || entry.result.country
+            entry.result.city = profile.city || entry.result.city
             entry.result.enriched = true
           }
         } catch { /* skip enrichment errors */ }
@@ -213,7 +228,7 @@ async function searchViaApifyHashtag(
     const enriched = allResults.filter(r => r.enriched).sort((a, b) => b.followers - a.followers)
     const notEnriched = allResults.filter(r => !r.enriched).sort((a, b) => (b.avgLikes + b.avgComments) - (a.avgLikes + a.avgComments))
 
-    return [...enriched, ...notEnriched].slice(0, 50)
+    return [...enriched, ...notEnriched]
   } catch (err) {
     console.error('[Discover] Hashtag search error:', err)
     return []
@@ -293,6 +308,9 @@ async function searchInternalDatabase(
       email: inf.email,
       platform: inf.platform,
       source: 'database' as const,
+      bio: inf.bio || null,
+      country: inf.country || null,
+      city: inf.city || null,
       _score: score,
     }
   })

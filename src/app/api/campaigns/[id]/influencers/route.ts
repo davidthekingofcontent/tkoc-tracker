@@ -156,6 +156,11 @@ export async function DELETE(
       return NextResponse.json({ error: 'Influencer not in this campaign' }, { status: 404 })
     }
 
+    // Delete associated media records for this influencer in this campaign
+    await prisma.media.deleteMany({
+      where: { campaignId: id, influencerId },
+    })
+
     await prisma.campaignInfluencer.delete({
       where: { id: existing.id },
     })

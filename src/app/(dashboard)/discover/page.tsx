@@ -35,6 +35,9 @@ interface DiscoverResult {
   platform: string
   source: 'apify' | 'database'
   enriched?: boolean
+  bio?: string | null
+  country?: string | null
+  city?: string | null
 }
 
 interface ListItem {
@@ -142,17 +145,45 @@ export default function DiscoverPage() {
       const minEng = parseFloat(engagementFilter)
       filtered = filtered.filter(r => r.engagementRate >= minEng || r.engagementRate === 0)
     }
-    // Location filter (checks displayName and bio if available — best effort)
-    // Note: Apify doesn't return location/bio for hashtag results, only enriched profiles
+    // Location filter (checks country, city, displayName, and bio)
     if (locationFilter.trim()) {
       const loc = locationFilter.trim().toLowerCase()
-      // Don't filter out results without data, only filter those that have location data and don't match
+      // Build a list of location synonyms to check (e.g. "España" also matches "Spain", "Madrid", etc.)
+      const locationAliases: Record<string, string[]> = {
+        'spain': ['españa', 'spain', 'madrid', 'barcelona', 'valencia', 'sevilla', 'seville', 'malaga', 'málaga', 'bilbao', 'es'],
+        'españa': ['españa', 'spain', 'madrid', 'barcelona', 'valencia', 'sevilla', 'seville', 'malaga', 'málaga', 'bilbao', 'es'],
+        'mexico': ['mexico', 'méxico', 'cdmx', 'mx', 'guadalajara', 'monterrey'],
+        'méxico': ['mexico', 'méxico', 'cdmx', 'mx', 'guadalajara', 'monterrey'],
+        'argentina': ['argentina', 'buenos aires', 'ar'],
+        'colombia': ['colombia', 'bogota', 'bogotá', 'medellín', 'medellin', 'co'],
+        'uk': ['uk', 'united kingdom', 'london', 'england', 'gb'],
+        'united kingdom': ['uk', 'united kingdom', 'london', 'england', 'gb'],
+        'usa': ['usa', 'united states', 'us', 'new york', 'los angeles', 'la', 'miami'],
+        'united states': ['usa', 'united states', 'us', 'new york', 'los angeles', 'la', 'miami'],
+        'france': ['france', 'francia', 'paris', 'fr'],
+        'francia': ['france', 'francia', 'paris', 'fr'],
+        'italy': ['italy', 'italia', 'milan', 'rome', 'roma', 'it'],
+        'italia': ['italy', 'italia', 'milan', 'rome', 'roma', 'it'],
+        'germany': ['germany', 'alemania', 'berlin', 'münchen', 'munich', 'de'],
+        'alemania': ['germany', 'alemania', 'berlin', 'münchen', 'munich', 'de'],
+        'brazil': ['brazil', 'brasil', 'são paulo', 'sao paulo', 'rio', 'br'],
+        'brasil': ['brazil', 'brasil', 'são paulo', 'sao paulo', 'rio', 'br'],
+        'portugal': ['portugal', 'lisboa', 'lisbon', 'porto', 'pt'],
+        'chile': ['chile', 'santiago', 'cl'],
+      }
+      const searchTerms = locationAliases[loc] || [loc]
       filtered = filtered.filter(r => {
+        const country = (r.country || '').toLowerCase()
+        const city = (r.city || '').toLowerCase()
         const name = (r.displayName || '').toLowerCase()
-        // Keep results that might match or have no data to filter on
-        if (name.includes(loc)) return true
-        // If we have no location data, keep the result (don't exclude unknowns)
-        return true
+        const bio = (r.bio || '').toLowerCase()
+        // If the result has no location data at all, keep it (don't exclude unknowns)
+        const hasLocationData = country || city || bio
+        if (!hasLocationData) return true
+        // Check if any search term matches country, city, displayName, or bio
+        return searchTerms.some(term =>
+          country.includes(term) || city.includes(term) || name.includes(term) || bio.includes(term)
+        )
       })
     }
     return filtered
