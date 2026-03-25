@@ -342,6 +342,9 @@ export default function CampaignDetailPage() {
     message: string
   } | null>(null)
 
+  // Drag & drop state for pipeline kanban
+  const [dragOverColumn, setDragOverColumn] = useState<string | null>(null)
+
   // Load more media state
   const [mediaOffset, setMediaOffset] = useState(0)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
@@ -895,7 +898,19 @@ export default function CampaignDetailPage() {
   const targetHashtags = campaign?.targetHashtags || []
 
   const stories = media.filter(m => m.mediaType === 'STORY')
-  const nonStoryMedia = media.filter(m => m.mediaType !== 'STORY')
+
+  // For campaigns with selected influencers, only show media from those influencers
+  // For Social Listening (no influencers selected), show all media
+  const selectedInfluencerIds = new Set(influencers.map(ci => ci.influencer?.id).filter(Boolean))
+  const nonStoryMedia = media.filter(m => {
+    if (m.mediaType === 'STORY') return false
+    // If campaign has selected influencers, only show their media
+    if (selectedInfluencerIds.size > 0 && m.influencer?.id) {
+      return selectedInfluencerIds.has(m.influencer.id)
+    }
+    // Social Listening: show all
+    return true
+  })
 
   const totalReach = overview?.totalReach || influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0)
   const totalEngagements = overview?.totalEngagements || 0
@@ -2271,6 +2286,11 @@ export default function CampaignDetailPage() {
 
           {/* Sub-tab: Pipeline */}
           <TabsContent value="sub-pipeline">
+          {canEdit && (
+            <p className="mb-3 text-xs text-gray-400 italic">
+              {locale === 'es' ? 'Arrastra los influencers entre columnas' : 'Drag influencers between columns'}
+            </p>
+          )}
           <div className="overflow-x-auto pb-4">
             <div className="flex gap-4" style={{ minWidth: 'max-content' }}>
               {([
@@ -2300,7 +2320,41 @@ export default function CampaignDetailPage() {
                 return (
                   <div
                     key={col.key}
-                    className={`w-[280px] shrink-0 rounded-xl border ${colors.border} ${colors.bg} shadow-sm`}
+                    className={`w-[280px] shrink-0 rounded-xl border-2 transition-colors duration-150 ${
+                      dragOverColumn === col.key
+                        ? 'border-dashed border-purple-400 bg-purple-50/30'
+                        : `border-solid ${colors.border} ${colors.bg}`
+                    } shadow-sm`}
+                    onDragOver={(e) => {
+                      if (!canEdit) return
+                      e.preventDefault()
+                      e.dataTransfer.dropEffect = 'move'
+                      setDragOverColumn(col.key)
+                    }}
+                    onDragLeave={(e) => {
+                      // Only clear if leaving the column entirely (not entering a child)
+                      if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                        setDragOverColumn(null)
+                      }
+                    }}
+                    onDrop={async (e) => {
+                      e.preventDefault()
+                      setDragOverColumn(null)
+                      if (!canEdit) return
+                      const influencerId = e.dataTransfer.getData('text/influencer-id')
+                      const fromColumn = e.dataTransfer.getData('text/from-column')
+                      if (!influencerId || fromColumn === col.key) return
+                      try {
+                        await fetch(`/api/campaigns/${campaignId}/influencers`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ influencerId, status: col.key }),
+                        })
+                        await fetchCampaign()
+                      } catch (err) {
+                        console.error('Error updating status via drag:', err)
+                      }
+                    }}
                   >
                     <div className={`flex items-center justify-between rounded-t-xl px-4 py-3 ${colors.headerBg}`}>
                       <div className="flex items-center gap-2">
@@ -2316,7 +2370,23 @@ export default function CampaignDetailPage() {
                         <p className="py-6 text-center text-xs text-gray-400">{t.pipeline.noInfluencers}</p>
                       ) : (
                         colInfluencers.map((ci) => (
-                          <div key={ci.id} className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                          <div
+                            key={ci.id}
+                            draggable={canEdit}
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('text/influencer-id', ci.influencer.id)
+                              e.dataTransfer.setData('text/from-column', col.key)
+                              e.dataTransfer.effectAllowed = 'move'
+                              ;(e.currentTarget as HTMLDivElement).style.opacity = '0.5'
+                              ;(e.currentTarget as HTMLDivElement).style.transform = 'scale(0.95)'
+                            }}
+                            onDragEnd={(e) => {
+                              ;(e.currentTarget as HTMLDivElement).style.opacity = '1'
+                              ;(e.currentTarget as HTMLDivElement).style.transform = 'scale(1)'
+                              setDragOverColumn(null)
+                            }}
+                            className={`rounded-xl border border-gray-200 bg-white p-3 shadow-sm transition-transform ${canEdit ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                          >
                             <div className="flex items-center gap-2.5">
                               <Avatar
                                 src={ci.influencer.avatarUrl || undefined}

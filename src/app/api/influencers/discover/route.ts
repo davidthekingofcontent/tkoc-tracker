@@ -97,9 +97,9 @@ async function searchViaApifyHashtag(
 ): Promise<DiscoverResult[]> {
   try {
     const cleanTag = query.replace(/^#/, '').replace(/\s+/g, '').toLowerCase()
-    console.log(`[Discover] Hashtag search: #${cleanTag} on ${platform}, fetching 200 posts`)
+    console.log(`[Discover] Hashtag search: #${cleanTag} on ${platform}, fetching 500 posts`)
 
-    const hashtagResults = await scrapeHashtag(cleanTag, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 200)
+    const hashtagResults = await scrapeHashtag(cleanTag, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 500)
     if (!hashtagResults || hashtagResults.length === 0) {
       console.log('[Discover] Hashtag search returned 0 posts')
       return []
@@ -187,10 +187,10 @@ async function searchViaApifyHashtag(
     const sortedEntries = Array.from(authorMap.values())
       .sort((a, b) => b.bestEngagement - a.bestEngagement)
 
-    // Enrich TOP 10 that are not already enriched, via Apify profile scraping in parallel
+    // Enrich TOP 25 that are not already enriched, via Apify profile scraping in parallel
     const needsEnrichment = sortedEntries
       .filter(e => !e.result.enriched)
-      .slice(0, 20)
+      .slice(0, 25)
 
     if (needsEnrichment.length > 0) {
       console.log(`[Discover] Enriching ${needsEnrichment.length} profiles via Apify in parallel...`)
