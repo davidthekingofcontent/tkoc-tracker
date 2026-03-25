@@ -370,10 +370,21 @@ export default function DiscoverPage() {
         <div className="flex-1 min-w-0">
           {/* Loading spinner */}
           {searching && (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm py-32">
-              <Loader2 className="h-10 w-10 animate-spin text-purple-500 mb-4" />
-              <p className="text-sm font-medium text-gray-700">{t.common.loading}...</p>
-              <p className="text-xs text-gray-400 mt-1">{t.discover.subtitle}</p>
+            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm py-24">
+              <Loader2 className="h-12 w-12 animate-spin text-purple-500 mb-4" />
+              <p className="text-base font-semibold text-gray-700 dark:text-gray-200">
+                {locale === 'es' ? 'Buscando creadores...' : 'Searching creators...'}
+              </p>
+              <p className="text-sm text-gray-400 mt-2 max-w-sm text-center">
+                {locale === 'es'
+                  ? 'Esto puede tardar hasta 1-2 minutos. Estamos buscando en Instagram, analizando hashtags y enriqueciendo perfiles.'
+                  : 'This may take 1-2 minutes. We are searching Instagram, analyzing hashtags and enriching profiles.'}
+              </p>
+              <div className="mt-4 flex items-center gap-2">
+                <div className="h-2 w-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                <div className="h-2 w-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+                <div className="h-2 w-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
             </div>
           )}
 

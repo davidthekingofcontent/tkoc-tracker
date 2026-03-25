@@ -132,7 +132,7 @@ async function searchViaApifyHashtag(query: string, platform: string, minFollowe
       })
     }
 
-    // For top authors, try to enrich with full profile data from DB
+    // Enrich with DB data first
     const usernames = Array.from(authorMap.keys())
     if (usernames.length > 0) {
       const dbProfiles = await prisma.influencer.findMany({
@@ -153,7 +153,37 @@ async function searchViaApifyHashtag(query: string, platform: string, minFollowe
       }
     }
 
-    return Array.from(authorMap.values()).sort((a, b) => b.followers - a.followers).slice(0, 50)
+    // For top authors without full data, enrich via Apify profile scraping (max 5 to keep it fast)
+    const needsEnrichment = Array.from(authorMap.values())
+      .filter(r => r.followers === 0 || r.engagementRate === 0)
+      .slice(0, 5)
+
+    if (needsEnrichment.length > 0) {
+      console.log(`[Discover] Enriching ${needsEnrichment.length} profiles via Apify...`)
+      const enrichPromises = needsEnrichment.map(async (r) => {
+        try {
+          const profile = await scrapeProfile(r.username, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
+          if (profile) {
+            r.followers = profile.followers || r.followers
+            r.engagementRate = profile.engagementRate || r.engagementRate
+            r.avgLikes = profile.avgLikes || r.avgLikes
+            r.avgComments = profile.avgComments || r.avgComments
+            r.avgViews = profile.avgViews || r.avgViews
+            r.avatarUrl = profile.avatarUrl || r.avatarUrl
+            r.displayName = profile.displayName || r.displayName
+            r.email = profile.email || r.email
+          }
+        } catch { /* skip enrichment errors */ }
+      })
+      await Promise.allSettled(enrichPromises)
+    }
+
+    // Apply follower filters after enrichment
+    let enrichedResults = Array.from(authorMap.values())
+    if (minFollowers) enrichedResults = enrichedResults.filter(r => r.followers >= minFollowers || r.followers === 0)
+    if (maxFollowers) enrichedResults = enrichedResults.filter(r => r.followers <= maxFollowers || r.followers === 0)
+
+    return enrichedResults.sort((a, b) => b.followers - a.followers).slice(0, 50)
   } catch (err) {
     console.error('Hashtag search error:', err)
     return []
@@ -237,12 +267,27 @@ export async function POST(request: NextRequest) {
           // Direct profile lookup
           results = await searchViaApifyProfile(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
         } else {
-          // Try discovery search first (searches for accounts by keyword)
-          results = await searchViaApifyDiscovery(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
-          // If discovery returned no results, try hashtag search as fallback
-          if (results.length === 0) {
-            results = await searchViaApifyHashtag(cleanQuery, normalizedPlatform, minFollowers, maxFollowers)
+          // Run BOTH discovery and hashtag search in parallel for speed
+          console.log(`[Discover] Searching "${cleanQuery}" on ${normalizedPlatform} — running discovery + hashtag in parallel`)
+          const [discoveryResults, hashtagResults] = await Promise.allSettled([
+            searchViaApifyDiscovery(cleanQuery, normalizedPlatform, minFollowers, maxFollowers),
+            searchViaApifyHashtag(cleanQuery, normalizedPlatform, minFollowers, maxFollowers),
+          ])
+
+          const discovery = discoveryResults.status === 'fulfilled' ? discoveryResults.value : []
+          const hashtag = hashtagResults.status === 'fulfilled' ? hashtagResults.value : []
+
+          // Merge and deduplicate by username
+          const mergedMap = new Map<string, DiscoverResult>()
+          for (const r of [...discovery, ...hashtag]) {
+            const existing = mergedMap.get(r.username)
+            if (!existing || r.followers > existing.followers) {
+              mergedMap.set(r.username, r)
+            }
           }
+          results = Array.from(mergedMap.values()).sort((a, b) => b.followers - a.followers)
+
+          console.log(`[Discover] Found ${discovery.length} via discovery, ${hashtag.length} via hashtag, ${results.length} merged`)
         }
         if (results.length > 0) source = 'apify'
       } catch (apifyError) {
