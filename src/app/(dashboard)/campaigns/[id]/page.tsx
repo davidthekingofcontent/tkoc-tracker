@@ -2665,6 +2665,28 @@ export default function CampaignDetailPage() {
                               <span className={`h-3 w-3 rounded-full ${trafficDot[cpm.trafficLight]}`} />
                               <span className="text-sm font-bold">{cpm.recommendation}</span>
                             </div>
+
+                            {/* Remove influencer button */}
+                            {canEdit && (
+                              <button
+                                onClick={async () => {
+                                  if (!confirm(locale === 'es' ? `¿Quitar a @${ci.influencer.username} de esta campaña?` : `Remove @${ci.influencer.username} from this campaign?`)) return
+                                  try {
+                                    await fetch(`/api/campaigns/${campaignId}/influencers`, {
+                                      method: 'DELETE',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ influencerId: ci.influencer.id }),
+                                    })
+                                    await fetchCampaign()
+                                  } catch { /* ignore */ }
+                                }}
+                                className="flex items-center gap-1.5 rounded-lg border-2 border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs font-bold text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
+                                title={locale === 'es' ? 'Quitar de campaña' : 'Remove from campaign'}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                {locale === 'es' ? 'Quitar' : 'Remove'}
+                              </button>
+                            )}
                           </div>
 
                           {/* CPM Evaluation Row */}
