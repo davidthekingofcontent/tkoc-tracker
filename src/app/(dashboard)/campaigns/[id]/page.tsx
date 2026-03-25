@@ -2838,7 +2838,7 @@ export default function CampaignDetailPage() {
                             </label>
                           </div>
 
-                          {/* Notes & History */}
+                          {/* Notes & History & Remove */}
                           <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center gap-2">
                             <CampaignNotesButton
                               campaignId={campaignId}
@@ -2851,6 +2851,27 @@ export default function CampaignDetailPage() {
                               influencerName={ci.influencer.displayName || ci.influencer.username}
                               locale={locale}
                             />
+                            {/* Remove influencer button */}
+                            {canEdit && (
+                              <button
+                                onClick={async () => {
+                                  if (!confirm(locale === 'es' ? `¿Quitar a @${ci.influencer.username} de esta campaña?` : `Remove @${ci.influencer.username} from this campaign?`)) return
+                                  try {
+                                    await fetch(`/api/campaigns/${campaignId}/influencers`, {
+                                      method: 'DELETE',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ influencerId: ci.influencer.id }),
+                                    })
+                                    await fetchCampaign()
+                                  } catch { /* ignore */ }
+                                }}
+                                className="inline-flex items-center gap-1 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-2 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
+                                title={locale === 'es' ? 'Quitar de campaña' : 'Remove from campaign'}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                                {locale === 'es' ? 'Quitar' : 'Remove'}
+                              </button>
+                            )}
                             {/* Invite to connect button - only for non-oauth influencers, only for editors */}
                             {canEdit && (
                               <div className="relative ml-auto">
