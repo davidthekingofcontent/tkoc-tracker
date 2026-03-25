@@ -75,7 +75,7 @@ function getDiscoverValue(obj: DiscoverResult, field: string): number {
 }
 
 export default function DiscoverPage() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [sortField, setSortField] = useState<string>('followers')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -391,8 +391,24 @@ export default function DiscoverPage() {
 
           {/* No results state */}
           {hasSearched && !searching && results.length === 0 && (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm py-32">
-              <p className="text-sm text-gray-500">{t.common.noResults}</p>
+            <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm py-20 px-8">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-amber-50 dark:bg-amber-900/20 text-amber-500 mb-4">
+                <Search className="h-7 w-7" />
+              </div>
+              <p className="text-base font-semibold text-gray-700 dark:text-gray-200">{t.common.noResults}</p>
+              <div className="mt-4 max-w-md text-center space-y-2">
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  {locale === 'es'
+                    ? 'La búsqueda por categoría (ej: "moda", "fitness") busca en nuestra base de datos y en Apify. Si no hay resultados, prueba a:'
+                    : 'Category search (e.g. "fashion", "fitness") searches our database and Apify. If no results, try:'}
+                </p>
+                <ul className="text-sm text-gray-500 dark:text-gray-400 text-left list-disc pl-5 space-y-1">
+                  <li>{locale === 'es' ? 'Buscar por @username directamente (ej: @vileda.es)' : 'Search by @username directly (e.g. @vileda.es)'}</li>
+                  <li>{locale === 'es' ? 'Reducir los filtros (quitar engagement mínimo o rango de seguidores)' : 'Reduce filters (remove min engagement or follower range)'}</li>
+                  <li>{locale === 'es' ? 'Probar con términos en inglés (ej: "fashion" en vez de "moda")' : 'Try English terms (e.g. "fashion" instead of local terms)'}</li>
+                  <li>{locale === 'es' ? 'Añadir influencers directamente en una campaña con su @username' : 'Add influencers directly in a campaign with their @username'}</li>
+                </ul>
+              </div>
             </div>
           )}
 

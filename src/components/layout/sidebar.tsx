@@ -53,8 +53,6 @@ const secondaryNavItems: NavItem[] = [
 // Simplified nav for CREATOR role
 const creatorMainNavItems: NavItem[] = [
   { key: "home", icon: LayoutDashboard, href: "/dashboard" },
-  { key: "campaigns", icon: Megaphone, href: "/campaigns" },
-  { key: "methodology", icon: BookOpen, href: "/methodology" },
 ]
 
 const creatorSecondaryNavItems: NavItem[] = [
