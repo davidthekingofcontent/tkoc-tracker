@@ -14,6 +14,7 @@ import {
   Instagram,
   Youtube,
   Loader2,
+  Upload,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -234,25 +235,61 @@ export default function ListDetailPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+            <Upload className="h-4 w-4" />
+            {t.listDetail?.import || 'Import CSV'}
+            <input
+              type="file"
+              accept=".csv,.txt"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0]
+                if (!file) return
+                const text = await file.text()
+                const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+                const usernames = lines.map(l => l.split(',')[0].trim().replace(/^@/, '').replace(/"/g, '')).filter(Boolean)
+                if (usernames.length === 0) return
+                let added = 0
+                for (const username of usernames) {
+                  try {
+                    const analyzeRes = await fetch('/api/influencers/analyze', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ username, platform: 'INSTAGRAM' }),
+                    })
+                    if (analyzeRes.ok) {
+                      const analyzeData = await analyzeRes.json()
+                      const influencerId = analyzeData.influencer?.id
+                      if (influencerId) {
+                        await fetch(`/api/lists/${listId}`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ influencerId }),
+                        })
+                        added++
+                      }
+                    }
+                  } catch { /* skip failed */ }
+                }
+                if (added > 0) fetchList()
+                e.target.value = ''
+              }}
+            />
+          </label>
           <Button variant="secondary" onClick={() => {}}>
             <Download className="h-4 w-4" />
-            {t.listDetail.export}
+            {t.listDetail?.export || 'Export'}
           </Button>
         </div>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <StatCard
           icon={<Users className="h-5 w-5" />}
           label={t.lists.creators}
           value={items.length}
           accent
-        />
-        <StatCard
-          icon={<Eye className="h-5 w-5" />}
-          label={t.lists.reach}
-          value={formatNumber(combinedReach)}
         />
         <StatCard
           icon={<Mail className="h-5 w-5" />}
