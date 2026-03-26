@@ -164,6 +164,19 @@ export default function ListDetailPage() {
     }
   }
 
+  const items = list?.items || []
+  const combinedReach = items.reduce((sum, i) => sum + (i.influencer.followers || 0), 0)
+  const withEmail = items.filter((i) => i.influencer.email).length
+
+  const sortedItems = useMemo(() => {
+    if (!items.length) return []
+    return [...items].sort((a, b) => {
+      const aVal = getNestedValue(a, sortField)
+      const bVal = getNestedValue(b, sortField)
+      return sortDir === 'asc' ? aVal - bVal : bVal - aVal
+    })
+  }, [items, sortField, sortDir])
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -176,25 +189,13 @@ export default function ListDetailPage() {
   if (!list) {
     return (
       <div className="py-24 text-center">
-        <p className="text-gray-500">{t.listDetail.listNotFound}</p>
+        <p className="text-gray-500">{t.listDetail?.listNotFound || 'List not found'}</p>
         <Link href="/lists" className="mt-4 text-purple-600 hover:underline">
           {t.common.back}
         </Link>
       </div>
     )
   }
-
-  const items = list.items || []
-  const combinedReach = items.reduce((sum, i) => sum + (i.influencer.followers || 0), 0)
-  const withEmail = items.filter((i) => i.influencer.email).length
-
-  const sortedItems = useMemo(() => {
-    return [...items].sort((a, b) => {
-      const aVal = getNestedValue(a, sortField)
-      const bVal = getNestedValue(b, sortField)
-      return sortDir === 'asc' ? aVal - bVal : bVal - aVal
-    })
-  }, [items, sortField, sortDir])
 
   return (
     <div className="space-y-6">
