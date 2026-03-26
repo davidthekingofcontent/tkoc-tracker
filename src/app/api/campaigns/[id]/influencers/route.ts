@@ -51,11 +51,10 @@ export async function POST(
     })
 
     // Notify team
-    const campaign = await prisma.campaign.findUnique({ where: { id }, select: { name: true } })
     notifyAllTeam({
       type: 'influencer_added',
       title: 'Influencer añadido',
-      message: `@${item.influencer.username} añadido a la campaña "${campaign?.name || 'Campaña'}"`,
+      message: `@${item.influencer.username} añadido a la campaña "${campaign.name}"`,
       link: `/campaigns/${id}`,
     }, session.id).catch(() => {})
 
