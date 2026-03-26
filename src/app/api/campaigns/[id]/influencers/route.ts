@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { InfluencerStatus } from '@/generated/prisma/client'
+import { notifyAllTeam } from '@/lib/notifications'
 
 export async function POST(
   request: NextRequest,
@@ -48,6 +49,15 @@ export async function POST(
       data: { campaignId: id, influencerId },
       include: { influencer: true },
     })
+
+    // Notify team
+    const campaign = await prisma.campaign.findUnique({ where: { id }, select: { name: true } })
+    notifyAllTeam({
+      type: 'influencer_added',
+      title: 'Influencer añadido',
+      message: `@${item.influencer.username} añadido a la campaña "${campaign?.name || 'Campaña'}"`,
+      link: `/campaigns/${id}`,
+    }, session.id).catch(() => {})
 
     return NextResponse.json({ item }, { status: 201 })
   } catch (error) {
