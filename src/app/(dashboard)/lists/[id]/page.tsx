@@ -95,6 +95,8 @@ export default function ListDetailPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [sortField, setSortField] = useState<string>('followers')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [listSearch, setListSearch] = useState('')
+  const [listPlatformFilter, setListPlatformFilter] = useState('all')
 
   function toggleSort(field: string) {
     if (sortField === field) {
@@ -170,12 +172,27 @@ export default function ListDetailPage() {
 
   const sortedItems = useMemo(() => {
     if (!items.length) return []
-    return [...items].sort((a, b) => {
+    let filtered = items
+    // Search filter
+    if (listSearch.trim()) {
+      const q = listSearch.toLowerCase()
+      filtered = filtered.filter(i =>
+        i.influencer.username.toLowerCase().includes(q) ||
+        (i.influencer.displayName || '').toLowerCase().includes(q) ||
+        (i.influencer.country || '').toLowerCase().includes(q) ||
+        (i.influencer.city || '').toLowerCase().includes(q)
+      )
+    }
+    // Platform filter
+    if (listPlatformFilter !== 'all') {
+      filtered = filtered.filter(i => i.influencer.platform === listPlatformFilter)
+    }
+    return [...filtered].sort((a, b) => {
       const aVal = getNestedValue(a, sortField)
       const bVal = getNestedValue(b, sortField)
       return sortDir === 'asc' ? aVal - bVal : bVal - aVal
     })
-  }, [items, sortField, sortDir])
+  }, [items, sortField, sortDir, listSearch, listPlatformFilter])
 
   if (isLoading) {
     return (
@@ -242,6 +259,42 @@ export default function ListDetailPage() {
           label={t.lists.withEmail}
           value={withEmail}
         />
+      </div>
+
+      {/* Search & Filter Bar */}
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex-1 min-w-[200px]">
+            <input
+              type="text"
+              value={listSearch}
+              onChange={(e) => setListSearch(e.target.value)}
+              placeholder={t.common.search || 'Search by name, username, location...'}
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder-gray-400 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+            />
+          </div>
+          <select
+            value={listPlatformFilter}
+            onChange={(e) => setListPlatformFilter(e.target.value)}
+            className="rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 outline-none focus:border-purple-500"
+          >
+            <option value="all">{t.campaignDetail?.allPlatforms || 'All Platforms'}</option>
+            <option value="INSTAGRAM">Instagram</option>
+            <option value="TIKTOK">TikTok</option>
+            <option value="YOUTUBE">YouTube</option>
+          </select>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {sortedItems.length} / {items.length} {t.lists.creators}
+          </p>
+          {(listSearch || listPlatformFilter !== 'all') && (
+            <button
+              onClick={() => { setListSearch(''); setListPlatformFilter('all') }}
+              className="text-xs text-purple-600 dark:text-purple-400 hover:underline font-medium"
+            >
+              {t.common.clearFilters || 'Clear filters'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Influencers Table */}
