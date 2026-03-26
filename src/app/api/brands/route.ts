@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
+import { sendBrandAssignmentEmail } from '@/lib/email'
 
 function generateId(): string {
   return `brand_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
@@ -274,6 +275,9 @@ export async function PATCH(request: NextRequest) {
     }
 
     if (website !== undefined) brandData.website = website?.trim() || undefined
+
+    // Track newly assigned employees for notification
+    const previousEmployees = brandData.assignedEmployees || []
     if (assignedEmployees !== undefined) brandData.assignedEmployees = assignedEmployees
     if (brandUserId !== undefined) brandData.brandUserId = brandUserId || undefined
 
@@ -281,6 +285,30 @@ export async function PATCH(request: NextRequest) {
       where: { key: brandId },
       data: { value: JSON.stringify(brandData) },
     })
+
+    // Send email to newly assigned employees
+    if (assignedEmployees !== undefined) {
+      const newlyAssigned = assignedEmployees.filter((id: string) => !previousEmployees.includes(id))
+      if (newlyAssigned.length > 0) {
+        const adminUser = await prisma.user.findUnique({ where: { id: session.id }, select: { name: true } })
+        const newUsers = await prisma.user.findMany({
+          where: { id: { in: newlyAssigned } },
+          select: { email: true, name: true },
+        })
+        for (const user of newUsers) {
+          try {
+            await sendBrandAssignmentEmail({
+              to: user.email,
+              employeeName: user.name || 'Equipo',
+              brandName: brandData.name,
+              assignedBy: adminUser?.name || 'Admin',
+            })
+          } catch (emailErr) {
+            console.error(`[Brands] Failed to send assignment email to ${user.email}:`, emailErr)
+          }
+        }
+      }
+    }
 
     return NextResponse.json({ brand: brandData })
   } catch (error) {
