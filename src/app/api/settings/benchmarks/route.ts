@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 
-// Keys we store in the settings table
-const BENCHMARK_KEYS = [
+// Base keys we store in the settings table
+const BENCHMARK_BASE_KEYS = [
   'benchmark_fee_ranges',
   'benchmark_cpm_rates',
   'benchmark_emv_rates',
@@ -57,7 +57,20 @@ const DEFAULT_EMV_RATES = {
   },
 }
 
+/** Build the actual settings keys, optionally scoped to a brand */
+function getBenchmarkKeys(brandId?: string): string[] {
+  const suffix = brandId ? `_${brandId}` : ''
+  return BENCHMARK_BASE_KEYS.map(k => `${k}${suffix}`)
+}
+
+/** Check if a key (possibly brand-scoped) is a valid benchmark key */
+function isValidBenchmarkKey(key: string): boolean {
+  // Match base keys or brand-scoped keys like benchmark_fee_ranges_brand_123_abc
+  return BENCHMARK_BASE_KEYS.some(base => key === base || key.startsWith(`${base}_`))
+}
+
 // GET — return current benchmark settings (from DB or defaults)
+// Accepts optional ?brandId=xxx to load brand-specific benchmarks
 export async function GET(request: NextRequest) {
   try {
     const session = await getSession(request)
@@ -65,9 +78,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    // Read all benchmark settings from DB
+    const { searchParams } = new URL(request.url)
+    const brandId = searchParams.get('brandId') || undefined
+
+    const keys = getBenchmarkKeys(brandId)
+
+    // Read brand-specific benchmark settings from DB
     const settings = await prisma.setting.findMany({
-      where: { key: { in: [...BENCHMARK_KEYS] } },
+      where: { key: { in: keys } },
     })
 
     const settingsMap: Record<string, string> = {}
@@ -75,16 +93,71 @@ export async function GET(request: NextRequest) {
       settingsMap[s.key] = s.value
     }
 
-    // Parse from DB or fallback to defaults
-    const feeRanges = settingsMap['benchmark_fee_ranges']
+    const suffix = brandId ? `_${brandId}` : ''
+
+    // If brand-specific, try brand keys first; if not found, fall back to global, then defaults
+    let feeRanges: unknown
+    let cpmRates: unknown
+    let emvRates: unknown
+
+    if (brandId) {
+      // Try brand-specific first
+      const brandFee = settingsMap[`benchmark_fee_ranges${suffix}`]
+      const brandCpm = settingsMap[`benchmark_cpm_rates${suffix}`]
+      const brandEmv = settingsMap[`benchmark_emv_rates${suffix}`]
+
+      // For brand-specific, also fetch global as fallback
+      const globalKeys = getBenchmarkKeys()
+      const globalSettings = await prisma.setting.findMany({
+        where: { key: { in: globalKeys } },
+      })
+      const globalMap: Record<string, string> = {}
+      for (const s of globalSettings) {
+        globalMap[s.key] = s.value
+      }
+
+      feeRanges = brandFee
+        ? JSON.parse(brandFee)
+        : globalMap['benchmark_fee_ranges']
+          ? JSON.parse(globalMap['benchmark_fee_ranges'])
+          : DEFAULT_FEE_RANGES
+
+      cpmRates = brandCpm
+        ? JSON.parse(brandCpm)
+        : globalMap['benchmark_cpm_rates']
+          ? JSON.parse(globalMap['benchmark_cpm_rates'])
+          : DEFAULT_CPM_RATES
+
+      emvRates = brandEmv
+        ? JSON.parse(brandEmv)
+        : globalMap['benchmark_emv_rates']
+          ? JSON.parse(globalMap['benchmark_emv_rates'])
+          : DEFAULT_EMV_RATES
+
+      // Tell the client which keys have brand-specific overrides
+      return NextResponse.json({
+        feeRanges,
+        cpmRates,
+        emvRates,
+        brandId,
+        hasBrandOverrides: {
+          feeRanges: !!brandFee,
+          cpmRates: !!brandCpm,
+          emvRates: !!brandEmv,
+        },
+      })
+    }
+
+    // Global (no brandId)
+    feeRanges = settingsMap['benchmark_fee_ranges']
       ? JSON.parse(settingsMap['benchmark_fee_ranges'])
       : DEFAULT_FEE_RANGES
 
-    const cpmRates = settingsMap['benchmark_cpm_rates']
+    cpmRates = settingsMap['benchmark_cpm_rates']
       ? JSON.parse(settingsMap['benchmark_cpm_rates'])
       : DEFAULT_CPM_RATES
 
-    const emvRates = settingsMap['benchmark_emv_rates']
+    emvRates = settingsMap['benchmark_emv_rates']
       ? JSON.parse(settingsMap['benchmark_emv_rates'])
       : DEFAULT_EMV_RATES
 
@@ -100,6 +173,7 @@ export async function GET(request: NextRequest) {
 }
 
 // PUT — save benchmark overrides (ADMIN only)
+// Accepts optional brandId in body to save brand-specific benchmarks
 export async function PUT(request: NextRequest) {
   try {
     const session = await getSession(request)
@@ -112,28 +186,73 @@ export async function PUT(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { key, value } = body as { key: string; value: unknown }
+    const { key, value, brandId } = body as { key: string; value: unknown; brandId?: string }
 
     if (!key || value === undefined) {
       return NextResponse.json({ error: 'Missing key or value' }, { status: 400 })
     }
 
-    // Validate key
-    if (!BENCHMARK_KEYS.includes(key as typeof BENCHMARK_KEYS[number])) {
+    // Validate that the base key is valid
+    if (!BENCHMARK_BASE_KEYS.includes(key as typeof BENCHMARK_BASE_KEYS[number])) {
       return NextResponse.json({ error: 'Invalid benchmark key' }, { status: 400 })
     }
 
+    // Build the actual storage key (brand-scoped if brandId provided)
+    const storageKey = brandId ? `${key}_${brandId}` : key
     const serialized = JSON.stringify(value)
 
     await prisma.setting.upsert({
-      where: { key },
+      where: { key: storageKey },
       update: { value: serialized },
-      create: { key, value: serialized },
+      create: { key: storageKey, value: serialized },
     })
 
-    return NextResponse.json({ success: true, key })
+    return NextResponse.json({ success: true, key: storageKey })
   } catch (error) {
     console.error('Failed to update benchmark:', error)
     return NextResponse.json({ error: 'Failed to update benchmark' }, { status: 500 })
+  }
+}
+
+// DELETE — reset brand-specific benchmarks back to global (ADMIN only)
+// Accepts ?brandId=xxx&key=benchmark_fee_ranges (or 'all' to reset all)
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await getSession(request)
+    if (!session) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    if (session.role !== 'ADMIN') {
+      return NextResponse.json({ error: 'Only administrators can manage benchmarks' }, { status: 403 })
+    }
+
+    const { searchParams } = new URL(request.url)
+    const brandId = searchParams.get('brandId')
+    const key = searchParams.get('key') // specific key or 'all'
+
+    if (!brandId) {
+      return NextResponse.json({ error: 'brandId is required' }, { status: 400 })
+    }
+
+    if (key === 'all') {
+      // Delete all brand-specific benchmark overrides
+      const brandKeys = getBenchmarkKeys(brandId)
+      await prisma.setting.deleteMany({
+        where: { key: { in: brandKeys } },
+      })
+    } else if (key && isValidBenchmarkKey(key)) {
+      const storageKey = `${key}_${brandId}`
+      await prisma.setting.deleteMany({
+        where: { key: storageKey },
+      })
+    } else {
+      return NextResponse.json({ error: 'Invalid key parameter' }, { status: 400 })
+    }
+
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    console.error('Failed to reset benchmark:', error)
+    return NextResponse.json({ error: 'Failed to reset benchmark' }, { status: 500 })
   }
 }

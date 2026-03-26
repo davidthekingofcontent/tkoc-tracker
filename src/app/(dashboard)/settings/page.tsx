@@ -205,6 +205,13 @@ export default function SettingsPage() {
   const [cpmThresholdsOpen, setCpmThresholdsOpen] = useState(false)
   const [emvRatesOpen, setEmvRatesOpen] = useState(false)
 
+  // Brand-specific benchmarks state
+  const [benchmarkBrands, setBenchmarkBrands] = useState<{ id: string; name: string }[]>([])
+  const [selectedBenchmarkBrand, setSelectedBenchmarkBrand] = useState<string>('')
+  const [benchmarkBrandOverrides, setBenchmarkBrandOverrides] = useState<{
+    feeRanges: boolean; cpmRates: boolean; emvRates: boolean
+  } | null>(null)
+
   // ---------- Team Data Fetch ----------
 
   useEffect(() => {
@@ -213,6 +220,7 @@ export default function SettingsPage() {
     fetchIntegrations()
     fetchBenchmarks()
     fetchBrandAssignments()
+    fetchBenchmarkBrands()
     // Fetch current user role
     fetch('/api/auth/me').then(r => r.ok ? r.json() : null).then(d => {
       if (d?.user?.role) setCurrentUserRole(d.user.role)
@@ -273,18 +281,36 @@ export default function SettingsPage() {
     }
   }
 
-  async function fetchBenchmarks() {
+  async function fetchBenchmarks(brandId?: string) {
     try {
-      const res = await fetch('/api/settings/benchmarks')
+      const url = brandId
+        ? `/api/settings/benchmarks?brandId=${encodeURIComponent(brandId)}`
+        : '/api/settings/benchmarks'
+      const res = await fetch(url)
       if (res.ok) {
         const data = await res.json()
         setBenchmarkFeeRanges(data.feeRanges)
         setBenchmarkCpmRates(data.cpmRates)
         setBenchmarkEmvRates(data.emvRates)
+        if (data.hasBrandOverrides) {
+          setBenchmarkBrandOverrides(data.hasBrandOverrides)
+        } else {
+          setBenchmarkBrandOverrides(null)
+        }
       }
     } catch {} finally {
       setBenchmarksLoading(false)
     }
+  }
+
+  async function fetchBenchmarkBrands() {
+    try {
+      const res = await fetch('/api/brands')
+      if (res.ok) {
+        const data = await res.json()
+        setBenchmarkBrands((data.brands || []).map((b: { id: string; name: string }) => ({ id: b.id, name: b.name })))
+      }
+    } catch {}
   }
 
   async function fetchBrandAssignments() {
@@ -332,14 +358,48 @@ export default function SettingsPage() {
     setBenchmarkSaving(key)
     setBenchmarkSaveResult(null)
     try {
+      const bodyObj: { key: string; value: unknown; brandId?: string } = { key, value }
+      if (selectedBenchmarkBrand) {
+        bodyObj.brandId = selectedBenchmarkBrand
+      }
       const res = await fetch('/api/settings/benchmarks', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key, value }),
+        body: JSON.stringify(bodyObj),
       })
       if (res.ok) {
         setBenchmarkSaveResult({ type: 'success', message: t.settings.savedSuccessfully })
         setTimeout(() => setBenchmarkSaveResult(null), 3000)
+        // Refresh overrides info
+        if (selectedBenchmarkBrand) {
+          fetchBenchmarks(selectedBenchmarkBrand)
+        }
+      } else {
+        setBenchmarkSaveResult({ type: 'error', message: t.settings.saveFailed })
+      }
+    } catch {
+      setBenchmarkSaveResult({ type: 'error', message: t.settings.saveFailed })
+    } finally {
+      setBenchmarkSaving(null)
+    }
+  }
+
+  async function resetBrandBenchmarks() {
+    if (!selectedBenchmarkBrand) return
+    setBenchmarkSaving('reset')
+    setBenchmarkSaveResult(null)
+    try {
+      const res = await fetch(
+        `/api/settings/benchmarks?brandId=${encodeURIComponent(selectedBenchmarkBrand)}&key=all`,
+        { method: 'DELETE' }
+      )
+      if (res.ok) {
+        setBenchmarkSaveResult({
+          type: 'success',
+          message: locale === 'es' ? 'Benchmarks de marca reseteados a global' : 'Brand benchmarks reset to global',
+        })
+        setTimeout(() => setBenchmarkSaveResult(null), 3000)
+        fetchBenchmarks(selectedBenchmarkBrand)
       } else {
         setBenchmarkSaveResult({ type: 'error', message: t.settings.saveFailed })
       }
@@ -1195,6 +1255,61 @@ export default function SettingsPage() {
           <div className="space-y-4">
             <div>
               <p className="text-sm text-gray-500 dark:text-gray-400">{t.settings.benchmarksSubtitle}</p>
+            </div>
+
+            {/* Brand selector */}
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-sm">
+              <div className="flex items-center gap-4 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {locale === 'es' ? 'Marca:' : 'Brand:'}
+                  </label>
+                  <select
+                    value={selectedBenchmarkBrand}
+                    onChange={(e) => {
+                      const newBrandId = e.target.value
+                      setSelectedBenchmarkBrand(newBrandId)
+                      setBenchmarksLoading(true)
+                      fetchBenchmarks(newBrandId || undefined)
+                    }}
+                    className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 min-w-[200px]"
+                  >
+                    <option value="">
+                      {locale === 'es' ? 'Global (por defecto)' : 'Global (default)'}
+                    </option>
+                    {benchmarkBrands.map(b => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                </div>
+                {selectedBenchmarkBrand && (
+                  <>
+                    {benchmarkBrandOverrides && (benchmarkBrandOverrides.feeRanges || benchmarkBrandOverrides.cpmRates || benchmarkBrandOverrides.emvRates) ? (
+                      <Badge variant="default">
+                        {locale === 'es' ? 'Tiene configuraciones propias' : 'Has custom overrides'}
+                      </Badge>
+                    ) : (
+                      <Badge variant="default">
+                        {locale === 'es' ? 'Usando valores globales' : 'Using global values'}
+                      </Badge>
+                    )}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={resetBrandBenchmarks}
+                      disabled={benchmarkSaving === 'reset'}
+                      className="gap-1.5 ml-auto"
+                    >
+                      {benchmarkSaving === 'reset' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RotateCcw className="h-3.5 w-3.5" />
+                      )}
+                      {locale === 'es' ? 'Resetear a global' : 'Reset to global'}
+                    </Button>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Save result notification */}

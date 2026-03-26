@@ -263,7 +263,7 @@ const RechartsArea = dynamic(
   { ssr: false, loading: () => <div className="h-[300px] rounded-xl border border-gray-200 bg-white animate-pulse" /> }
 )
 
-type SortField = 'followers' | 'engagement'
+type SortField = 'followers' | 'engagement' | 'fee' | 'creatorScore'
 type SortDirection = 'asc' | 'desc'
 
 const PlatformIcon = ({ platform }: { platform: string }) => {
@@ -305,6 +305,14 @@ function sortInfluencers(
     if (sortField === 'followers') {
       aVal = a.influencer?.followers || 0
       bVal = b.influencer?.followers || 0
+    } else if (sortField === 'fee') {
+      aVal = a.agreedFee || a.cost || 0
+      bVal = b.agreedFee || b.cost || 0
+    } else if (sortField === 'creatorScore') {
+      // Sort by followers as proxy when creatorScore sort is selected
+      // The actual score is calculated in the component
+      aVal = (a.influencer?.engagementRate || 0) * (a.influencer?.followers || 0)
+      bVal = (b.influencer?.engagementRate || 0) * (b.influencer?.followers || 0)
     } else {
       aVal = a.influencer?.engagementRate || 0
       bVal = b.influencer?.engagementRate || 0
@@ -333,6 +341,12 @@ export default function CampaignDetailPage() {
   const [reportSortDirection, setReportSortDirection] = useState<SortDirection>('desc')
   const [influencerSortField, setInfluencerSortField] = useState<SortField | null>(null)
   const [influencerSortDirection, setInfluencerSortDirection] = useState<SortDirection>('desc')
+
+  // Elegir tab filter state
+  const [elegirSearch, setElegirSearch] = useState('')
+  const [elegirStatusFilter, setElegirStatusFilter] = useState<string>('all')
+  const [elegirSortBy, setElegirSortBy] = useState<SortField | 'none'>('none')
+  const [elegirSortDir, setElegirSortDir] = useState<SortDirection>('desc')
 
   // Add influencer state
   const [addInfluencerUsername, setAddInfluencerUsername] = useState('')
@@ -927,6 +941,32 @@ export default function CampaignDetailPage() {
     () => sortInfluencers(influencers, influencerSortField, influencerSortDirection),
     [influencers, influencerSortField, influencerSortDirection]
   )
+
+  // Filtered & sorted influencers for the Elegir tab
+  const filteredElegirInfluencers = useMemo(() => {
+    let result = influencers.filter(ci => ci.influencer)
+
+    // Search by username
+    if (elegirSearch.trim()) {
+      const q = elegirSearch.trim().toLowerCase()
+      result = result.filter(ci =>
+        ci.influencer.username.toLowerCase().includes(q) ||
+        (ci.influencer.displayName || '').toLowerCase().includes(q)
+      )
+    }
+
+    // Status filter
+    if (elegirStatusFilter !== 'all') {
+      result = result.filter(ci => (ci.status || 'PROSPECT') === elegirStatusFilter)
+    }
+
+    // Sort
+    if (elegirSortBy !== 'none') {
+      result = sortInfluencers(result, elegirSortBy, elegirSortDir)
+    }
+
+    return result
+  }, [influencers, elegirSearch, elegirStatusFilter, elegirSortBy, elegirSortDir])
 
   // Unique platforms and influencers for filter dropdowns
   const mediaPlatforms = useMemo(() => {
@@ -2607,6 +2647,71 @@ export default function CampaignDetailPage() {
             </div>
             )}
 
+            {/* Elegir Filter Bar */}
+            {influencers.length > 0 && (
+              <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* Search */}
+                  <div className="relative flex-1 min-w-[200px]">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <input
+                      type="text"
+                      value={elegirSearch}
+                      onChange={(e) => setElegirSearch(e.target.value)}
+                      placeholder={locale === 'es' ? 'Buscar por username...' : 'Search by username...'}
+                      className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 pl-9 pr-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                    />
+                  </div>
+                  {/* Status filter */}
+                  <select
+                    value={elegirStatusFilter}
+                    onChange={(e) => setElegirStatusFilter(e.target.value)}
+                    className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                  >
+                    <option value="all">{locale === 'es' ? 'Todos los estados' : 'All statuses'}</option>
+                    <option value="PROSPECT">{locale === 'es' ? 'Prospecto' : 'Prospect'}</option>
+                    <option value="OUTREACH">{locale === 'es' ? 'Contacto' : 'Outreach'}</option>
+                    <option value="NEGOTIATING">{locale === 'es' ? 'Negociando' : 'Negotiating'}</option>
+                    <option value="AGREED">{locale === 'es' ? 'Acordado' : 'Agreed'}</option>
+                    <option value="CONTRACTED">{locale === 'es' ? 'Contratado' : 'Contracted'}</option>
+                    <option value="POSTED">{locale === 'es' ? 'Publicado' : 'Posted'}</option>
+                    <option value="COMPLETED">{locale === 'es' ? 'Completado' : 'Completed'}</option>
+                  </select>
+                  {/* Sort */}
+                  <select
+                    value={elegirSortBy}
+                    onChange={(e) => {
+                      const val = e.target.value as SortField | 'none'
+                      setElegirSortBy(val)
+                      if (val !== 'none') setElegirSortDir('desc')
+                    }}
+                    className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                  >
+                    <option value="none">{locale === 'es' ? 'Ordenar por...' : 'Sort by...'}</option>
+                    <option value="followers">{locale === 'es' ? 'Seguidores' : 'Followers'}</option>
+                    <option value="engagement">{locale === 'es' ? 'Engagement' : 'Engagement'}</option>
+                    <option value="fee">{locale === 'es' ? 'Fee acordado' : 'Agreed Fee'}</option>
+                    <option value="creatorScore">{locale === 'es' ? 'Creator Score' : 'Creator Score'}</option>
+                  </select>
+                  {elegirSortBy !== 'none' && (
+                    <button
+                      onClick={() => setElegirSortDir(prev => prev === 'asc' ? 'desc' : 'asc')}
+                      className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                      title={elegirSortDir === 'asc' ? 'Ascending' : 'Descending'}
+                    >
+                      {elegirSortDir === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                    </button>
+                  )}
+                </div>
+                {/* Count */}
+                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  {locale === 'es'
+                    ? `Mostrando ${filteredElegirInfluencers.length} de ${influencers.length} influencers`
+                    : `Showing ${filteredElegirInfluencers.length} of ${influencers.length} influencers`}
+                </p>
+              </div>
+            )}
+
             {/* Influencers Table */}
             <Card variant="elevated">
               <CardContent>
@@ -2642,7 +2747,20 @@ export default function CampaignDetailPage() {
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {sortedInfluencers.filter(ci => ci.influencer).map((ci) => {
+                    {filteredElegirInfluencers.length === 0 ? (
+                      <div className="py-12 text-center">
+                        <Search className="mx-auto h-10 w-10 text-gray-300" />
+                        <p className="mt-3 text-sm text-gray-500">
+                          {locale === 'es' ? 'No se encontraron influencers con estos filtros' : 'No influencers match the current filters'}
+                        </p>
+                        <button
+                          onClick={() => { setElegirSearch(''); setElegirStatusFilter('all'); setElegirSortBy('none') }}
+                          className="mt-2 text-sm text-purple-600 hover:text-purple-700 font-medium"
+                        >
+                          {locale === 'es' ? 'Limpiar filtros' : 'Clear filters'}
+                        </button>
+                      </div>
+                    ) : filteredElegirInfluencers.map((ci) => {
                       const cpm = getCPMForInfluencer(ci)
                       const feeValue = editingFee[ci.id] !== undefined ? editingFee[ci.id] : (ci.agreedFee || ci.cost || '')
 
