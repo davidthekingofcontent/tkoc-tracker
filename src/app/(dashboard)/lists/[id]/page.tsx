@@ -237,7 +237,7 @@ export default function ListDetailPage() {
         <div className="flex items-center gap-3">
           <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
             <Upload className="h-4 w-4" />
-            {t.listDetail?.import || 'Import CSV'}
+            {'Import CSV'}
             <input
               type="file"
               accept=".csv,.txt"
