@@ -32,6 +32,7 @@ import { CreatorScoreBadge } from '@/components/creator-score-badge'
 import { DealAdvisorPanel } from '@/components/deal-advisor-panel'
 import { ReportPreviewModal } from '@/components/report-preview-modal'
 import { RiskSignalsBadge } from '@/components/risk-signals-badge'
+import { SpainFitLink } from '@/components/spain-fit-badge'
 import { calculateCreatorScore } from '@/lib/creator-score'
 import { evaluateFeeClient } from '@/lib/market-benchmark-client'
 import { proxyImg } from '@/lib/proxy-image'
@@ -1926,7 +1927,10 @@ export default function CampaignDetailPage() {
                                   <p className="font-medium text-gray-900">
                                     {ci.influencer.displayName || ci.influencer.username}
                                   </p>
-                                  <p className="text-xs text-gray-500">@{ci.influencer.username}</p>
+                                  <div className="flex items-center gap-1">
+                                    <p className="text-xs text-gray-500">@{ci.influencer.username}</p>
+                                    <SpainFitLink username={ci.influencer.username} platform={ci.influencer.platform} />
+                                  </div>
                                 </div>
                               </div>
                             </TableCell>
