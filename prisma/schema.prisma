@@ -562,6 +562,285 @@ model CompetitorPost {
   @@index([competitorId])
 }
 
+// ============ DISCOVERY: CREATOR PROFILES ============
+
+model CreatorProfile {
+  id                String    @id @default(cuid())
+  displayName       String?
+  primaryPlatform   Platform
+
+  // Spain Fit
+  spainFitScore     Float?    // 0-100
+  spainFitLevel     String?   // confirmed/probable/partial/hispanic_global/latam/unknown
+
+  // Categories
+  primaryCategory   String?
+  categories        String[]
+
+  // Language
+  primaryLanguage   String?
+  languages         String[]
+
+  // Geography (inferred from signals)
+  geoCity           String?
+  geoProvince       String?
+  geoCountry        String?
+  geoConfidence     String    @default("unknown") // observed/inferred/unknown
+
+  // Contact
+  contactEmail      String?
+  contactEmailSource String?  // bio/website/manual
+  websiteUrl        String?
+
+  // Scoring
+  performanceScore  Float?    // 0-100
+  riskLevel         String?   // low/medium/high
+  dataQualityScore  Float?    // 0-100
+
+  // Type classification
+  creatorType       String?   // influencer/ugc_organic/ugc_ads/mixed
+
+  // Status
+  isVerifiedCreator Boolean   @default(false)
+  isSuppressed      Boolean   @default(false)
+  lastEnriched      DateTime?
+
+  // Relations
+  platformProfiles  CreatorPlatformProfile[]
+  snapshots         CreatorSnapshot[]
+  posts             CreatorPost[]
+  brandMentions     CreatorBrandMention[]
+  geoSignals        CreatorGeoSignal[]
+  categorySignals   CreatorCategorySignal[]
+  scores            CreatorScoreRecord[]
+  suppressionRequest SuppressionRequest?
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@map("creator_profiles")
+}
+
+model CreatorPlatformProfile {
+  id              String    @id @default(cuid())
+  creatorId       String
+  creator         CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  platform        Platform
+  username        String
+  platformUserId  String?
+
+  // Metrics
+  followers       Int       @default(0)
+  following       Int       @default(0)
+  postsCount      Int       @default(0)
+  engagementRate  Float     @default(0)
+  avgViews        Int       @default(0)
+  avgLikes        Int       @default(0)
+  avgComments     Int       @default(0)
+  medianViews     Int?      // More reliable than avg
+
+  // Profile data
+  bio             String?
+  avatarUrl       String?
+  isVerified      Boolean   @default(false)
+
+  // Tracking
+  lastScraped     DateTime?
+  dataSource      String    @default("apify") // apify/api/manual
+  scrapeCount     Int       @default(0)
+
+  // Link to existing Influencer model
+  influencerId    String?   // Link to legacy Influencer if exists
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([platform, username])
+  @@index([creatorId])
+  @@index([followers])
+  @@map("creator_platform_profiles")
+}
+
+model CreatorSnapshot {
+  id              String    @id @default(cuid())
+  creatorId       String
+  creator         CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  platform        Platform
+  followers       Int
+  engagementRate  Float?
+  avgViews        Int?
+  avgLikes        Int?
+  medianViews     Int?
+  capturedAt      DateTime  @default(now())
+  source          String    @default("apify")
+
+  @@index([creatorId, capturedAt])
+  @@map("creator_snapshots")
+}
+
+model CreatorPost {
+  id              String    @id @default(cuid())
+  creatorId       String
+  creator         CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  platform        Platform
+  externalId      String?
+  mediaType       String    @default("POST") // POST/REEL/STORY/VIDEO/SHORT/CAROUSEL
+  caption         String?
+  likes           Int       @default(0)
+  comments        Int       @default(0)
+  views           Int       @default(0)
+  shares          Int       @default(0)
+  saves           Int       @default(0)
+  permalink       String?
+  thumbnailUrl    String?
+  postedAt        DateTime?
+  capturedAt      DateTime  @default(now())
+  hashtags        String[]
+  mentions        String[]
+  isBrandCollab   Boolean   @default(false)
+  detectedBrand   String?
+  source          String    @default("apify")
+
+  @@unique([platform, externalId])
+  @@index([creatorId])
+  @@index([postedAt])
+  @@map("creator_posts")
+}
+
+model CreatorBrandMention {
+  id              String    @id @default(cuid())
+  creatorId       String
+  creator         CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  brandName       String
+  platform        Platform
+  postId          String?
+  mentionType     String    // hashtag/tag/caption/bio
+  confidence      Float     @default(0.5)
+  detectedAt      DateTime  @default(now())
+
+  @@index([creatorId])
+  @@index([brandName])
+  @@map("creator_brand_mentions")
+}
+
+model CreatorGeoSignal {
+  id              String    @id @default(cuid())
+  creatorId       String
+  creator         CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  signalType      String    // bio_text/city_mention/timezone/hashtag/language/flag_emoji/posting_hours
+  value           String
+  confidence      Float     @default(0.5)
+  source          String    @default("inferred")
+  detectedAt      DateTime  @default(now())
+
+  @@index([creatorId])
+  @@map("creator_geo_signals")
+}
+
+model CreatorCategorySignal {
+  id              String    @id @default(cuid())
+  creatorId       String
+  creator         CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  category        String
+  confidence      Float     @default(0.5)
+  source          String    @default("inferred") // bio_keywords/hashtags/brand_collabs/manual
+  detectedAt      DateTime  @default(now())
+
+  @@index([creatorId])
+  @@index([category])
+  @@map("creator_category_signals")
+}
+
+model CreatorScoreRecord {
+  id              String    @id @default(cuid())
+  creatorId       String
+  creator         CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  scoreType       String    // spain_fit/performance/fee_recommendation/risk/brand_safety
+  score           Float
+  signal          String    // green/yellow/red
+  explanation     String    // human-readable
+  components      Json?     // breakdown
+  isInferred      Boolean   @default(true)
+  confidence      Float     @default(0.5)
+  calculatedAt    DateTime  @default(now())
+
+  @@index([creatorId, scoreType])
+  @@map("creator_score_records")
+}
+
+// ============ DISCOVERY: CRAWL JOBS ============
+
+model CrawlJob {
+  id              String    @id @default(cuid())
+  jobType         String    // profile_scrape/hashtag_discovery/refresh/enrichment/seed
+  platform        Platform?
+  target          String    // username/hashtag/url
+  priority        Int       @default(5) // 1=highest, 10=lowest
+  status          String    @default("pending") // pending/running/completed/failed/stale
+  attempts        Int       @default(0)
+  maxAttempts     Int       @default(3)
+  result          Json?
+  error           String?
+  itemsFound      Int       @default(0)
+  scheduledFor    DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([status, priority, scheduledFor])
+  @@index([jobType, platform])
+  @@map("crawl_jobs_v2")
+}
+
+// ============ DISCOVERY: DATA PROVENANCE ============
+
+model DataProvenance {
+  id              String    @id @default(cuid())
+  entityType      String    // creator/post/score
+  entityId        String
+  field           String    // followers/geoCountry/category
+  value           String
+  source          String    // apify/youtube_api/manual/inferred
+  method          String    // scrape/api_call/nlp/heuristic
+  confidence      Float     @default(0.5)
+  isInferred      Boolean   @default(false)
+  capturedAt      DateTime  @default(now())
+
+  @@index([entityType, entityId])
+  @@map("data_provenance")
+}
+
+// ============ DISCOVERY: COMPLIANCE ============
+
+model SuppressionRequest {
+  id              String    @id @default(cuid())
+  creatorId       String    @unique
+  creator         CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  requestType     String    // deletion/opposition/rectification
+  requestedAt     DateTime  @default(now())
+  processedAt     DateTime?
+  status          String    @default("pending") // pending/processed/rejected
+  reason          String?
+  requestedBy     String?   // email of requester
+
+  @@map("suppression_requests")
+}
+
+// ============ DISCOVERY: SPAIN CATEGORIES ============
+
+model SpainCategory {
+  id              String    @id @default(cuid())
+  slug            String    @unique
+  nameEs          String
+  nameEn          String
+  parentSlug      String?
+  keywords        String[]  // for automatic detection
+  hashtagsEs      String[]  // Spanish hashtags for this category
+  brandsEs        String[]  // Spanish brands in this sector
+
+  @@map("spain_categories")
+}
+
 // ============ SOCIAL API TOKENS ============
 
 model SocialToken {
