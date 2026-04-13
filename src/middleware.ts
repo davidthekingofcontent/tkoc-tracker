@@ -30,7 +30,14 @@ function isPublicPath(pathname: string): boolean {
     pathname.startsWith('/images') ||
     pathname.startsWith('/api/') ||
     pathname.endsWith('.txt') ||
-    pathname.endsWith('.json')
+    pathname.endsWith('.json') ||
+    pathname.endsWith('.js') ||
+    pathname.endsWith('.css') ||
+    pathname.endsWith('.svg') ||
+    pathname.endsWith('.png') ||
+    pathname.endsWith('.ico') ||
+    pathname === '/capture.js' ||
+    pathname.startsWith('/sw.js')
   ) {
     return true
   }
