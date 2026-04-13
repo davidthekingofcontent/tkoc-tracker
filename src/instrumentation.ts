@@ -1,5 +1,6 @@
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000
 const ONE_HOUR_MS = 1 * 60 * 60 * 1000
+const THIRTY_MINUTES_MS = 30 * 60 * 1000
 const FOUR_HOURS_MS = 4 * 60 * 60 * 1000
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000
@@ -13,6 +14,8 @@ interface CronJob {
   initialDelayMs: number
   /** Auth style: 'bearer' uses Authorization: Bearer, 'header' uses x-cron-secret */
   auth: 'bearer' | 'header'
+  /** HTTP method override (defaults to GET) */
+  method?: 'GET' | 'POST'
 }
 
 const CRON_JOBS: CronJob[] = [
@@ -21,6 +24,7 @@ const CRON_JOBS: CronJob[] = [
   { name: 'stories',          path: '/api/cron/stories',          intervalMs: FOUR_HOURS_MS,   initialDelayMs: 15 * 60 * 1000,       auth: 'header' },
   { name: 'check-posts',      path: '/api/cron/check-posts',      intervalMs: SIX_HOURS_MS,    initialDelayMs: 20 * 60 * 1000,       auth: 'header' },
   { name: 'check-deletions',  path: '/api/cron/check-deletions',  intervalMs: TWELVE_HOURS_MS, initialDelayMs: 25 * 60 * 1000,       auth: 'bearer' },
+  { name: 'live-capture-enrich', path: '/api/live-capture/enrich', intervalMs: THIRTY_MINUTES_MS, initialDelayMs: 8 * 60 * 1000, auth: 'header', method: 'POST' },
 ]
 
 async function executeCron(job: CronJob) {
@@ -37,7 +41,14 @@ async function executeCron(job: CronJob) {
     }
 
     console.log(`[TKOC Cron] Running ${job.name}...`)
-    const res = await fetch(`${baseUrl}${job.path}`, { headers })
+    const res = await fetch(`${baseUrl}${job.path}`, {
+      method: job.method || 'GET',
+      headers: {
+        ...headers,
+        ...(job.method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(job.method === 'POST' ? { body: '{}' } : {}),
+    })
     const text = await res.text()
     console.log(`[TKOC Cron] ${job.name} completed (${res.status}):`, text.substring(0, 300))
   } catch (error) {

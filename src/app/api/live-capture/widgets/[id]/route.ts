@@ -20,6 +20,10 @@ export async function GET(
         _count: {
           select: { captures: true },
         },
+        captures: {
+          orderBy: { createdAt: 'desc' },
+          take: 200,
+        },
       },
     })
 
@@ -27,7 +31,70 @@ export async function GET(
       return NextResponse.json({ error: 'Widget not found' }, { status: 404 })
     }
 
-    return NextResponse.json({ widget })
+    // Enrich captures that have a matchedContactId with creator data
+    const matchedContactIds = widget.captures
+      .map(c => c.matchedContactId)
+      .filter((id): id is string => id !== null)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let enrichmentMap: Record<string, any> = {}
+
+    if (matchedContactIds.length > 0) {
+      // Find matches for these contacts
+      const matches = await prisma.clientCreatorMatch.findMany({
+        where: {
+          clientContactId: { in: matchedContactIds },
+          userId: session.id,
+        },
+        include: {
+          creatorProfile: {
+            include: {
+              platformProfiles: {
+                take: 1,
+                orderBy: { followers: 'desc' },
+                select: {
+                  platform: true,
+                  followers: true,
+                  engagementRate: true,
+                },
+              },
+            },
+          },
+          warmScore: {
+            select: {
+              opportunityGrade: true,
+              opportunityScore: true,
+            },
+          },
+        },
+      })
+
+      for (const match of matches) {
+        const pp = match.creatorProfile.platformProfiles[0]
+        enrichmentMap[match.clientContactId] = {
+          followers: pp?.followers ?? null,
+          engagementRate: pp?.engagementRate ?? null,
+          platform: pp?.platform ?? null,
+          warmGrade: match.warmScore?.opportunityGrade ?? null,
+          warmScore: match.warmScore?.opportunityScore ?? null,
+        }
+      }
+    }
+
+    // Attach enrichment data to captures
+    const capturesWithEnrichment = widget.captures.map(capture => ({
+      ...capture,
+      enrichedData: capture.matchedContactId
+        ? enrichmentMap[capture.matchedContactId] || null
+        : null,
+    }))
+
+    return NextResponse.json({
+      widget: {
+        ...widget,
+        captures: capturesWithEnrichment,
+      },
+    })
   } catch (error) {
     console.error('Get live capture widget error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

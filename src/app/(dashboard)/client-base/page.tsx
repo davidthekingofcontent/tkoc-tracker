@@ -127,6 +127,14 @@ interface LiveCaptureEntry {
   isProcessed: boolean
   matchedContactId: string | null
   createdAt: string
+  // Enrichment data (populated when matched)
+  enrichedData?: {
+    followers: number | null
+    engagementRate: number | null
+    platform: string | null
+    warmGrade: string | null
+    warmScore: number | null
+  } | null
 }
 
 interface CaptureStats {
@@ -328,6 +336,10 @@ export default function ClientBasePage() {
   const [wfMobile, setWfMobile] = useState(true)
   const [wfDomains, setWfDomains] = useState('')
   const [isSavingWidget, setIsSavingWidget] = useState(false)
+
+  // Capture enrichment
+  const [isEnriching, setIsEnriching] = useState(false)
+  const [enrichResult, setEnrichResult] = useState<{ processed: number; enriched: number; matchesCreated: number; errors: number } | null>(null)
 
   // Capture filters
   const [captureFilter, setCaptureFilter] = useState<'all' | 'processed' | 'unprocessed'>('all')
@@ -717,6 +729,34 @@ export default function ClientBasePage() {
     }
   }
 
+  const handleEnrichCaptures = async () => {
+    setIsEnriching(true)
+    setEnrichResult(null)
+    try {
+      const res = await fetch('/api/live-capture/enrich', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setEnrichResult({
+          processed: data.processed || 0,
+          enriched: data.enriched || 0,
+          matchesCreated: data.matchesCreated || 0,
+          errors: data.errors || 0,
+        })
+        // Refresh captures and matches after enrichment
+        fetchCaptures()
+        fetchMatches()
+      }
+    } catch (err) {
+      console.error('Error enriching captures:', err)
+    } finally {
+      setIsEnriching(false)
+    }
+  }
+
   const handleToggleWidget = async (widget: LiveCaptureWidget) => {
     try {
       await fetch(`/api/live-capture/widgets/${widget.id}`, {
@@ -826,6 +866,25 @@ export default function ClientBasePage() {
         {/* === Live Captures Tab === */}
         <TabsContent value="captures">
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={handleEnrichCaptures}
+                disabled={isEnriching}
+                className="gap-1.5"
+              >
+                {isEnriching ? (
+                  <><Loader2 className="h-4 w-4 animate-spin" /> {tr('processing', 'Processing...')}</>
+                ) : (
+                  <><Zap className="h-4 w-4" /> {tr('processAll', 'Process All')}</>
+                )}
+              </Button>
+              {enrichResult && (
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {enrichResult.processed} processed, {enrichResult.enriched} enriched, {enrichResult.matchesCreated} matches
+                  {enrichResult.errors > 0 && `, ${enrichResult.errors} errors`}
+                </span>
+              )}
+            </div>
             <div className="flex-1" />
             <div className="flex items-center gap-2">
               <select
@@ -878,6 +937,7 @@ export default function ClientBasePage() {
                     <TableHead>{t.common.email}</TableHead>
                     <TableHead>{t.common.name}</TableHead>
                     <TableHead>{tr('pageUrl', 'Page URL')}</TableHead>
+                    <TableHead>{tr('creatorData', 'Creator Data')}</TableHead>
                     <TableHead>{tr('matched', 'Matched?')}</TableHead>
                     <TableHead>{tr('processedStatus', 'Processed')}</TableHead>
                   </TableRow>
@@ -930,6 +990,32 @@ export default function ClientBasePage() {
                           <span className="text-xs text-gray-400 truncate max-w-[200px] block" title={capture.pageUrl}>
                             {capture.pageUrl.replace(/^https?:\/\//, '').slice(0, 40)}
                           </span>
+                        ) : (
+                          <span className="text-xs text-gray-400">--</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {capture.enrichedData ? (
+                          <div className="flex flex-col gap-0.5">
+                            {capture.enrichedData.followers != null && (
+                              <span className="text-xs text-gray-600 dark:text-gray-400">
+                                {capture.enrichedData.followers >= 1000
+                                  ? `${(capture.enrichedData.followers / 1000).toFixed(1)}K`
+                                  : capture.enrichedData.followers} followers
+                              </span>
+                            )}
+                            {capture.enrichedData.engagementRate != null && (
+                              <span className="text-xs text-gray-500">
+                                {capture.enrichedData.engagementRate.toFixed(2)}% eng.
+                              </span>
+                            )}
+                            {capture.enrichedData.warmGrade && (
+                              <span className={`text-xs font-semibold ${gradeColor(capture.enrichedData.warmGrade)}`}>
+                                Grade {capture.enrichedData.warmGrade}
+                                {capture.enrichedData.warmScore != null && ` (${Math.round(capture.enrichedData.warmScore)})`}
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-xs text-gray-400">--</span>
                         )}
