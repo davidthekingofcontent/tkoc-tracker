@@ -15,6 +15,15 @@ import {
   FileSpreadsheet,
   Instagram,
   Youtube,
+  Radio,
+  Copy,
+  ExternalLink,
+  Trash2,
+  Settings2,
+  Eye,
+  ToggleLeft,
+  ToggleRight,
+  Code2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -83,6 +92,52 @@ interface ClientMatch {
 interface ImportResult {
   imported: number
   matches: number
+}
+
+interface LiveCaptureWidget {
+  id: string
+  name: string
+  apiKey: string
+  brandName: string | null
+  brandLogo: string | null
+  primaryColor: string
+  incentiveText: string | null
+  headlineText: string
+  subtitleText: string | null
+  triggerType: string
+  triggerDelay: number
+  triggerScroll: number
+  showOnMobile: boolean
+  allowedDomains: string[]
+  impressions: number
+  submissions: number
+  isActive: boolean
+  createdAt: string
+  _count: { captures: number }
+}
+
+interface LiveCaptureEntry {
+  id: string
+  instagramHandle: string | null
+  tiktokHandle: string | null
+  youtubeHandle: string | null
+  email: string | null
+  name: string | null
+  pageUrl: string | null
+  isProcessed: boolean
+  matchedContactId: string | null
+  createdAt: string
+}
+
+interface CaptureStats {
+  totalCaptures: number
+  processedCaptures: number
+  matchedCaptures: number
+  totalImpressions: number
+  totalSubmissions: number
+  conversionRate: number
+  activeWidgets: number
+  totalWidgets: number
 }
 
 // --- Helpers ---
@@ -217,6 +272,18 @@ function autoDetectMapping(headers: string[]): Record<number, MappableField | ''
   return mapping
 }
 
+function copyToClipboard(text: string) {
+  navigator.clipboard.writeText(text).catch(() => {
+    // Fallback
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  })
+}
+
 // --- Main Component ---
 
 export default function ClientBasePage() {
@@ -233,6 +300,38 @@ export default function ClientBasePage() {
   const [matches, setMatches] = useState<ClientMatch[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isLoadingMatches, setIsLoadingMatches] = useState(true)
+
+  // Live Capture state
+  const [widgets, setWidgets] = useState<LiveCaptureWidget[]>([])
+  const [captures, setCaptures] = useState<LiveCaptureEntry[]>([])
+  const [captureStats, setCaptureStats] = useState<CaptureStats | null>(null)
+  const [isLoadingWidgets, setIsLoadingWidgets] = useState(true)
+  const [isLoadingCaptures, setIsLoadingCaptures] = useState(true)
+
+  // Widget management
+  const [showWidgetModal, setShowWidgetModal] = useState(false)
+  const [editingWidget, setEditingWidget] = useState<LiveCaptureWidget | null>(null)
+  const [showSnippetModal, setShowSnippetModal] = useState<string | null>(null)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+
+  // Widget form
+  const [wfName, setWfName] = useState('Default Widget')
+  const [wfBrandName, setWfBrandName] = useState('')
+  const [wfBrandLogo, setWfBrandLogo] = useState('')
+  const [wfColor, setWfColor] = useState('#7c3aed')
+  const [wfIncentive, setWfIncentive] = useState('')
+  const [wfHeadline, setWfHeadline] = useState('Share your social media')
+  const [wfSubtitle, setWfSubtitle] = useState('Connect with us and get exclusive offers')
+  const [wfTrigger, setWfTrigger] = useState('exit_intent')
+  const [wfDelay, setWfDelay] = useState(5)
+  const [wfScroll, setWfScroll] = useState(50)
+  const [wfMobile, setWfMobile] = useState(true)
+  const [wfDomains, setWfDomains] = useState('')
+  const [isSavingWidget, setIsSavingWidget] = useState(false)
+
+  // Capture filters
+  const [captureFilter, setCaptureFilter] = useState<'all' | 'processed' | 'unprocessed'>('all')
+  const [captureMatchFilter, setCaptureMatchFilter] = useState<'all' | 'matched' | 'unmatched'>('all')
 
   // Search & filters - contacts
   const [contactSearch, setContactSearch] = useState('')
@@ -302,10 +401,64 @@ export default function ClientBasePage() {
     }
   }, [])
 
+  // Fetch widgets
+  const fetchWidgets = useCallback(async () => {
+    try {
+      const res = await fetch('/api/live-capture/widgets')
+      if (res.ok) {
+        const data = await res.json()
+        setWidgets(data.widgets || [])
+      }
+    } catch (err) {
+      console.error('Error fetching widgets:', err)
+    } finally {
+      setIsLoadingWidgets(false)
+    }
+  }, [])
+
+  // Fetch captures (recent)
+  const fetchCaptures = useCallback(async () => {
+    try {
+      const res = await fetch('/api/live-capture/stats')
+      if (res.ok) {
+        const data = await res.json()
+        setCaptureStats(data.stats || null)
+      }
+    } catch (err) {
+      console.error('Error fetching capture stats:', err)
+    }
+
+    // Fetch actual captures via widgets
+    try {
+      const res = await fetch('/api/live-capture/widgets')
+      if (res.ok) {
+        const data = await res.json()
+        const widgetList = data.widgets || []
+        // Get captures from all widgets
+        const allCaptures: LiveCaptureEntry[] = []
+        for (const widget of widgetList) {
+          try {
+            const cRes = await fetch(`/api/live-capture/widgets/${widget.id}`)
+            if (cRes.ok) {
+              const cData = await cRes.json()
+              if (cData.widget?.captures) {
+                allCaptures.push(...cData.widget.captures)
+              }
+            }
+          } catch { /* skip */ }
+        }
+        setCaptures(allCaptures)
+      }
+    } catch { /* skip */ }
+    setIsLoadingCaptures(false)
+  }, [])
+
   useEffect(() => {
     fetchContacts()
     fetchMatches()
-  }, [fetchContacts, fetchMatches])
+    fetchWidgets()
+    fetchCaptures()
+  }, [fetchContacts, fetchMatches, fetchWidgets, fetchCaptures])
 
   // Stats
   const totalClients = contacts.length
@@ -423,7 +576,6 @@ export default function ClientBasePage() {
     setIsImporting(true)
     setImportResult(null)
 
-    // Map rows to contact objects
     const mappedContacts = csvRows.map(row => {
       const contact: Record<string, string> = {}
       Object.entries(csvMapping).forEach(([idxStr, field]) => {
@@ -433,7 +585,7 @@ export default function ClientBasePage() {
         }
       })
       return contact
-    }).filter(c => c.name || c.email) // At least name or email required
+    }).filter(c => c.name || c.email)
 
     try {
       const res = await fetch('/api/client-contacts/import', {
@@ -486,21 +638,139 @@ export default function ClientBasePage() {
     }
   }
 
+  // Widget management
+  const resetWidgetForm = () => {
+    setWfName('Default Widget')
+    setWfBrandName('')
+    setWfBrandLogo('')
+    setWfColor('#7c3aed')
+    setWfIncentive('')
+    setWfHeadline('Share your social media')
+    setWfSubtitle('Connect with us and get exclusive offers')
+    setWfTrigger('exit_intent')
+    setWfDelay(5)
+    setWfScroll(50)
+    setWfMobile(true)
+    setWfDomains('')
+    setEditingWidget(null)
+  }
+
+  const openWidgetModal = (widget?: LiveCaptureWidget) => {
+    if (widget) {
+      setEditingWidget(widget)
+      setWfName(widget.name)
+      setWfBrandName(widget.brandName || '')
+      setWfBrandLogo(widget.brandLogo || '')
+      setWfColor(widget.primaryColor)
+      setWfIncentive(widget.incentiveText || '')
+      setWfHeadline(widget.headlineText)
+      setWfSubtitle(widget.subtitleText || '')
+      setWfTrigger(widget.triggerType)
+      setWfDelay(widget.triggerDelay)
+      setWfScroll(widget.triggerScroll)
+      setWfMobile(widget.showOnMobile)
+      setWfDomains(widget.allowedDomains.join(', '))
+    } else {
+      resetWidgetForm()
+    }
+    setShowWidgetModal(true)
+  }
+
+  const handleSaveWidget = async () => {
+    setIsSavingWidget(true)
+    const payload = {
+      name: wfName.trim() || 'Default Widget',
+      brandName: wfBrandName.trim() || null,
+      brandLogo: wfBrandLogo.trim() || null,
+      primaryColor: wfColor,
+      incentiveText: wfIncentive.trim() || null,
+      headlineText: wfHeadline.trim() || 'Share your social media',
+      subtitleText: wfSubtitle.trim() || null,
+      triggerType: wfTrigger,
+      triggerDelay: wfDelay,
+      triggerScroll: wfScroll,
+      showOnMobile: wfMobile,
+      allowedDomains: wfDomains.split(',').map(d => d.trim()).filter(Boolean),
+    }
+
+    try {
+      if (editingWidget) {
+        await fetch(`/api/live-capture/widgets/${editingWidget.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+      } else {
+        await fetch('/api/live-capture/widgets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+      }
+      setShowWidgetModal(false)
+      resetWidgetForm()
+      fetchWidgets()
+    } catch (err) {
+      console.error('Error saving widget:', err)
+    } finally {
+      setIsSavingWidget(false)
+    }
+  }
+
+  const handleToggleWidget = async (widget: LiveCaptureWidget) => {
+    try {
+      await fetch(`/api/live-capture/widgets/${widget.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: !widget.isActive }),
+      })
+      fetchWidgets()
+    } catch (err) {
+      console.error('Error toggling widget:', err)
+    }
+  }
+
+  const handleDeleteWidget = async (widgetId: string) => {
+    if (!confirm('Are you sure you want to delete this widget? All captures will be lost.')) return
+    try {
+      await fetch(`/api/live-capture/widgets/${widgetId}`, { method: 'DELETE' })
+      fetchWidgets()
+      fetchCaptures()
+    } catch (err) {
+      console.error('Error deleting widget:', err)
+    }
+  }
+
+  const handleCopyKey = (key: string) => {
+    copyToClipboard(key)
+    setCopiedKey(key)
+    setTimeout(() => setCopiedKey(null), 2000)
+  }
+
+  const getEmbedSnippet = (apiKey: string) => {
+    return `<script src="${typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com'}/capture.js" data-api-key="${apiKey}"></script>`
+  }
+
   // --- Render ---
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-          {tr('title', 'My Client Base')}
-        </h1>
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+            {tr('title', 'My Client Base')}
+          </h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            {tr('liveCaptureDesc', 'Capture social handles from website visitors and match them with creators.')}
+          </p>
+        </div>
         <div className="flex items-center gap-2">
           <Button variant="secondary" onClick={() => { resetImportModal(); setShowImportModal(true) }}>
             <Upload className="h-4 w-4" />
             {tr('importCsv', 'Import CSV')}
           </Button>
-          <Button onClick={() => { resetAddForm(); setShowAddModal(true) }}>
+          <Button variant="secondary" onClick={() => { resetAddForm(); setShowAddModal(true) }}>
             <Plus className="h-4 w-4" />
             {tr('addContact', 'Add Contact')}
           </Button>
@@ -508,160 +778,338 @@ export default function ClientBasePage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <StatCard
-          icon={<Users className="h-5 w-5" />}
-          label={tr('totalClients', 'Total Clients')}
-          value={totalClients}
+          icon={<Radio className="h-5 w-5" />}
+          label={tr('totalCaptures', 'Total Captures')}
+          value={captureStats?.totalCaptures ?? 0}
           accent
+        />
+        <StatCard
+          icon={<Check className="h-5 w-5" />}
+          label={tr('processed', 'Processed')}
+          value={captureStats?.processedCaptures ?? 0}
         />
         <StatCard
           icon={<Zap className="h-5 w-5" />}
           label={tr('matchesFound', 'Matches Found')}
-          value={totalMatches}
+          value={captureStats?.matchedCaptures ?? totalMatches}
         />
         <StatCard
           icon={<Flame className="h-5 w-5" />}
-          label={tr('warmOpportunities', 'Warm Opportunities (A+B)')}
-          value={warmOpportunities}
+          label={tr('conversionRate', 'Conversion Rate')}
+          value={`${captureStats?.conversionRate ?? 0}%`}
         />
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="contacts">
+      <Tabs defaultValue="captures">
         <TabsList>
-          <TabsTrigger value="contacts">{tr('contactsTab', 'Contacts')}</TabsTrigger>
-          <TabsTrigger value="matches">{tr('matchesTab', 'Matches')}</TabsTrigger>
+          <TabsTrigger value="captures">
+            <Radio className="mr-1.5 h-3.5 w-3.5" />
+            {tr('liveCapturesTab', 'Live Captures')}
+          </TabsTrigger>
+          <TabsTrigger value="widgets">
+            <Code2 className="mr-1.5 h-3.5 w-3.5" />
+            {tr('widgetsTab', 'Widgets')}
+          </TabsTrigger>
+          <TabsTrigger value="matches">
+            <Zap className="mr-1.5 h-3.5 w-3.5" />
+            {tr('matchesTab', 'Matches')}
+          </TabsTrigger>
+          <TabsTrigger value="contacts">
+            <Users className="mr-1.5 h-3.5 w-3.5" />
+            {tr('contactsTab', 'Contacts')}
+          </TabsTrigger>
         </TabsList>
 
-        {/* === Contacts Tab === */}
-        <TabsContent value="contacts">
-          {/* Search + Filters */}
+        {/* === Live Captures Tab === */}
+        <TabsContent value="captures">
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="flex-1">
-              <Input
-                placeholder={tr('searchContacts', 'Search contacts by name, email, company...')}
-                value={contactSearch}
-                onChange={(e) => setContactSearch(e.target.value)}
-                icon={<Search className="h-4 w-4" />}
-              />
-            </div>
+            <div className="flex-1" />
             <div className="flex items-center gap-2">
               <select
-                value={sourceFilter}
-                onChange={(e) => setSourceFilter(e.target.value)}
+                value={captureFilter}
+                onChange={(e) => setCaptureFilter(e.target.value as 'all' | 'processed' | 'unprocessed')}
                 className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm text-gray-900 dark:text-white focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
               >
-                <option value="">{tr('allSources', 'All Sources')}</option>
-                <option value="CSV">{tr('csv', 'CSV')}</option>
-                <option value="MANUAL">{tr('manual', 'Manual')}</option>
-                <option value="CRM">{tr('crm', 'CRM')}</option>
+                <option value="all">{tr('allCaptures', 'All Captures')}</option>
+                <option value="processed">{tr('processedOnly', 'Processed')}</option>
+                <option value="unprocessed">{tr('unprocessedOnly', 'Unprocessed')}</option>
               </select>
               <select
-                value={relationshipFilter}
-                onChange={(e) => setRelationshipFilter(e.target.value)}
+                value={captureMatchFilter}
+                onChange={(e) => setCaptureMatchFilter(e.target.value as 'all' | 'matched' | 'unmatched')}
                 className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm text-gray-900 dark:text-white focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
               >
-                <option value="">{tr('allRelationships', 'All Relationships')}</option>
-                {relationshipTypes.map(rt => (
-                  <option key={rt} value={rt}>{rt}</option>
-                ))}
+                <option value="all">{tr('allMatches', 'All')}</option>
+                <option value="matched">{tr('hasMatch', 'Has Match')}</option>
+                <option value="unmatched">{tr('noMatch', 'No Match')}</option>
               </select>
             </div>
           </div>
 
-          {/* Contacts Table */}
-          {isLoading ? (
+          {isLoadingCaptures ? (
             <div className="flex items-center justify-center py-16 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
               <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
               <span className="ml-2 text-gray-500">{t.common.loading}</span>
+            </div>
+          ) : captures.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+              <Radio className="h-10 w-10 text-gray-300 dark:text-gray-600 mb-4" />
+              <p className="text-base font-medium text-gray-900 dark:text-gray-100">
+                {tr('noCapturesYet', 'No captures yet')}
+              </p>
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400 text-center max-w-md">
+                {tr('noCapturesDesc', 'Create a widget and embed it on your website to start capturing social handles from visitors.')}
+              </p>
+              <Button className="mt-4" onClick={() => openWidgetModal()}>
+                <Plus className="h-4 w-4" />
+                {tr('createWidget', 'Create Widget')}
+              </Button>
             </div>
           ) : (
             <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden shadow-sm">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>{t.common.name}</TableHead>
-                    <TableHead>{tr('company', 'Company')}</TableHead>
+                    <TableHead>{tr('date', 'Date')}</TableHead>
+                    <TableHead>{tr('handles', 'Handle(s)')}</TableHead>
                     <TableHead>{t.common.email}</TableHead>
-                    <TableHead>{tr('source', 'Source')}</TableHead>
-                    <TableHead>{tr('relationship', 'Relationship')}</TableHead>
-                    <TableHead>{t.common.status}</TableHead>
-                    <TableHead>{tr('matches', 'Matches')}</TableHead>
-                    <TableHead>{t.common.actions}</TableHead>
+                    <TableHead>{t.common.name}</TableHead>
+                    <TableHead>{tr('pageUrl', 'Page URL')}</TableHead>
+                    <TableHead>{tr('matched', 'Matched?')}</TableHead>
+                    <TableHead>{tr('processedStatus', 'Processed')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredContacts.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={8} className="py-12 text-center text-gray-500">
-                        {contacts.length === 0
-                          ? tr('noContactsDesc', 'Add your first client contact or import a CSV to get started.')
-                          : t.common.noResults}
+                  {captures
+                    .filter(c => {
+                      if (captureFilter === 'processed' && !c.isProcessed) return false
+                      if (captureFilter === 'unprocessed' && c.isProcessed) return false
+                      if (captureMatchFilter === 'matched' && !c.matchedContactId) return false
+                      if (captureMatchFilter === 'unmatched' && c.matchedContactId) return false
+                      return true
+                    })
+                    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                    .map((capture) => (
+                    <TableRow key={capture.id}>
+                      <TableCell>
+                        <span className="text-xs text-gray-500">{formatDate(capture.createdAt)}</span>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-col gap-0.5">
+                          {capture.instagramHandle && (
+                            <span className="inline-flex items-center gap-1 text-xs">
+                              <Instagram className="h-3 w-3 text-pink-500" />
+                              @{capture.instagramHandle}
+                            </span>
+                          )}
+                          {capture.tiktokHandle && (
+                            <span className="inline-flex items-center gap-1 text-xs">
+                              <TikTokIcon className="h-3 w-3" />
+                              @{capture.tiktokHandle}
+                            </span>
+                          )}
+                          {capture.youtubeHandle && (
+                            <span className="inline-flex items-center gap-1 text-xs">
+                              <Youtube className="h-3 w-3 text-red-500" />
+                              {capture.youtubeHandle}
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-xs text-gray-400">{capture.email || '--'}</span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-sm text-gray-600 dark:text-gray-400">{capture.name || '--'}</span>
+                      </TableCell>
+                      <TableCell>
+                        {capture.pageUrl ? (
+                          <span className="text-xs text-gray-400 truncate max-w-[200px] block" title={capture.pageUrl}>
+                            {capture.pageUrl.replace(/^https?:\/\//, '').slice(0, 40)}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-400">--</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {capture.matchedContactId ? (
+                          <Badge variant="active">
+                            <Check className="h-3 w-3" /> {tr('yes', 'Yes')}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-gray-400">{tr('no', 'No')}</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {capture.isProcessed ? (
+                          <Check className="h-4 w-4 text-green-500" />
+                        ) : (
+                          <span className="text-xs text-gray-400">--</span>
+                        )}
                       </TableCell>
                     </TableRow>
-                  ) : (
-                    filteredContacts.map((contact) => (
-                      <TableRow key={contact.id}>
-                        <TableCell>
-                          <p className="font-medium text-gray-900 dark:text-gray-100">{contact.name}</p>
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-sm text-gray-600 dark:text-gray-400">{contact.company || '—'}</span>
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-xs text-gray-400">{contact.email || '—'}</span>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="default">{contact.source}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-sm text-gray-600 dark:text-gray-400">
-                            {contact.relationshipType || '—'}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={
-                            contact.relationshipStatus === 'active' ? 'active' :
-                            contact.relationshipStatus === 'paused' ? 'paused' : 'default'
-                          }>
-                            {contact.relationshipStatus || '—'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {contact.matchCount > 0 ? (
-                            <button
-                              onClick={() => {
-                                // Switch to matches tab filtered by this client (handled via search)
-                                setMatchSearch(contact.name)
-                                const tabEl = document.querySelector('[role="tab"][aria-selected="false"]') as HTMLButtonElement
-                                if (tabEl) tabEl.click()
-                              }}
-                              className="inline-flex items-center gap-1 rounded-full bg-purple-50 dark:bg-purple-900/30 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/50 transition-colors"
-                            >
-                              <Zap className="h-3 w-3" />
-                              {contact.matchCount}
-                            </button>
-                          ) : (
-                            <span className="text-xs text-gray-400">0</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <button
-                            onClick={() => {
-                              // Could open edit modal - for now, just a placeholder
-                            }}
-                            className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100"
-                            title="View"
-                          >
-                            <ChevronDown className="h-4 w-4" />
-                          </button>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
+                  ))}
                 </TableBody>
               </Table>
+            </div>
+          )}
+        </TabsContent>
+
+        {/* === Widgets Tab === */}
+        <TabsContent value="widgets">
+          <div className="mb-4 flex items-center justify-between">
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              {tr('widgetsDesc', 'Manage your capture widgets. Embed them on your brand website to collect social handles.')}
+            </p>
+            <Button onClick={() => openWidgetModal()}>
+              <Plus className="h-4 w-4" />
+              {tr('createWidget', 'Create Widget')}
+            </Button>
+          </div>
+
+          {isLoadingWidgets ? (
+            <div className="flex items-center justify-center py-16 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+              <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+              <span className="ml-2 text-gray-500">{t.common.loading}</span>
+            </div>
+          ) : widgets.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+              <Code2 className="h-10 w-10 text-gray-300 dark:text-gray-600 mb-4" />
+              <p className="text-base font-medium text-gray-900 dark:text-gray-100">
+                {tr('noWidgets', 'No widgets yet')}
+              </p>
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {tr('noWidgetsDesc', 'Create your first capture widget to start collecting social handles.')}
+              </p>
+              <Button className="mt-4" onClick={() => openWidgetModal()}>
+                <Plus className="h-4 w-4" />
+                {tr('createWidget', 'Create Widget')}
+              </Button>
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {widgets.map((widget) => (
+                <div
+                  key={widget.id}
+                  className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
+                >
+                  {/* Widget header */}
+                  <div className="flex items-start justify-between mb-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                          {widget.name}
+                        </h3>
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                          widget.isActive
+                            ? 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+                            : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
+                        }`}>
+                          {widget.isActive ? tr('active', 'Active') : tr('inactive', 'Inactive')}
+                        </span>
+                      </div>
+                      {widget.brandName && (
+                        <p className="text-xs text-gray-500 mt-0.5">{widget.brandName}</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleToggleWidget(widget)}
+                        className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+                        title={widget.isActive ? 'Deactivate' : 'Activate'}
+                      >
+                        {widget.isActive ? (
+                          <ToggleRight className="h-4 w-4 text-green-500" />
+                        ) : (
+                          <ToggleLeft className="h-4 w-4" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => openWidgetModal(widget)}
+                        className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+                        title="Edit"
+                      >
+                        <Settings2 className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteWidget(widget.id)}
+                        className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500"
+                        title="Delete"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Stats row */}
+                  <div className="grid grid-cols-3 gap-3 mb-4">
+                    <div className="text-center rounded-lg bg-gray-50 dark:bg-gray-700/50 p-2">
+                      <p className="text-lg font-bold text-gray-900 dark:text-gray-100">{widget.impressions}</p>
+                      <p className="text-xs text-gray-500">{tr('impressions', 'Impressions')}</p>
+                    </div>
+                    <div className="text-center rounded-lg bg-gray-50 dark:bg-gray-700/50 p-2">
+                      <p className="text-lg font-bold text-gray-900 dark:text-gray-100">{widget.submissions}</p>
+                      <p className="text-xs text-gray-500">{tr('submissions', 'Submissions')}</p>
+                    </div>
+                    <div className="text-center rounded-lg bg-gray-50 dark:bg-gray-700/50 p-2">
+                      <p className="text-lg font-bold text-gray-900 dark:text-gray-100">
+                        {widget.impressions > 0 ? Math.round((widget.submissions / widget.impressions) * 100) : 0}%
+                      </p>
+                      <p className="text-xs text-gray-500">{tr('rate', 'Rate')}</p>
+                    </div>
+                  </div>
+
+                  {/* API Key */}
+                  <div className="mb-3">
+                    <label className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+                      {tr('apiKey', 'API Key')}
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 rounded-lg bg-gray-50 dark:bg-gray-700 px-3 py-2 text-xs font-mono text-gray-600 dark:text-gray-300 truncate">
+                        {widget.apiKey}
+                      </code>
+                      <button
+                        onClick={() => handleCopyKey(widget.apiKey)}
+                        className="shrink-0 rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600"
+                        title="Copy API Key"
+                      >
+                        {copiedKey === widget.apiKey ? (
+                          <Check className="h-4 w-4 text-green-500" />
+                        ) : (
+                          <Copy className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Embed code button */}
+                  <Button
+                    variant="secondary"
+                    className="w-full"
+                    onClick={() => setShowSnippetModal(widget.apiKey)}
+                  >
+                    <Code2 className="h-4 w-4" />
+                    {tr('getEmbedCode', 'Get Embed Code')}
+                  </Button>
+
+                  {/* Domains */}
+                  {widget.allowedDomains.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {widget.allowedDomains.map((domain) => (
+                        <span
+                          key={domain}
+                          className="inline-flex items-center rounded-full bg-purple-50 dark:bg-purple-900/20 px-2.5 py-0.5 text-xs text-purple-700 dark:text-purple-400"
+                        >
+                          {domain}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </TabsContent>
@@ -788,7 +1236,7 @@ export default function ClientBasePage() {
                               )}
                             </span>
                           ) : (
-                            <span className="text-xs text-gray-400">—</span>
+                            <span className="text-xs text-gray-400">--</span>
                           )}
                         </TableCell>
                         <TableCell>
@@ -821,7 +1269,301 @@ export default function ClientBasePage() {
             </div>
           )}
         </TabsContent>
+
+        {/* === Contacts Tab === */}
+        <TabsContent value="contacts">
+          {/* Search + Filters */}
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="flex-1">
+              <Input
+                placeholder={tr('searchContacts', 'Search contacts by name, email, company...')}
+                value={contactSearch}
+                onChange={(e) => setContactSearch(e.target.value)}
+                icon={<Search className="h-4 w-4" />}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                value={sourceFilter}
+                onChange={(e) => setSourceFilter(e.target.value)}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm text-gray-900 dark:text-white focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+              >
+                <option value="">{tr('allSources', 'All Sources')}</option>
+                <option value="CSV">{tr('csv', 'CSV')}</option>
+                <option value="MANUAL">{tr('manual', 'Manual')}</option>
+                <option value="CRM">{tr('crm', 'CRM')}</option>
+              </select>
+              <select
+                value={relationshipFilter}
+                onChange={(e) => setRelationshipFilter(e.target.value)}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm text-gray-900 dark:text-white focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+              >
+                <option value="">{tr('allRelationships', 'All Relationships')}</option>
+                {relationshipTypes.map(rt => (
+                  <option key={rt} value={rt}>{rt}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Contacts Table */}
+          {isLoading ? (
+            <div className="flex items-center justify-center py-16 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+              <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+              <span className="ml-2 text-gray-500">{t.common.loading}</span>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden shadow-sm">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t.common.name}</TableHead>
+                    <TableHead>{tr('company', 'Company')}</TableHead>
+                    <TableHead>{t.common.email}</TableHead>
+                    <TableHead>{tr('source', 'Source')}</TableHead>
+                    <TableHead>{tr('relationship', 'Relationship')}</TableHead>
+                    <TableHead>{t.common.status}</TableHead>
+                    <TableHead>{tr('matches', 'Matches')}</TableHead>
+                    <TableHead>{t.common.actions}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredContacts.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="py-12 text-center text-gray-500">
+                        {contacts.length === 0
+                          ? tr('noContactsDesc', 'Add your first client contact or import a CSV to get started.')
+                          : t.common.noResults}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    filteredContacts.map((contact) => (
+                      <TableRow key={contact.id}>
+                        <TableCell>
+                          <p className="font-medium text-gray-900 dark:text-gray-100">{contact.name}</p>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-sm text-gray-600 dark:text-gray-400">{contact.company || '--'}</span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-xs text-gray-400">{contact.email || '--'}</span>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="default">{contact.source}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-sm text-gray-600 dark:text-gray-400">
+                            {contact.relationshipType || '--'}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={
+                            contact.relationshipStatus === 'active' ? 'active' :
+                            contact.relationshipStatus === 'paused' ? 'paused' : 'default'
+                          }>
+                            {contact.relationshipStatus || '--'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          {contact.matchCount > 0 ? (
+                            <button
+                              onClick={() => {
+                                setMatchSearch(contact.name)
+                                const tabEl = document.querySelector('[data-value="matches"]') as HTMLButtonElement
+                                if (tabEl) tabEl.click()
+                              }}
+                              className="inline-flex items-center gap-1 rounded-full bg-purple-50 dark:bg-purple-900/30 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/50 transition-colors"
+                            >
+                              <Zap className="h-3 w-3" />
+                              {contact.matchCount}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-gray-400">0</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <button
+                            onClick={() => {}}
+                            className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100"
+                            title="View"
+                          >
+                            <ChevronDown className="h-4 w-4" />
+                          </button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </TabsContent>
       </Tabs>
+
+      {/* === Widget Create/Edit Modal === */}
+      <Modal open={showWidgetModal} onClose={() => setShowWidgetModal(false)} className="max-w-2xl">
+        <ModalHeader onClose={() => setShowWidgetModal(false)}>
+          {editingWidget ? tr('editWidget', 'Edit Widget') : tr('createWidget', 'Create Widget')}
+        </ModalHeader>
+        <ModalBody>
+          <div className="space-y-4">
+            <Input
+              label={tr('widgetName', 'Widget Name')}
+              placeholder="e.g. Homepage Widget"
+              value={wfName}
+              onChange={(e) => setWfName(e.target.value)}
+            />
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                label={tr('brandNameLabel', 'Brand Name')}
+                placeholder="e.g. Vileda"
+                value={wfBrandName}
+                onChange={(e) => setWfBrandName(e.target.value)}
+              />
+              <Input
+                label={tr('brandLogoUrl', 'Brand Logo URL')}
+                placeholder="https://..."
+                value={wfBrandLogo}
+                onChange={(e) => setWfBrandLogo(e.target.value)}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {tr('primaryColorLabel', 'Primary Color')}
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={wfColor}
+                    onChange={(e) => setWfColor(e.target.value)}
+                    className="h-10 w-10 rounded-lg border border-gray-300 dark:border-gray-600 cursor-pointer"
+                  />
+                  <Input
+                    value={wfColor}
+                    onChange={(e) => setWfColor(e.target.value)}
+                    placeholder="#7c3aed"
+                  />
+                </div>
+              </div>
+              <Input
+                label={tr('incentiveTextLabel', 'Incentive Text')}
+                placeholder="e.g. Get 10% off!"
+                value={wfIncentive}
+                onChange={(e) => setWfIncentive(e.target.value)}
+              />
+            </div>
+
+            <Input
+              label={tr('headlineTextLabel', 'Headline Text')}
+              placeholder="Share your social media"
+              value={wfHeadline}
+              onChange={(e) => setWfHeadline(e.target.value)}
+            />
+            <Input
+              label={tr('subtitleTextLabel', 'Subtitle Text')}
+              placeholder="Connect with us and get exclusive offers"
+              value={wfSubtitle}
+              onChange={(e) => setWfSubtitle(e.target.value)}
+            />
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {tr('triggerLabel', 'Trigger')}
+                </label>
+                <select
+                  value={wfTrigger}
+                  onChange={(e) => setWfTrigger(e.target.value)}
+                  className="block w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2.5 text-sm text-gray-900 dark:text-white focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                >
+                  <option value="exit_intent">{tr('exitIntent', 'Exit Intent')}</option>
+                  <option value="delay">{tr('delay', 'Time Delay')}</option>
+                  <option value="scroll">{tr('scroll', 'Scroll %')}</option>
+                  <option value="manual">{tr('manualTrigger', 'Manual')}</option>
+                </select>
+              </div>
+              {wfTrigger === 'delay' && (
+                <Input
+                  label={tr('delaySeconds', 'Delay (seconds)')}
+                  type="number"
+                  value={String(wfDelay)}
+                  onChange={(e) => setWfDelay(parseInt(e.target.value) || 5)}
+                />
+              )}
+              {wfTrigger === 'scroll' && (
+                <Input
+                  label={tr('scrollPercent', 'Scroll %')}
+                  type="number"
+                  value={String(wfScroll)}
+                  onChange={(e) => setWfScroll(parseInt(e.target.value) || 50)}
+                />
+              )}
+              <div className="flex items-end">
+                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer pb-2.5">
+                  <input
+                    type="checkbox"
+                    checked={wfMobile}
+                    onChange={(e) => setWfMobile(e.target.checked)}
+                    className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                  />
+                  {tr('showOnMobileLabel', 'Show on mobile')}
+                </label>
+              </div>
+            </div>
+
+            <Input
+              label={tr('allowedDomainsLabel', 'Allowed Domains (comma-separated)')}
+              placeholder="e.g. vileda.es, www.vileda.es"
+              value={wfDomains}
+              onChange={(e) => setWfDomains(e.target.value)}
+            />
+            <p className="text-xs text-gray-400">
+              {tr('domainsHint', 'Leave empty to allow all domains. Add domains where the widget will be embedded.')}
+            </p>
+          </div>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="ghost" onClick={() => setShowWidgetModal(false)}>
+            {t.common.cancel}
+          </Button>
+          <Button onClick={handleSaveWidget} disabled={isSavingWidget}>
+            {isSavingWidget ? t.common.loading : (editingWidget ? t.common.save : t.common.create)}
+          </Button>
+        </ModalFooter>
+      </Modal>
+
+      {/* === Snippet Modal === */}
+      <Modal open={!!showSnippetModal} onClose={() => setShowSnippetModal(null)}>
+        <ModalHeader onClose={() => setShowSnippetModal(null)}>
+          {tr('embedCode', 'Embed Code')}
+        </ModalHeader>
+        <ModalBody>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {tr('embedInstructions', 'Add this script tag to your website, just before the closing </body> tag:')}
+            </p>
+            <div className="relative">
+              <pre className="rounded-lg bg-gray-900 p-4 text-xs text-green-400 overflow-x-auto">
+                {showSnippetModal ? getEmbedSnippet(showSnippetModal) : ''}
+              </pre>
+              <button
+                onClick={() => showSnippetModal && copyToClipboard(getEmbedSnippet(showSnippetModal))}
+                className="absolute top-2 right-2 rounded-lg bg-gray-700 p-2 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+                title="Copy"
+              >
+                <Copy className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="ghost" onClick={() => setShowSnippetModal(null)}>
+            {t.common.close}
+          </Button>
+        </ModalFooter>
+      </Modal>
 
       {/* === Add Contact Modal === */}
       <Modal open={showAddModal} onClose={() => setShowAddModal(false)}>
@@ -919,7 +1661,6 @@ export default function ClientBasePage() {
         </ModalHeader>
         <ModalBody>
           <div className="space-y-4">
-            {/* File Upload Area */}
             {!csvFile ? (
               <div
                 onDrop={handleDrop}
@@ -949,7 +1690,6 @@ export default function ClientBasePage() {
               </div>
             ) : (
               <>
-                {/* File info */}
                 <div className="flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 px-4 py-3">
                   <div className="flex items-center gap-2">
                     <FileSpreadsheet className="h-5 w-5 text-purple-600" />
@@ -964,7 +1704,6 @@ export default function ClientBasePage() {
                   </button>
                 </div>
 
-                {/* Column Mapping */}
                 <div>
                   <h3 className="mb-2 text-sm font-semibold text-gray-700 dark:text-gray-300">
                     {tr('columnMapping', 'Column Mapping')}
@@ -990,7 +1729,6 @@ export default function ClientBasePage() {
                   </div>
                 </div>
 
-                {/* Preview */}
                 <div>
                   <h3 className="mb-2 text-sm font-semibold text-gray-700 dark:text-gray-300">
                     {tr('preview', 'Preview')} ({Math.min(5, csvRows.length)} {tr('rows', 'rows')})
@@ -1014,7 +1752,7 @@ export default function ClientBasePage() {
                           <tr key={ri} className="border-t border-gray-100 dark:border-gray-700">
                             {row.map((cell, ci) => (
                               <td key={ci} className="whitespace-nowrap px-3 py-1.5 text-gray-700 dark:text-gray-300">
-                                {cell || '—'}
+                                {cell || '--'}
                               </td>
                             ))}
                           </tr>
@@ -1024,7 +1762,6 @@ export default function ClientBasePage() {
                   </div>
                 </div>
 
-                {/* Import result */}
                 {importResult && (
                   <div className="rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 px-4 py-3">
                     <p className="text-sm text-green-700 dark:text-green-400">
@@ -1082,7 +1819,6 @@ export default function ClientBasePage() {
             <div className="p-6 space-y-6">
               {/* Client + Creator side by side */}
               <div className="grid grid-cols-2 gap-6">
-                {/* Client Info */}
                 <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
                   <h3 className="mb-3 text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     {tr('clientInfo', 'Client Info')}
@@ -1092,8 +1828,6 @@ export default function ClientBasePage() {
                     <p className="mt-1 text-sm text-gray-500">{selectedMatch.clientContact.company}</p>
                   )}
                 </div>
-
-                {/* Creator Info */}
                 <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
                   <h3 className="mb-3 text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     {tr('creatorInfo', 'Creator Info')}

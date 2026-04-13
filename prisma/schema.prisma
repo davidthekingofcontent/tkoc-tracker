@@ -54,6 +54,7 @@ model User {
   socialTokens  SocialToken[]
   clientContacts    ClientContact[]
   clientCreatorMatches ClientCreatorMatch[]
+  liveCaptureWidgets  LiveCaptureWidget[]
 
   @@map("users")
 }
@@ -1027,4 +1028,75 @@ model SocialToken {
   @@unique([platform, userId, tokenType])
   @@index([influencerId])
   @@map("social_tokens")
+}
+
+// ============ LIVE CAPTURE (Widget-based social handle capture) ============
+
+model LiveCaptureWidget {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name            String    @default("Default Widget")
+  apiKey          String    @unique @default(cuid())
+
+  // Customization
+  brandName       String?
+  brandLogo       String?
+  primaryColor    String    @default("#7c3aed")
+  incentiveText   String?
+  headlineText    String    @default("Share your social media")
+  subtitleText    String?   @default("Connect with us and get exclusive offers")
+
+  // Behavior
+  triggerType     String    @default("exit_intent")
+  triggerDelay    Int       @default(5)
+  triggerScroll   Int       @default(50)
+  showOnMobile    Boolean   @default(true)
+
+  // Domains allowed
+  allowedDomains  String[]
+
+  // Stats
+  impressions     Int       @default(0)
+  submissions     Int       @default(0)
+
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  captures        LiveCapture[]
+
+  @@index([userId])
+  @@index([apiKey])
+  @@map("live_capture_widgets")
+}
+
+model LiveCapture {
+  id              String    @id @default(cuid())
+  widgetId        String
+  widget          LiveCaptureWidget @relation(fields: [widgetId], references: [id], onDelete: Cascade)
+
+  // Captured data
+  instagramHandle String?
+  tiktokHandle    String?
+  youtubeHandle   String?
+  email           String?
+  name            String?
+
+  // Visitor context
+  pageUrl         String?
+  referrer        String?
+  userAgent       String?
+  ipCountry       String?
+
+  // Processing
+  isProcessed     Boolean   @default(false)
+  matchedContactId String?
+
+  createdAt       DateTime  @default(now())
+
+  @@index([widgetId])
+  @@index([isProcessed])
+  @@map("live_captures")
 }

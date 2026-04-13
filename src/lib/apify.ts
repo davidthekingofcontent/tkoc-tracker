@@ -66,9 +66,10 @@ async function runActor(
     throw new Error(`Apify actor ${actorId} failed to start: ${runRes.status} ${errText}`)
   }
 
-  const runData = await runRes.json() as { data?: { defaultDatasetId?: string; status?: string } }
+  const runData = await runRes.json() as { data?: { id?: string; defaultDatasetId?: string; status?: string } }
+  const runId = runData.data?.id
   const datasetId = runData.data?.defaultDatasetId
-  console.log(`[Apify] Run status: ${runData.data?.status}, datasetId: ${datasetId}`)
+  console.log(`[Apify] Run id: ${runId}, status: ${runData.data?.status}, datasetId: ${datasetId}`)
 
   if (!datasetId) {
     throw new Error(`Apify actor ${actorId} did not return a dataset ID`)
@@ -78,11 +79,11 @@ async function runActor(
   const status = runData.data?.status
   if (status && status !== 'SUCCEEDED' && status !== 'READY') {
     // Wait a bit more and check
-    if (status === 'RUNNING') {
-      // Poll until done
+    if (status === 'RUNNING' && runId) {
+      // Poll until done — use the run ID, not the dataset ID
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 5000))
-        const checkRes = await fetch(`${APIFY_BASE}/actor-runs/${datasetId}?token=${token}`)
+        const checkRes = await fetch(`${APIFY_BASE}/actor-runs/${runId}?token=${token}`)
         if (checkRes.ok) {
           const checkData = await checkRes.json() as { data?: { status?: string } }
           if (checkData.data?.status === 'SUCCEEDED') break
@@ -942,10 +943,178 @@ export async function scrapeProfile(username: string, platform: 'INSTAGRAM' | 'T
   }
 }
 
+async function scrapeTikTokHashtag(hashtag: string, maxPosts = 20): Promise<HashtagResult[]> {
+  const cleanTag = hashtag.replace(/^#/, '')
+
+  try {
+    // Use the free-tiktok-scraper actor with a hashtag search URL
+    const items = await runActor('clockworks~free-tiktok-scraper', {
+      hashtags: [cleanTag],
+      resultsPerPage: maxPosts,
+      shouldDownloadVideos: false,
+    }, 180)
+
+    if (!items || items.length === 0) {
+      console.log(`[Apify] TikTok hashtag: free-tiktok-scraper returned 0 results for #${cleanTag}, trying fallback`)
+      // Fallback: use apify~tiktok-scraper which supports hashtag search
+      const fallbackItems = await runActor('apify~tiktok-scraper', {
+        hashtags: [cleanTag],
+        resultsPerPage: maxPosts,
+        searchSection: '',
+      }, 180)
+
+      if (!fallbackItems || fallbackItems.length === 0) return []
+
+      return fallbackItems.map((post: Record<string, unknown>) => {
+        const authorMeta = (post.authorMeta as Record<string, unknown>) || {}
+        const text = (post.text as string) || ''
+        const hashtags = (post.hashtags as { name: string }[] || []).map(h => `#${h.name}`)
+        const mentions = text.match(/@\w+/g) || []
+        const authorCountry = detectCountry(authorMeta)
+
+        return {
+          posts: [{
+            externalId: (post.id as string) || '',
+            caption: text,
+            mediaUrl: (post.videoUrl as string) || null,
+            thumbnailUrl: (post.covers as Record<string, string>)?.default || (post.coverUrl as string) || (post.cover as string) || null,
+            permalink: (post.webVideoUrl as string) || null,
+            mediaType: 'VIDEO' as const,
+            likes: (post.diggCount as number) || (post.likes as number) || 0,
+            comments: (post.commentCount as number) || (post.comments as number) || 0,
+            shares: (post.shareCount as number) || (post.shares as number) || 0,
+            saves: 0,
+            views: (post.playCount as number) || (post.plays as number) || 0,
+            postedAt: (post.createTimeISO as string) || null,
+            hashtags,
+            mentions,
+          }],
+          authorUsername: (authorMeta.name as string) || (authorMeta.uniqueId as string) || '',
+          authorDisplayName: (authorMeta.nickName as string) || (authorMeta.nickname as string) || null,
+          authorAvatarUrl: (authorMeta.avatar as string) || null,
+          authorFollowers: (authorMeta.fans as number) || (authorMeta.followers as number) || 0,
+          authorCountry,
+        }
+      })
+    }
+
+    // Process results from free-tiktok-scraper
+    return items.map((post: Record<string, unknown>) => {
+      const authorMeta = (post.authorMeta as Record<string, unknown>) || {}
+      const text = (post.text as string) || ''
+      const postHashtags = (post.hashtags as { name: string }[] || []).map(h => `#${h.name}`)
+      const mentions = text.match(/@\w+/g) || []
+      const authorCountry = detectCountry(authorMeta)
+
+      return {
+        posts: [{
+          externalId: (post.id as string) || '',
+          caption: text,
+          mediaUrl: (post.videoUrl as string) || null,
+          thumbnailUrl: (post.covers as Record<string, string>)?.default || (post.coverUrl as string) || (post.cover as string) || null,
+          permalink: (post.webVideoUrl as string) || `https://tiktok.com/@${(authorMeta.name as string) || ''}/video/${post.id}`,
+          mediaType: 'VIDEO' as const,
+          likes: (post.diggCount as number) || (post.likes as number) || 0,
+          comments: (post.commentCount as number) || (post.comments as number) || 0,
+          shares: (post.shareCount as number) || (post.shares as number) || 0,
+          saves: 0,
+          views: (post.playCount as number) || (post.plays as number) || 0,
+          postedAt: (post.createTimeISO as string) || null,
+          hashtags: postHashtags,
+          mentions,
+        }],
+        authorUsername: (authorMeta.name as string) || (authorMeta.uniqueId as string) || '',
+        authorDisplayName: (authorMeta.nickName as string) || (authorMeta.nickname as string) || null,
+        authorAvatarUrl: (authorMeta.avatar as string) || null,
+        authorFollowers: (authorMeta.fans as number) || (authorMeta.followers as number) || 0,
+        authorCountry,
+      }
+    })
+  } catch (err) {
+    console.error(`[Apify] TikTok hashtag scraping error for #${cleanTag}:`, err)
+    return []
+  }
+}
+
+async function scrapeYouTubeHashtag(hashtag: string, maxPosts = 20): Promise<HashtagResult[]> {
+  const cleanTag = hashtag.replace(/^#/, '')
+
+  try {
+    // Use the YouTube scraper actor to search for videos by keyword/hashtag
+    const items = await runActor('streamers~youtube-channel-scraper', {
+      searchKeywords: [cleanTag],
+      maxVideos: maxPosts,
+      searchType: 'video',
+    }, 180)
+
+    if (!items || items.length === 0) {
+      console.log(`[Apify] YouTube hashtag: streamers actor returned 0, trying bernardo~youtube-scraper`)
+      // Fallback actor
+      const fallbackItems = await runActor('bernardo~youtube-scraper', {
+        searchQueries: [`#${cleanTag}`],
+        maxResults: maxPosts,
+      }, 180)
+
+      if (!fallbackItems || fallbackItems.length === 0) return []
+      return mapYouTubeHashtagItems(fallbackItems)
+    }
+
+    return mapYouTubeHashtagItems(items)
+  } catch (err) {
+    console.error(`[Apify] YouTube hashtag scraping error for #${cleanTag}:`, err)
+    return []
+  }
+}
+
+function mapYouTubeHashtagItems(items: Record<string, unknown>[]): HashtagResult[] {
+  return items.map((video: Record<string, unknown>) => {
+    const title = (video.title as string) || ''
+    const description = (video.description as string) || ''
+    const hashtags = (title + ' ' + description).match(/#\w+/g) || []
+    const channelName = (video.channelName as string) || (video.channelTitle as string) || (video.author as string) || ''
+    const channelUrl = (video.channelUrl as string) || ''
+    // Try to extract username from channel URL (e.g., https://youtube.com/@username)
+    const usernameMatch = channelUrl.match(/@([^/]+)/)
+
+    const duration = (video.duration as string) || ''
+    const durationSecs = parseInt(duration) || 0
+    const isShort = durationSecs > 0 && durationSecs < 61
+    const mediaType = isShort ? 'SHORT' : 'VIDEO'
+
+    return {
+      posts: [{
+        externalId: (video.id as string) || (video.videoId as string) || '',
+        caption: title,
+        mediaUrl: null,
+        thumbnailUrl: (video.thumbnailUrl as string) || (video.thumbnail as string) || null,
+        permalink: (video.url as string) || (video.id ? `https://youtube.com/watch?v=${video.id}` : null),
+        mediaType: mediaType as ScrapedPost['mediaType'],
+        likes: (video.likes as number) || 0,
+        comments: (video.numberOfComments as number) || (video.commentCount as number) || 0,
+        shares: 0,
+        saves: 0,
+        views: (video.viewCount as number) || (video.views as number) || 0,
+        postedAt: (video.publishedAt as string) || (video.date as string) || (video.uploadDate as string) || null,
+        hashtags,
+        mentions: [],
+      }],
+      authorUsername: usernameMatch?.[1] || channelName,
+      authorDisplayName: channelName || null,
+      authorAvatarUrl: (video.channelAvatarUrl as string) || null,
+      authorFollowers: (video.subscriberCount as number) || 0,
+      authorCountry: null,
+    }
+  })
+}
+
 export async function scrapeHashtag(hashtag: string, platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', maxPosts = 20): Promise<HashtagResult[]> {
   switch (platform) {
     case 'INSTAGRAM':
       return scrapeInstagramHashtag(hashtag, maxPosts)
+    case 'TIKTOK':
+      return scrapeTikTokHashtag(hashtag, maxPosts)
+    case 'YOUTUBE':
+      return scrapeYouTubeHashtag(hashtag, maxPosts)
     default:
       return []
   }
