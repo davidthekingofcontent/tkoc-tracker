@@ -26,6 +26,7 @@ import {
   ListPlus,
   Mail,
   Link as LinkIcon,
+  Handshake,
 } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { useI18n } from '@/i18n/context'
@@ -117,6 +118,32 @@ interface Snapshot {
   engagementRate: number | null
   avgViews: number | null
   capturedAt: string
+}
+
+interface ClientMatch {
+  id: string
+  confidenceScore: number
+  confidenceLevel: string
+  matchSignals: { type: string; weight: number; detail: string }[]
+  matchStatus: string
+  clientContact: {
+    contactName: string
+    companyName: string | null
+    contactEmail: string | null
+    relationshipType: string
+    relationshipStatus: string
+    lastActivityAt: string | null
+  }
+  warmScore: {
+    opportunityScore: number
+    opportunityGrade: string
+    opportunityReasons: string[]
+    riskFlags: string[]
+    recommendedUse: string[]
+    brandFitScore: number
+    easeOfActivation: number
+    expectedResponseRate: string
+  } | null
 }
 
 interface CreatorData {
@@ -228,6 +255,7 @@ export default function CreatorProfilePage() {
   const [creator, setCreator] = useState<CreatorData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [clientMatches, setClientMatches] = useState<ClientMatch[]>([])
 
   useEffect(() => {
     if (!id) return
@@ -245,6 +273,18 @@ export default function CreatorProfilePage() {
         setError(err.message)
         setLoading(false)
       })
+  }, [id])
+
+  useEffect(() => {
+    if (!id) return
+    fetch(`/api/client-contacts/matches?creatorProfileId=${id}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.matches) {
+          setClientMatches(data.matches.filter((m: ClientMatch) => m.matchStatus !== 'USER_REJECTED'))
+        }
+      })
+      .catch(() => {})
   }, [id])
 
   if (loading) {
@@ -461,6 +501,138 @@ export default function CreatorProfilePage() {
           </div>
         ))}
       </div>
+
+      {/* ============ PREVIOUS RELATIONSHIP ============ */}
+      {clientMatches.length > 0 && (
+        <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/30 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2 mb-4">
+            <Handshake className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+            Previous Relationship
+          </h3>
+
+          {clientMatches.map((match) => (
+            <div key={match.id} className="space-y-4">
+              {/* Relationship info */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Existing Client</p>
+                  <p className="text-sm font-semibold text-green-600 dark:text-green-400">
+                    ✅ Yes
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Confidence</p>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          match.confidenceLevel === 'EXACT' ? 'bg-green-500' :
+                          match.confidenceLevel === 'PROBABLE' ? 'bg-yellow-500' : 'bg-gray-400'
+                        }`}
+                        style={{ width: `${match.confidenceScore * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-sm font-medium">{Math.round(match.confidenceScore * 100)}%</span>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Relationship Type</p>
+                  <p className="text-sm font-medium capitalize">{match.clientContact.relationshipType.toLowerCase()}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Company</p>
+                  <p className="text-sm font-medium">{match.clientContact.companyName || '\u2014'}</p>
+                </div>
+              </div>
+
+              {/* Match signals */}
+              <div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Matched by</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {match.matchSignals.map((signal, i) => (
+                    <span key={i} className="inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-900/40 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:text-amber-300">
+                      {signal.type.replace(/_/g, ' ')}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Warm Score */}
+              {match.warmScore && (
+                <div className="mt-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      Warm Creator Opportunity
+                    </h4>
+                    <div className="flex items-center gap-2">
+                      <span className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+                        {Math.round(match.warmScore.opportunityScore)}/100
+                      </span>
+                      <span className={`text-lg font-bold px-2 py-0.5 rounded ${
+                        match.warmScore.opportunityGrade === 'A' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' :
+                        match.warmScore.opportunityGrade === 'B' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400' :
+                        match.warmScore.opportunityGrade === 'C' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400' :
+                        'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
+                      }`}>
+                        {match.warmScore.opportunityGrade}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Reasons */}
+                    <div>
+                      <p className="text-xs font-medium text-green-600 dark:text-green-400 mb-1">✅ Why it&apos;s an opportunity</p>
+                      <ul className="space-y-0.5">
+                        {match.warmScore.opportunityReasons.map((reason, i) => (
+                          <li key={i} className="text-xs text-gray-600 dark:text-gray-400">
+                            • {reason.replace(/_/g, ' ')}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* Risks */}
+                    {match.warmScore.riskFlags.length > 0 && (
+                      <div>
+                        <p className="text-xs font-medium text-red-600 dark:text-red-400 mb-1">⚠️ Risks</p>
+                        <ul className="space-y-0.5">
+                          {match.warmScore.riskFlags.map((risk, i) => (
+                            <li key={i} className="text-xs text-gray-600 dark:text-gray-400">
+                              • {risk.replace(/_/g, ' ')}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Recommended use */}
+                  <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Recommended use</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {match.warmScore.recommendedUse.map((use, i) => (
+                        <span key={i} className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                          use === 'not_recommended'
+                            ? 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400'
+                            : use === 'influencer'
+                            ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-400'
+                            : 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400'
+                        }`}>
+                          {use === 'ugc_organic' ? '📱 UGC Organic' :
+                           use === 'ugc_ads' ? '🎬 UGC Ads' :
+                           use === 'influencer' ? '⭐ Influencer' :
+                           use === 'not_recommended' ? '❌ Not Recommended' : use}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ============ RECENT POSTS ============ */}
       {creator.posts.length > 0 && (

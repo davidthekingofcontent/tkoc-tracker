@@ -52,6 +52,8 @@ model User {
   invitations   Invitation[]
   assignedCampaigns CampaignAssignment[]
   socialTokens  SocialToken[]
+  clientContacts    ClientContact[]
+  clientCreatorMatches ClientCreatorMatch[]
 
   @@map("users")
 }
@@ -614,6 +616,8 @@ model CreatorProfile {
   categorySignals   CreatorCategorySignal[]
   scores            CreatorScoreRecord[]
   suppressionRequest SuppressionRequest?
+  clientMatches     ClientCreatorMatch[]
+  warmScores        WarmCreatorScore[]
 
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
@@ -839,6 +843,153 @@ model SpainCategory {
   brandsEs        String[]  // Spanish brands in this sector
 
   @@map("spain_categories")
+}
+
+// ============ CLIENT-CREATOR MATCHING (Warm Opportunities) ============
+
+enum ClientContactSource {
+  CSV_IMPORT
+  CRM_HUBSPOT
+  CRM_APOLLO
+  MANUAL
+  API
+}
+
+enum RelationshipType {
+  CUSTOMER
+  LEAD
+  VENDOR
+  PARTNER
+  PAST_CUSTOMER
+  EMPLOYEE
+  OTHER
+}
+
+enum RelationshipStatus {
+  ACTIVE
+  INACTIVE
+  CHURNED
+}
+
+enum MatchConfidenceLevel {
+  EXACT
+  PROBABLE
+  POSSIBLE
+  REJECTED
+}
+
+enum MatchStatus {
+  AUTO_DETECTED
+  USER_CONFIRMED
+  USER_REJECTED
+  PENDING_REVIEW
+}
+
+enum WarmOpportunityGrade {
+  A
+  B
+  C
+  D
+  F
+}
+
+enum ExpectedResponseRate {
+  VERY_HIGH
+  HIGH
+  MEDIUM
+  LOW
+}
+
+model ClientContact {
+  id                    String              @id @default(cuid())
+  userId                String
+  user                  User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  source                ClientContactSource @default(MANUAL)
+  externalCrmId         String?
+  contactName           String
+  contactEmail          String?
+  companyName           String?
+  companyDomain         String?
+  socialHandles         Json?               // {"instagram": "xx", "tiktok": "yy"}
+  phone                 String?
+  tags                  String[]
+  relationshipType      RelationshipType    @default(CUSTOMER)
+  relationshipStatus    RelationshipStatus  @default(ACTIVE)
+  lastActivityAt        DateTime?
+  notes                 String?
+  importBatchId         String?             // Group imports by batch
+
+  matches               ClientCreatorMatch[]
+
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  @@index([userId])
+  @@index([contactEmail])
+  @@index([companyDomain])
+  @@index([importBatchId])
+  @@map("client_contacts")
+}
+
+model ClientCreatorMatch {
+  id                    String                @id @default(cuid())
+  userId                String
+  user                  User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  clientContactId       String
+  clientContact         ClientContact         @relation(fields: [clientContactId], references: [id], onDelete: Cascade)
+
+  creatorProfileId      String
+  creatorProfile        CreatorProfile        @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+  confidenceScore       Float                 @default(0)
+  confidenceLevel       MatchConfidenceLevel  @default(POSSIBLE)
+  matchSignals          Json?                 // ["email_exact", "domain_match", "name_company"]
+  matchStatus           MatchStatus           @default(AUTO_DETECTED)
+
+  reviewedBy            String?
+  reviewedAt            DateTime?
+
+  warmScore             WarmCreatorScore?
+
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  @@unique([clientContactId, creatorProfileId])
+  @@index([userId])
+  @@index([creatorProfileId])
+  @@index([confidenceLevel])
+  @@index([matchStatus])
+  @@map("client_creator_matches")
+}
+
+model WarmCreatorScore {
+  id                      String                @id @default(cuid())
+  userId                  String
+
+  matchId                 String                @unique
+  match                   ClientCreatorMatch    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  creatorProfileId        String
+  creatorProfile          CreatorProfile        @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+  opportunityScore        Float                 @default(0)    // 0-100
+  opportunityGrade        WarmOpportunityGrade  @default(F)
+  opportunityReasons      Json?                 // ["active_client", "consistent_content", ...]
+  riskFlags               Json?                 // ["low_engagement", "brand_conflict", ...]
+  recommendedUse          String[]              // ["ugc_organic", "influencer", "ugc_ads", "not_recommended"]
+  brandFitScore           Float                 @default(0)    // 0-100
+  easeOfActivation        Float                 @default(0)    // 0-100
+  expectedResponseRate    ExpectedResponseRate  @default(MEDIUM)
+
+  scoredAt                DateTime              @default(now())
+  scoringVersion          String                @default("1.0")
+
+  @@index([userId])
+  @@index([creatorProfileId])
+  @@index([opportunityGrade])
+  @@map("warm_creator_scores")
 }
 
 // ============ SOCIAL API TOKENS ============
