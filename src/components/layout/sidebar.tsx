@@ -22,6 +22,7 @@ import {
   Sun,
   Building2,
   Briefcase,
+  UserCheck,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { NotificationsBell } from '@/components/notifications-bell'
@@ -46,6 +47,7 @@ const mainNavItems: NavItem[] = [
 
 const secondaryNavItems: NavItem[] = [
   { key: "lists", icon: ListChecks, href: "/lists" },
+  { key: "lookalikes", icon: UserCheck, href: "/lookalikes" },
   { key: "contacts", icon: Contact, href: "/contacts" },
   { key: "clientBase", icon: Briefcase, href: "/client-base" },
   { key: "pipeline", icon: Kanban, href: "/pipeline" },
@@ -90,6 +92,7 @@ function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
     case 'methodology': return t.nav.methodology
     case 'lists': return t.lists?.title || t.nav.lists
     case 'contacts': return t.contacts?.title || t.nav.contacts
+    case 'lookalikes': return t.lookalikes?.title || 'Lookalikes'
     case 'clientBase': return (t as Record<string, unknown> as { clientBase?: { title?: string } }).clientBase?.title || 'My Client Base'
     case 'pipeline': return t.nav.pipeline
     case 'settings': return t.settings?.title || t.nav.settings

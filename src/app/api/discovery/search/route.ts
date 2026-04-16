@@ -101,15 +101,14 @@ export async function POST(req: NextRequest) {
   if (query && query.trim()) {
     const q = query.trim()
     const existing = creatorWhere.platformProfiles
-    // We need OR at the top level
-    creatorWhere.AND = [
-      {
-        OR: [
-          { displayName: { contains: q, mode: 'insensitive' } },
-          { platformProfiles: { some: platformProfileWhere } },
-        ],
-      },
-    ]
+    // Push text search condition into AND array (preserve existing AND conditions like category)
+    if (!creatorWhere.AND) creatorWhere.AND = []
+    ;(creatorWhere.AND as Prisma.CreatorProfileWhereInput[]).push({
+      OR: [
+        { displayName: { contains: q, mode: 'insensitive' } },
+        { platformProfiles: { some: platformProfileWhere } },
+      ],
+    })
     // Remove the simple platformProfiles filter to avoid conflict
     if (existing) {
       delete creatorWhere.platformProfiles
