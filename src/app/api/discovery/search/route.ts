@@ -36,11 +36,16 @@ export async function POST(req: NextRequest) {
     creatorWhere.spainFitLevel = spainFitLevel
   }
 
-  // Category filter via CategorySignals
+  // Category filter: match creators with CategorySignal rows OR category in their categories array
   if (category) {
-    creatorWhere.categorySignals = {
-      some: { category },
+    const categoryCondition: Prisma.CreatorProfileWhereInput = {
+      OR: [
+        { categorySignals: { some: { category } } },
+        { categories: { has: category } },
+      ],
     }
+    if (!creatorWhere.AND) creatorWhere.AND = []
+    ;(creatorWhere.AND as Prisma.CreatorProfileWhereInput[]).push(categoryCondition)
   }
 
   // City filter

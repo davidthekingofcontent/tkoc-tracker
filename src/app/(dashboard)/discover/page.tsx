@@ -20,6 +20,7 @@ import {
   MapPin,
   Tag,
   ChevronDown,
+  ClipboardList,
 } from 'lucide-react'
 import { Select } from '@/components/ui/select'
 import { Avatar } from '@/components/ui/avatar'
@@ -213,6 +214,18 @@ export default function DiscoverPage() {
   const [dbHasSearched, setDbHasSearched] = useState(false)
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null)
 
+  // ============ BULK PASTE STATE ============
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [bulkText, setBulkText] = useState('')
+  const [bulkPlatform, setBulkPlatform] = useState('INSTAGRAM')
+  const [bulkProcessing, setBulkProcessing] = useState(false)
+  const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 })
+  const [bulkResult, setBulkResult] = useState<{ found: number; scraped: number; errors: number } | null>(null)
+
+  const bulkHandles = useMemo(() => {
+    return bulkText.split(/[\n,;]+/).map(h => h.trim()).filter(h => h.length > 0)
+  }, [bulkText])
+
   // ============ LIVE SEARCH TAB STATE ============
   const [searchMode, setSearchMode] = useState<SearchMode>('category')
   const [platform, setPlatform] = useState('instagram')
@@ -298,6 +311,41 @@ export default function DiscoverPage() {
   const handleDbLoadMore = () => {
     handleDbSearch(dbOffset + 50)
   }
+
+  const handleBulkProcess = useCallback(async () => {
+    if (bulkHandles.length === 0) return
+    setBulkProcessing(true)
+    setBulkResult(null)
+    setBulkProgress({ current: 0, total: bulkHandles.length })
+
+    try {
+      const res = await fetch('/api/discovery/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handles: bulkHandles, platform: bulkPlatform }),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setBulkResult({ found: data.found, scraped: data.scraped, errors: data.errors })
+        setBulkProgress({ current: data.total, total: data.total })
+
+        // If there are successful results, load them into the database results
+        const creatorIds = (data.results || [])
+          .filter((r: { creatorId?: string }) => r.creatorId)
+          .map((r: { creatorId: string }) => r.creatorId)
+
+        if (creatorIds.length > 0) {
+          // Trigger a search to show processed creators
+          handleDbSearch(0)
+        }
+      }
+    } catch {
+      setBulkResult({ found: 0, scraped: 0, errors: bulkHandles.length })
+    } finally {
+      setBulkProcessing(false)
+    }
+  }, [bulkHandles, bulkPlatform, handleDbSearch])
 
   const resetDbFilters = () => {
     setDbQuery('')
@@ -494,6 +542,121 @@ export default function DiscoverPage() {
 
         {/* ============ DATABASE TAB ============ */}
         <TabsContent value="database">
+          {/* Bulk Paste Panel */}
+          <div className="mb-4">
+            <button
+              type="button"
+              onClick={() => setBulkOpen(!bulkOpen)}
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:border-purple-300 dark:hover:border-purple-700 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-all"
+            >
+              <ClipboardList className="h-4 w-4 text-purple-500" />
+              {isEs ? 'Pegar lista de handles' : 'Paste handle list'}
+              <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${bulkOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {bulkOpen && (
+              <div className="mt-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5 space-y-4">
+                <div className="flex gap-4">
+                  <div className="flex-1">
+                    <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {isEs ? 'Handles' : 'Handles'}
+                    </label>
+                    <textarea
+                      value={bulkText}
+                      onChange={(e) => setBulkText(e.target.value)}
+                      rows={5}
+                      placeholder={isEs
+                        ? 'Pega aqui los @handles separados por saltos de linea o comas\n@usuario1\n@usuario2\nhttps://instagram.com/usuario3'
+                        : 'Paste @handles separated by line breaks or commas\n@user1\n@user2\nhttps://instagram.com/user3'}
+                      className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-colors font-mono"
+                    />
+                    <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {bulkHandles.length > 0
+                        ? (isEs ? `${bulkHandles.length} handles detectados` : `${bulkHandles.length} handles detected`)
+                        : (isEs ? '0 handles detectados' : '0 handles detected')}
+                    </p>
+                  </div>
+                  <div className="w-48 shrink-0 space-y-3">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {isEs ? 'Plataforma' : 'Platform'}
+                      </label>
+                      <select
+                        value={bulkPlatform}
+                        onChange={(e) => setBulkPlatform(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      >
+                        <option value="INSTAGRAM">Instagram</option>
+                        <option value="TIKTOK">TikTok</option>
+                        <option value="YOUTUBE">YouTube</option>
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleBulkProcess}
+                      disabled={bulkProcessing || bulkHandles.length === 0}
+                      className="w-full flex items-center justify-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-purple-500/25 hover:bg-purple-700 active:bg-purple-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                      {bulkProcessing ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          {isEs ? 'Procesando...' : 'Processing...'}
+                        </>
+                      ) : (
+                        <>
+                          <Search className="h-4 w-4" />
+                          {isEs ? 'Procesar todos' : 'Process all'}
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Progress bar */}
+                {bulkProcessing && bulkProgress.total > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+                      <span>
+                        {isEs
+                          ? `Procesando ${bulkProgress.current}/${bulkProgress.total}...`
+                          : `Processing ${bulkProgress.current}/${bulkProgress.total}...`}
+                      </span>
+                      <span>{Math.round((bulkProgress.current / bulkProgress.total) * 100)}%</span>
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-purple-500 transition-all duration-300"
+                        style={{ width: `${(bulkProgress.current / bulkProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Results summary */}
+                {bulkResult && !bulkProcessing && (
+                  <div className="flex items-center gap-4 rounded-lg bg-gray-50 dark:bg-gray-700/50 px-4 py-3">
+                    <div className="flex items-center gap-1.5">
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {isEs
+                          ? `${bulkResult.found} encontrados, ${bulkResult.scraped} scrapeados, ${bulkResult.errors} errores`
+                          : `${bulkResult.found} found, ${bulkResult.scraped} scraped, ${bulkResult.errors} errors`}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { handleDbSearch(0); setBulkOpen(false) }}
+                      className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-purple-700 transition-colors"
+                    >
+                      <Database className="h-3.5 w-3.5" />
+                      {isEs ? 'Ver resultados' : 'View results'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="flex gap-6">
             {/* Filters Sidebar */}
             <div className="w-80 shrink-0 space-y-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5">
