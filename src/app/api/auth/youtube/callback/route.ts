@@ -71,69 +71,37 @@ export async function GET(request: NextRequest) {
     // Store token (linked to influencer if provided, otherwise to user)
     const scopes = tokenData.scope.split(' ')
 
-    if (influencerId) {
-      // Store as influencer token
-      await prisma.socialToken.upsert({
-        where: {
-          platform_userId_tokenType: {
-            platform: 'YOUTUBE',
-            userId,
-            tokenType: 'user',
-          },
-        },
-        create: {
-          platform: 'YOUTUBE',
-          tokenType: 'user',
-          userId,
-          influencerId: influencerId || undefined,
-          accessToken: encrypt(tokenData.accessToken),
-          refreshToken: tokenData.refreshToken ? encrypt(tokenData.refreshToken) : null,
-          expiresAt: new Date(Date.now() + tokenData.expiresIn * 1000),
-          scopes,
-          platformUserId: channelId,
-          isValid: true,
-        },
-        update: {
-          accessToken: encrypt(tokenData.accessToken),
-          refreshToken: tokenData.refreshToken ? encrypt(tokenData.refreshToken) : null,
-          expiresAt: new Date(Date.now() + tokenData.expiresIn * 1000),
-          scopes,
-          platformUserId: channelId,
-          isValid: true,
-          lastError: null,
-          lastUsedAt: new Date(),
-          influencerId: influencerId || undefined,
+    const existingYt = await prisma.socialToken.findFirst({
+      where: { platform: 'YOUTUBE', userId, tokenType: 'user' },
+    })
+
+    const commonData = {
+      accessToken: encrypt(tokenData.accessToken),
+      refreshToken: tokenData.refreshToken ? encrypt(tokenData.refreshToken) : null,
+      expiresAt: new Date(Date.now() + tokenData.expiresIn * 1000),
+      scopes,
+      platformUserId: channelId,
+      isValid: true,
+      lastError: null,
+      lastUsedAt: new Date(),
+    }
+
+    if (existingYt) {
+      await prisma.socialToken.update({
+        where: { id: existingYt.id },
+        data: {
+          ...commonData,
+          ...(influencerId ? { influencerId } : {}),
         },
       })
     } else {
-      await prisma.socialToken.upsert({
-        where: {
-          platform_userId_tokenType: {
-            platform: 'YOUTUBE',
-            userId,
-            tokenType: 'user',
-          },
-        },
-        create: {
+      await prisma.socialToken.create({
+        data: {
           platform: 'YOUTUBE',
           tokenType: 'user',
           userId,
-          accessToken: encrypt(tokenData.accessToken),
-          refreshToken: tokenData.refreshToken ? encrypt(tokenData.refreshToken) : null,
-          expiresAt: new Date(Date.now() + tokenData.expiresIn * 1000),
-          scopes,
-          platformUserId: channelId,
-          isValid: true,
-        },
-        update: {
-          accessToken: encrypt(tokenData.accessToken),
-          refreshToken: tokenData.refreshToken ? encrypt(tokenData.refreshToken) : null,
-          expiresAt: new Date(Date.now() + tokenData.expiresIn * 1000),
-          scopes,
-          platformUserId: channelId,
-          isValid: true,
-          lastError: null,
-          lastUsedAt: new Date(),
+          ...(influencerId ? { influencerId } : {}),
+          ...commonData,
         },
       })
     }

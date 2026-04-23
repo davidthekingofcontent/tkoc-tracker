@@ -167,11 +167,17 @@ export default function PrivacyPolicyPageES() {
           <ul className="list-disc pl-6 space-y-1">
             <li>Enviar un correo electrónico a admon@thekingofcontent.agency</li>
             <li>Utilizar el punto de acceso automatizado de eliminación de datos en /api/data-deletion</li>
-            <li>Desconectar sus cuentas de redes sociales desde la sección de Configuración</li>
+            <li>Desconectar sus cuentas de redes sociales desde Ajustes → Integraciones</li>
+            <li>
+              Eliminar la aplicación TKOC Intelligence desde su cuenta de Facebook — esto dispara una
+              eliminación automática de todos los datos de Meta/Instagram que tenemos de su cuenta
+              mediante nuestro webhook firmado de Meta Data Deletion.
+            </li>
           </ul>
           <p>
             Tras recibir una solicitud de eliminación válida, eliminaremos todos los datos personales
-            en un plazo de 30 días y confirmaremos la eliminación.
+            en un plazo de 30 días y confirmaremos la eliminación. Para eliminaciones iniciadas por Meta,
+            devolvemos un código de confirmación consultable en /data-deletion.
           </p>
         </section>
 

@@ -4,6 +4,7 @@ const THIRTY_MINUTES_MS = 30 * 60 * 1000
 const FOUR_HOURS_MS = 4 * 60 * 60 * 1000
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000
 const FIVE_MINUTES_MS = 5 * 60 * 1000
 
 interface CronJob {
@@ -25,6 +26,8 @@ const CRON_JOBS: CronJob[] = [
   { name: 'check-posts',      path: '/api/cron/check-posts',      intervalMs: SIX_HOURS_MS,    initialDelayMs: 20 * 60 * 1000,       auth: 'header' },
   { name: 'check-deletions',  path: '/api/cron/check-deletions',  intervalMs: TWELVE_HOURS_MS, initialDelayMs: 25 * 60 * 1000,       auth: 'bearer' },
   { name: 'live-capture-enrich', path: '/api/live-capture/enrich', intervalMs: THIRTY_MINUTES_MS, initialDelayMs: 8 * 60 * 1000, auth: 'header', method: 'POST' },
+  { name: 'meta-sync',          path: '/api/cron/meta-sync',          intervalMs: SIX_HOURS_MS,        initialDelayMs: 12 * 60 * 1000, auth: 'header' },
+  { name: 'meta-token-refresh', path: '/api/cron/meta-token-refresh', intervalMs: TWENTY_FOUR_HOURS_MS, initialDelayMs: 30 * 60 * 1000, auth: 'header' },
 ]
 
 async function executeCron(job: CronJob) {

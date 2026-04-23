@@ -619,6 +619,7 @@ model CreatorProfile {
   suppressionRequest SuppressionRequest?
   clientMatches     ClientCreatorMatch[]
   warmScores        WarmCreatorScore[]
+  socialTokens      SocialToken[]
 
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
@@ -998,7 +999,7 @@ model WarmCreatorScore {
 model SocialToken {
   id             String    @id @default(cuid())
   platform       Platform
-  tokenType      String    @default("page")  // "page", "user", "api_key"
+  tokenType      String    @default("page")  // "page", "user", "api_key", "brand", "creator"
 
   // For brand/platform tokens (Meta Page tokens, YouTube API keys)
   userId         String?
@@ -1007,6 +1008,10 @@ model SocialToken {
   // For influencer tokens (YouTube Analytics OAuth)
   influencerId   String?
   influencer     Influencer? @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  // For creator-facing OAuth (public creator connect flow)
+  creatorProfileId String?
+  creatorProfile CreatorProfile? @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
 
   // Token data (encrypted AES-256-GCM)
   accessToken    String
@@ -1025,9 +1030,99 @@ model SocialToken {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  @@unique([platform, userId, tokenType])
+  // Meta-specific relations (Phase 2 OAuth)
+  accountSnapshots   MetaAccountSnapshot[]
+  media              MetaMedia[]
+  audienceInsights   MetaAudienceInsight[]
+  storyMentions      MetaStoryMention[]
+
+  // Uniqueness is enforced in app code because (platform, userId, tokenType)
+  // can conflict with (platform, creatorProfileId, tokenType) scenarios.
+  @@index([platform, userId])
+  @@index([platform, creatorProfileId])
+  @@index([platform, influencerId])
   @@index([influencerId])
   @@map("social_tokens")
+}
+
+// ============ META (Instagram Business) — Phase 2 OAuth ============
+
+model MetaAccountSnapshot {
+  id              String   @id @default(cuid())
+  socialTokenId   String
+  socialToken     SocialToken @relation(fields: [socialTokenId], references: [id], onDelete: Cascade)
+  igUsername      String
+  igName          String?
+  igBiography     String?
+  igWebsite       String?
+  igProfilePicUrl String?
+  followersCount  Int
+  followsCount    Int
+  mediaCount      Int
+  capturedAt      DateTime @default(now())
+
+  @@index([socialTokenId])
+  @@map("meta_account_snapshots")
+}
+
+model MetaMedia {
+  id                String   @id @default(cuid())
+  socialTokenId     String
+  socialToken       SocialToken @relation(fields: [socialTokenId], references: [id], onDelete: Cascade)
+  igMediaId         String
+  mediaType         String
+  caption           String?
+  permalink         String?
+  thumbnailUrl      String?
+  mediaUrl          String?
+  postedAt          DateTime?
+  likeCount         Int      @default(0)
+  commentsCount     Int      @default(0)
+  reach             Int?
+  impressions       Int?
+  engagement        Int?
+  saved             Int?
+  shares            Int?
+  storyExits        Int?
+  storyReplies      Int?
+  storyTapsForward  Int?
+  storyTapsBack     Int?
+  lastSyncedAt      DateTime @default(now())
+
+  @@unique([socialTokenId, igMediaId])
+  @@index([socialTokenId, mediaType])
+  @@map("meta_media")
+}
+
+model MetaAudienceInsight {
+  id              String   @id @default(cuid())
+  socialTokenId   String
+  socialToken     SocialToken @relation(fields: [socialTokenId], references: [id], onDelete: Cascade)
+  genderAge       Json
+  country         Json
+  city            Json
+  locale          Json
+  onlineFollowers Json
+  capturedAt      DateTime @default(now())
+
+  @@index([socialTokenId])
+  @@map("meta_audience_insights")
+}
+
+model MetaStoryMention {
+  id               String   @id @default(cuid())
+  socialTokenId    String
+  socialToken      SocialToken @relation(fields: [socialTokenId], references: [id], onDelete: Cascade)
+  mentionMediaId   String
+  mentionUsername  String
+  mentionedAt      DateTime
+  matchedCreatorId String?
+  capturedAt       DateTime @default(now())
+
+  @@unique([socialTokenId, mentionMediaId])
+  @@index([socialTokenId])
+  @@index([matchedCreatorId])
+  @@map("meta_story_mentions")
 }
 
 // ============ LIVE CAPTURE (Widget-based social handle capture) ============

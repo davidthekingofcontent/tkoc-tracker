@@ -616,8 +616,127 @@ export default function SettingsPage() {
   }
 
   function handleConnectMeta() {
-    window.location.href = '/api/auth/meta'
+    window.location.href = '/api/auth/meta/brand/start'
   }
+
+  // ---------- Meta Connections (Phase 2 OAuth) ----------
+
+  interface MetaConnectionAccount {
+    igUsername: string
+    igName: string | null
+    igProfilePicUrl: string | null
+    followersCount: number
+    followsCount: number
+    mediaCount: number
+    capturedAt: string
+  }
+
+  interface MetaConnection {
+    id: string
+    platform: string
+    tokenType: string
+    platformUserId: string | null
+    platformPageId: string | null
+    scopes: string[]
+    expiresAt: string | null
+    isValid: boolean
+    lastUsedAt: string | null
+    lastError: string | null
+    createdAt: string
+    updatedAt: string
+    status: 'connected' | 'expired' | 'error' | 'disconnected'
+    account: MetaConnectionAccount | null
+  }
+
+  const [metaConnections, setMetaConnections] = useState<MetaConnection[]>([])
+  const [metaConnectionsLoading, setMetaConnectionsLoading] = useState(true)
+  const [metaSyncingId, setMetaSyncingId] = useState<string | null>(null)
+  const [metaDisconnectingId, setMetaDisconnectingId] = useState<string | null>(null)
+  const [metaToast, setMetaToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+
+  async function fetchMetaConnections() {
+    try {
+      const res = await fetch('/api/meta/connections')
+      if (res.ok) {
+        const data = await res.json()
+        setMetaConnections(data.connections || [])
+      }
+    } catch {
+      // silent
+    } finally {
+      setMetaConnectionsLoading(false)
+    }
+  }
+
+  async function handleSyncMetaConnection(id: string) {
+    setMetaSyncingId(id)
+    try {
+      const res = await fetch(`/api/meta/sync/${id}`, { method: 'POST' })
+      if (res.ok) {
+        setMetaToast({ type: 'success', message: locale === 'es' ? 'Sincronización completada' : 'Sync complete' })
+        fetchMetaConnections()
+      } else {
+        setMetaToast({ type: 'error', message: locale === 'es' ? 'Error al sincronizar' : 'Sync failed' })
+      }
+    } catch {
+      setMetaToast({ type: 'error', message: locale === 'es' ? 'Error al sincronizar' : 'Sync failed' })
+    } finally {
+      setMetaSyncingId(null)
+      setTimeout(() => setMetaToast(null), 3500)
+    }
+  }
+
+  async function handleDisconnectMetaConnection(id: string) {
+    if (typeof window !== 'undefined') {
+      const ok = window.confirm(
+        locale === 'es'
+          ? '¿Desconectar esta cuenta? Los datos se conservarán pero no se actualizarán.'
+          : 'Disconnect this account? Existing data will be kept but will stop updating.'
+      )
+      if (!ok) return
+    }
+    setMetaDisconnectingId(id)
+    try {
+      const res = await fetch(`/api/meta/connections/${id}`, { method: 'DELETE' })
+      if (res.ok) {
+        setMetaToast({ type: 'success', message: locale === 'es' ? 'Cuenta desconectada' : 'Account disconnected' })
+        fetchMetaConnections()
+      } else {
+        setMetaToast({ type: 'error', message: locale === 'es' ? 'Error al desconectar' : 'Disconnect failed' })
+      }
+    } catch {
+      setMetaToast({ type: 'error', message: locale === 'es' ? 'Error al desconectar' : 'Disconnect failed' })
+    } finally {
+      setMetaDisconnectingId(null)
+      setTimeout(() => setMetaToast(null), 3500)
+    }
+  }
+
+  // Load Meta connections + show toast on ?connected=meta
+  useEffect(() => {
+    fetchMetaConnections()
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      if (params.get('connected') === 'meta') {
+        setMetaToast({
+          type: 'success',
+          message: locale === 'es' ? 'Instagram conectado correctamente' : 'Instagram connected successfully',
+        })
+        setTimeout(() => setMetaToast(null), 4000)
+        // Clean up query string
+        const url = new URL(window.location.href)
+        url.searchParams.delete('connected')
+        window.history.replaceState({}, '', url.pathname + (url.searchParams.toString() ? '?' + url.searchParams : ''))
+      } else if (params.get('error')?.startsWith('meta_')) {
+        setMetaToast({
+          type: 'error',
+          message: locale === 'es' ? 'Error al conectar Instagram' : 'Failed to connect Instagram',
+        })
+        setTimeout(() => setMetaToast(null), 4000)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div className="space-y-6">
@@ -1155,6 +1274,144 @@ export default function SettingsPage() {
                   </CardContent>
                 </Card>
               </div>
+            </div>
+
+            {/* Section: Meta Connected Accounts (Phase 2 OAuth) */}
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
+                {locale === 'es' ? 'Cuentas de Instagram conectadas' : 'Connected Instagram accounts'}
+              </h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+                {locale === 'es'
+                  ? 'Cada cuenta de Instagram Business vinculada aquí se sincroniza automáticamente cada 6 horas.'
+                  : 'Each Instagram Business account linked here is auto-synced every 6 hours.'}
+              </p>
+
+              {metaToast && (
+                <div className={cn(
+                  "mb-4 rounded-lg px-4 py-2 text-sm font-medium",
+                  metaToast.type === 'success'
+                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                    : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                )}>
+                  {metaToast.message}
+                </div>
+              )}
+
+              {metaConnectionsLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-5 w-5 animate-spin text-purple-600" />
+                </div>
+              ) : metaConnections.length === 0 ? (
+                <Card variant="elevated">
+                  <CardContent>
+                    <div className="py-6 text-center">
+                      <Instagram className="mx-auto h-8 w-8 text-gray-300" />
+                      <p className="mt-2 text-sm text-gray-500">
+                        {locale === 'es'
+                          ? 'Aún no hay cuentas conectadas. Usa el botón “Connect with Facebook” arriba.'
+                          : 'No accounts connected yet. Use the “Connect with Facebook” button above.'}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        className="mt-4"
+                        onClick={handleConnectMeta}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        {locale === 'es' ? 'Conectar Instagram' : 'Connect Instagram'}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid gap-3">
+                  {metaConnections.map(conn => {
+                    const statusBadge = (() => {
+                      switch (conn.status) {
+                        case 'connected': return { label: locale === 'es' ? 'Conectado' : 'Connected', variant: 'active' as const }
+                        case 'expired':   return { label: locale === 'es' ? 'Expirado' : 'Expired', variant: 'archived' as const }
+                        case 'error':     return { label: locale === 'es' ? 'Error' : 'Error', variant: 'archived' as const }
+                        default:          return { label: locale === 'es' ? 'Desconectado' : 'Disconnected', variant: 'archived' as const }
+                      }
+                    })()
+
+                    return (
+                      <Card key={conn.id} variant="elevated">
+                        <CardContent>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              {conn.account?.igProfilePicUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={conn.account.igProfilePicUrl}
+                                  alt=""
+                                  className="h-11 w-11 rounded-xl object-cover border border-gray-200 dark:border-gray-700"
+                                />
+                              ) : (
+                                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-pink-50 dark:bg-pink-900/20 text-pink-500">
+                                  <Instagram className="h-5 w-5" />
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <p className="font-semibold text-gray-900 dark:text-white truncate">
+                                    @{conn.account?.igUsername || conn.platformUserId || 'unknown'}
+                                  </p>
+                                  <Badge variant={statusBadge.variant}>{statusBadge.label}</Badge>
+                                </div>
+                                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500 dark:text-gray-400">
+                                  {conn.account && (
+                                    <span>{conn.account.followersCount.toLocaleString()} {locale === 'es' ? 'seguidores' : 'followers'}</span>
+                                  )}
+                                  {conn.lastUsedAt && (
+                                    <span>
+                                      {locale === 'es' ? 'Última sync:' : 'Last sync:'}{' '}
+                                      {new Date(conn.lastUsedAt).toLocaleString(locale === 'es' ? 'es-ES' : 'en-US')}
+                                    </span>
+                                  )}
+                                  {conn.expiresAt && (
+                                    <span>
+                                      {locale === 'es' ? 'Expira:' : 'Expires:'}{' '}
+                                      {new Date(conn.expiresAt).toLocaleDateString(locale === 'es' ? 'es-ES' : 'en-US')}
+                                    </span>
+                                  )}
+                                </div>
+                                {conn.lastError && (
+                                  <p className="mt-1 text-xs text-red-500 truncate" title={conn.lastError}>
+                                    {conn.lastError}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => handleSyncMetaConnection(conn.id)}
+                                loading={metaSyncingId === conn.id}
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                                {locale === 'es' ? 'Sincronizar' : 'Sync'}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleDisconnectMetaConnection(conn.id)}
+                                loading={metaDisconnectingId === conn.id}
+                              >
+                                <XCircle className="h-3.5 w-3.5" />
+                                {locale === 'es' ? 'Desconectar' : 'Disconnect'}
+                              </Button>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Section: Data Sources */}

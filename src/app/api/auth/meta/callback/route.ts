@@ -75,36 +75,43 @@ export async function GET(request: NextRequest) {
       'business_management',
     ]
 
-    await prisma.socialToken.upsert({
+    const existingToken = await prisma.socialToken.findFirst({
       where: {
-        platform_userId_tokenType: {
-          platform: 'INSTAGRAM',
-          userId,
-          tokenType: 'page',
-        },
-      },
-      create: {
         platform: 'INSTAGRAM',
-        tokenType: 'page',
         userId,
-        accessToken: encrypt(pageToken),
-        expiresAt: new Date(Date.now() + expiresIn * 1000),
-        scopes,
-        platformUserId: igAccount?.igUserId || null,
-        platformPageId: igAccount?.pageId || null,
-        isValid: true,
-      },
-      update: {
-        accessToken: encrypt(pageToken),
-        expiresAt: new Date(Date.now() + expiresIn * 1000),
-        scopes,
-        platformUserId: igAccount?.igUserId || null,
-        platformPageId: igAccount?.pageId || null,
-        isValid: true,
-        lastError: null,
-        lastUsedAt: new Date(),
+        tokenType: 'page',
       },
     })
+
+    if (existingToken) {
+      await prisma.socialToken.update({
+        where: { id: existingToken.id },
+        data: {
+          accessToken: encrypt(pageToken),
+          expiresAt: new Date(Date.now() + expiresIn * 1000),
+          scopes,
+          platformUserId: igAccount?.igUserId || null,
+          platformPageId: igAccount?.pageId || null,
+          isValid: true,
+          lastError: null,
+          lastUsedAt: new Date(),
+        },
+      })
+    } else {
+      await prisma.socialToken.create({
+        data: {
+          platform: 'INSTAGRAM',
+          tokenType: 'page',
+          userId,
+          accessToken: encrypt(pageToken),
+          expiresAt: new Date(Date.now() + expiresIn * 1000),
+          scopes,
+          platformUserId: igAccount?.igUserId || null,
+          platformPageId: igAccount?.pageId || null,
+          isValid: true,
+        },
+      })
+    }
 
     // Step 6: Update integration setting
     await prisma.setting.upsert({
