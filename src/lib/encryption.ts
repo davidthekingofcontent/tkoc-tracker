@@ -15,7 +15,10 @@ const IV_LENGTH = 12 // 12 bytes = GCM standard
 const KEY_LENGTH_BYTES = 32 // 256 bits
 const KEY_LENGTH_HEX = KEY_LENGTH_BYTES * 2 // 64 hex chars
 
+let _cachedKey: Buffer | null = null
+
 function loadKey(): Buffer {
+  if (_cachedKey) return _cachedKey
   const raw = process.env.TOKEN_ENCRYPTION_KEY
   if (!raw) {
     throw new Error(
@@ -27,19 +30,27 @@ function loadKey(): Buffer {
       `TOKEN_ENCRYPTION_KEY must be exactly ${KEY_LENGTH_HEX} hex chars (32 bytes). Got ${raw.length} chars.`
     )
   }
-  return Buffer.from(raw, 'hex')
+  _cachedKey = Buffer.from(raw, 'hex')
+  return _cachedKey
 }
 
-// Validate at import time — fail fast if key is missing or malformed.
-const KEY = loadKey()
+/**
+ * Returns true if TOKEN_ENCRYPTION_KEY is configured. Useful for
+ * gracefully disabling Meta/OAuth features when the key is absent.
+ */
+export function isEncryptionConfigured(): boolean {
+  const raw = process.env.TOKEN_ENCRYPTION_KEY
+  return !!raw && /^[0-9a-fA-F]+$/.test(raw) && raw.length === KEY_LENGTH_HEX
+}
 
 /**
  * Encrypt plaintext with AES-256-GCM.
  * Returns `iv:authTag:ciphertext` with each segment hex-encoded.
  */
 export function encrypt(plaintext: string): string {
+  const key = loadKey()
   const iv = randomBytes(IV_LENGTH)
-  const cipher = createCipheriv(ALGORITHM, KEY, iv)
+  const cipher = createCipheriv(ALGORITHM, key, iv)
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
   const authTag = cipher.getAuthTag()
   return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`
@@ -59,7 +70,8 @@ export function decrypt(payload: string): string {
   const authTag = Buffer.from(tagHex, 'hex')
   const data = Buffer.from(dataHex, 'hex')
 
-  const decipher = createDecipheriv(ALGORITHM, KEY, iv)
+  const key = loadKey()
+  const decipher = createDecipheriv(ALGORITHM, key, iv)
   decipher.setAuthTag(authTag)
   const decrypted = Buffer.concat([decipher.update(data), decipher.final()])
   return decrypted.toString('utf8')
