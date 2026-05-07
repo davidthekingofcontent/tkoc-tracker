@@ -160,22 +160,47 @@ export async function POST(
                 }
               }
 
-              // Link influencer to campaign if not already linked
-              await prisma.campaignInfluencer.upsert({
+              // CRITICAL: Do NOT auto-add discovered profiles to the campaign.
+              // Only track posts for creators the user has explicitly added.
+              const isCampaignMember = await prisma.campaignInfluencer.findUnique({
                 where: {
                   campaignId_influencerId: {
                     campaignId: id,
                     influencerId: influencer.id,
                   },
                 },
-                create: {
-                  campaignId: id,
-                  influencerId: influencer.id,
-                },
-                update: {},
               })
 
-              // Save the posts (respecting campaign start date)
+              if (!isCampaignMember) {
+                // Optionally send a discovery notification (deduped 7 days)
+                if (influencer.followers >= 1000) {
+                  const recent = await prisma.notification.findFirst({
+                    where: {
+                      userId: campaign.userId,
+                      type: 'creator_discovered',
+                      createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+                      metadata: { path: ['influencerId'], equals: influencer.id },
+                    },
+                  })
+                  if (!recent) {
+                    try {
+                      await prisma.notification.create({
+                        data: {
+                          userId: campaign.userId,
+                          type: 'creator_discovered',
+                          title: 'Nuevo creador descubierto',
+                          message: `🔍 @${influencer.username} descubierto via #${hashtag} en ${campaign.name}`,
+                          link: `/campaigns/${id}`,
+                          metadata: { influencerId: influencer.id, campaignId: id },
+                        },
+                      })
+                    } catch { /* skip */ }
+                  }
+                }
+                continue // Skip media tracking for non-members
+              }
+
+              // Save the posts (respecting campaign start date) — member only
               const campaignStart = campaign.startDate ? new Date(campaign.startDate) : null
               for (const post of result.posts) {
                 if (!post.externalId) continue
@@ -300,11 +325,38 @@ export async function POST(
                 }
               }
 
-              await prisma.campaignInfluencer.upsert({
+              // CRITICAL: Do NOT auto-add. Only track for explicit campaign members.
+              const isCampaignMember = await prisma.campaignInfluencer.findUnique({
                 where: { campaignId_influencerId: { campaignId: id, influencerId: influencer.id } },
-                create: { campaignId: id, influencerId: influencer.id },
-                update: {},
               })
+
+              if (!isCampaignMember) {
+                if (influencer.followers >= 1000) {
+                  const recent = await prisma.notification.findFirst({
+                    where: {
+                      userId: campaign.userId,
+                      type: 'creator_discovered',
+                      createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+                      metadata: { path: ['influencerId'], equals: influencer.id },
+                    },
+                  })
+                  if (!recent) {
+                    try {
+                      await prisma.notification.create({
+                        data: {
+                          userId: campaign.userId,
+                          type: 'creator_discovered',
+                          title: 'Nuevo creador descubierto',
+                          message: `🔍 @${influencer.username} mencionó @${account} en ${campaign.name}`,
+                          link: `/campaigns/${id}`,
+                          metadata: { influencerId: influencer.id, campaignId: id },
+                        },
+                      })
+                    } catch { /* skip */ }
+                  }
+                }
+                continue // Skip media tracking for non-members
+              }
 
               for (const post of result.posts) {
                 if (!post.externalId) continue
