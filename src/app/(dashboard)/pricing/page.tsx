@@ -265,35 +265,76 @@ export default function PricingPage() {
     }
   }, [form.platform, form.format])
 
-  // Search by username
+  // Search by username — auto-detects platform from URL, falls back to checking all platforms
   const handleLookup = useCallback(async () => {
     if (!form.username.trim()) return
     setLookingUp(true)
     setError(null)
-    try {
+
+    // Auto-detect platform from URL if pasted as URL
+    const raw = form.username.trim()
+    let detectedPlatform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE' = form.platform
+    let cleanUsername = raw.replace('@', '')
+
+    if (raw.includes('instagram.com')) {
+      detectedPlatform = 'INSTAGRAM'
+      const m = raw.match(/instagram\.com\/([^/?]+)/)
+      if (m) cleanUsername = m[1]
+    } else if (raw.includes('tiktok.com')) {
+      detectedPlatform = 'TIKTOK'
+      const m = raw.match(/tiktok\.com\/@?([^/?]+)/)
+      if (m) cleanUsername = m[1]
+    } else if (raw.includes('youtube.com')) {
+      detectedPlatform = 'YOUTUBE'
+      const m = raw.match(/youtube\.com\/@?([^/?]+)/)
+      if (m) cleanUsername = m[1]
+    }
+
+    // Helper: try a single platform
+    const tryPlatform = async (p: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE') => {
       const res = await fetch('/api/influencers/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: form.username.replace('@', ''),
-          platform: form.platform,
-        }),
+        body: JSON.stringify({ username: cleanUsername, platform: p }),
       })
-      if (res.ok) {
-        const data = await res.json()
-        const inf = data.influencer || data
-        if (inf) {
-          setForm(prev => ({
-            ...prev,
-            followers: String(inf.followers || ''),
-            avgViews: String(inf.avgViews || ''),
-            avgLikes: String(inf.avgLikes || ''),
-            avgComments: String(inf.avgComments || ''),
-            engagementRate: String(inf.engagementRate || ''),
-          }))
+      if (!res.ok) return null
+      const data = await res.json()
+      const inf = data.influencer || data
+      if (!inf || (inf.followers === 0 && inf.engagementRate === 0)) return null
+      return { ...inf, platform: p }
+    }
+
+    try {
+      // 1) Try the detected/selected platform first
+      let inf = await tryPlatform(detectedPlatform)
+
+      // 2) If no luck and user pasted a plain handle (no URL), try other platforms
+      if (!inf && !raw.includes('http') && !raw.includes('.com')) {
+        const others: Array<'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'> = (['INSTAGRAM', 'TIKTOK', 'YOUTUBE'] as const).filter(p => p !== detectedPlatform)
+        for (const p of others) {
+          inf = await tryPlatform(p)
+          if (inf) break
         }
+      }
+
+      if (inf) {
+        // Default format per platform
+        const defaultFormat = inf.platform === 'INSTAGRAM' ? 'REEL'
+          : inf.platform === 'TIKTOK' ? 'VIDEO'
+          : 'VIDEO'
+        setForm(prev => ({
+          ...prev,
+          username: cleanUsername,
+          platform: inf.platform,
+          format: FORMAT_OPTIONS[inf.platform]?.some(f => f.value === prev.format) ? prev.format : defaultFormat,
+          followers: String(inf.followers || ''),
+          avgViews: String(inf.avgViews || ''),
+          avgLikes: String(inf.avgLikes || ''),
+          avgComments: String(inf.avgComments || ''),
+          engagementRate: String(inf.engagementRate || ''),
+        }))
       } else {
-        setError(isEs ? 'No se encontro el usuario en la base de datos' : 'User not found in database')
+        setError(isEs ? 'No se encontro el usuario en ninguna plataforma' : 'User not found on any platform')
       }
     } catch {
       setError(isEs ? 'Error de red' : 'Network error')

@@ -465,14 +465,16 @@ model CampaignTemplate {
 model Notification {
   id        String   @id @default(cuid())
   userId    String
-  type      String   // campaign_created, influencer_added, media_posted, status_changed, etc.
+  type      String   // campaign_created, influencer_added, media_posted, status_changed, creator_discovered, etc.
   title     String
   message   String
   link      String?  // URL to navigate to on click
+  metadata  Json?    // Optional structured data (e.g. { influencerId, campaignId } for dedup)
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
 
   @@index([userId, read])
+  @@index([userId, type, createdAt])
   @@map("notifications")
 }
 

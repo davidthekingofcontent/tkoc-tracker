@@ -77,6 +77,7 @@ import {
   Copy,
   Upload,
   Trash2,
+  AlertTriangle,
   File,
   MessageCircle,
   ThumbsUp,
@@ -2592,6 +2593,56 @@ export default function CampaignDetailPage() {
         {/* ========== PHASE 2: ELEGIR (Choose) ========== */}
         <TabsContent value="elegir">
           <div className="space-y-4">
+            {/* Cleanup banner — shown if many PROSPECT influencers (likely auto-added by old cron bug) */}
+            {canEdit && influencers.filter(ci => ci.status === 'PROSPECT' && !ci.agreedFee && !ci.notes).length >= 5 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 flex items-center justify-between">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-semibold text-amber-900">
+                      {locale === 'es'
+                        ? `Hay ${influencers.filter(ci => ci.status === 'PROSPECT' && !ci.agreedFee && !ci.notes).length} perfiles auto-añadidos por el sistema (estado PROSPECT, sin fee ni notas)`
+                        : `${influencers.filter(ci => ci.status === 'PROSPECT' && !ci.agreedFee && !ci.notes).length} profiles auto-added by the system (PROSPECT status, no fee or notes)`}
+                    </p>
+                    <p className="text-xs text-amber-700 mt-1">
+                      {locale === 'es'
+                        ? 'Esto era un bug ya arreglado. Puedes limpiarlos automáticamente — solo se eliminarán los que no hayas tocado.'
+                        : 'This was a fixed bug. You can clean them up automatically — only untouched ones will be removed.'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    // First do a dry run to show count
+                    const previewRes = await fetch(`/api/admin/cleanup-auto-added?campaignId=${campaign?.id}&dryRun=true`, { method: 'POST' })
+                    if (!previewRes.ok) {
+                      alert(locale === 'es' ? 'Error al previsualizar' : 'Preview error')
+                      return
+                    }
+                    const preview = await previewRes.json()
+                    const confirmMsg = locale === 'es'
+                      ? `Se eliminarán ${preview.wouldRemove} perfiles auto-añadidos. ¿Continuar?`
+                      : `${preview.wouldRemove} auto-added profiles will be removed. Continue?`
+                    if (!confirm(confirmMsg)) return
+
+                    const res = await fetch(`/api/admin/cleanup-auto-added?campaignId=${campaign?.id}`, { method: 'POST' })
+                    if (!res.ok) {
+                      alert(locale === 'es' ? 'Error al limpiar' : 'Cleanup error')
+                      return
+                    }
+                    const data = await res.json()
+                    alert(locale === 'es' ? `${data.removed} perfiles eliminados` : `${data.removed} profiles removed`)
+                    window.location.reload()
+                  }}
+                  className="shrink-0 ml-3 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700 transition-colors"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {locale === 'es' ? 'Limpiar auto-añadidos' : 'Clean up auto-added'}
+                </button>
+              </div>
+            )}
+
             {/* Add Influencer Section */}
             {canEdit && (
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">

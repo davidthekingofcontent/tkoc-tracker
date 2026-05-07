@@ -204,37 +204,58 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
           }
         }
 
-        const campaignInfluencerResult = await prisma.campaignInfluencer.upsert({
+        // Check if influencer is already a member of this campaign — DO NOT auto-add
+        // The user must explicitly add creators to campaigns. We only track posts for
+        // creators they've already added.
+        const existingMembership = await prisma.campaignInfluencer.findUnique({
           where: {
             campaignId_influencerId: {
               campaignId: campaign.id,
               influencerId: influencer.id,
             },
           },
-          create: {
-            campaignId: campaign.id,
-            influencerId: influencer.id,
-            ...(influencer.followers >= 1000 ? { status: 'PROSPECT' as const } : {}),
-          },
-          update: {},
         })
 
-        // Notify on new creator discovery
-        const isNewlyCreated = (Date.now() - new Date(campaignInfluencerResult.createdAt).getTime()) < 5000
-        if (isNewlyCreated && influencer.followers >= 1000) {
-          try {
-            await prisma.notification.create({
-              data: {
-                userId: campaign.userId,
-                type: 'creator_discovered',
-                title: 'Nuevo creador descubierto',
-                message: `🔍 @${influencer.username} (${formatFollowers(influencer.followers)}) descubierto via ${source} en ${campaign.name}`,
-                link: `/campaigns/${campaign.id}`,
+        // Notify on new creator discovery (but DO NOT auto-add to campaign)
+        if (!existingMembership && influencer.followers >= 1000) {
+          // Check if we already notified about this creator+campaign in the last 7 days
+          const recentNotification = await prisma.notification.findFirst({
+            where: {
+              userId: campaign.userId,
+              type: 'creator_discovered',
+              createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+              metadata: {
+                path: ['influencerId'],
+                equals: influencer.id,
               },
-            })
-          } catch { /* skip */ }
+            },
+          })
+          if (recentNotification) {
+            continue // Skip — already notified, and not a campaign member, so no Media tracking
+          }
         }
 
+        // If not a campaign member, send discovery notification and SKIP Media creation
+        // (Media is only tracked for creators explicitly added to the campaign)
+        if (!existingMembership) {
+          if (influencer.followers >= 1000) {
+            try {
+              await prisma.notification.create({
+                data: {
+                  userId: campaign.userId,
+                  type: 'creator_discovered',
+                  title: 'Nuevo creador descubierto',
+                  message: `🔍 @${influencer.username} (${formatFollowers(influencer.followers)}) descubierto via ${source} en ${campaign.name}`,
+                  link: `/campaigns/${campaign.id}`,
+                  metadata: { influencerId: influencer.id, campaignId: campaign.id },
+                },
+              })
+            } catch { /* skip */ }
+          }
+          continue // Skip media tracking for non-members
+        }
+
+        // Creator IS a campaign member — proceed with Media tracking
         for (const post of result.posts) {
           if (!post.externalId) continue
 
