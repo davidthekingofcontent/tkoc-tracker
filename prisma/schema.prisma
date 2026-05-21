@@ -242,6 +242,9 @@ model CampaignInfluencer {
   // Pipeline status
   status        InfluencerStatus @default(PROSPECT)
 
+  // How this influencer was added to the campaign
+  source        String    @default("manual") // manual | auto_discovery (legacy/deprecated)
+
   // Per-campaign costs
   cost          Float?    @default(0)
   agreedFee     Float?    // What was agreed for THIS specific campaign

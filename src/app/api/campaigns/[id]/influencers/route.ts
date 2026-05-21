@@ -46,7 +46,7 @@ export async function POST(
     }
 
     const item = await prisma.campaignInfluencer.create({
-      data: { campaignId: id, influencerId },
+      data: { campaignId: id, influencerId, source: 'manual' },
       include: { influencer: true },
     })
 

@@ -394,37 +394,122 @@ export async function POST(
       }
     }
 
-    // Also refresh profiles of campaign influencers
+    // ===== CAMPAIGN MEMBER POST CAPTURE =====
+    // For every creator the user has added to this campaign, scrape their profile
+    // and capture posts that mention the brand (even if they didn't use #hashtag
+    // or @mention exactly — match against caption/hashtags/mentions case-insensitively)
     const existingInfluencers = campaign.influencers || []
+    const campaignStartDate = campaign.startDate ? new Date(campaign.startDate) : null
+    const campaignEndDate = campaign.endDate ? new Date(campaign.endDate) : null
+
+    // Build brand keyword set for matching (lowercased target hashtags + accounts)
+    const brandKeywords = new Set<string>()
+    for (const h of campaign.targetHashtags) {
+      const clean = h.toLowerCase().replace(/^#/, '').trim()
+      if (clean) brandKeywords.add(clean)
+    }
+    for (const a of campaign.targetAccounts) {
+      const clean = a.toLowerCase().replace(/^@/, '').trim()
+      if (clean) brandKeywords.add(clean)
+    }
+
+    function postMentionsBrand(post: { caption: string | null; hashtags: string[]; mentions: string[] }): boolean {
+      if (brandKeywords.size === 0) return true // No brand targets configured → keep all
+      const haystack = [
+        (post.caption || '').toLowerCase(),
+        ...post.hashtags.map(h => h.toLowerCase().replace(/^#/, '')),
+        ...post.mentions.map(m => m.toLowerCase().replace(/^@/, '')),
+      ].join(' ')
+      for (const kw of brandKeywords) {
+        if (haystack.includes(kw)) return true
+      }
+      return false
+    }
+
     for (const ci of existingInfluencers) {
       const inf = ci.influencer
-      const isStale = !inf.lastScraped || (Date.now() - inf.lastScraped.getTime()) > 24 * 60 * 60 * 1000
+      try {
+        const scraped = await scrapeProfile(inf.username, inf.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
+        if (!scraped) continue
 
-      if (isStale) {
-        try {
-          const scraped = await scrapeProfile(inf.username, inf.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
-          if (scraped) {
-            await prisma.influencer.update({
-              where: { id: inf.id },
-              data: {
-                displayName: scraped.displayName,
-                bio: scraped.bio,
-                avatarUrl: scraped.avatarUrl,
-                followers: scraped.followers,
-                following: scraped.following,
-                postsCount: scraped.postsCount,
-                engagementRate: scraped.engagementRate,
-                avgLikes: scraped.avgLikes,
-                avgComments: scraped.avgComments,
-                avgViews: scraped.avgViews,
-                isVerified: scraped.isVerified,
-                lastScraped: new Date(),
+        // Update influencer metadata
+        await prisma.influencer.update({
+          where: { id: inf.id },
+          data: {
+            displayName: scraped.displayName,
+            bio: scraped.bio,
+            avatarUrl: scraped.avatarUrl,
+            followers: scraped.followers,
+            following: scraped.following,
+            postsCount: scraped.postsCount,
+            engagementRate: scraped.engagementRate,
+            avgLikes: scraped.avgLikes,
+            avgComments: scraped.avgComments,
+            avgViews: scraped.avgViews,
+            isVerified: scraped.isVerified,
+            lastScraped: new Date(),
+          },
+        })
+
+        // Capture posts from this member that mention the brand within campaign dates
+        let memberPostsCaptured = 0
+        for (const post of scraped.recentPosts) {
+          if (!post.externalId) continue
+
+          // Date filter
+          if (post.postedAt) {
+            const postDate = new Date(post.postedAt)
+            if (campaignStartDate && postDate < campaignStartDate) continue
+            if (campaignEndDate && postDate > campaignEndDate) continue
+          }
+
+          // Brand mention filter
+          if (!postMentionsBrand(post)) continue
+
+          try {
+            await prisma.media.upsert({
+              where: {
+                externalId_platform: {
+                  externalId: post.externalId,
+                  platform: inf.platform as Platform,
+                },
+              },
+              create: {
+                externalId: post.externalId,
+                platform: inf.platform as Platform,
+                mediaType: post.mediaType,
+                caption: post.caption,
+                mediaUrl: post.mediaUrl,
+                thumbnailUrl: post.thumbnailUrl,
+                permalink: post.permalink,
+                likes: post.likes,
+                comments: post.comments,
+                shares: post.shares,
+                saves: post.saves,
+                views: post.views,
+                hashtags: post.hashtags,
+                mentions: post.mentions,
+                postedAt: post.postedAt ? new Date(post.postedAt) : null,
+                influencerId: inf.id,
+                campaignId: id,
+              },
+              update: {
+                likes: post.likes,
+                comments: post.comments,
+                shares: post.shares,
+                saves: post.saves,
+                views: post.views,
+                campaignId: id,
               },
             })
+            memberPostsCaptured++
+          } catch {
+            // Skip duplicate/invalid posts
           }
-        } catch {
-          // Skip profile refresh errors
         }
+        results.postsFound += memberPostsCaptured
+      } catch {
+        // Skip profile refresh errors
       }
     }
 
