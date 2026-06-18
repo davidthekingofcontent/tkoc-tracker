@@ -193,6 +193,40 @@ interface TimelinePoint {
   engagements: number
 }
 
+interface DiagnosticData {
+  campaign: {
+    name: string
+    targetHashtags: string[]
+    targetAccounts: string[]
+    platforms: string[]
+    startDate: string | null
+    endDate: string | null
+    membersCount: number
+  }
+  apify: { configured: boolean; apiKeySet: boolean }
+  scrapeJobs: {
+    total: number
+    completed: number
+    failed: number
+    totalItemsFound: number
+    lastJob: { type: string; platform: string; target: string | null; status: string; itemsFound: number; error: string | null; startedAt: string | null; completedAt: string | null } | null
+    lastSuccessfulJob: { type: string; target: string | null; itemsFound: number; completedAt: string | null } | null
+    recent: Array<{ type: string; platform: string; target: string | null; status: string; itemsFound: number; error: string | null; createdAt: string; completedAt: string | null }>
+  }
+  members: Array<{
+    username: string
+    displayName: string | null
+    platform: string
+    followers: number
+    status: string
+    source: string
+    lastScraped: string | null
+    mediaInCampaign: number
+    lastPost: { postedAt: string | null; mediaType: string; permalink: string | null; likes: number; comments: number; views: number } | null
+  }>
+  summary: { membersWithMedia: number; membersWithoutMedia: number; totalMediaInCampaign: number; membersNeverScraped: number }
+}
+
 // Dynamic import for Recharts (client-side only)
 const RechartsArea = dynamic(
   () => import('recharts').then(mod => {
@@ -337,6 +371,11 @@ export default function CampaignDetailPage() {
     type: 'success' | 'error'
     message: string
   } | null>(null)
+
+  // Diagnostic modal state
+  const [showDiagnostic, setShowDiagnostic] = useState(false)
+  const [diagnosticData, setDiagnosticData] = useState<DiagnosticData | null>(null)
+  const [diagnosticLoading, setDiagnosticLoading] = useState(false)
 
   // Sort state
   const [reportSortField, setReportSortField] = useState<SortField | null>(null)
@@ -1115,24 +1154,44 @@ export default function CampaignDetailPage() {
         </div>
         <div className="flex items-center gap-3">
           {isActive && (
-            <Button
-              variant="primary"
-              size="lg"
-              onClick={handleTrackNow}
-              disabled={isTracking}
-            >
-              {isTracking ? (
-                <>
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                  {t.campaignDetail.tracking}
-                </>
-              ) : (
-                <>
-                  <Radar className="h-5 w-5" />
-                  {t.campaignDetail.trackNow}
-                </>
-              )}
-            </Button>
+            <>
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowDiagnostic(true)
+                  setDiagnosticLoading(true)
+                  try {
+                    const res = await fetch(`/api/admin/diagnostic?campaignId=${campaignId}`)
+                    if (res.ok) setDiagnosticData(await res.json())
+                  } finally {
+                    setDiagnosticLoading(false)
+                  }
+                }}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                title={locale === 'es' ? 'Ver diagnóstico de captura de datos' : 'View data capture diagnostic'}
+              >
+                <AlertTriangle className="h-4 w-4 text-amber-500" />
+                {locale === 'es' ? 'Diagnóstico' : 'Diagnostic'}
+              </button>
+              <Button
+                variant="primary"
+                size="lg"
+                onClick={handleTrackNow}
+                disabled={isTracking}
+              >
+                {isTracking ? (
+                  <>
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    {t.campaignDetail.tracking}
+                  </>
+                ) : (
+                  <>
+                    <Radar className="h-5 w-5" />
+                    {t.campaignDetail.trackNow}
+                  </>
+                )}
+              </Button>
+            </>
           )}
           <div className="relative">
             <Button
@@ -3908,6 +3967,171 @@ export default function CampaignDetailPage() {
           </Button>
         </ModalFooter>
       </Modal>
+
+      {/* Diagnostic Modal */}
+      {showDiagnostic && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowDiagnostic(false)}>
+          <div
+            className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white dark:bg-gray-800 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 flex items-center justify-between border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-6 py-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100">
+                  {locale === 'es' ? 'Diagnóstico de captura' : 'Capture Diagnostic'}
+                </h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {locale === 'es' ? 'Qué está pasando con el rastreo de esta campaña' : 'What\'s going on with this campaign\'s tracking'}
+                </p>
+              </div>
+              <button onClick={() => setShowDiagnostic(false)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-5 p-6">
+              {diagnosticLoading && (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-8 w-8 animate-spin text-purple-500" />
+                </div>
+              )}
+
+              {!diagnosticLoading && diagnosticData && (
+                <>
+                  {/* Apify status */}
+                  <div className={`rounded-xl border p-4 ${diagnosticData.apify.configured ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20' : 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20'}`}>
+                    <p className={`text-sm font-semibold ${diagnosticData.apify.configured ? 'text-green-800 dark:text-green-300' : 'text-red-800 dark:text-red-300'}`}>
+                      {diagnosticData.apify.configured
+                        ? (locale === 'es' ? '✓ Apify configurado correctamente' : '✓ Apify configured')
+                        : (locale === 'es' ? '✗ Apify NO está configurado — esto bloquea toda la captura' : '✗ Apify NOT configured — blocks all capture')}
+                    </p>
+                  </div>
+
+                  {/* Summary cards */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
+                      <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-medium">{locale === 'es' ? 'Miembros' : 'Members'}</p>
+                      <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{diagnosticData.campaign.membersCount}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
+                      <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-medium">{locale === 'es' ? 'Con posts' : 'With posts'}</p>
+                      <p className="text-2xl font-bold text-green-600 dark:text-green-400">{diagnosticData.summary.membersWithMedia}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
+                      <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-medium">{locale === 'es' ? 'Sin posts' : 'No posts'}</p>
+                      <p className="text-2xl font-bold text-amber-600 dark:text-amber-400">{diagnosticData.summary.membersWithoutMedia}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
+                      <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-medium">{locale === 'es' ? 'Total posts capturados' : 'Total captured'}</p>
+                      <p className="text-2xl font-bold text-purple-600 dark:text-purple-400">{diagnosticData.summary.totalMediaInCampaign}</p>
+                    </div>
+                  </div>
+
+                  {/* Per-member table */}
+                  <div>
+                    <h3 className="mb-2 text-sm font-bold text-gray-900 dark:text-gray-100">
+                      {locale === 'es' ? 'Cobertura por influencer' : 'Coverage by influencer'}
+                    </h3>
+                    <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700">
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-50 dark:bg-gray-900">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Usuario</th>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">{locale === 'es' ? 'Origen' : 'Source'}</th>
+                            <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300">Posts</th>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">{locale === 'es' ? 'Último scrape' : 'Last scrape'}</th>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">{locale === 'es' ? 'Último post' : 'Latest post'}</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                          {diagnosticData.members.map(m => (
+                            <tr key={m.username} className="bg-white dark:bg-gray-800">
+                              <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">@{m.username}</td>
+                              <td className="px-3 py-2">
+                                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${m.source === 'manual' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'}`}>
+                                  {m.source}
+                                </span>
+                              </td>
+                              <td className={`px-3 py-2 text-right font-bold ${m.mediaInCampaign > 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'}`}>
+                                {m.mediaInCampaign}
+                              </td>
+                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
+                                {m.lastScraped ? new Date(m.lastScraped).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' }) : (locale === 'es' ? 'Nunca' : 'Never')}
+                              </td>
+                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
+                                {m.lastPost?.permalink ? (
+                                  <a href={m.lastPost.permalink} target="_blank" rel="noopener noreferrer" className="text-purple-600 hover:underline">
+                                    {m.lastPost.postedAt ? new Date(m.lastPost.postedAt).toLocaleDateString('es-ES') : 'Ver'} ({m.lastPost.mediaType})
+                                  </a>
+                                ) : '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Recent scrape jobs */}
+                  <div>
+                    <h3 className="mb-2 text-sm font-bold text-gray-900 dark:text-gray-100">
+                      {locale === 'es' ? 'Últimos trabajos de scrape (Apify)' : 'Recent scrape jobs (Apify)'}
+                    </h3>
+                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                      {locale === 'es'
+                        ? `${diagnosticData.scrapeJobs.completed}/${diagnosticData.scrapeJobs.total} completados, ${diagnosticData.scrapeJobs.failed} fallidos`
+                        : `${diagnosticData.scrapeJobs.completed}/${diagnosticData.scrapeJobs.total} completed, ${diagnosticData.scrapeJobs.failed} failed`}
+                    </p>
+                    <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700">
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-50 dark:bg-gray-900">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Tipo</th>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Target</th>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Status</th>
+                            <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300">Items</th>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Cuándo</th>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Error</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                          {diagnosticData.scrapeJobs.recent.map((j, i) => (
+                            <tr key={i} className="bg-white dark:bg-gray-800">
+                              <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{j.type}</td>
+                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400 font-mono">{j.target || '—'}</td>
+                              <td className="px-3 py-2">
+                                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                  j.status === 'COMPLETED' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
+                                  j.status === 'FAILED' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' :
+                                  'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
+                                }`}>
+                                  {j.status}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-right font-medium text-gray-700 dark:text-gray-300">{j.itemsFound}</td>
+                              <td className="px-3 py-2 text-gray-500 dark:text-gray-400">
+                                {new Date(j.createdAt).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' })}
+                              </td>
+                              <td className="px-3 py-2 text-red-600 dark:text-red-400 max-w-[200px] truncate" title={j.error || ''}>
+                                {j.error ? j.error.slice(0, 60) + '…' : ''}
+                              </td>
+                            </tr>
+                          ))}
+                          {diagnosticData.scrapeJobs.recent.length === 0 && (
+                            <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-500 dark:text-gray-400">
+                              {locale === 'es' ? 'Aún no se ha ejecutado ningún rastreo. Dale a "Rastrear Ahora" primero.' : 'No tracking runs yet. Click "Track Now" first.'}
+                            </td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Report Preview Modal */}
       {campaign && (
