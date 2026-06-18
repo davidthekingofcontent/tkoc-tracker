@@ -402,26 +402,43 @@ export async function POST(
     const campaignStartDate = campaign.startDate ? new Date(campaign.startDate) : null
     const campaignEndDate = campaign.endDate ? new Date(campaign.endDate) : null
 
-    // Build brand keyword set for matching (lowercased target hashtags + accounts)
+    // Build brand keyword set for matching (normalized + raw)
+    // Normalize: lowercase, strip accents, remove spaces/dots/hyphens/underscores
+    function normalize(s: string): string {
+      return s.toLowerCase()
+        .normalize('NFD').replace(/[̀-ͯ]/g, '') // strip accents
+        .replace(/[\s._\-/]/g, '') // remove spaces, dots, underscores, hyphens, slashes
+    }
+
     const brandKeywords = new Set<string>()
     for (const h of campaign.targetHashtags) {
       const clean = h.toLowerCase().replace(/^#/, '').trim()
-      if (clean) brandKeywords.add(clean)
+      if (clean) {
+        brandKeywords.add(clean)
+        brandKeywords.add(normalize(clean))
+      }
     }
     for (const a of campaign.targetAccounts) {
       const clean = a.toLowerCase().replace(/^@/, '').trim()
-      if (clean) brandKeywords.add(clean)
+      if (clean) {
+        brandKeywords.add(clean)
+        brandKeywords.add(normalize(clean))
+      }
     }
 
     function postMentionsBrand(post: { caption: string | null; hashtags: string[]; mentions: string[] }): boolean {
       if (brandKeywords.size === 0) return true // No brand targets configured → keep all
-      const haystack = [
+      const rawHaystack = [
         (post.caption || '').toLowerCase(),
         ...post.hashtags.map(h => h.toLowerCase().replace(/^#/, '')),
         ...post.mentions.map(m => m.toLowerCase().replace(/^@/, '')),
       ].join(' ')
+      // Match against both the raw haystack and a normalized version
+      // (so "PC Componentes" matches keyword "pccomponentes")
+      const normHaystack = normalize(rawHaystack)
       for (const kw of brandKeywords) {
-        if (haystack.includes(kw)) return true
+        if (rawHaystack.includes(kw)) return true
+        if (normHaystack.includes(kw)) return true
       }
       return false
     }
@@ -508,6 +525,9 @@ export async function POST(
           }
         }
         results.postsFound += memberPostsCaptured
+        if (memberPostsCaptured > 0) {
+          results.influencersFound++
+        }
       } catch {
         // Skip profile refresh errors
       }
