@@ -118,6 +118,7 @@ export async function syncMetaConnection(connectionId: string): Promise<SyncResu
           socialTokenId: connectionId,
           igMediaId: m.id,
           mediaType: m.media_type,
+          igUsername: m.username ?? null,
           caption: m.caption ?? null,
           permalink: m.permalink ?? null,
           thumbnailUrl: m.thumbnail_url ?? null,
@@ -133,6 +134,7 @@ export async function syncMetaConnection(connectionId: string): Promise<SyncResu
           lastSyncedAt: new Date(),
         },
         update: {
+          igUsername: m.username ?? null,
           caption: m.caption ?? null,
           permalink: m.permalink ?? null,
           thumbnailUrl: m.thumbnail_url ?? null,
@@ -165,6 +167,7 @@ export async function syncMetaConnection(connectionId: string): Promise<SyncResu
           socialTokenId: connectionId,
           igMediaId: s.id,
           mediaType: 'STORY',
+          igUsername: s.username ?? null,
           caption: s.caption ?? null,
           permalink: s.permalink ?? null,
           thumbnailUrl: s.thumbnail_url ?? null,
@@ -181,6 +184,7 @@ export async function syncMetaConnection(connectionId: string): Promise<SyncResu
           lastSyncedAt: new Date(),
         },
         update: {
+          igUsername: s.username ?? null,
           caption: s.caption ?? null,
           permalink: s.permalink ?? null,
           thumbnailUrl: s.thumbnail_url ?? null,
@@ -226,6 +230,42 @@ export async function syncMetaConnection(connectionId: string): Promise<SyncResu
     try {
       const tagged = await getTaggedMedia(igId, pageAccessToken, 25)
       for (const t of tagged) {
+        // Persist the full tagged post into MetaMedia too (incl. poster's
+        // igUsername) so campaigns can match it against member influencers.
+        // Insights are not available for other users' media, so reach/
+        // impressions stay null here.
+        try {
+          await prisma.metaMedia.upsert({
+            where: { socialTokenId_igMediaId: { socialTokenId: connectionId, igMediaId: t.id } },
+            create: {
+              socialTokenId: connectionId,
+              igMediaId: t.id,
+              mediaType: t.media_type,
+              igUsername: t.username ?? null,
+              caption: t.caption ?? null,
+              permalink: t.permalink ?? null,
+              thumbnailUrl: t.thumbnail_url ?? null,
+              mediaUrl: t.media_url ?? null,
+              postedAt: t.timestamp ? new Date(t.timestamp) : null,
+              likeCount: t.like_count ?? 0,
+              commentsCount: t.comments_count ?? 0,
+              lastSyncedAt: new Date(),
+            },
+            update: {
+              igUsername: t.username ?? null,
+              caption: t.caption ?? null,
+              permalink: t.permalink ?? null,
+              thumbnailUrl: t.thumbnail_url ?? null,
+              mediaUrl: t.media_url ?? null,
+              postedAt: t.timestamp ? new Date(t.timestamp) : null,
+              likeCount: t.like_count ?? 0,
+              commentsCount: t.comments_count ?? 0,
+              lastSyncedAt: new Date(),
+            },
+          })
+        } catch (err) {
+          console.error('[meta-sync] tagged media upsert failed', err instanceof Error ? err.message : err)
+        }
         try {
           await prisma.metaStoryMention.upsert({
             where: {

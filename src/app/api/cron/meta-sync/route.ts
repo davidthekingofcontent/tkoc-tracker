@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { syncMetaConnection } from '@/lib/meta-sync'
+import { materializeMetaContent } from '@/lib/meta-materialize'
 
 const MAX_PER_RUN = 20
 
@@ -22,16 +23,36 @@ export async function GET(request: NextRequest) {
     where: { platform: 'INSTAGRAM', isValid: true },
     orderBy: { lastUsedAt: { sort: 'asc', nulls: 'first' } },
     take: MAX_PER_RUN,
-    select: { id: true },
+    select: { id: true, userId: true },
   })
 
   const results: Array<{ id: string; ok: boolean; error?: string }> = []
+  const syncedUserIds = new Set<string>()
   for (const t of tokens) {
     try {
       const r = await syncMetaConnection(t.id)
       results.push({ id: t.id, ok: r.success, error: r.error })
+      if (r.success && t.userId) syncedUserIds.add(t.userId)
     } catch (err) {
       results.push({ id: t.id, ok: false, error: err instanceof Error ? err.message : 'unknown' })
+    }
+  }
+
+  // Materialize freshly-synced Meta content into every ACTIVE campaign of the
+  // synced users, so it flows into campaign metrics without manual tracking.
+  let materialized = { created: 0, updated: 0 }
+  if (syncedUserIds.size > 0) {
+    const activeCampaigns = await prisma.campaign.findMany({
+      where: { userId: { in: Array.from(syncedUserIds) }, status: 'ACTIVE' },
+      select: { id: true },
+    })
+    for (const c of activeCampaigns) {
+      try {
+        const m = await materializeMetaContent(c.id)
+        materialized = { created: materialized.created + m.created, updated: materialized.updated + m.updated }
+      } catch (err) {
+        console.error(`[Cron/MetaSync] materialize failed for campaign ${c.id}:`, err instanceof Error ? err.message : err)
+      }
     }
   }
 
@@ -39,6 +60,7 @@ export async function GET(request: NextRequest) {
     total: tokens.length,
     succeeded: results.filter(r => r.ok).length,
     failed: results.filter(r => !r.ok).length,
+    materialized,
     results,
   })
 }

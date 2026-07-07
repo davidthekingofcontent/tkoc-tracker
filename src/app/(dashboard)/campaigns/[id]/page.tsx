@@ -372,6 +372,26 @@ export default function CampaignDetailPage() {
     message: string
   } | null>(null)
 
+  // Meta connect banner state — hasMetaConnection defaults true so the banner
+  // never flashes before the check resolves, and fetch errors keep it hidden
+  const [hasMetaConnection, setHasMetaConnection] = useState(true)
+  const [metaBannerDismissed, setMetaBannerDismissed] = useState(true)
+
+  useEffect(() => {
+    try {
+      setMetaBannerDismissed(localStorage.getItem('dismissed_meta_banner') === '1')
+    } catch { /* private mode — keep dismissed */ }
+
+    fetch('/api/meta/connections')
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (data && Array.isArray(data.connections)) {
+          setHasMetaConnection(data.connections.length > 0)
+        }
+      })
+      .catch(() => { /* treat as connected — never nag on API failure */ })
+  }, [])
+
   // Diagnostic modal state
   const [showDiagnostic, setShowDiagnostic] = useState(false)
   const [diagnosticData, setDiagnosticData] = useState<DiagnosticData | null>(null)
@@ -971,6 +991,12 @@ export default function CampaignDetailPage() {
   const totalEngagements = overview?.totalEngagements || 0
   const totalMedia = overview?.totalMedia || media.length
   const isActive = campaign?.status === 'ACTIVE'
+
+  const showMetaBanner =
+    !hasMetaConnection &&
+    !metaBannerDismissed &&
+    !!campaign &&
+    ((campaign.targetAccounts?.length || 0) > 0 || (campaign.targetHashtags?.length || 0) > 0)
   const isEmpty = media.length === 0 && influencers.length === 0
 
   const sortedReportInfluencers = useMemo(
@@ -1193,6 +1219,13 @@ export default function CampaignDetailPage() {
               </Button>
             </>
           )}
+          <Link
+            href={`/campaigns/${campaignId}/report`}
+            className="inline-flex items-center gap-2 rounded-lg border border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors"
+          >
+            <BarChart3 className="h-4 w-4" />
+            {locale === 'es' ? 'Ver informe' : 'View report'}
+          </Link>
           <div className="relative">
             <Button
               variant="primary"
@@ -1430,6 +1463,36 @@ export default function CampaignDetailPage() {
           </div>
         )}
       </div>
+
+      {/* Meta connect banner — shown for brand-tracking campaigns without a Meta connection */}
+      {showMetaBanner && (
+        <div className="flex items-center justify-between gap-4 rounded-2xl bg-gradient-to-r from-purple-500 to-pink-500 px-5 py-4 text-white shadow-lg">
+          <p className="text-sm font-medium">
+            {locale === 'es'
+              ? '🔓 Desbloquea datos reales de Instagram — Conecta tu cuenta Business para capturar métricas verdaderas (reach, impresiones, saves) sin depender de scraping.'
+              : '🔓 Unlock real Instagram data — Connect your Business account to capture true metrics (reach, impressions, saves) without relying on scraping.'}
+          </p>
+          <div className="flex shrink-0 items-center gap-2">
+            <Link
+              href="/settings"
+              className="rounded-lg bg-white px-4 py-2 text-sm font-bold text-purple-700 hover:bg-purple-50 transition-colors"
+            >
+              {locale === 'es' ? 'Conectar ahora' : 'Connect now'}
+            </Link>
+            <button
+              type="button"
+              onClick={() => {
+                try { localStorage.setItem('dismissed_meta_banner', '1') } catch { /* private mode */ }
+                setMetaBannerDismissed(true)
+              }}
+              className="rounded-lg p-1.5 text-white/70 hover:bg-white/10 hover:text-white transition-colors"
+              aria-label="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Tabs - 5 Campaign Phases */}
       <Tabs defaultValue="planificar">

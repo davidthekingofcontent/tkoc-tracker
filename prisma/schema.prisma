@@ -320,6 +320,11 @@ model Media {
   isAdDisclosed     Boolean   @default(false)
   dataSource        String?   // "api", "oauth", "marketplace", "apify"
 
+  // Where this Media row's metrics came from. Distinct from dataSource above
+  // so we can differentiate Apify-scraped (public) rows from Meta Graph API
+  // (real reach/impressions) rows even when they share dataSource == "api".
+  source        String    @default("apify") // apify | meta_api | manual
+
   // Tracking
   postedAt      DateTime?
   discoveredAt  DateTime  @default(now())
@@ -1076,6 +1081,10 @@ model MetaMedia {
   socialToken       SocialToken @relation(fields: [socialTokenId], references: [id], onDelete: Cascade)
   igMediaId         String
   mediaType         String
+  // Poster's IG username (NULLABLE — added for campaign matching).
+  // For the brand's own media this is the brand username; for tagged media
+  // (getTaggedMedia) this is the creator who posted the tagging content.
+  igUsername        String?
   caption           String?
   permalink         String?
   thumbnailUrl      String?

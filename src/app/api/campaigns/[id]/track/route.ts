@@ -3,6 +3,8 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { scrapeHashtag, scrapeAccountMentions, scrapeProfile, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
 import type { HashtagResult } from '@/lib/apify'
+import { syncMetaConnection } from '@/lib/meta-sync'
+import { materializeMetaContent } from '@/lib/meta-materialize'
 import { Platform } from '@/generated/prisma/client'
 
 export async function POST(
@@ -57,7 +59,70 @@ export async function POST(
       influencersFound: 0,
       storiesCaptured: 0,
       storyError: null as string | null,
+      metaSync: { connections: 0, media: 0, stories: 0, mentions: 0 },
       errors: [] as string[],
+    }
+
+    // ===== META GRAPH API SYNC (PRIMARY SOURCE) =====
+    // Sync all of the campaign owner's connected brand Instagram accounts
+    // BEFORE the Apify passes. Uses campaign.userId (NOT session.id) so team
+    // members can trigger tracking and still sync the owner's connections.
+    // A Meta failure must never break the rest of tracking.
+    const metaCoveredAccounts = new Set<string>()
+    try {
+      const brandTokens = await prisma.socialToken.findMany({
+        where: {
+          platform: 'INSTAGRAM',
+          tokenType: 'brand',
+          isValid: true,
+          userId: campaign.userId,
+        },
+        select: { id: true },
+      })
+
+      for (const brandToken of brandTokens) {
+        try {
+          const sync = await syncMetaConnection(brandToken.id)
+          if (sync.success) {
+            results.metaSync.connections++
+            results.metaSync.media += sync.media
+            results.metaSync.stories += sync.stories
+            results.metaSync.mentions += sync.mentions
+
+            // Only skip the Apify mentions pass when Meta ACTUALLY delivered
+            // this run — if the sync failed, Apify remains the fallback.
+            const snapshot = await prisma.metaAccountSnapshot.findFirst({
+              where: { socialTokenId: brandToken.id },
+              orderBy: { capturedAt: 'desc' },
+              select: { igUsername: true },
+            })
+            if (snapshot?.igUsername) {
+              metaCoveredAccounts.add(snapshot.igUsername.toLowerCase().replace(/^@/, '').trim())
+            }
+          } else if (sync.error) {
+            results.errors.push(`Meta sync failed: ${sync.error}`)
+          }
+        } catch (err) {
+          results.errors.push(
+            `Meta sync failed: ${err instanceof Error ? err.message : 'Unknown error'}`
+          )
+        }
+      }
+
+      // Materialize Meta-captured member content into the Media table so all
+      // campaign aggregates (overview, timeline, EMV, exports) include it.
+      if (results.metaSync.connections > 0) {
+        try {
+          const materialized = await materializeMetaContent(id)
+          results.postsFound += materialized.created
+          console.log(`[Track] Materialized Meta content: ${materialized.created} created, ${materialized.updated} upgraded`)
+        } catch (err) {
+          console.error('[Track] Meta materialization failed:', err instanceof Error ? err.message : err)
+        }
+      }
+    } catch (err) {
+      // Never let Meta issues break Apify tracking
+      console.error('[Track] Meta sync pass failed:', err instanceof Error ? err.message : err)
     }
 
     // Track hashtags
@@ -276,7 +341,14 @@ export async function POST(
     // ===== ACCOUNT MENTIONS TRACKING =====
     // Find posts where targetAccounts are tagged/mentioned
     for (const account of campaign.targetAccounts) {
+      const normalizedAccount = account.toLowerCase().replace(/^@/, '').trim()
       for (const platform of campaign.platforms) {
+        // Apify cost saver: Meta Graph API already captured tagged content for
+        // connected brand accounts — skip the Instagram Apify mentions scrape.
+        if (platform === 'INSTAGRAM' && metaCoveredAccounts.has(normalizedAccount)) {
+          console.log(`[Track] Skipping Apify mentions for @${normalizedAccount} — Meta connection covers it`)
+          continue
+        }
         try {
           const job = await prisma.scrapeJob.create({
             data: {
@@ -625,6 +697,7 @@ export async function POST(
         postsFromMentions: results.postsFromMentions,
         storiesCaptured: results.storiesCaptured,
         storyError: results.storyError,
+        metaSync: results.metaSync,
       },
       results,
     })

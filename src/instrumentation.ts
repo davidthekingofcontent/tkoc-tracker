@@ -1,6 +1,3 @@
-const TWO_HOURS_MS = 2 * 60 * 60 * 1000
-const ONE_HOUR_MS = 1 * 60 * 60 * 1000
-const THIRTY_MINUTES_MS = 30 * 60 * 1000
 const FOUR_HOURS_MS = 4 * 60 * 60 * 1000
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000
@@ -19,14 +16,20 @@ interface CronJob {
   method?: 'GET' | 'POST'
 }
 
+// Cron cadence optimized to reduce Apify cost:
+// - discovery reduced from 1h → 12h (was the biggest cost center)
+// - track reduced from 2h → 6h (Apify-based; Meta API sync via meta-sync runs 4h)
+// - stories reduced from 4h → 6h (24h expiry means 4x/day is enough)
+// - live-capture-enrich reduced from 30min → 4h (was scraping every 30min on empty queues)
+// - meta-sync increased frequency 6h → 4h (free via Meta API, no cost concern)
 const CRON_JOBS: CronJob[] = [
-  { name: 'track',            path: '/api/cron/track',            intervalMs: TWO_HOURS_MS,    initialDelayMs: FIVE_MINUTES_MS,      auth: 'bearer' },
-  { name: 'discovery',        path: '/api/cron/discovery',        intervalMs: ONE_HOUR_MS,     initialDelayMs: 10 * 60 * 1000,       auth: 'header' },
-  { name: 'stories',          path: '/api/cron/stories',          intervalMs: FOUR_HOURS_MS,   initialDelayMs: 15 * 60 * 1000,       auth: 'header' },
-  { name: 'check-posts',      path: '/api/cron/check-posts',      intervalMs: SIX_HOURS_MS,    initialDelayMs: 20 * 60 * 1000,       auth: 'header' },
-  { name: 'check-deletions',  path: '/api/cron/check-deletions',  intervalMs: TWELVE_HOURS_MS, initialDelayMs: 25 * 60 * 1000,       auth: 'bearer' },
-  { name: 'live-capture-enrich', path: '/api/live-capture/enrich', intervalMs: THIRTY_MINUTES_MS, initialDelayMs: 8 * 60 * 1000, auth: 'header', method: 'POST' },
-  { name: 'meta-sync',          path: '/api/cron/meta-sync',          intervalMs: SIX_HOURS_MS,        initialDelayMs: 12 * 60 * 1000, auth: 'header' },
+  { name: 'track',            path: '/api/cron/track',            intervalMs: SIX_HOURS_MS,    initialDelayMs: FIVE_MINUTES_MS,      auth: 'bearer' },
+  { name: 'discovery',        path: '/api/cron/discovery',        intervalMs: TWELVE_HOURS_MS, initialDelayMs: 10 * 60 * 1000,       auth: 'header' },
+  { name: 'stories',          path: '/api/cron/stories',          intervalMs: SIX_HOURS_MS,    initialDelayMs: 15 * 60 * 1000,       auth: 'header' },
+  { name: 'check-posts',      path: '/api/cron/check-posts',      intervalMs: TWELVE_HOURS_MS, initialDelayMs: 20 * 60 * 1000,       auth: 'header' },
+  { name: 'check-deletions',  path: '/api/cron/check-deletions',  intervalMs: TWENTY_FOUR_HOURS_MS, initialDelayMs: 25 * 60 * 1000,  auth: 'bearer' },
+  { name: 'live-capture-enrich', path: '/api/live-capture/enrich', intervalMs: FOUR_HOURS_MS,   initialDelayMs: 8 * 60 * 1000,        auth: 'header', method: 'POST' },
+  { name: 'meta-sync',          path: '/api/cron/meta-sync',          intervalMs: FOUR_HOURS_MS,       initialDelayMs: 12 * 60 * 1000, auth: 'header' },
   { name: 'meta-token-refresh', path: '/api/cron/meta-token-refresh', intervalMs: TWENTY_FOUR_HOURS_MS, initialDelayMs: 30 * 60 * 1000, auth: 'header' },
 ]
 

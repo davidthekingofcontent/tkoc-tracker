@@ -713,13 +713,21 @@ export async function scrapeAccountMentions(
   platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE',
   maxPosts = 50
 ): Promise<HashtagResult[]> {
-  switch (platform) {
-    case 'INSTAGRAM':
-      return scrapeInstagramAccountMentions(username, maxPosts)
-    default:
-      console.log(`[Apify] Account mention scraping not supported for ${platform}`)
-      return []
+  if (platform !== 'INSTAGRAM') {
+    console.log(`[Apify] Account mention scraping not supported for ${platform}`)
+    return []
   }
+
+  const cacheKey = `mentions:${platform}:${username.toLowerCase().replace(/^@/, '')}:${maxPosts}`
+  const cached = cacheGet<HashtagResult[]>(cacheKey)
+  if (cached !== undefined) {
+    console.log(`[Apify] Cache hit for ${cacheKey} — skipping paid scrape`)
+    return cached
+  }
+
+  const result = await scrapeInstagramAccountMentions(username, maxPosts)
+  cacheSet(cacheKey, result, result.length > 0 ? LIST_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS)
+  return result
 }
 
 // ============ INSTAGRAM STORIES ============
@@ -825,13 +833,23 @@ async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[
 }
 
 export async function scrapeStories(usernames: string[], platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<StoryResult[]> {
-  switch (platform) {
-    case 'INSTAGRAM':
-      return scrapeInstagramStories(usernames)
-    default:
-      // Stories only supported on Instagram for now
-      return []
+  if (platform !== 'INSTAGRAM') {
+    // Stories only supported on Instagram for now
+    return []
   }
+
+  // Short TTL: stories expire in 24h so freshness matters, but a 30min cache
+  // absorbs repeated "Track Now" clicks without paying Apify each time
+  const cacheKey = `stories:${platform}:${usernames.map(u => u.toLowerCase()).sort().join(',')}`
+  const cached = cacheGet<StoryResult[]>(cacheKey)
+  if (cached !== undefined) {
+    console.log(`[Apify] Cache hit for stories batch (${usernames.length} users) — skipping paid scrape`)
+    return cached
+  }
+
+  const result = await scrapeInstagramStories(usernames)
+  cacheSet(cacheKey, result, result.length > 0 ? 30 * 60 * 1000 : NEGATIVE_CACHE_TTL_MS)
+  return result
 }
 
 // ============ PUBLIC API ============
@@ -930,17 +948,70 @@ export async function scrapeInstagramSimilarAccounts(
   }
 }
 
+// ============ IN-MEMORY SCRAPE CACHE (Apify cost saver) ============
+// The production deployment is a long-lived Node process, so this cache
+// persists across requests until redeploy. Repeated "Track Now" clicks and
+// overlapping crons no longer pay Apify twice for the same target.
+// Empty/failed results get a short negative-cache TTL so a transient Apify
+// failure doesn't hide data for hours but also doesn't get hammered.
+
+const SCRAPE_CACHE_MAX_ENTRIES = 500
+const PROFILE_CACHE_TTL_MS = 6 * 60 * 60 * 1000 // 6h — matches track cron cadence
+const LIST_CACHE_TTL_MS = 2 * 60 * 60 * 1000    // 2h — hashtag/mention feeds move faster
+const NEGATIVE_CACHE_TTL_MS = 10 * 60 * 1000    // 10min — retry failures soon
+
+interface CacheEntry<T> {
+  data: T
+  at: number
+  ttl: number
+}
+
+const _scrapeCache = new Map<string, CacheEntry<unknown>>()
+
+function cacheGet<T>(key: string): T | undefined {
+  const entry = _scrapeCache.get(key)
+  if (!entry) return undefined
+  if (Date.now() - entry.at > entry.ttl) {
+    _scrapeCache.delete(key)
+    return undefined
+  }
+  return entry.data as T
+}
+
+function cacheSet<T>(key: string, data: T, ttl: number) {
+  // Simple FIFO eviction — oldest insertion goes first
+  if (_scrapeCache.size >= SCRAPE_CACHE_MAX_ENTRIES) {
+    const oldest = _scrapeCache.keys().next().value
+    if (oldest !== undefined) _scrapeCache.delete(oldest)
+  }
+  _scrapeCache.set(key, { data, at: Date.now(), ttl })
+}
+
 export async function scrapeProfile(username: string, platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<ScrapedProfile | null> {
+  const cacheKey = `profile:${platform}:${username.toLowerCase()}`
+  const cached = cacheGet<ScrapedProfile | null>(cacheKey)
+  if (cached !== undefined) {
+    console.log(`[Apify] Cache hit for ${cacheKey} — skipping paid scrape`)
+    return cached
+  }
+
+  let result: ScrapedProfile | null
   switch (platform) {
     case 'INSTAGRAM':
-      return scrapeInstagramProfile(username)
+      result = await scrapeInstagramProfile(username)
+      break
     case 'TIKTOK':
-      return scrapeTikTokProfile(username)
+      result = await scrapeTikTokProfile(username)
+      break
     case 'YOUTUBE':
-      return scrapeYouTubeProfile(username)
+      result = await scrapeYouTubeProfile(username)
+      break
     default:
       throw new Error(`Unsupported platform: ${platform}`)
   }
+
+  cacheSet(cacheKey, result, result ? PROFILE_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS)
+  return result
 }
 
 async function scrapeTikTokHashtag(hashtag: string, maxPosts = 20): Promise<HashtagResult[]> {
@@ -1108,16 +1179,30 @@ function mapYouTubeHashtagItems(items: Record<string, unknown>[]): HashtagResult
 }
 
 export async function scrapeHashtag(hashtag: string, platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', maxPosts = 20): Promise<HashtagResult[]> {
+  const cacheKey = `hashtag:${platform}:${hashtag.toLowerCase().replace(/^#/, '')}:${maxPosts}`
+  const cached = cacheGet<HashtagResult[]>(cacheKey)
+  if (cached !== undefined) {
+    console.log(`[Apify] Cache hit for ${cacheKey} — skipping paid scrape`)
+    return cached
+  }
+
+  let result: HashtagResult[]
   switch (platform) {
     case 'INSTAGRAM':
-      return scrapeInstagramHashtag(hashtag, maxPosts)
+      result = await scrapeInstagramHashtag(hashtag, maxPosts)
+      break
     case 'TIKTOK':
-      return scrapeTikTokHashtag(hashtag, maxPosts)
+      result = await scrapeTikTokHashtag(hashtag, maxPosts)
+      break
     case 'YOUTUBE':
-      return scrapeYouTubeHashtag(hashtag, maxPosts)
+      result = await scrapeYouTubeHashtag(hashtag, maxPosts)
+      break
     default:
       return []
   }
+
+  cacheSet(cacheKey, result, result.length > 0 ? LIST_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS)
+  return result
 }
 
 // ============ COMMENT SCRAPING ============
