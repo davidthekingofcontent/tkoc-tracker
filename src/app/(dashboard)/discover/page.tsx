@@ -189,6 +189,31 @@ function CategoryTag({ slug, isEs }: { slug: string; isEs: boolean }) {
   )
 }
 
+// ============ APIFY STATUS BANNER ============
+
+interface ApifyStatus {
+  available: boolean
+  resumesAt: string | null
+}
+
+function formatApifyResumeDate(resumesAt: string | null): string {
+  if (!resumesAt) return ''
+  const d = new Date(resumesAt)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })
+}
+
+function ApifyExhaustedBanner({ isEs, resumesAt, className = '' }: { isEs: boolean; resumesAt: string | null; className?: string }) {
+  const fecha = formatApifyResumeDate(resumesAt)
+  return (
+    <div className={`rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-300 ${className}`}>
+      {isEs
+        ? `⚠️ La búsqueda en vivo está temporalmente no disponible: el proveedor de datos externo alcanzó su límite mensual.${fecha ? ` Se restablece el ${fecha}.` : ''} La búsqueda en la base de datos sigue funcionando con normalidad.`
+        : `⚠️ Live search is temporarily unavailable: the external data provider reached its monthly usage limit.${fecha ? ` It resumes on ${fecha}.` : ''} Database search keeps working normally.`}
+    </div>
+  )
+}
+
 // ============ MAIN PAGE ============
 
 export default function DiscoverPage() {
@@ -196,6 +221,18 @@ export default function DiscoverPage() {
   const isEs = locale === 'es'
 
   const [activeTab, setActiveTab] = useState('database')
+
+  // ============ APIFY STATUS (live search availability) ============
+  const [apifyStatus, setApifyStatus] = useState<ApifyStatus | null>(null)
+
+  useEffect(() => {
+    fetch('/api/apify-status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data) setApifyStatus(data) })
+      .catch(() => {})
+  }, [])
+
+  const apifyDown = apifyStatus !== null && !apifyStatus.available
 
   // ============ DATABASE TAB STATE ============
   const [dbQuery, setDbQuery] = useState('')
@@ -595,6 +632,9 @@ export default function DiscoverPage() {
 
             {bulkOpen && (
               <div className="mt-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5 space-y-4">
+                {apifyDown && (
+                  <ApifyExhaustedBanner isEs={isEs} resumesAt={apifyStatus?.resumesAt ?? null} />
+                )}
                 <div className="flex gap-4">
                   <div className="flex-1">
                     <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -1119,6 +1159,9 @@ export default function DiscoverPage() {
 
         {/* ============ LIVE SEARCH TAB ============ */}
         <TabsContent value="live">
+          {apifyDown && (
+            <ApifyExhaustedBanner isEs={isEs} resumesAt={apifyStatus?.resumesAt ?? null} className="mb-4" />
+          )}
           <div className="flex gap-6">
             {/* Left Sidebar Filters */}
             <div className="w-80 shrink-0 space-y-5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5">

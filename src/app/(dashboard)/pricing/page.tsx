@@ -232,6 +232,21 @@ export default function PricingPage() {
   const [result, setResult] = useState<PricingAnalysisResult | null>(null)
   const [quickBenchmark, setQuickBenchmark] = useState<QuickBenchmark | null>(null)
 
+  // Apify (live scraping) availability — banner shown when the monthly limit is exhausted
+  const [apifyStatus, setApifyStatus] = useState<{ available: boolean; resumesAt: string | null } | null>(null)
+
+  useEffect(() => {
+    fetch('/api/apify-status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data) setApifyStatus(data) })
+      .catch(() => {})
+  }, [])
+
+  const apifyDown = apifyStatus !== null && !apifyStatus.available
+  const apifyResumeDate = apifyStatus?.resumesAt
+    ? new Date(apifyStatus.resumesAt).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })
+    : ''
+
   const updateField = (key: keyof FormData, value: string) => {
     setForm(prev => ({ ...prev, [key]: value }))
   }
@@ -442,6 +457,15 @@ export default function PricingPage() {
               {isEs ? 'Buscar' : 'Lookup'}
             </Button>
           </div>
+
+          {/* Apify exhausted note */}
+          {apifyDown && (
+            <p className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+              {isEs
+                ? `⚠️ La búsqueda de perfiles nuevos está temporalmente no disponible${apifyResumeDate ? ` (hasta el ${apifyResumeDate})` : ''}. Los perfiles ya guardados funcionan.`
+                : `⚠️ New profile lookup is temporarily unavailable${apifyResumeDate ? ` (until ${apifyResumeDate})` : ''}. Already saved profiles still work.`}
+            </p>
+          )}
 
           {/* Platform + Format row */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

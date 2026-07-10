@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { Platform } from '@/generated/prisma/client'
-import { scrapeProfile, isApifyConfigured } from '@/lib/apify'
+import { scrapeProfile, isApifyConfigured, isApifyExhausted, getApifyResumeDate } from '@/lib/apify'
 
 export async function POST(request: NextRequest) {
   try {
@@ -54,6 +54,9 @@ export async function POST(request: NextRequest) {
     // If Apify is configured and data is stale or doesn't exist, scrape fresh data
     const apifyReady = isApifyConfigured()
     console.log(`[Analyze] username=${cleanUsername}, platform=${platform}, apifyConfigured=${apifyReady}, existing=${!!existing}, isStale=${isStale}, hasNoData=${hasNoData}`)
+
+    // Track whether an attempted scrape came back empty (to surface Apify exhaustion)
+    let scrapeFailed = false
 
     if (apifyReady && (!existing || isStale)) {
       console.log(`[Analyze] Starting Apify scrape for ${cleanUsername} on ${platform}`)
@@ -193,6 +196,7 @@ export async function POST(request: NextRequest) {
         }
 
         // Scraping returned null - update job as failed
+        scrapeFailed = true
         await prisma.scrapeJob.update({
           where: { id: job.id },
           data: {
@@ -202,11 +206,17 @@ export async function POST(request: NextRequest) {
           },
         })
       } catch (scrapeError) {
+        scrapeFailed = true
         console.error('[Analyze] Apify scrape error:', scrapeError instanceof Error ? scrapeError.message : scrapeError)
         console.error('[Analyze] Full error:', scrapeError)
         // Continue to return existing data if scraping fails
       }
     }
+
+    // Surface Apify monthly-limit exhaustion when a scrape came back empty
+    const exhaustedInfo = scrapeFailed && isApifyExhausted()
+      ? { apifyExhausted: true, resumesAt: getApifyResumeDate() }
+      : {}
 
     // If we have existing data (even if scraping failed), return it
     if (existing) {
@@ -217,6 +227,7 @@ export async function POST(request: NextRequest) {
         message: existing.lastScraped
           ? `Showing cached data from ${existing.lastScraped.toISOString()}`
           : 'Profile data loaded from cache.',
+        ...exhaustedInfo,
       })
     }
 
@@ -236,6 +247,7 @@ export async function POST(request: NextRequest) {
       analyzed: false,
       source: 'placeholder',
       message: 'Profile created. Analyzing data...',
+      ...exhaustedInfo,
     })
   } catch (error) {
     console.error('Analyze influencer error:', error)

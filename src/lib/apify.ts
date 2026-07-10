@@ -5,6 +5,49 @@ import { prisma } from '@/lib/db'
 
 const APIFY_BASE = 'https://api.apify.com/v2'
 
+// ============ CIRCUIT BREAKER (monthly usage hard limit) ============
+// When Apify returns 403 "platform-feature-disabled" / "Monthly usage hard
+// limit exceeded", every actor start will keep failing until the usage cycle
+// resets. Trip an in-memory breaker so subsequent calls fail fast (no network)
+// instead of burning latency on doomed requests. Per-process state: resets on
+// deploy/restart and re-trips on the first failed call — that is expected.
+
+let apifyExhaustedUntil: number | null = null
+
+export function isApifyExhausted(): boolean {
+  return apifyExhaustedUntil !== null && Date.now() < apifyExhaustedUntil
+}
+
+export function getApifyResumeDate(): string | null {
+  if (!isApifyExhausted()) return null
+  return new Date(apifyExhaustedUntil as number).toISOString()
+}
+
+/** Trip the breaker. Tries to read the real cycle end from the Apify limits
+ *  endpoint; falls back to now + 6h. Never throws. */
+async function tripApifyExhausted(token: string): Promise<void> {
+  let until = Date.now() + 6 * 60 * 60 * 1000 // fallback: retry in 6 hours
+  try {
+    const res = await fetch(`https://api.apify.com/v2/users/me/limits?token=${token}`)
+    if (res.ok) {
+      const json = await res.json() as { data?: { monthlyUsageCycle?: { endAt?: string } } }
+      const endAt = json.data?.monthlyUsageCycle?.endAt
+      if (endAt) {
+        const parsed = Date.parse(endAt)
+        if (!Number.isNaN(parsed) && parsed > Date.now()) until = parsed
+      }
+    }
+  } catch {
+    // keep the 6h fallback — this must never throw
+  }
+  apifyExhaustedUntil = until
+  console.error(`[Apify] Monthly limit exhausted — circuit open until ${new Date(until).toISOString()}`)
+}
+
+function isExhaustedError(err: unknown): boolean {
+  return err instanceof Error && err.message === 'APIFY_EXHAUSTED'
+}
+
 // Cache the DB token for 60s to avoid hitting DB on every call
 let _cachedDbToken: string | null = null
 let _cachedDbTokenAt = 0
@@ -41,6 +84,9 @@ async function runActor(
   input: Record<string, unknown>,
   timeoutSecs = 120
 ): Promise<Record<string, unknown>[]> {
+  // Circuit breaker: fail fast (no network, no DB) while the monthly limit is exhausted
+  if (isApifyExhausted()) throw new Error('APIFY_EXHAUSTED')
+
   const token = await getTokenWithDbFallback()
   if (!token) throw new Error('APIFY_API_KEY not configured')
 
@@ -63,6 +109,13 @@ async function runActor(
   if (!runRes.ok) {
     const errText = await runRes.text()
     console.error(`[Apify] Actor ${actorId} FAILED: ${runRes.status} ${errText}`)
+    // Monthly usage hard limit → open the circuit breaker until the cycle resets
+    if (
+      runRes.status === 403 &&
+      (errText.includes('platform-feature-disabled') || errText.toLowerCase().includes('hard limit'))
+    ) {
+      await tripApifyExhausted(token)
+    }
     throw new Error(`Apify actor ${actorId} failed to start: ${runRes.status} ${errText}`)
   }
 
@@ -726,6 +779,8 @@ export async function scrapeAccountMentions(
   }
 
   const result = await scrapeInstagramAccountMentions(username, maxPosts)
+  // Don't negative-cache empties caused by the exhausted-limit circuit breaker
+  if (result.length === 0 && isApifyExhausted()) return result
   cacheSet(cacheKey, result, result.length > 0 ? LIST_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS)
   return result
 }
@@ -848,6 +903,8 @@ export async function scrapeStories(usernames: string[], platform: 'INSTAGRAM' |
   }
 
   const result = await scrapeInstagramStories(usernames)
+  // Don't negative-cache empties caused by the exhausted-limit circuit breaker
+  if (result.length === 0 && isApifyExhausted()) return result
   cacheSet(cacheKey, result, result.length > 0 ? 30 * 60 * 1000 : NEGATIVE_CACHE_TTL_MS)
   return result
 }
@@ -996,18 +1053,25 @@ export async function scrapeProfile(username: string, platform: 'INSTAGRAM' | 'T
   }
 
   let result: ScrapedProfile | null
-  switch (platform) {
-    case 'INSTAGRAM':
-      result = await scrapeInstagramProfile(username)
-      break
-    case 'TIKTOK':
-      result = await scrapeTikTokProfile(username)
-      break
-    case 'YOUTUBE':
-      result = await scrapeYouTubeProfile(username)
-      break
-    default:
-      throw new Error(`Unsupported platform: ${platform}`)
+  try {
+    switch (platform) {
+      case 'INSTAGRAM':
+        result = await scrapeInstagramProfile(username)
+        break
+      case 'TIKTOK':
+        result = await scrapeTikTokProfile(username)
+        break
+      case 'YOUTUBE':
+        result = await scrapeYouTubeProfile(username)
+        break
+      default:
+        throw new Error(`Unsupported platform: ${platform}`)
+    }
+  } catch (err) {
+    // Circuit breaker open: return null fast and do NOT negative-cache —
+    // caching would mask recovery once the usage cycle resets
+    if (isExhaustedError(err)) return null
+    throw err
   }
 
   cacheSet(cacheKey, result, result ? PROFILE_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS)
@@ -1187,19 +1251,27 @@ export async function scrapeHashtag(hashtag: string, platform: 'INSTAGRAM' | 'TI
   }
 
   let result: HashtagResult[]
-  switch (platform) {
-    case 'INSTAGRAM':
-      result = await scrapeInstagramHashtag(hashtag, maxPosts)
-      break
-    case 'TIKTOK':
-      result = await scrapeTikTokHashtag(hashtag, maxPosts)
-      break
-    case 'YOUTUBE':
-      result = await scrapeYouTubeHashtag(hashtag, maxPosts)
-      break
-    default:
-      return []
+  try {
+    switch (platform) {
+      case 'INSTAGRAM':
+        result = await scrapeInstagramHashtag(hashtag, maxPosts)
+        break
+      case 'TIKTOK':
+        result = await scrapeTikTokHashtag(hashtag, maxPosts)
+        break
+      case 'YOUTUBE':
+        result = await scrapeYouTubeHashtag(hashtag, maxPosts)
+        break
+      default:
+        return []
+    }
+  } catch (err) {
+    if (isExhaustedError(err)) return []
+    throw err
   }
+
+  // Don't negative-cache breaker-caused empties (TikTok/YouTube paths catch internally)
+  if (result.length === 0 && isApifyExhausted()) return result
 
   cacheSet(cacheKey, result, result.length > 0 ? LIST_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS)
   return result
@@ -1248,7 +1320,12 @@ export async function scrapeComments(
 ): Promise<ScrapedComment[]> {
   switch (platform) {
     case 'INSTAGRAM':
-      return scrapeInstagramComments(postUrls, maxComments)
+      try {
+        return await scrapeInstagramComments(postUrls, maxComments)
+      } catch (err) {
+        if (isExhaustedError(err)) return []
+        throw err
+      }
     default:
       // Only Instagram supported for now
       console.log(`[Apify] Comment scraping not yet supported for ${platform}`)

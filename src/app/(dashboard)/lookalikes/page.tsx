@@ -156,7 +156,8 @@ export default function LookalikesPage() {
 }
 
 function LookalikesContent() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  const isEs = locale === 'es'
   const searchParams = useSearchParams()
 
   const [handle, setHandle] = useState('')
@@ -172,6 +173,21 @@ function LookalikesContent() {
   const [addToListModal, setAddToListModal] = useState<{ username: string; platform: string } | null>(null)
   const [addingToList, setAddingToList] = useState(false)
   const [addToListResult, setAddToListResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+
+  // Apify (live scraping) availability — note shown when the monthly limit is exhausted
+  const [apifyStatus, setApifyStatus] = useState<{ available: boolean; resumesAt: string | null } | null>(null)
+
+  useEffect(() => {
+    fetch('/api/apify-status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data) setApifyStatus(data) })
+      .catch(() => {})
+  }, [])
+
+  const apifyDown = apifyStatus !== null && !apifyStatus.available
+  const apifyResumeDate = apifyStatus?.resumesAt
+    ? new Date(apifyStatus.resumesAt).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })
+    : ''
 
   // Load lists on mount
   useEffect(() => {
@@ -317,6 +333,15 @@ function LookalikesContent() {
             {searching ? t.lookalikes.finding : t.lookalikes.find}
           </button>
         </div>
+
+        {/* Apify exhausted note */}
+        {apifyDown && (
+          <p className="mt-3 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+            {isEs
+              ? `⚠️ La búsqueda de perfiles nuevos está temporalmente no disponible${apifyResumeDate ? ` (hasta el ${apifyResumeDate})` : ''}. Los perfiles ya guardados funcionan.`
+              : `⚠️ New profile lookup is temporarily unavailable${apifyResumeDate ? ` (until ${apifyResumeDate})` : ''}. Already saved profiles still work.`}
+          </p>
+        )}
       </div>
 
       {/* Error state */}

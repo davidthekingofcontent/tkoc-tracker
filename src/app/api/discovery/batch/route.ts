@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { Platform } from '@/generated/prisma/client'
-import { scrapeProfile } from '@/lib/apify'
+import { scrapeProfile, isApifyExhausted, getApifyResumeDate } from '@/lib/apify'
 import { enrichCreatorFull } from '@/lib/creator-enrichment'
 
 // Extract clean username from handle/URL
@@ -82,6 +82,7 @@ export async function POST(req: NextRequest) {
 
   const semaphore = createSemaphore(3)
   const results: BatchResultItem[] = []
+  let anyScrapeFailed = false
 
   const tasks = handles.slice(0, 200).map(async (handle) => {
     await semaphore.acquire()
@@ -120,6 +121,7 @@ export async function POST(req: NextRequest) {
       try {
         const profile = await scrapeProfile(username, normalizedPlatform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
         if (!profile) {
+          anyScrapeFailed = true
           results.push({ handle, status: 'error', username, error: 'Profile not found or scrape failed' })
           return
         }
@@ -133,6 +135,7 @@ export async function POST(req: NextRequest) {
           followers: profile.followers,
         })
       } catch (scrapeErr) {
+        anyScrapeFailed = true
         results.push({
           handle,
           status: 'error',
@@ -157,5 +160,9 @@ export async function POST(req: NextRequest) {
     found,
     scraped,
     errors,
+    // Surface Apify monthly-limit exhaustion when scrapes came back empty
+    ...(anyScrapeFailed && isApifyExhausted()
+      ? { apifyExhausted: true, resumesAt: getApifyResumeDate() }
+      : {}),
   })
 }
