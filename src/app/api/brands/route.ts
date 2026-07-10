@@ -7,6 +7,31 @@ function generateId(): string {
   return `brand_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
 }
 
+// ============ DUPLICATE BRAND DETECTION ============
+// Exact-match checks let "VILEDA" and "Vileda España" coexist — the same brand
+// twice, which splits campaigns and Meta connections. Compare normalized names
+// (lowercase, accent-stripped, whitespace-collapsed) and also treat containment
+// as a duplicate: "vileda" ⊂ "vileda españa" → same brand.
+
+function normalizeBrandName(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isSameBrandName(a: string, b: string): boolean {
+  const na = normalizeBrandName(a)
+  const nb = normalizeBrandName(b)
+  if (!na || !nb) return false
+  if (na === nb) return true
+  // Containment needs a minimum length so short generic words don't collide
+  const [shorter, longer] = na.length <= nb.length ? [na, nb] : [nb, na]
+  return shorter.length >= 4 && longer.includes(shorter)
+}
+
 interface BrandData {
   id: string
   name: string
@@ -173,9 +198,11 @@ export async function POST(request: NextRequest) {
     for (const existing of existingBrands) {
       try {
         const data = JSON.parse(existing.value) as BrandData
-        if (data.name.toLowerCase().trim() === name.toLowerCase().trim()) {
+        if (isSameBrandName(data.name, name)) {
           return NextResponse.json(
-            { error: 'A brand with this name already exists' },
+            {
+              error: `Ya existe una marca igual o muy similar: "${data.name}". Usa esa marca o renómbrala antes de crear otra — duplicarla dividiría las campañas y la conexión de Instagram.`,
+            },
             { status: 409 }
           )
         }
@@ -264,9 +291,11 @@ export async function PATCH(request: NextRequest) {
       for (const b of allBrands) {
         try {
           const d = JSON.parse(b.value) as BrandData
-          if (d.name.toLowerCase().trim() === name.toLowerCase().trim()) {
+          if (isSameBrandName(d.name, name)) {
             return NextResponse.json(
-              { error: 'A brand with this name already exists' },
+              {
+                error: `Ya existe una marca igual o muy similar: "${d.name}". Duplicarla dividiría las campañas y la conexión de Instagram.`,
+              },
               { status: 409 }
             )
           }
