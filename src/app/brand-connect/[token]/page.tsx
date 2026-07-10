@@ -35,7 +35,9 @@ function decodeInviteForDisplay(token: string): InviteDisplayData | null {
     if (parts.length !== 3) return null
     const pad = parts[1].length % 4 === 0 ? '' : '='.repeat(4 - (parts[1].length % 4))
     const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/') + pad
-    const payload = JSON.parse(atob(b64))
+    // atob() yields Latin-1 — re-decode as UTF-8 so names like "España" render correctly
+    const utf8 = new TextDecoder('utf-8').decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)))
+    const payload = JSON.parse(utf8)
     if (payload.purpose !== 'brand_connect' || !payload.brandName) return null
     return {
       brandName: payload.brandName,

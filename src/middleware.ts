@@ -57,6 +57,9 @@ const brandApiWhitelist = [
   '/api/portal',
   '/api/notifications',
   '/api/proxy',
+  // Public-purpose invitation endpoint: an already-logged-in BRAND user
+  // opening an invite link must not get a Forbidden instead of the page.
+  '/api/invite',
 ]
 
 /**
