@@ -63,6 +63,15 @@ const creatorSecondaryNavItems: NavItem[] = [
   { key: "settings", icon: Settings, href: "/settings" },
 ]
 
+// Simplified nav for BRAND (client) role — their whole world is the portal.
+// (Middleware also redirects BRAND users to /portal; this is defense-in-depth
+// so a brand never sees agency nav if they land on a dashboard page.)
+const brandMainNavItems: NavItem[] = [
+  { key: "portal", icon: Building2, href: "/portal" },
+]
+
+const brandSecondaryNavItems: NavItem[] = []
+
 interface SidebarCampaign {
   id: string
   name: string
@@ -95,6 +104,7 @@ function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
     case 'lookalikes': return t.lookalikes?.title || 'Lookalikes'
     case 'clientBase': return (t as Record<string, unknown> as { clientBase?: { title?: string } }).clientBase?.title || 'My Client Base'
     case 'pipeline': return t.nav.pipeline
+    case 'portal': return t.nav.portal || 'Portal'
     case 'settings': return t.settings?.title || t.nav.settings
     default: return key
   }
@@ -112,20 +122,26 @@ export function Sidebar() {
   const [user, setUser] = useState<UserData>({ name: 'User', email: '', role: 'ADMIN' })
 
   const isCreator = user.role === 'CREATOR'
+  const isBrand = user.role === 'BRAND'
 
   useEffect(() => {
     // Load user from localStorage
+    let role = 'ADMIN'
     try {
       const userData = localStorage.getItem('user')
       if (userData) {
         const parsed = JSON.parse(userData)
+        role = parsed.role || 'ADMIN'
         setUser({
           name: parsed.name || 'User',
           email: parsed.email || '',
-          role: parsed.role || 'ADMIN',
+          role,
         })
       }
     } catch {}
+
+    // Brands only see the portal link — skip agency data fetches
+    if (role === 'BRAND') return
 
     // Fetch recent campaigns (skip for creators)
     fetch('/api/campaigns?limit=5')
@@ -169,6 +185,9 @@ export function Sidebar() {
     (href === '/' && pathname === '/') ||
     (href !== '/' && (pathname === href || pathname?.startsWith(href + "/")))
 
+  const navMainItems = isBrand ? brandMainNavItems : isCreator ? creatorMainNavItems : mainNavItems
+  const navSecondaryItems = isBrand ? brandSecondaryNavItems : isCreator ? creatorSecondaryNavItems : secondaryNavItems
+
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-[260px] flex-col border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 transition-colors">
       {/* Logo */}
@@ -185,7 +204,7 @@ export function Sidebar() {
       <nav className="flex-1 overflow-y-auto px-3 py-4">
         {/* Main Navigation */}
         <div className="space-y-1">
-          {(isCreator ? creatorMainNavItems : mainNavItems).map((item) => {
+          {navMainItems.map((item) => {
             const active = isActive(item.href)
             return (
               <Link
@@ -213,11 +232,13 @@ export function Sidebar() {
         </div>
 
         {/* Divider between main and secondary nav */}
-        <div className="my-4 border-t border-gray-200 dark:border-gray-700" />
+        {navSecondaryItems.length > 0 && (
+          <div className="my-4 border-t border-gray-200 dark:border-gray-700" />
+        )}
 
         {/* Secondary Navigation */}
         <div className="space-y-0.5">
-          {(isCreator ? creatorSecondaryNavItems : secondaryNavItems).map((item) => {
+          {navSecondaryItems.map((item) => {
             const active = isActive(item.href)
             return (
               <Link
@@ -244,8 +265,8 @@ export function Sidebar() {
           })}
         </div>
 
-        {/* Lists — hidden for creators */}
-        {!isCreator && lists.length > 0 && (
+        {/* Lists — hidden for creators and brands */}
+        {!isCreator && !isBrand && lists.length > 0 && (
           <div className="mt-6">
             <button
               onClick={() => setListsOpen(!listsOpen)}
@@ -281,8 +302,8 @@ export function Sidebar() {
           </div>
         )}
 
-        {/* Recent Campaigns — hidden for creators */}
-        {!isCreator && campaigns.length > 0 && (
+        {/* Recent Campaigns — hidden for creators and brands */}
+        {!isCreator && !isBrand && campaigns.length > 0 && (
           <div className="mt-4">
             <button
               onClick={() => setCampaignsOpen(!campaignsOpen)}

@@ -27,11 +27,32 @@ export async function GET(
     return NextResponse.json({ error: 'Invitation has expired' }, { status: 410 })
   }
 
+  // For BRAND invitations, surface the linked brand name (informational)
+  let brandName: string | undefined
+  if (invitation.role === 'BRAND') {
+    const link = await prisma.setting.findUnique({
+      where: { key: `invite_brand_${token}` },
+    })
+    if (link) {
+      const brandSetting = await prisma.setting.findUnique({
+        where: { key: link.value },
+      })
+      if (brandSetting) {
+        try {
+          brandName = JSON.parse(brandSetting.value).name
+        } catch {
+          /* ignore malformed brand JSON */
+        }
+      }
+    }
+  }
+
   return NextResponse.json({
     email: invitation.email,
     role: invitation.role,
     invitedBy: invitation.user.name,
     expiresAt: invitation.expiresAt,
+    ...(brandName ? { brandName } : {}),
   })
 }
 
@@ -81,6 +102,41 @@ export async function POST(
       role: invitation.role,
     },
   })
+
+  // For BRAND invitations: write brandUserId into the brand's Setting JSON
+  // and mirror the brand name onto the user (User.brandName is BRAND-only).
+  if (invitation.role === 'BRAND') {
+    const link = await prisma.setting.findUnique({
+      where: { key: `invite_brand_${token}` },
+    })
+    if (link) {
+      const brandSetting = await prisma.setting.findUnique({
+        where: { key: link.value },
+      })
+      if (brandSetting) {
+        try {
+          const brandData = JSON.parse(brandSetting.value)
+          brandData.brandUserId = user.id
+          await prisma.setting.update({
+            where: { key: brandSetting.key },
+            data: { value: JSON.stringify(brandData) },
+          })
+          if (brandData.name) {
+            await prisma.user.update({
+              where: { id: user.id },
+              data: { brandName: brandData.name },
+            })
+          }
+        } catch (err) {
+          console.error('Failed to link brand user on invite acceptance:', err)
+        }
+      }
+      // Consume the one-time brand link
+      await prisma.setting
+        .deleteMany({ where: { key: `invite_brand_${token}` } })
+        .catch(() => {})
+    }
+  }
 
   // Mark invitation as accepted
   await prisma.invitation.update({

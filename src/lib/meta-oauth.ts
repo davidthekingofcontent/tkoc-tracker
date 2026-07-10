@@ -11,11 +11,12 @@ const STATE_COOKIE_MAX_AGE_SECONDS = 60 * 15 // 15 minutes
 export type MetaStatePayload = {
   /** Random nonce, included in URL state param. */
   nonce: string
-  /** Flow kind: 'brand' or 'creator'. */
-  kind: 'brand' | 'creator'
+  /** Flow kind: 'brand', 'creator' or 'brand_connect' (session-less brand landing). */
+  kind: 'brand' | 'creator' | 'brand_connect'
   /** For brand flow, the logged-in user id. */
   userId?: string
-  /** For creator flow, the invitation token that links to a CreatorProfile. */
+  /** For creator flow, the invitation token that links to a CreatorProfile.
+   *  For brand_connect flow, the signed invite JWT. */
   invitationToken?: string
   /** Redirect URI used when starting OAuth (must match exactly on callback). */
   redirectUri: string

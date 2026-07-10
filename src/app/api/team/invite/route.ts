@@ -44,10 +44,37 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  const { email, role, locale } = await request.json()
+  const { email, role, locale, brandId } = await request.json()
 
   if (!email) {
     return NextResponse.json({ error: 'Email is required' }, { status: 400 })
+  }
+
+  // BRAND invitations must be linked to an existing brand (Setting row).
+  // The brandId is stashed in a Setting keyed by the invitation token and
+  // consumed on acceptance (writes brandUserId into the brand's JSON).
+  if (role === 'BRAND') {
+    if (!brandId || typeof brandId !== 'string') {
+      return NextResponse.json(
+        { error: 'brandId is required for BRAND invitations' },
+        { status: 400 }
+      )
+    }
+    const brandSetting = await prisma.setting.findUnique({ where: { key: brandId } })
+    if (!brandSetting || !brandId.startsWith('brand_')) {
+      return NextResponse.json({ error: 'Brand not found' }, { status: 404 })
+    }
+    try {
+      const brandData = JSON.parse(brandSetting.value)
+      if (brandData.brandUserId) {
+        return NextResponse.json(
+          { error: 'This brand already has a linked brand user' },
+          { status: 409 }
+        )
+      }
+    } catch {
+      return NextResponse.json({ error: 'Corrupted brand data' }, { status: 500 })
+    }
   }
 
   // Check if user already exists
@@ -78,6 +105,17 @@ export async function POST(request: NextRequest) {
     },
   })
 
+  // Stash the brand link for BRAND invitations; consumed on acceptance.
+  // Key deliberately does NOT start with 'brand_' to stay out of the
+  // brand-listing filters in /api/brands.
+  if (role === 'BRAND' && brandId) {
+    await prisma.setting.upsert({
+      where: { key: `invite_brand_${token}` },
+      create: { key: `invite_brand_${token}`, value: brandId },
+      update: { value: brandId },
+    })
+  }
+
   // Send email
   try {
     await sendInvitationEmail({
@@ -88,8 +126,11 @@ export async function POST(request: NextRequest) {
       locale: locale || 'es',
     })
   } catch (err) {
-    // Delete invitation if email fails
+    // Delete invitation (and any brand link) if email fails
     await prisma.invitation.delete({ where: { id: invitation.id } })
+    await prisma.setting
+      .deleteMany({ where: { key: `invite_brand_${token}` } })
+      .catch(() => {})
     console.error('Email send error:', err)
     return NextResponse.json({ error: 'Failed to send invitation email' }, { status: 500 })
   }
@@ -116,7 +157,13 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: 'Invitation ID is required' }, { status: 400 })
   }
 
+  const invitation = await prisma.invitation.findUnique({ where: { id: invitationId } })
   await prisma.invitation.delete({ where: { id: invitationId } })
+  if (invitation) {
+    await prisma.setting
+      .deleteMany({ where: { key: `invite_brand_${invitation.token}` } })
+      .catch(() => {})
+  }
 
   return NextResponse.json({ message: 'Invitation revoked' })
 }

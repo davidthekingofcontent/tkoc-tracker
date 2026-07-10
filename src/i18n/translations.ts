@@ -85,6 +85,7 @@ export const translations = {
       calendar: 'Calendar',
       brands: 'Brands',
       compare: 'Compare',
+      portal: 'Portal',
     },
 
     // Dashboard
@@ -797,6 +798,7 @@ export const translations = {
       calendar: 'Calendario',
       brands: 'Marcas',
       compare: 'Comparar',
+      portal: 'Portal',
     },
 
     // Dashboard

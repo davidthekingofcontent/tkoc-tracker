@@ -31,11 +31,12 @@ export async function GET(request: NextRequest) {
       where: { key: { startsWith: 'brand_' } },
     })
 
-    // Filter out non-brand entries (like brand_assignment_ or campaign_brand_)
+    // Filter out non-brand entries (like brand_assignment_, brand_user_ or brand_ig_)
     const brandEntries = brandSettings.filter(
       (s) =>
         !s.key.startsWith('brand_assignment_') &&
-        !s.key.startsWith('brand_user_')
+        !s.key.startsWith('brand_user_') &&
+        !s.key.startsWith('brand_ig_')
     )
 
     const brands: Array<{
@@ -164,6 +165,7 @@ export async function POST(request: NextRequest) {
         NOT: [
           { key: { startsWith: 'brand_assignment_' } },
           { key: { startsWith: 'brand_user_' } },
+          { key: { startsWith: 'brand_ig_' } },
         ],
       },
     })
@@ -253,6 +255,7 @@ export async function PATCH(request: NextRequest) {
           NOT: [
             { key: { startsWith: 'brand_assignment_' } },
             { key: { startsWith: 'brand_user_' } },
+            { key: { startsWith: 'brand_ig_' } },
             { key: brandId },
           ],
         },

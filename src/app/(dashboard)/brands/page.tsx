@@ -20,6 +20,8 @@ import {
   X,
   ChevronRight,
   AlertCircle,
+  Instagram,
+  Check,
 } from "lucide-react"
 
 interface Brand {
@@ -55,6 +57,12 @@ export default function BrandsPage() {
   const [newWebsite, setNewWebsite] = useState("")
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState("")
+
+  // IG connect link copy state (per brand)
+  const [connectLinkState, setConnectLinkState] = useState<{
+    id: string
+    status: "copying" | "copied" | "error"
+  } | null>(null)
 
   // Manage employees modal
   const [managingBrand, setManagingBrand] = useState<Brand | null>(null)
@@ -96,6 +104,10 @@ export default function BrandsPage() {
         none: "Ninguno",
         deleteConfirm: "¿Seguro que quieres eliminar esta marca? Esta acción no se puede deshacer.",
         createdBy: "Creado por",
+        copyConnectLink: "Copiar link de conexión IG",
+        copyingConnectLink: "Generando...",
+        copiedConnectLink: "¡Link copiado!",
+        copyConnectLinkError: "Error al generar el link",
       }
     }
     return {
@@ -128,6 +140,10 @@ export default function BrandsPage() {
       none: "None",
       deleteConfirm: "Are you sure you want to delete this brand? This action cannot be undone.",
       createdBy: "Created by",
+      copyConnectLink: "Copy IG connect link",
+      copyingConnectLink: "Generating...",
+      copiedConnectLink: "Link copied!",
+      copyConnectLinkError: "Failed to generate link",
     }
   }, [locale])
 
@@ -184,6 +200,33 @@ export default function BrandsPage() {
       setCreateError(err instanceof Error ? err.message : "Something went wrong")
     } finally {
       setCreating(false)
+    }
+  }
+
+  const handleCopyConnectLink = async (brandId: string) => {
+    setConnectLinkState({ id: brandId, status: "copying" })
+    try {
+      const res = await fetch("/api/brand-connect/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brandId }),
+      })
+      if (!res.ok) throw new Error("Failed to generate link")
+      const data = await res.json()
+      try {
+        await navigator.clipboard.writeText(data.url)
+      } catch {
+        // Clipboard API unavailable (e.g. non-secure context) — show the URL
+        window.prompt("Copia el enlace:", data.url)
+      }
+      setConnectLinkState({ id: brandId, status: "copied" })
+    } catch {
+      setConnectLinkState({ id: brandId, status: "error" })
+    } finally {
+      setTimeout(
+        () => setConnectLinkState((prev) => (prev?.id === brandId ? null : prev)),
+        2500
+      )
     }
   }
 
@@ -375,7 +418,7 @@ export default function BrandsPage() {
                 )}
 
                 {/* Actions */}
-                <div className="mt-4 flex items-center gap-2 border-t border-gray-100 dark:border-gray-700 pt-3">
+                <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-100 dark:border-gray-700 pt-3">
                   <Link
                     href={`/campaigns?brand=${brand.id}`}
                     className="flex items-center gap-1 text-xs font-medium text-purple-600 dark:text-purple-400 hover:underline"
@@ -383,6 +426,47 @@ export default function BrandsPage() {
                     {labels.viewCampaigns}
                     <ChevronRight className="h-3 w-3" />
                   </Link>
+                  {isAdmin && (
+                    <button
+                      onClick={() => handleCopyConnectLink(brand.id)}
+                      disabled={
+                        connectLinkState?.id === brand.id &&
+                        connectLinkState.status === "copying"
+                      }
+                      className={cn(
+                        "flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                        connectLinkState?.id === brand.id && connectLinkState.status === "copied"
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : connectLinkState?.id === brand.id && connectLinkState.status === "error"
+                            ? "text-red-500"
+                            : "text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                      )}
+                    >
+                      {connectLinkState?.id === brand.id ? (
+                        connectLinkState.status === "copying" ? (
+                          <>
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            {labels.copyingConnectLink}
+                          </>
+                        ) : connectLinkState.status === "copied" ? (
+                          <>
+                            <Check className="h-3 w-3" />
+                            {labels.copiedConnectLink}
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircle className="h-3 w-3" />
+                            {labels.copyConnectLinkError}
+                          </>
+                        )
+                      ) : (
+                        <>
+                          <Instagram className="h-3 w-3" />
+                          {labels.copyConnectLink}
+                        </>
+                      )}
+                    </button>
+                  )}
                   {isAdmin && (
                     <>
                       <button
