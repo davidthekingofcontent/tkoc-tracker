@@ -181,7 +181,7 @@ function scoreHigherIsBetter(value: number | null, greenThreshold: number, redTh
  */
 function scoreToSignal(score: number): Signal {
   if (score >= 65) return 'green'
-  if (score >= 35) return 'yellow'
+  if (score >= 25) return 'yellow'
   return 'red'
 }
 
@@ -274,7 +274,12 @@ function calculateInfluencerKPIs(
     ? Math.round(validScores.reduce((sum, s) => sum + (s.score! * s.weight), 0) / totalWeight)
     : 0
 
-  const signal = validScores.length > 0 ? scoreToSignal(weightedScore) : 'gray'
+  // Require a minimum of scored metrics before judging a creator: with only
+  // 1-2 data points (e.g. a post captured but no views/fee yet) the weighted
+  // score reads like a disaster when the truth is we simply lack data.
+  // Below the minimum the creator is shown as unscored (gray, "Faltan datos").
+  const MIN_METRICS_TO_SCORE = 3
+  const signal = validScores.length >= MIN_METRICS_TO_SCORE ? scoreToSignal(weightedScore) : 'gray'
 
   // Generate highlights
   const highlights: string[] = []
@@ -442,15 +447,18 @@ export function analyzeCampaign(input: CampaignIntelligenceInput): CampaignIntel
   const totalEMV = influencerKPIs.reduce((sum, i) => sum + i.emv, 0)
   const emvRatio = totalInvestment > 0 ? totalEMV / totalInvestment : null
 
-  // Overall score = average of influencer scores (weighted by fee)
-  const totalFee = influencerKPIs.reduce((sum, i) => sum + (i.fee || 1), 0)
+  // Overall score = average of SCORED influencer scores (weighted by fee).
+  // Unscored creators (gray, insufficient data) are excluded — they'd drag a
+  // healthy campaign into the red just because their data hasn't arrived yet.
+  const scoredKPIs = influencerKPIs.filter(i => i.signal !== 'gray')
+  const totalFee = scoredKPIs.reduce((sum, i) => sum + (i.fee || 1), 0)
   const overallScore = totalFee > 0
-    ? Math.round(influencerKPIs.reduce((sum, i) => sum + (i.score * (i.fee || 1)), 0) / totalFee)
+    ? Math.round(scoredKPIs.reduce((sum, i) => sum + (i.score * (i.fee || 1)), 0) / totalFee)
     : 0
-  const overallSignal = influencerKPIs.length > 0 ? scoreToSignal(overallScore) : 'gray'
+  const overallSignal = scoredKPIs.length > 0 ? scoreToSignal(overallScore) : 'gray'
 
-  // Find top and worst performers
-  const sorted = [...influencerKPIs].sort((a, b) => b.score - a.score)
+  // Find top and worst performers — only among scored creators
+  const sorted = [...scoredKPIs].sort((a, b) => b.score - a.score)
   const topPerformer = sorted.length > 0 ? sorted[0].username : null
   const worstPerformer = sorted.length > 1 ? sorted[sorted.length - 1].username : null
 

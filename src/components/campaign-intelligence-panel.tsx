@@ -211,8 +211,14 @@ export function CampaignIntelligencePanel({
         <SignalDot signal={intelligence.overallSignal} size="lg" />
         <div className="flex items-center gap-2">
           <span className="text-2xl font-bold text-gray-900 dark:text-white">
-            {intelligence.overallScore}
-            <span className="text-sm font-normal text-gray-500 dark:text-gray-400">/100</span>
+            {intelligence.overallSignal === 'gray' ? (
+              <span className="text-gray-400">—</span>
+            ) : (
+              <>
+                {intelligence.overallScore}
+                <span className="text-sm font-normal text-gray-500 dark:text-gray-400">/100</span>
+              </>
+            )}
           </span>
         </div>
         {objectiveInfo && (
@@ -246,7 +252,7 @@ export function CampaignIntelligencePanel({
         />
         <SummaryCard
           label={t(locale, 'Puntuacion general', 'Overall Score')}
-          value={`${intelligence.overallScore}/100`}
+          value={intelligence.overallSignal === 'gray' ? '—' : `${intelligence.overallScore}/100`}
           icon="🎯"
           signal={intelligence.overallSignal}
         />
@@ -339,10 +345,16 @@ export function CampaignIntelligencePanel({
                       <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
                         {formatRatio(inf.emvCostRatio)}
                       </td>
-                      {/* Score */}
+                      {/* Score — unscored creators (gray signal) show a dash, not a misleading number */}
                       <td className="px-3 py-3 text-right font-semibold text-gray-900 dark:text-white whitespace-nowrap">
-                        {inf.score}
-                        <span className="text-xs font-normal text-gray-400">/100</span>
+                        {inf.signal === 'gray' ? (
+                          <span className="text-gray-400 font-normal">—</span>
+                        ) : (
+                          <>
+                            {inf.score}
+                            <span className="text-xs font-normal text-gray-400">/100</span>
+                          </>
+                        )}
                       </td>
                       {/* Recommendation */}
                       <td className="px-3 py-3 max-w-[220px]">
