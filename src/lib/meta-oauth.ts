@@ -102,16 +102,47 @@ export const META_STATE_COOKIE = 'meta_oauth_state'
 export const META_STATE_COOKIE_MAX_AGE = STATE_COOKIE_MAX_AGE_SECONDS
 
 /**
- * Derive BASE URL from env or request origin.
+ * Derive the BASE URL from the ACTUAL request origin, falling back to env.
+ *
+ * Precedence:
+ *  1. Request origin: x-forwarded-proto + x-forwarded-host (Railway proxy),
+ *     falling back to the Host header. When forwarded-proto is missing we
+ *     assume https unless the host is localhost.
+ *  2. Env (NEXT_PUBLIC_BASE_URL / NEXT_PUBLIC_APP_URL) when no request is
+ *     available.
+ *
+ * Rationale: production serves on TWO domains (custom + railway). The OAuth
+ * state/session cookies live on whichever domain the user is browsing, so
+ * redirect_uri MUST be built from that same domain — otherwise Facebook
+ * returns the browser to a domain where the cookies don't exist and the
+ * callback silently fails. Deriving from each request keeps the redirect_uri
+ * built at start identical to the one at token exchange (both requests hit
+ * the same domain), which Meta requires to match exactly.
  */
-export function getBaseUrl(request: Request): string {
+export function getBaseUrl(request?: Request): string {
+  if (request) {
+    // Proxies may send comma-separated lists — take the first (client-most) value.
+    const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim()
+    const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim()
+    const host = forwardedHost || request.headers.get('host')?.trim()
+    if (host) {
+      const isLocalhost = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host)
+      const proto = forwardedProto || (isLocalhost ? 'http' : 'https')
+      return `${proto}://${host}`
+    }
+    // No forwarded/Host headers at all — derive from the request URL itself.
+    try {
+      const url = new URL(request.url)
+      return `${url.protocol}//${url.host}`
+    } catch {
+      // fall through to env
+    }
+  }
   const envBase = process.env.NEXT_PUBLIC_BASE_URL || process.env.NEXT_PUBLIC_APP_URL
   if (envBase) {
     return envBase.startsWith('http') ? envBase : `https://${envBase}`
   }
-  // Derive from request origin (Host + proto)
-  const url = new URL(request.url)
-  return `${url.protocol}//${url.host}`
+  return 'http://localhost:3000'
 }
 
 /**
