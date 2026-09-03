@@ -28,6 +28,8 @@ export interface SyncResult {
   stories: number
   mentions: number
   error?: string
+  /** Non-fatal problems (e.g. tagged-media permission missing). Sync still succeeds. */
+  warning?: string
 }
 
 export async function syncMetaConnection(connectionId: string): Promise<SyncResult> {
@@ -291,7 +293,9 @@ export async function syncMetaConnection(connectionId: string): Promise<SyncResu
         }
       }
     } catch (err) {
-      console.error('[meta-sync] mentions fetch failed', err instanceof Error ? err.message : err)
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[meta-sync] mentions fetch failed', msg)
+      result.warning = msg
     }
   }
 

@@ -20,6 +20,7 @@ import {
 import {
   decodeMetaState,
   getBaseUrl,
+  META_BRAND_SCOPES,
   META_STATE_COOKIE,
 } from '@/lib/meta-oauth'
 
@@ -104,13 +105,7 @@ export async function GET(request: NextRequest) {
         accessToken: encrypt(page.access_token),
         refreshToken: encrypt(userToken),
         expiresAt,
-        scopes: [
-          'instagram_basic',
-          'instagram_manage_insights',
-          'pages_show_list',
-          'pages_read_engagement',
-          'business_management',
-        ],
+        scopes: META_BRAND_SCOPES,
         platformUserId: igId,
         platformPageId: page.id,
         isValid: true,

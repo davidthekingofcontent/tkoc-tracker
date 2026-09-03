@@ -69,11 +69,12 @@ Después de crear, cualquier campaña puede guardarse como plantilla ("Guardar c
 Cada campaña (/campaigns/[id]) tiene 5 pestañas que siguen la metodología: Planificar, Elegir, Pagar, Ejecutar, Aprender.
 Formas de añadir creadores a la campaña:
 - Desde la propia pestaña Elegir: buscar por username en la base de datos, o "Añadir Creador UGC" pegando @handle o URL de perfil (se analiza el perfil con Apify y se añade).
-- Desde Creadores (/discover): buscar en la base de datos interna o en vivo y usar "Añadir a..." → campaña o lista. "Pegar lista de handles" sirve para añadir muchos de golpe.
+- "Añadir varios" (botón en la pestaña Elegir, junto al buscador) — LA FORMA DE AÑADIR MUCHOS DE GOLPE A UNA CAMPAÑA: se abre un panel con "Pegar lista" (pega @usuarios o URLs de perfil de Instagram/TikTok/YouTube, uno por línea o separados por comas) y "O sube un CSV" (se usa la primera columna, o cualquier celda con @ o URL; la fila de cabecera se ignora). Opcional: "Plataforma (si la URL no la indica)". Hasta 200 creadores por tanda. Los que ya están en la base de datos se añaden al instante; los nuevos se analizan con Apify (de 3 en 3) y los repetidos se omiten. Al terminar muestra añadidos / omitidos / errores por handle.
+- Desde Creadores (/discover): buscar en la base de datos interna o en vivo y usar "Añadir a..." → campaña o lista. "Pegar lista de handles" sirve para descubrir/analizar muchos perfiles a la vez.
 - Desde Similares (/lookalikes) o Analizar Perfil: "Añadir a lista" / "Añadir a Campaña".
 - Desde una Lista: los creadores de una lista se pueden mandar a una campaña con "Añadir a Campaña".
-- Importación CSV: en Mi Base de Clientes se importan contactos por CSV; los creadores de campaña se añaden con los métodos anteriores.
-Cada creador añadido crea/actualiza automáticamente un Contacto en /contacts. Solo los creadores que son MIEMBROS de la campaña se rastrean (ver sección 5).
+- Importación CSV de creadores: con "Añadir varios" dentro de la campaña. (El CSV de Mi Base de Clientes es para contactos de la marca, no para creadores.)
+Cada creador añadido crea/actualiza automáticamente un Contacto en /contacts y dispara en segundo plano una captura inmediata de su contenido reciente (solo se guarda lo que cumple las reglas de la sección 5). Solo los creadores que son MIEMBROS de la campaña se rastrean.
 En Elegir se ve por creador: seguidores, engagement, plataforma, Creator Score, estado del pipeline, fee acordado, toggles "Derechos Ads / Spark Ads" y "Exclusividad", email, portfolio, "Invitar a conectar" (envía al creador un enlace para conectar su Instagram profesional y obtener métricas reales), "Quitar de campaña".
 
 ### Paso 3 — Estados del pipeline (por creador dentro de la campaña)
@@ -94,6 +95,11 @@ Captura automática: el servidor ejecuta tareas periódicas (definidas en src/in
 - meta-token-refresh: cada 24 horas — renueva tokens de Meta que caducan en menos de 7 días.
 - discovery: cada 12 horas — procesa la cola de descubrimiento de creadores.
 Captura manual: botón "Rastrear Ahora" en la cabecera de la campaña (también en Planificar y Elegir). Escanea hashtags, menciones, perfiles de los miembros y stories; al terminar muestra "Rastreo completado: N posts encontrados, N stories". Requiere que la campaña esté ACTIVA y que Apify esté configurado. Hay una ventana de deduplicación de 3 horas: si un objetivo se rastreó hace menos de 3 h, se omite.
+Captura automática por evento (sin pulsar nada): al añadir un creador a la campaña (individual o con "Añadir varios") y cada vez que su estado pasa a Acordado, Contratado, Envío, Publicado o Completado, la plataforma rastrea su contenido reciente en segundo plano y guarda solo lo que cumple las reglas de la sección 5.
+"Añadir publicación por URL" (Ejecutar → Media): pega la URL de un post, reel o vídeo de un creador que sea MIEMBRO de la campaña; "Detectar desde la URL" identifica la plataforma; se descarga con Apify y se guarda con fuente "manual". Si la publicación está fuera de las fechas de la campaña o el autor no es miembro, se rechaza con un mensaje claro.
+"Registrar Story" (Ejecutar → Stories): registra a mano una story de un miembro (influencer, fecha, vistas, alcance, respuestas y enlace opcional). Lo registrado a mano nunca lo elimina la revalidación.
+"Revalidar contenido" (Ejecutar → Media): vuelve a comprobar todo el contenido de la campaña contra las reglas (miembro + fechas + etiqueta/mención de la marca) y DESVINCULA lo que no cumple. No borra nada: el post deja de contar en la campaña pero sigue en la base de datos. El contenido manual siempre se conserva. Devuelve "conservados / desvinculados".
+Aviso "no tiene cuentas objetivo ni hashtags: no se capturará contenido": aparece en la cabecera cuando la campaña no tiene Cuentas de Marca Objetivo ni hashtags. Sin objetivos NO se captura nada; se añaden en "Editar Campaña".
 Botón "Diagnóstico" (junto a Rastrear Ahora): abre el "Diagnóstico de captura" y muestra si Apify está configurado, miembros de la campaña, miembros con/sin contenido capturado, total de posts capturados, cuándo se rastreó por última vez cada miembro, y el historial de trabajos de rastreo (completados/fallidos). Es el primer sitio donde mirar cuando "no aparece contenido".
 Filtros en Media: ordenar por Más Recientes, Más Likes, Más Comentados, Más Vistos, Más Compartidos, Más Guardados; filtrar por plataforma e influencer; "Cargar Más".
 Sentimiento: en Aprender → Sentimiento, "Analizar Comentarios" escanea los comentarios de los posts de la campaña y clasifica positivo/negativo/neutro.
@@ -101,7 +107,7 @@ Cumplimiento: detecta posts eliminados y colaboraciones no declaradas (falta #ad
 
 ### Paso 6 — Informe y exportación
 - "Ver informe" (/campaigns/[id]/report): informe completo de la campaña (resumen, KPIs, evolución temporal, desglose por plataforma, niveles de influencers, contenido destacado, demografía si hay datos de Meta).
-- "Exportar Informe": abre la vista previa editable (título, resumen, imagen de portada, notas, secciones que se muestran/ocultan) y exporta a PDF. También "Exportar PDF", "Exportar CSV" y "Exportar JSON" directos desde la cabecera.
+- "Exportar Informe": abre la vista previa editable (título, resumen, imagen de portada, notas, secciones que se muestran/ocultan) y exporta a PDF. La portada estándar aprobada lleva el logo de The King of Content y el logo/nombre de la marca de la campaña (se toma de la Marca asociada; si la campaña no tiene marca, solo aparece TKOC). También "Exportar PDF", "Exportar CSV" y "Exportar JSON" directos desde la cabecera.
 - KPIs de Resumen: Likes Medios, Comentarios Medios, Vistas Medias, Vistas Totales, Tasa de Engagement = (likes + comentarios) / alcance (o vistas) × 100, Impresiones, Perfiles Publicados, Valor de Media (EMV). "EMV Básico" = solo alcance (impresiones / 1000 × CPM del sector); "EMV Ampliado" = alcance + clics + engagement (fórmula TKOC).
 
 ### Paso 7 — Portal de cliente (solo lectura)
@@ -115,8 +121,9 @@ Para dar acceso a un cliente: (1) crear la marca en Marcas, (2) asociar la campa
 - Editar Campaña, Guardar como Plantilla, Datos de Envío.
 
 ## 5. Reglas de captura de contenido (qué entra en una campaña y qué no)
+0. Si la campaña no tiene Cuentas de Marca Objetivo ni hashtags, NO se captura nada (aviso en la cabecera). Primero hay que definir qué se rastrea.
 1. Solo se captura contenido de creadores que son MIEMBROS de la campaña (añadidos en Elegir). Si un creador no está en la campaña, su contenido no se asocia aunque mencione a la marca.
-2. Solo se captura contenido publicado DENTRO de las fechas de la campaña (desde Fecha de Inicio hasta Fecha de Fin; sin fecha de fin = siempre activo). Posts anteriores al inicio no se asocian.
+2. Solo se captura contenido publicado DENTRO de las fechas de la campaña (desde Fecha de Inicio hasta el final del día de la Fecha de Fin, inclusive; sin fecha de fin = siempre activo). Posts anteriores al inicio no se asocian. El contenido sin fecha de publicación no se captura (no se puede demostrar que esté dentro de la ventana). Un mismo post pertenece a UNA sola campaña: si ya está asociado a otra, no se mueve.
 3. El contenido debe estar relacionado con la marca: etiquetar/mencionar alguna de las Cuentas de Marca Objetivo (ej. @vileda.es) en el caption, las menciones o la etiqueta de colaboración, o usar alguno de los hashtags objetivo. Si el creador publica sin mencionar a la marca ni usar el hashtag, el post no se captura automáticamente.
 4. Fuentes de datos, por prioridad: meta_api (API oficial de Meta, cuando la marca o el creador han conectado su Instagram Business; aporta alcance, impresiones, guardados y compartidos reales), apify (scraping público, fallback) y manual. Cada media registra su fuente.
 5. Deduplicación: un mismo post no se guarda dos veces (clave externalId + plataforma). Si Apify y Meta capturan el mismo post, la fila se actualiza con las métricas reales de Meta.
@@ -127,6 +134,7 @@ Para dar acceso a un cliente: (1) crear la marca en Marcas, (2) asociar la campa
 ## 6. Conexión con Meta (Instagram Business) — Ajustes → Integraciones
 - Botón "Conectar con Facebook" / "Conectar Instagram". Requisitos: cuenta de Instagram Profesional (Business o Creator) vinculada a una Página de Facebook, y permisos aceptados en el diálogo de Meta.
 - Qué aporta: analíticas oficiales de posts, reels y stories (alcance, impresiones, guardados, compartidos), demografía de audiencia (edad, género, país, ciudad), y detección de menciones/etiquetas de marca en el contenido de los creadores sin capturas manuales.
+- Permisos que pide la conexión de MARCA: instagram_basic, instagram_manage_insights, instagram_manage_comments, pages_show_list, pages_read_engagement, business_management. El permiso instagram_manage_comments es el que permite leer las publicaciones en las que los creadores ETIQUETAN a la marca (endpoint /tags); las conexiones hechas antes de añadirlo no lo tienen y hay que "Volver a conectar" (o reenviar a la marca el link de conexión IG) para que el contenido etiquetado entre en las campañas.
 - Cada cuenta conectada se sincroniza automáticamente (cron meta-sync cada 4 h) y se puede "Sincronizar" manualmente. Estados: Conectado, Expirado (hay que "Volver a conectar"), Error, Desconectado. Los tokens se cifran en reposo (AES-256-GCM) y se renuevan automáticamente.
 - Para que un CLIENTE conecte su Instagram sin cuenta en la herramienta: Marcas → "Copiar link de conexión IG" y enviárselo. El enlace caduca (30 días).
 - Para que un CREADOR conecte su cuenta: en la campaña, pestaña Elegir → "Invitar a conectar" (email con enlace /creators/connect/[token]).
@@ -154,7 +162,7 @@ Inputs: plataforma, seguidores, vistas medias (obligatorios; o un username para 
 Outputs: tier detectado, CPM real ("Coste por 1000 views") frente al CPM objetivo del mercado, semáforo, Rango de Mercado para ese tier, Escenarios de Precio (Conservador p25 / Realista p50 / Optimista p75) con "Ahorro / Sobrecoste", Recomendación, "Decisión Final" y Tip de negociación. Avisos por tier (Macro/Mega nunca solo gifting; Nano suele aceptar gifting). Usa los mismos algoritmos que Deal Advisor dentro de una campaña.
 
 ## 10. Similares (Lookalikes)
-Introduce un handle de Instagram, TikTok o YouTube. La plataforma toma el creador fuente (de la base de datos o analizándolo con Apify) y busca candidatos en la base de datos interna y, si Apify está disponible, en cuentas similares sugeridas por Instagram. Cada resultado tiene una puntuación de coincidencia con "Razones de coincidencia": categoría principal y categorías compartidas, similitud de seguidores, similitud de engagement, ubicación y marcas con las que ha trabajado. Desde el resultado: Ver perfil, Añadir a lista. Requiere Apify para buscar fuera de la base de datos.
+Introduce un @handle o la URL del perfil (instagram.com/usuario, tiktok.com/@usuario, youtube.com/@canal); la plataforma se detecta sola desde la URL. La plataforma toma el creador fuente (de la base de datos o analizándolo con Apify) y busca candidatos en la base de datos interna y, si Apify está disponible, en cuentas similares sugeridas por Instagram. Cada resultado tiene una puntuación de coincidencia con "Razones de coincidencia": categoría principal y categorías compartidas, similitud de seguidores, similitud de engagement, ubicación y marcas con las que ha trabajado. Desde el resultado: Ver perfil, Añadir a lista. Requiere Apify para buscar fuera de la base de datos.
 
 ## 11. Mi Base de Clientes y captura en vivo (/client-base)
 - Contactos: importa clientes de la marca por CSV (con mapeo de columnas), manualmente o desde CRM (HubSpot/Apollo). Campos: nombre, email, empresa, dominio, teléfono, redes sociales, tipo de relación (cliente, lead, proveedor, partner, ex cliente, empleado), estado.
@@ -169,7 +177,7 @@ Introduce un handle de Instagram, TikTok o YouTube. La plataforma toma el creado
 - Notas de campaña por creador, Historial de colaboraciones previas de cada creador, Duplicados (creadores repetidos entre campañas).
 
 ## 13. Limitaciones conocidas y problemas frecuentes
-- "No aparece contenido en la campaña": comprobar en este orden (1) el creador está en Elegir como miembro; (2) el post se publicó dentro de las fechas; (3) el post menciona/etiqueta la cuenta objetivo o usa el hashtag; (4) Diagnóstico → Apify configurado y sin cuota agotada; (5) pulsar "Rastrear Ahora" (si se rastreó hace < 3 h, se omite); (6) esperar al siguiente cron (6 h). Si la marca tiene Meta conectado, Sincronizar en Integraciones.
+- "No aparece contenido en la campaña": comprobar en este orden (0) la campaña tiene Cuentas de Marca Objetivo o hashtags (sin ellos no se captura nada); (1) el creador está en Elegir como miembro; (2) el post se publicó dentro de las fechas; (3) el post menciona/etiqueta la cuenta objetivo o usa el hashtag; (4) Diagnóstico → Apify configurado y sin cuota agotada; (5) pulsar "Rastrear Ahora" (si se rastreó hace < 3 h, se omite); (6) esperar al siguiente cron (6 h). Si la marca tiene Meta conectado, Sincronizar en Integraciones.
 - Stories caducan a las 24 h: si no se capturan ese día, se pierden.
 - Alcance, impresiones, guardados y demografía solo existen con conexión de Meta; con Apify solo métricas públicas (likes, comentarios, vistas cuando están expuestas).
 - TikTok: la integración OAuth está pendiente de revisión de app; los datos de TikTok llegan por Apify. YouTube: datos públicos vía YouTube Data API (clave API).

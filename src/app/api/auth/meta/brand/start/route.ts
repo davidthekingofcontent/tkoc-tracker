@@ -9,17 +9,12 @@ import {
   buildAuthorizeUrl,
   encodeMetaState,
   getBaseUrl,
+  META_BRAND_SCOPES,
   META_STATE_COOKIE,
   META_STATE_COOKIE_MAX_AGE,
 } from '@/lib/meta-oauth'
 
-const BRAND_SCOPES = [
-  'instagram_basic',
-  'instagram_manage_insights',
-  'pages_show_list',
-  'pages_read_engagement',
-  'business_management',
-]
+const BRAND_SCOPES = META_BRAND_SCOPES
 
 export async function GET(request: NextRequest) {
   const session = await getSession(request)

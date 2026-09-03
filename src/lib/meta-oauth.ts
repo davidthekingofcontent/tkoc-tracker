@@ -146,6 +146,25 @@ export function getBaseUrl(request?: Request): string {
 }
 
 /**
+ * Permissions requested for a BRAND connection (the brand's own IG Business
+ * account). Single source of truth for the two brand flows (authenticated and
+ * session-less brand-connect) and for the scopes recorded on the SocialToken.
+ *
+ * `instagram_manage_comments` is what unlocks GET /{ig-user-id}/tags — the
+ * edge that returns creators' posts tagging the brand. Without it Meta answers
+ * "(#10) Application does not have permission" and no tagged content can be
+ * attributed to campaigns.
+ */
+export const META_BRAND_SCOPES = [
+  'instagram_basic',
+  'instagram_manage_insights',
+  'instagram_manage_comments',
+  'pages_show_list',
+  'pages_read_engagement',
+  'business_management',
+]
+
+/**
  * Build the Facebook OAuth dialog URL.
  */
 export function buildAuthorizeUrl(opts: {

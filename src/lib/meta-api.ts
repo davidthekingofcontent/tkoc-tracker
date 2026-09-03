@@ -475,9 +475,29 @@ export async function getTaggedMedia(
     return (res.data ?? []).map(mapMediaItem)
   } catch (err) {
     if (err instanceof MetaApiError && (err.status === 400 || err.status === 404)) {
+      // "(#10) Application does not have permission" means the token lacks
+      // instagram_manage_comments (required by the /tags edge). Swallowing it
+      // silently made tagged content look like "no tags" for weeks — surface it.
+      if (isPermissionError(err)) {
+        throw new MetaApiError(
+          'Meta /tags denied (#10): the connection lacks instagram_manage_comments — reconnect the brand account to grant it',
+          err.status,
+          err.responseBody
+        )
+      }
       return []
     }
     throw err
+  }
+}
+
+/** True when the Graph error body is the OAuthException code 10 (missing permission). */
+export function isPermissionError(err: MetaApiError): boolean {
+  try {
+    const parsed = JSON.parse(err.responseBody) as { error?: { code?: number } }
+    return parsed?.error?.code === 10
+  } catch {
+    return /\(#10\)/.test(err.responseBody)
   }
 }
 
