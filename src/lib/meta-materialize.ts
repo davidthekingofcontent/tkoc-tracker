@@ -97,18 +97,23 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
     handledIgMediaIds.add(mm.igMediaId)
 
     try {
-      // Prefer upgrading an Apify row for the same post (matched by shortcode).
-      // Media has a GLOBAL unique on (externalId, platform), so the externalId
-      // branch must not be scoped to this campaign or create() would collide.
+      // Prefer upgrading an existing row for the same post. Apify and Meta use
+      // different externalIds for the same post, so the shortcode in the
+      // permalink is the only cross-source key — and the lookup must be
+      // platform-wide (NOT scoped to this campaign): an Apify row that is
+      // unattached or attached to another campaign would otherwise be invisible
+      // here and we'd create a twin. Media has a GLOBAL unique on
+      // (externalId, platform), so neither branch may be campaign-scoped.
       const shortcode = shortcodeOf(mm.permalink)
       const existing = await prisma.media.findFirst({
         where: {
           platform: 'INSTAGRAM' as Platform,
           OR: [
             { externalId: mm.igMediaId },
-            ...(shortcode ? [{ campaignId, permalink: { contains: `/${shortcode}` } }] : []),
+            ...(shortcode ? [{ permalink: { contains: `/${shortcode}` } }] : []),
           ],
         },
+        orderBy: { campaignId: { sort: 'desc', nulls: 'last' } },
       })
 
       const metaMetrics = {
@@ -123,21 +128,24 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
       }
 
       if (existing) {
+        const ours = !existing.campaignId || existing.campaignId === campaignId
         await prisma.media.update({
           where: { id: existing.id },
           data: {
             ...metaMetrics,
+            // Manual rows keep their own bookkeeping; only enrich metrics.
+            ...(existing.source === 'manual' ? { source: 'manual' } : {}),
             // Claim for this campaign only when the row is unattached or
             // already ours — a row can belong to ONE campaign and another
             // campaign's attachment must not be stolen (same as the Apify pass)
-            ...(!existing.campaignId || existing.campaignId === campaignId ? { campaignId } : {}),
+            ...(ours ? { campaignId } : {}),
             // Keep the larger like/comment counts (Apify sometimes sees more
             // recent numbers than a stale Meta sync)
             likes: Math.max(existing.likes, metaMetrics.likes),
             comments: Math.max(existing.comments, metaMetrics.comments),
           },
         })
-        stats.updated++
+        if (ours) stats.updated++
       } else {
         await prisma.media.create({
           data: {
