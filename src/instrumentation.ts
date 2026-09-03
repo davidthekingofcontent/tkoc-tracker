@@ -1,5 +1,6 @@
 import type { Prisma } from '@/generated/prisma/client'
 
+const TWO_HOURS_MS = 2 * 60 * 60 * 1000
 const FOUR_HOURS_MS = 4 * 60 * 60 * 1000
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000
@@ -23,7 +24,8 @@ interface CronJob {
 // - track reduced from 2h → 6h (Apify-based; Meta API sync via meta-sync runs 4h)
 // - stories reduced from 4h → 6h (24h expiry means 4x/day is enough)
 // - live-capture-enrich reduced from 30min → 4h (was scraping every 30min on empty queues)
-// - meta-sync increased frequency 6h → 4h (free via Meta API, no cost concern)
+// - meta-sync increased frequency 6h → 4h → 2h (free via Meta API, no cost concern;
+//   each run is time-boxed to 240s and rotates connections by lastUsedAt)
 const CRON_JOBS: CronJob[] = [
   { name: 'track',            path: '/api/cron/track',            intervalMs: SIX_HOURS_MS,    initialDelayMs: FIVE_MINUTES_MS,      auth: 'bearer' },
   { name: 'discovery',        path: '/api/cron/discovery',        intervalMs: TWELVE_HOURS_MS, initialDelayMs: 10 * 60 * 1000,       auth: 'header' },
@@ -31,7 +33,7 @@ const CRON_JOBS: CronJob[] = [
   { name: 'check-posts',      path: '/api/cron/check-posts',      intervalMs: TWELVE_HOURS_MS, initialDelayMs: 20 * 60 * 1000,       auth: 'header' },
   { name: 'check-deletions',  path: '/api/cron/check-deletions',  intervalMs: TWENTY_FOUR_HOURS_MS, initialDelayMs: 25 * 60 * 1000,  auth: 'bearer' },
   { name: 'live-capture-enrich', path: '/api/live-capture/enrich', intervalMs: FOUR_HOURS_MS,   initialDelayMs: 8 * 60 * 1000,        auth: 'header', method: 'POST' },
-  { name: 'meta-sync',          path: '/api/cron/meta-sync',          intervalMs: FOUR_HOURS_MS,       initialDelayMs: 12 * 60 * 1000, auth: 'header' },
+  { name: 'meta-sync',          path: '/api/cron/meta-sync',          intervalMs: TWO_HOURS_MS,        initialDelayMs: 12 * 60 * 1000, auth: 'header' },
   { name: 'meta-token-refresh', path: '/api/cron/meta-token-refresh', intervalMs: TWENTY_FOUR_HOURS_MS, initialDelayMs: 30 * 60 * 1000, auth: 'header' },
 ]
 

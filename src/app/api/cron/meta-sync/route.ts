@@ -9,6 +9,14 @@ import { syncMetaConnection } from '@/lib/meta-sync'
 import { materializeMetaContent } from '@/lib/meta-materialize'
 
 const MAX_PER_RUN = 20
+/**
+ * The instrumentation self-fetch that triggers this route (Node fetch / undici)
+ * gives up on headers after 300s and would report a false "cron failed". Tagged
+ * media crawls are slow (~10s per 3 items), so the run is time-boxed: whatever
+ * does not fit is picked up next run (connections are ordered by lastUsedAt).
+ */
+const RUN_BUDGET_MS = 240_000
+const MIN_PER_CONNECTION_MS = 60_000
 
 export async function GET(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET
@@ -26,16 +34,30 @@ export async function GET(request: NextRequest) {
     select: { id: true, userId: true },
   })
 
-  const results: Array<{ id: string; ok: boolean; error?: string }> = []
+  const startedAt = Date.now()
+  const results: Array<{ id: string; ok: boolean; error?: string; warning?: string; tagsCrawlComplete?: boolean }> = []
+  const skipped: string[] = []
   const syncedUserIds = new Set<string>()
   for (const t of tokens) {
+    const remaining = RUN_BUDGET_MS - (Date.now() - startedAt)
+    if (remaining < MIN_PER_CONNECTION_MS) {
+      skipped.push(t.id)
+      continue
+    }
     try {
-      const r = await syncMetaConnection(t.id)
-      results.push({ id: t.id, ok: r.success, error: r.error })
+      const r = await syncMetaConnection(t.id, {
+        tagsMaxItems: 45,
+        // leave ~45s for profile/media/insights/stories calls
+        tagsTimeBudgetMs: Math.max(20_000, Math.min(150_000, remaining - 45_000)),
+      })
+      results.push({ id: t.id, ok: r.success, error: r.error, warning: r.warning, tagsCrawlComplete: r.tagsCrawlComplete })
       if (r.success && t.userId) syncedUserIds.add(t.userId)
     } catch (err) {
       results.push({ id: t.id, ok: false, error: err instanceof Error ? err.message : 'unknown' })
     }
+  }
+  if (skipped.length > 0) {
+    console.warn(`[Cron/MetaSync] run budget reached — ${skipped.length} connection(s) deferred to the next run`)
   }
 
   // Materialize freshly-synced Meta content into every ACTIVE campaign of the
@@ -60,6 +82,8 @@ export async function GET(request: NextRequest) {
     total: tokens.length,
     succeeded: results.filter(r => r.ok).length,
     failed: results.filter(r => !r.ok).length,
+    skipped: skipped.length,
+    elapsedMs: Date.now() - startedAt,
     materialized,
     results,
   })

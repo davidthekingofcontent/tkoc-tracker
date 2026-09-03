@@ -106,7 +106,9 @@ export async function POST(
 
       for (const brandToken of brandTokens) {
         try {
-          const sync = await syncMetaConnection(brandToken.id)
+          // Interactive "Rastrear ahora": keep the tagged-media crawl short — the
+          // 2h cron does the deep/backfill crawl.
+          const sync = await syncMetaConnection(brandToken.id, { tagsMaxItems: 15, tagsTimeBudgetMs: 60_000 })
           if (sync.success) {
             results.metaSync.connections++
             results.metaSync.media += sync.media

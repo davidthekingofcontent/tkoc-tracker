@@ -474,6 +474,19 @@ export interface TaggedMediaOptions {
   timeBudgetMs?: number
   /** Stop paginating once a page contains items older than this date. */
   since?: Date
+  /** Resume pagination from a `nextCursor` returned by a previous call. */
+  after?: string
+}
+
+export type TaggedStopReason = 'end' | 'since' | 'maxItems' | 'budget' | 'errors' | 'cursor'
+
+export interface TaggedMediaResult {
+  items: IgMediaItem[]
+  /** Cursor to continue the crawl from (null when the end of history was reached or the crawl was cut). */
+  nextCursor: string | null
+  /** True when Meta reported no further page — the whole tagged history has been seen. */
+  exhausted: boolean
+  stoppedBy: TaggedStopReason
 }
 
 /**
@@ -496,8 +509,9 @@ const TAGS_PAGE_LIMIT = 3
  * "(#1) Please reduce the amount of data you're asking for" or a hang, so we:
  *  - page through with a tiny `limit` (3), halving it on that error (down to 1);
  *  - stop at `maxItems`, at the `timeBudgetMs`, or when a page reaches
- *    items older than `since`;
- *  - return whatever was collected when Meta keeps failing (partial > nothing).
+ *    items older than `since`; `after` resumes an earlier crawl;
+ *  - return whatever was collected when Meta keeps failing (partial > nothing),
+ *    together with the cursor to continue from and whether history is exhausted.
  * A "(#10) permission" error is rethrown with an actionable message — it means
  * the connection was made without instagram_manage_comments.
  */
@@ -505,7 +519,7 @@ export async function getTaggedMedia(
   igBusinessId: string,
   token: string,
   options: number | TaggedMediaOptions = {}
-): Promise<IgMediaItem[]> {
+): Promise<TaggedMediaResult> {
   const opts: TaggedMediaOptions = typeof options === 'number' ? { maxItems: options } : options
   const maxItems = Math.max(1, opts.maxItems ?? 60)
   const timeBudgetMs = opts.timeBudgetMs ?? 120_000
@@ -515,10 +529,16 @@ export async function getTaggedMedia(
   const seen = new Set<string>()
   let limit = TAGS_PAGE_LIMIT
   const fields = TAGS_FIELDS_PAGE
-  let after: string | undefined
+  let after: string | undefined = opts.after
+  let nextCursor: string | null = opts.after ?? null
+  let exhausted = false
+  let stoppedBy: TaggedStopReason = 'maxItems'
   let failures = 0
+  let staleCursorPages = 0
 
-  while (out.length < maxItems && Date.now() - startedAt < timeBudgetMs) {
+  while (true) {
+    if (out.length >= maxItems) { stoppedBy = 'maxItems'; break }
+    if (Date.now() - startedAt >= timeBudgetMs) { stoppedBy = 'budget'; break }
     try {
       const res = await graphFetch<{
         data: RawMediaItem[]
@@ -529,17 +549,41 @@ export async function getTaggedMedia(
       })
       failures = 0
       const page = (res.data ?? []).map(mapMediaItem)
+      let added = 0
       for (const item of page) {
         if (!seen.has(item.id)) {
           seen.add(item.id)
           out.push(item)
+          added++
         }
       }
+      const cursor = res.paging?.cursors?.after ?? null
+      const hasNext = page.length > 0 && !!res.paging?.next && !!cursor
+      if (!hasNext) {
+        if (opts.after && out.length === 0 && page.length === 0) {
+          // Measured: Meta answers 200 + empty data (not 400) for a cursor it no
+          // longer accepts. A cursor we saved always came with a next page, so an
+          // empty first page on resume means "restart the crawl", not "history done".
+          console.warn('[meta-api] /tags resumed cursor yielded nothing — treating as stale cursor')
+          nextCursor = null
+          stoppedBy = 'cursor'
+          break
+        }
+        exhausted = true
+        nextCursor = null
+        stoppedBy = 'end'
+        break
+      }
+      nextCursor = cursor
+      if (added === 0) {
+        // Meta handed us a page we already had — guard against a cursor loop.
+        staleCursorPages++
+        if (staleCursorPages >= 3) { stoppedBy = 'errors'; break }
+      }
+      after = cursor
       const reachedSince =
         !!opts.since && page.some(i => i.timestamp && new Date(i.timestamp) < opts.since!)
-      const nextCursor = res.paging?.cursors?.after
-      if (page.length === 0 || !res.paging?.next || !nextCursor || reachedSince) break
-      after = nextCursor
+      if (reachedSince) { stoppedBy = 'since'; break }
     } catch (err) {
       if (!(err instanceof MetaApiError)) throw err
       if (isPermissionError(err)) {
@@ -557,20 +601,30 @@ export async function getTaggedMedia(
           limit = Math.max(1, Math.floor(limit / 2))
           continue
         }
-        if (failures >= 3) break // Meta keeps refusing even single items — return what we have
+        if (failures >= 3) { stoppedBy = 'errors'; break } // Meta keeps refusing even single items — return what we have
         continue
+      }
+      if (err.status === 400 && after) {
+        // A resumed cursor Meta no longer accepts — caller should restart the crawl.
+        console.warn(`[meta-api] /tags rejected cursor: ${err.responseBody.slice(0, 160)}`)
+        nextCursor = null
+        stoppedBy = 'cursor'
+        break
       }
       if (err.status === 400 || err.status === 404) {
         // Not a tags-capable account (e.g. creator-flow token) — nothing to collect.
+        exhausted = true
+        nextCursor = null
+        stoppedBy = 'end'
         break
       }
       throw err
     }
   }
-  if (out.length > 0 && out.length < maxItems && Date.now() - startedAt >= timeBudgetMs) {
+  if (stoppedBy === 'budget') {
     console.warn(`[meta-api] /tags stopped at ${out.length}/${maxItems} items (time budget ${timeBudgetMs}ms)`)
   }
-  return out
+  return { items: out, nextCursor, exhausted, stoppedBy }
 }
 
 /** Graph error "(#1) Please reduce the amount of data you're asking for" — page too big for the /tags edge. */

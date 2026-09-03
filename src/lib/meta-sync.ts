@@ -17,6 +17,7 @@ import {
   getTaggedMedia,
   refreshLongLivedToken,
   MetaApiError,
+  type IgMediaItem,
 } from '@/lib/meta-api'
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
@@ -30,7 +31,25 @@ export interface SyncResult {
   error?: string
   /** Non-fatal problems (e.g. tagged-media permission missing). Sync still succeeds. */
   warning?: string
+  /** Brand flow: whether the full tagged-media history has been crawled for this connection. */
+  tagsCrawlComplete?: boolean
 }
+
+/**
+ * Persisted per-connection crawl position for the brand's tagged media
+ * (Setting key `meta_tags_crawl_{connectionId}`). Tagged media is paged
+ * newest-first at ~10s per 3 items, so a single sync cannot see a long history:
+ * every run does a cheap "head" pass for new tags and then continues the
+ * "backfill" from `after` until Meta reports the end (`complete`).
+ */
+interface TagsCrawlState {
+  seeded: boolean
+  after: string | null
+  complete: boolean
+  updatedAt?: string
+}
+
+const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000
 
 export interface SyncOptions {
   /** How many tagged items (creators' posts tagging the brand) to collect, newest first. */
@@ -241,24 +260,67 @@ export async function syncMetaConnection(connectionId: string, options: SyncOpti
   // 5) Mentions (brand flow — find content that tagged the brand's IG account)
   if (token.tokenType === 'brand') {
     try {
-      // Tagged items arrive newest-first. Once we already hold history for this
-      // connection, stop paginating a few days before the newest tagged post we
-      // stored (overlap absorbs late tags / clock skew) so a routine sync is a
-      // handful of ~10s pages instead of a full crawl. The first sync (no
-      // history) crawls up to tagsMaxItems.
-      const newestStored = await prisma.metaMedia.findFirst({
-        where: { socialTokenId: connectionId, igUsername: { not: null, notIn: [brandUsername] } },
-        orderBy: { postedAt: 'desc' },
-        select: { postedAt: true },
-      })
-      const since = options.tagsSince
-        ?? (newestStored?.postedAt ? new Date(newestStored.postedAt.getTime() - 3 * 24 * 60 * 60 * 1000) : undefined)
-      const tagged = await getTaggedMedia(igId, pageAccessToken, {
-        maxItems: options.tagsMaxItems ?? 45,
-        timeBudgetMs: options.tagsTimeBudgetMs ?? 180_000,
-        since,
-      })
-      console.log(`[meta-sync] ${connectionId}: ${tagged.length} tagged items fetched${since ? ` (since ${since.toISOString().slice(0, 10)})` : ' (full crawl)'}`)
+      const collected = new Map<string, IgMediaItem>()
+      const tagsStartedAt = Date.now()
+      const totalBudget = options.tagsTimeBudgetMs ?? 180_000
+      const maxItems = options.tagsMaxItems ?? 45
+
+      // Crawl position persisted across runs (see TagsCrawlState).
+      const stateKey = `meta_tags_crawl_${connectionId}`
+      let state: TagsCrawlState = { seeded: false, after: null, complete: false }
+      const stateRow = await prisma.setting.findUnique({ where: { key: stateKey } })
+      if (stateRow) {
+        try { state = { ...state, ...(JSON.parse(stateRow.value) as Partial<TagsCrawlState>) } } catch { /* reseed */ }
+      }
+      const saveState = async () => {
+        const value = JSON.stringify({ ...state, updatedAt: new Date().toISOString() })
+        await prisma.setting.upsert({ where: { key: stateKey }, update: { value }, create: { key: stateKey, value } })
+      }
+
+      if (!state.seeded) {
+        // First crawl for this connection (or a reset after a rejected cursor):
+        // start from the newest tag and remember where we stopped so the next
+        // runs can continue into older history instead of re-reading the head.
+        const seed = await getTaggedMedia(igId, pageAccessToken, { maxItems, timeBudgetMs: totalBudget })
+        for (const i of seed.items) collected.set(i.id, i)
+        state = { seeded: true, after: seed.nextCursor, complete: seed.exhausted }
+        console.log(`[meta-sync] ${connectionId}: tags seed ${seed.items.length} items, stoppedBy=${seed.stoppedBy}, complete=${state.complete}`)
+      } else {
+        // (a) Head pass — tags newer than what we hold, with a 3-day overlap
+        // for late tags / clock skew. Cheap: usually one or two pages.
+        const newestStored = await prisma.metaMedia.findFirst({
+          where: { socialTokenId: connectionId, igUsername: { not: null, notIn: [brandUsername] } },
+          orderBy: { postedAt: 'desc' },
+          select: { postedAt: true },
+        })
+        const since = options.tagsSince
+          ?? (newestStored?.postedAt ? new Date(newestStored.postedAt.getTime() - THREE_DAYS_MS) : undefined)
+        const head = await getTaggedMedia(igId, pageAccessToken, {
+          maxItems,
+          timeBudgetMs: Math.min(totalBudget, 90_000),
+          since,
+        })
+        for (const i of head.items) collected.set(i.id, i)
+        if (head.exhausted) { state.complete = true; state.after = null }
+        console.log(`[meta-sync] ${connectionId}: tags head ${head.items.length} items, stoppedBy=${head.stoppedBy}${since ? ` (since ${since.toISOString().slice(0, 10)})` : ''}`)
+
+        // (b) Backfill pass — continue into older history from the saved cursor.
+        const remaining = totalBudget - (Date.now() - tagsStartedAt)
+        if (!state.complete && state.after && remaining > 20_000) {
+          const tail = await getTaggedMedia(igId, pageAccessToken, { maxItems, timeBudgetMs: remaining, after: state.after })
+          for (const i of tail.items) collected.set(i.id, i)
+          if (tail.stoppedBy === 'cursor') {
+            state = { seeded: false, after: null, complete: false } // reseed on the next run
+          } else {
+            state.after = tail.nextCursor
+            state.complete = tail.exhausted
+          }
+          console.log(`[meta-sync] ${connectionId}: tags backfill ${tail.items.length} items, stoppedBy=${tail.stoppedBy}, complete=${state.complete}`)
+        }
+      }
+      await saveState()
+      result.tagsCrawlComplete = state.complete
+      const tagged = Array.from(collected.values())
       for (const t of tagged) {
         // Persist the full tagged post into MetaMedia too (incl. poster's
         // igUsername) so campaigns can match it against member influencers.
