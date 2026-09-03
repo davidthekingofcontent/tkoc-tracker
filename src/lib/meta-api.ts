@@ -10,6 +10,8 @@
 
 const GRAPH_VERSION = 'v19.0'
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`
+/** Hard cap per Graph request — the /tags edge has been observed hanging for minutes. */
+const GRAPH_TIMEOUT_MS = 45_000
 
 // ============ TYPES ============
 
@@ -85,14 +87,21 @@ async function graphFetch<T>(path: string, opts: GraphFetchOpts = {}): Promise<T
   }
 
   let res: Response
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), GRAPH_TIMEOUT_MS)
   try {
-    res = await fetch(url.toString(), { method })
+    res = await fetch(url.toString(), { method, signal: ac.signal })
   } catch (err) {
+    const aborted = err instanceof Error && err.name === 'AbortError'
     throw new MetaApiError(
-      `Network error calling Meta Graph API: ${err instanceof Error ? err.message : String(err)}`,
+      aborted
+        ? `Meta Graph API ${method} ${path} timed out after ${GRAPH_TIMEOUT_MS}ms`
+        : `Network error calling Meta Graph API: ${err instanceof Error ? err.message : String(err)}`,
       0,
-      ''
+      aborted ? 'timeout' : ''
     )
+  } finally {
+    clearTimeout(timer)
   }
 
   const text = await res.text()
@@ -458,26 +467,81 @@ export async function getStoryMentions(
   }
 }
 
+export interface TaggedMediaOptions {
+  /** Maximum number of tagged items to collect across pages (newest first). */
+  maxItems?: number
+  /** Overall wall-clock budget; returns what was collected when exceeded. */
+  timeBudgetMs?: number
+  /** Stop paginating once a page contains items older than this date. */
+  since?: Date
+}
+
+/**
+ * Field set + page size for /tags. Measured 2026-09-03 against vileda.es:
+ * Meta answers "(#1) Please reduce the amount of data" (HTTP 500 after ~25s)
+ * for limit=5 with all fields and even limit=10 with minimal fields, while
+ * limit=3 with caption + CDN urls succeeds in ~10s. Tagged items cannot be
+ * fetched individually afterwards (GET /{media-id} → "Unsupported get request"
+ * for other users' media), so the page must carry everything we store.
+ */
+const TAGS_FIELDS_PAGE =
+  'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,username,like_count,comments_count'
+const TAGS_PAGE_LIMIT = 3
+
+/**
+ * Media in which the IG Business account is tagged — i.e. creators' posts
+ * tagging the brand. This is the core signal for campaign attribution via Meta.
+ *
+ * The /tags edge is slow (~10s per call) and refuses large pages with
+ * "(#1) Please reduce the amount of data you're asking for" or a hang, so we:
+ *  - page through with a tiny `limit` (3), halving it on that error (down to 1);
+ *  - stop at `maxItems`, at the `timeBudgetMs`, or when a page reaches
+ *    items older than `since`;
+ *  - return whatever was collected when Meta keeps failing (partial > nothing).
+ * A "(#10) permission" error is rethrown with an actionable message — it means
+ * the connection was made without instagram_manage_comments.
+ */
 export async function getTaggedMedia(
   igBusinessId: string,
   token: string,
-  limit = 25
+  options: number | TaggedMediaOptions = {}
 ): Promise<IgMediaItem[]> {
-  try {
-    const res = await graphFetch<{ data: RawMediaItem[] }>(`/${igBusinessId}/tags`, {
-      accessToken: token,
-      params: {
-        fields:
-          'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,username,like_count,comments_count',
-        limit,
-      },
-    })
-    return (res.data ?? []).map(mapMediaItem)
-  } catch (err) {
-    if (err instanceof MetaApiError && (err.status === 400 || err.status === 404)) {
-      // "(#10) Application does not have permission" means the token lacks
-      // instagram_manage_comments (required by the /tags edge). Swallowing it
-      // silently made tagged content look like "no tags" for weeks — surface it.
+  const opts: TaggedMediaOptions = typeof options === 'number' ? { maxItems: options } : options
+  const maxItems = Math.max(1, opts.maxItems ?? 60)
+  const timeBudgetMs = opts.timeBudgetMs ?? 120_000
+  const startedAt = Date.now()
+
+  const out: IgMediaItem[] = []
+  const seen = new Set<string>()
+  let limit = TAGS_PAGE_LIMIT
+  const fields = TAGS_FIELDS_PAGE
+  let after: string | undefined
+  let failures = 0
+
+  while (out.length < maxItems && Date.now() - startedAt < timeBudgetMs) {
+    try {
+      const res = await graphFetch<{
+        data: RawMediaItem[]
+        paging?: { cursors?: { after?: string }; next?: string }
+      }>(`/${igBusinessId}/tags`, {
+        accessToken: token,
+        params: { fields, limit: Math.min(limit, maxItems - out.length), after },
+      })
+      failures = 0
+      const page = (res.data ?? []).map(mapMediaItem)
+      for (const item of page) {
+        if (!seen.has(item.id)) {
+          seen.add(item.id)
+          out.push(item)
+        }
+      }
+      const reachedSince =
+        !!opts.since && page.some(i => i.timestamp && new Date(i.timestamp) < opts.since!)
+      const nextCursor = res.paging?.cursors?.after
+      if (page.length === 0 || !res.paging?.next || !nextCursor || reachedSince) break
+      after = nextCursor
+    } catch (err) {
+      if (!(err instanceof MetaApiError)) throw err
       if (isPermissionError(err)) {
         throw new MetaApiError(
           'Meta /tags denied (#10): the connection lacks instagram_manage_comments — reconnect the brand account to grant it',
@@ -485,9 +549,37 @@ export async function getTaggedMedia(
           err.responseBody
         )
       }
-      return []
+      const retryable = isTooMuchDataError(err) || err.status === 0 || err.status >= 500
+      if (retryable) {
+        failures++
+        console.warn(`[meta-api] /tags page failed (limit=${limit}, failures=${failures}): ${err.message}`)
+        if (limit > 1) {
+          limit = Math.max(1, Math.floor(limit / 2))
+          continue
+        }
+        if (failures >= 3) break // Meta keeps refusing even single items — return what we have
+        continue
+      }
+      if (err.status === 400 || err.status === 404) {
+        // Not a tags-capable account (e.g. creator-flow token) — nothing to collect.
+        break
+      }
+      throw err
     }
-    throw err
+  }
+  if (out.length > 0 && out.length < maxItems && Date.now() - startedAt >= timeBudgetMs) {
+    console.warn(`[meta-api] /tags stopped at ${out.length}/${maxItems} items (time budget ${timeBudgetMs}ms)`)
+  }
+  return out
+}
+
+/** Graph error "(#1) Please reduce the amount of data you're asking for" — page too big for the /tags edge. */
+export function isTooMuchDataError(err: MetaApiError): boolean {
+  try {
+    const parsed = JSON.parse(err.responseBody) as { error?: { code?: number; message?: string } }
+    return parsed?.error?.code === 1 || /reduce the amount of data/i.test(parsed?.error?.message ?? '')
+  } catch {
+    return /reduce the amount of data/i.test(err.responseBody)
   }
 }
 

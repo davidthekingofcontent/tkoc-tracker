@@ -32,7 +32,16 @@ export interface SyncResult {
   warning?: string
 }
 
-export async function syncMetaConnection(connectionId: string): Promise<SyncResult> {
+export interface SyncOptions {
+  /** How many tagged items (creators' posts tagging the brand) to collect, newest first. */
+  tagsMaxItems?: number
+  /** Time budget for the tagged-media pagination. */
+  tagsTimeBudgetMs?: number
+  /** Explicit lower bound for tagged items (overrides the "3 days before newest stored" default). */
+  tagsSince?: Date
+}
+
+export async function syncMetaConnection(connectionId: string, options: SyncOptions = {}): Promise<SyncResult> {
   const result: SyncResult = { success: false, snapshots: 0, media: 0, stories: 0, mentions: 0 }
 
   const token = await prisma.socialToken.findUnique({ where: { id: connectionId } })
@@ -85,10 +94,12 @@ export async function syncMetaConnection(connectionId: string): Promise<SyncResu
   }
 
   const igId = token.platformUserId
+  let brandUsername = ''
 
   // 1) Account snapshot
   try {
     const profile = await getIgProfileById(igId, pageAccessToken)
+    brandUsername = profile.username
     await prisma.metaAccountSnapshot.create({
       data: {
         socialTokenId: connectionId,
@@ -230,7 +241,24 @@ export async function syncMetaConnection(connectionId: string): Promise<SyncResu
   // 5) Mentions (brand flow — find content that tagged the brand's IG account)
   if (token.tokenType === 'brand') {
     try {
-      const tagged = await getTaggedMedia(igId, pageAccessToken, 25)
+      // Tagged items arrive newest-first. Once we already hold history for this
+      // connection, stop paginating a few days before the newest tagged post we
+      // stored (overlap absorbs late tags / clock skew) so a routine sync is a
+      // handful of ~10s pages instead of a full crawl. The first sync (no
+      // history) crawls up to tagsMaxItems.
+      const newestStored = await prisma.metaMedia.findFirst({
+        where: { socialTokenId: connectionId, igUsername: { not: null, notIn: [brandUsername] } },
+        orderBy: { postedAt: 'desc' },
+        select: { postedAt: true },
+      })
+      const since = options.tagsSince
+        ?? (newestStored?.postedAt ? new Date(newestStored.postedAt.getTime() - 3 * 24 * 60 * 60 * 1000) : undefined)
+      const tagged = await getTaggedMedia(igId, pageAccessToken, {
+        maxItems: options.tagsMaxItems ?? 45,
+        timeBudgetMs: options.tagsTimeBudgetMs ?? 180_000,
+        since,
+      })
+      console.log(`[meta-sync] ${connectionId}: ${tagged.length} tagged items fetched${since ? ` (since ${since.toISOString().slice(0, 10)})` : ' (full crawl)'}`)
       for (const t of tagged) {
         // Persist the full tagged post into MetaMedia too (incl. poster's
         // igUsername) so campaigns can match it against member influencers.
@@ -255,10 +283,10 @@ export async function syncMetaConnection(connectionId: string): Promise<SyncResu
             },
             update: {
               igUsername: t.username ?? null,
-              caption: t.caption ?? null,
+              ...(t.caption !== undefined && { caption: t.caption }),
               permalink: t.permalink ?? null,
-              thumbnailUrl: t.thumbnail_url ?? null,
-              mediaUrl: t.media_url ?? null,
+              ...(t.thumbnail_url !== undefined && { thumbnailUrl: t.thumbnail_url }),
+              ...(t.media_url !== undefined && { mediaUrl: t.media_url }),
               postedAt: t.timestamp ? new Date(t.timestamp) : null,
               likeCount: t.like_count ?? 0,
               commentsCount: t.comments_count ?? 0,
