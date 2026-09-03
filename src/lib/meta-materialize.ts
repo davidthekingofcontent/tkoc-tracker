@@ -14,6 +14,26 @@ import { isWithinCampaignDates } from '@/lib/campaign-capture'
  *   /p/{shortcode}/ or /reel/{shortcode}/ segment). When both captured the same
  *   post, the row is upgraded in place with Meta's real metrics.
  */
+/**
+ * ACTIVE campaigns of the given owners in materialization order: the most
+ * specific campaign (shortest date window) first, "always on" (no end date)
+ * last. A Media row belongs to ONE campaign and is never moved, so when a
+ * creator sits in both a monthly campaign and an annual/always-on one, the
+ * monthly campaign must get the first claim on their post.
+ */
+export async function listCampaignsForMaterialize(userIds: string[]): Promise<string[]> {
+  if (userIds.length === 0) return []
+  const rows = await prisma.campaign.findMany({
+    where: { userId: { in: userIds }, status: 'ACTIVE' },
+    select: { id: true, startDate: true, endDate: true, createdAt: true },
+  })
+  const span = (c: { startDate: Date | null; endDate: Date | null }) =>
+    c.endDate ? c.endDate.getTime() - (c.startDate?.getTime() ?? 0) : Number.POSITIVE_INFINITY
+  return rows
+    .sort((a, b) => span(a) - span(b) || b.createdAt.getTime() - a.createdAt.getTime())
+    .map(c => c.id)
+}
+
 export async function materializeMetaContent(campaignId: string): Promise<{ created: number; updated: number }> {
   const stats = { created: 0, updated: 0 }
 

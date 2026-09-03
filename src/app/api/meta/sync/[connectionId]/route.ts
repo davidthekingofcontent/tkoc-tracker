@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { syncMetaConnection } from '@/lib/meta-sync'
-import { materializeMetaContent } from '@/lib/meta-materialize'
+import { materializeMetaContent, listCampaignsForMaterialize } from '@/lib/meta-materialize'
 
 export async function POST(
   request: NextRequest,
@@ -44,20 +44,17 @@ export async function POST(
   // tagged posts to show up in campaigns without waiting for the next cron.
   let materialized = { created: 0, updated: 0, campaigns: 0 }
   if (connection.userId) {
-    const activeCampaigns = await prisma.campaign.findMany({
-      where: { userId: connection.userId, status: 'ACTIVE' },
-      select: { id: true },
-    })
-    for (const c of activeCampaigns) {
+    const campaignIds = await listCampaignsForMaterialize([connection.userId])
+    for (const campaignId of campaignIds) {
       try {
-        const m = await materializeMetaContent(c.id)
+        const m = await materializeMetaContent(campaignId)
         materialized = {
           created: materialized.created + m.created,
           updated: materialized.updated + m.updated,
           campaigns: materialized.campaigns + 1,
         }
       } catch (err) {
-        console.error(`[Meta/Sync] materialize failed for campaign ${c.id}:`, err instanceof Error ? err.message : err)
+        console.error(`[Meta/Sync] materialize failed for campaign ${campaignId}:`, err instanceof Error ? err.message : err)
       }
     }
   }

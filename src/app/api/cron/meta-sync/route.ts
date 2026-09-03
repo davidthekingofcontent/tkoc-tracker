@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { syncMetaConnection } from '@/lib/meta-sync'
-import { materializeMetaContent } from '@/lib/meta-materialize'
+import { materializeMetaContent, listCampaignsForMaterialize } from '@/lib/meta-materialize'
 
 const MAX_PER_RUN = 20
 /**
@@ -64,16 +64,13 @@ export async function GET(request: NextRequest) {
   // synced users, so it flows into campaign metrics without manual tracking.
   let materialized = { created: 0, updated: 0 }
   if (syncedUserIds.size > 0) {
-    const activeCampaigns = await prisma.campaign.findMany({
-      where: { userId: { in: Array.from(syncedUserIds) }, status: 'ACTIVE' },
-      select: { id: true },
-    })
-    for (const c of activeCampaigns) {
+    const campaignIds = await listCampaignsForMaterialize(Array.from(syncedUserIds))
+    for (const campaignId of campaignIds) {
       try {
-        const m = await materializeMetaContent(c.id)
+        const m = await materializeMetaContent(campaignId)
         materialized = { created: materialized.created + m.created, updated: materialized.updated + m.updated }
       } catch (err) {
-        console.error(`[Cron/MetaSync] materialize failed for campaign ${c.id}:`, err instanceof Error ? err.message : err)
+        console.error(`[Cron/MetaSync] materialize failed for campaign ${campaignId}:`, err instanceof Error ? err.message : err)
       }
     }
   }
