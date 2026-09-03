@@ -3,6 +3,30 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { resolveBrandScope, sanitizeCampaignForBrand } from '@/lib/brand-scope'
 
+// Brands are not a Prisma model: Setting 'campaign_brand_{campaignId}' holds
+// the brandId, and Setting key=brandId holds JSON { name, logo?, ... } (see
+// src/lib/brand-scope.ts). The report cover needs name + logo. Never throws.
+async function resolveCampaignBrand(
+  campaignId: string
+): Promise<{ name: string; logo: string | null } | null> {
+  try {
+    const mapping = await prisma.setting.findUnique({
+      where: { key: `campaign_brand_${campaignId}` },
+    })
+    if (!mapping?.value) return null
+    const brandSetting = await prisma.setting.findUnique({ where: { key: mapping.value } })
+    if (!brandSetting) return null
+    const data = JSON.parse(brandSetting.value) as { name?: unknown; logo?: unknown }
+    if (!data || typeof data.name !== 'string' || !data.name.trim()) return null
+    return {
+      name: data.name.trim(),
+      logo: typeof data.logo === 'string' && data.logo.trim() ? data.logo.trim() : null,
+    }
+  } catch {
+    return null
+  }
+}
+
 // GET /api/portal/campaigns/[id]
 // Brand-facing, read-only campaign detail. Response shape is compatible with
 // what the campaign report page expects from GET /api/campaigns/[id]:
@@ -176,9 +200,12 @@ export async function GET(
       ),
     }
 
+    // Brand info for the report cover: { name, logo } | null
+    const brand = await resolveCampaignBrand(id)
+
     // Defense in depth: the selects above are already narrow, but strip any
     // confidential key that might sneak in if a select widens later.
-    return NextResponse.json(sanitizeCampaignForBrand({ campaign, overview }))
+    return NextResponse.json(sanitizeCampaignForBrand({ campaign: { ...campaign, brand }, overview }))
   } catch (error) {
     console.error('Portal campaign error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

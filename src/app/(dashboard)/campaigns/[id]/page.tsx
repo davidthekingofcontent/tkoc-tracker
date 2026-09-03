@@ -90,7 +90,9 @@ import {
   Play,
   Search,
   Send,
+  RefreshCw,
 } from 'lucide-react'
+import { parseCreatorHandle } from '@/lib/handles'
 
 interface CampaignInfluencer {
   id: string
@@ -225,6 +227,74 @@ interface DiagnosticData {
     lastPost: { postedAt: string | null; mediaType: string; permalink: string | null; likes: number; comments: number; views: number } | null
   }>
   summary: { membersWithMedia: number; membersWithoutMedia: number; totalMediaInCampaign: number; membersNeverScraped: number }
+}
+
+// ===== Bulk add helpers (client-side parsing; the server re-parses with the same rules) =====
+type BulkAddStatus = 'added' | 'created_and_added' | 'already_member' | 'not_found' | 'apify_unavailable' | 'error'
+interface BulkAddResult { handle: string; username: string; status: BulkAddStatus; error?: string }
+interface BulkAddSummary {
+  added: number
+  alreadyMember: number
+  notFound: number
+  apifyUnavailable: number
+  errors: number
+  results: BulkAddResult[]
+}
+type BulkPlatform = 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
+/** Mirrors MAX_HANDLES in /api/campaigns/[id]/influencers/bulk */
+const BULK_MAX_HANDLES = 200
+
+/** Pasted text → candidate handles: one per line, or comma / semicolon / whitespace separated */
+function splitHandleText(text: string): string[] {
+  return text.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean)
+}
+
+const HANDLE_OR_URL = /@|https?:\/\/|(instagram\.com|tiktok\.com|youtube\.com|youtu\.be|instagr\.am)\//i
+const CSV_HEADER_WORDS = /^(user(name)?|handle|usuario|nombre de usuario|creator|creador(a)?|influencer|perfil|profile|url|link|enlace|cuenta|account|nombre|name|instagram|tiktok|youtube|ig|red social|plataforma|platform)$/i
+
+/** Minimal CSV line splitter: handles quoted cells and auto-detects , ; or tab delimiters */
+function splitCsvLine(line: string): string[] {
+  const delimiter = line.includes('\t') ? '\t' : (line.includes(';') && !line.includes(',')) ? ';' : ','
+  const cells: string[] = []
+  let cur = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { cur += '"'; i++ }
+      else inQuotes = !inQuotes
+    } else if (ch === delimiter && !inQuotes) {
+      cells.push(cur.trim())
+      cur = ''
+    } else {
+      cur += ch
+    }
+  }
+  cells.push(cur.trim())
+  return cells
+}
+
+/**
+ * CSV → candidate handles. Per row: any cell containing "@" or a profile URL
+ * wins; otherwise the first column. The header row is skipped when it looks
+ * like one (a known column name, or no @/URL while later rows carry one).
+ */
+function parseCsvHandles(text: string): string[] {
+  const rows = text
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean)
+    .map(line => {
+      const cells = splitCsvLine(line)
+      return cells.find(c => HANDLE_OR_URL.test(c)) ?? cells[0] ?? ''
+    })
+    .filter(Boolean)
+  if (rows.length === 0) return []
+  const first = rows[0]
+  const firstLooksLikeHeader =
+    !HANDLE_OR_URL.test(first) &&
+    (CSV_HEADER_WORDS.test(first) || rows.slice(1).some(r => HANDLE_OR_URL.test(r)))
+  return firstLooksLikeHeader ? rows.slice(1) : rows
 }
 
 // Dynamic import for Recharts (client-side only)
@@ -417,6 +487,56 @@ export default function CampaignDetailPage() {
     message: string
   } | null>(null)
 
+  // Bulk add influencers ("Añadir varios") state
+  const [showBulkAdd, setShowBulkAdd] = useState(false)
+  const [bulkText, setBulkText] = useState('')
+  const [bulkCsvHandles, setBulkCsvHandles] = useState<string[]>([])
+  const [bulkCsvName, setBulkCsvName] = useState<string | null>(null)
+  const [bulkPlatform, setBulkPlatform] = useState<BulkPlatform | ''>('') // '' → campaign default
+  const [isBulkAdding, setIsBulkAdding] = useState(false)
+  const [bulkResult, setBulkResult] = useState<BulkAddSummary | null>(null)
+  const [bulkError, setBulkError] = useState<string | null>(null)
+
+  // Default platform for handles whose URL doesn't carry one:
+  // explicit selection → campaign's first platform → Instagram
+  const effectiveBulkPlatform: BulkPlatform = (() => {
+    if (bulkPlatform) return bulkPlatform
+    const first = campaign?.platforms?.[0]
+    return first === 'TIKTOK' || first === 'YOUTUBE' ? first : 'INSTAGRAM'
+  })()
+
+  // Live "N perfiles detectados": textarea + CSV, deduped on (platform, username)
+  const bulkDetected = useMemo(() => {
+    const raw = [...splitHandleText(bulkText), ...bulkCsvHandles]
+    const seen = new Set<string>()
+    const handles: string[] = []
+    let invalid = 0
+    for (const r of raw) {
+      const { username, platform } = parseCreatorHandle(r)
+      if (!username) { invalid++; continue }
+      const key = `${platform ?? effectiveBulkPlatform}:${username.toLowerCase()}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      handles.push(r)
+    }
+    return { handles, invalid }
+  }, [bulkText, bulkCsvHandles, effectiveBulkPlatform])
+
+  // Manual media (post by URL) state
+  const [showManualMedia, setShowManualMedia] = useState(false)
+  const [manualMediaForm, setManualMediaForm] = useState({ url: '', influencerId: '', likes: '', comments: '', views: '' })
+  const [isAddingManualMedia, setIsAddingManualMedia] = useState(false)
+  const [manualMediaResult, setManualMediaResult] = useState<{
+    type: 'success' | 'error'
+    message: string
+  } | null>(null)
+
+  // Revalidate media against the capture rules
+  const [isRevalidating, setIsRevalidating] = useState(false)
+
+  // Lightweight toast (bottom-right, auto-dismiss)
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+
   // Drag & drop state for pipeline kanban
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null)
 
@@ -544,6 +664,149 @@ export default function CampaignDetailPage() {
     fetchCampaign()
     fetchBriefFiles()
   }, [campaignId])
+
+  // Toast auto-dismiss
+  useEffect(() => {
+    if (!toast) return
+    const timer = setTimeout(() => setToast(null), 8000)
+    return () => clearTimeout(timer)
+  }, [toast])
+
+  async function handleBulkCsvChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-selecting the same file
+    if (!file) return
+    try {
+      const text = await file.text()
+      setBulkCsvHandles(parseCsvHandles(text))
+      setBulkCsvName(file.name)
+      setBulkResult(null)
+      setBulkError(null)
+    } catch {
+      setBulkError(locale === 'es' ? 'No se pudo leer el archivo CSV' : 'Could not read the CSV file')
+    }
+  }
+
+  async function handleBulkAdd() {
+    const handles = bulkDetected.handles.slice(0, BULK_MAX_HANDLES)
+    if (handles.length === 0) return
+
+    setIsBulkAdding(true)
+    setBulkResult(null)
+    setBulkError(null)
+
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/influencers/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handles, platform: effectiveBulkPlatform }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        setBulkError(data.error || (locale === 'es' ? 'No se pudieron añadir los perfiles' : 'Could not add the profiles'))
+        return
+      }
+
+      const results: BulkAddResult[] = Array.isArray(data.results) ? data.results : []
+      const count = (status: BulkAddStatus) => results.filter(r => r.status === status).length
+      const added: number = typeof data.added === 'number' ? data.added : count('added') + count('created_and_added')
+      setBulkResult({
+        added,
+        alreadyMember: count('already_member'),
+        notFound: count('not_found'),
+        apifyUnavailable: count('apify_unavailable'),
+        errors: typeof data.errors === 'number' ? data.errors : count('error'),
+        results,
+      })
+
+      if (added > 0) {
+        setBulkText('')
+        setBulkCsvHandles([])
+        setBulkCsvName(null)
+      }
+      await fetchCampaign()
+    } catch {
+      setBulkError(locale === 'es' ? 'Error de red' : 'Network error')
+    } finally {
+      setIsBulkAdding(false)
+    }
+  }
+
+  async function handleAddManualMedia() {
+    const url = manualMediaForm.url.trim()
+    if (!url) return
+
+    setIsAddingManualMedia(true)
+    setManualMediaResult(null)
+
+    try {
+      const body: Record<string, unknown> = { url }
+      if (manualMediaForm.influencerId) body.influencerId = manualMediaForm.influencerId
+      if (manualMediaForm.likes.trim() !== '') body.likes = Number(manualMediaForm.likes)
+      if (manualMediaForm.comments.trim() !== '') body.comments = Number(manualMediaForm.comments)
+      if (manualMediaForm.views.trim() !== '') body.views = Number(manualMediaForm.views)
+
+      const res = await fetch(`/api/campaigns/${campaignId}/media/manual`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        // The API names the post's real owner: preselect them when they're already a member
+        if (typeof data.ownerUsername === 'string' && data.ownerUsername) {
+          const owner = data.ownerUsername.toLowerCase()
+          const match = (campaign?.influencers || []).find(ci => ci.influencer?.username?.toLowerCase() === owner)
+          if (match) setManualMediaForm(f => ({ ...f, influencerId: match.influencer.id }))
+        }
+        setManualMediaResult({
+          type: 'error',
+          message: data.error || (locale === 'es' ? 'No se pudo añadir la publicación' : 'Could not add the post'),
+        })
+        return
+      }
+
+      setManualMediaResult({
+        type: 'success',
+        message: data.enriched
+          ? (locale === 'es' ? 'Publicación añadida con métricas obtenidas de la plataforma' : 'Post added with metrics pulled from the platform')
+          : (locale === 'es' ? 'Publicación añadida. No se pudo enriquecer automáticamente: se guardan las métricas indicadas' : 'Post added. Could not enrich automatically: the metrics you entered were saved'),
+      })
+      setManualMediaForm({ url: '', influencerId: '', likes: '', comments: '', views: '' })
+      await fetchCampaign()
+    } catch {
+      setManualMediaResult({ type: 'error', message: locale === 'es' ? 'Error de red' : 'Network error' })
+    } finally {
+      setIsAddingManualMedia(false)
+    }
+  }
+
+  async function handleRevalidateMedia() {
+    setIsRevalidating(true)
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/revalidate-media`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setToast({ type: 'error', message: data.error || (locale === 'es' ? 'No se pudo revalidar el contenido' : 'Could not revalidate the content') })
+        return
+      }
+      const kept = Number(data.kept ?? 0)
+      const detached = Number(data.detached ?? 0)
+      setToast({
+        type: 'success',
+        message: locale === 'es'
+          ? `${kept} contenidos mantenidos, ${detached} desvinculados por no cumplir las reglas (miembro + fechas + menciona a la marca)`
+          : `${kept} items kept, ${detached} detached for not meeting the rules (member + dates + mentions the brand)`,
+      })
+      await fetchCampaign()
+    } catch {
+      setToast({ type: 'error', message: locale === 'es' ? 'Error de red' : 'Network error' })
+    } finally {
+      setIsRevalidating(false)
+    }
+  }
 
   async function handleTrackNow() {
     setIsTracking(true)
@@ -1219,22 +1482,16 @@ export default function CampaignDetailPage() {
               </Button>
             </>
           )}
-          <Link
-            href={`/campaigns/${campaignId}/report`}
-            className="inline-flex items-center gap-2 rounded-lg border border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors"
-          >
-            <BarChart3 className="h-4 w-4" />
-            {locale === 'es' ? 'Ver informe' : 'View report'}
-          </Link>
+          {/* The standard report with cover is the single approved format (replaces "Ver informe" + "Exportar informe") */}
           <div className="relative">
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => setShowReportModal(true)}
+            <Link
+              href={`/campaigns/${campaignId}/report`}
+              className="inline-flex h-10 items-center gap-2 rounded-lg bg-purple-600 px-4 text-sm font-semibold text-white hover:bg-purple-700 transition-colors"
+              title={locale === 'es' ? 'Abrir el informe estándar de campaña (PDF con portada)' : 'Open the standard campaign report (PDF with cover)'}
             >
-              <Download className="h-4 w-4" />
-              {t.campaignDetail.exportReport || 'Export Report'}
-            </Button>
+              <FileText className="h-4 w-4" />
+              {locale === 'es' ? 'Informe (PDF)' : 'Report (PDF)'}
+            </Link>
             {showExportDropdown && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setShowExportDropdown(false)} />
@@ -2084,6 +2341,26 @@ export default function CampaignDetailPage() {
 
         {/* ========== PHASE 4: EJECUTAR (Execute) ========== */}
         <TabsContent value="ejecutar">
+          {/* No capture rules → nothing gets captured: say so before the PM wonders why the tab is empty */}
+          {targetAccounts.length === 0 && targetHashtags.length === 0 && (
+            <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+              <p className="flex-1 text-sm text-amber-800 dark:text-amber-200">
+                {locale === 'es'
+                  ? 'Esta campaña no tiene cuentas objetivo ni hashtags: no se capturará contenido. Añádelos en Editar campaña.'
+                  : 'This campaign has no target accounts or hashtags: no content will be captured. Add them in Edit campaign.'}
+              </p>
+              {canEdit && (
+                <button
+                  type="button"
+                  onClick={openEditModal}
+                  className="shrink-0 rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+                >
+                  {locale === 'es' ? 'Editar campaña' : 'Edit campaign'}
+                </button>
+              )}
+            </div>
+          )}
           <Tabs defaultValue="sub-media">
             <TabsList>
               <TabsTrigger value="sub-media">
@@ -2106,6 +2383,152 @@ export default function CampaignDetailPage() {
 
           {/* Sub-tab: Media */}
           <TabsContent value="sub-media">
+          <div className="space-y-4">
+          {/* Content area header: add a post by URL + revalidate against the capture rules */}
+          {canEdit && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    {locale === 'es' ? 'Contenido de la campaña' : 'Campaign content'}
+                  </h3>
+                  <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {locale === 'es'
+                      ? 'Se captura solo el contenido de miembros que menciona a la marca dentro de las fechas. Las publicaciones añadidas a mano se conservan siempre.'
+                      : 'Only member content that mentions the brand within the campaign dates is captured. Posts added by hand are always kept.'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setShowManualMedia(v => !v); setManualMediaResult(null) }}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                      showManualMedia
+                        ? 'border-purple-300 dark:border-purple-700 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
+                        : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    <Link2 className="h-3.5 w-3.5" />
+                    {locale === 'es' ? 'Añadir publicación por URL' : 'Add post by URL'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRevalidateMedia}
+                    disabled={isRevalidating}
+                    title={locale === 'es'
+                      ? 'Vuelve a comprobar cada contenido contra las reglas de captura y desvincula el que no las cumple (no borra nada)'
+                      : 'Re-checks every item against the capture rules and detaches those that fail (nothing is deleted)'}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-60"
+                  >
+                    {isRevalidating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    {locale === 'es' ? 'Revalidar contenido' : 'Revalidate content'}
+                  </button>
+                </div>
+              </div>
+
+              {showManualMedia && (
+                <div className="mt-4 border-t border-gray-100 dark:border-gray-800 pt-4">
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="md:col-span-2">
+                      <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {locale === 'es' ? 'URL de la publicación' : 'Post URL'} *
+                      </label>
+                      <input
+                        type="url"
+                        value={manualMediaForm.url}
+                        onChange={(e) => setManualMediaForm(f => ({ ...f, url: e.target.value }))}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddManualMedia()}
+                        placeholder="https://www.instagram.com/reel/…  ·  tiktok.com/@usuario/video/…  ·  youtube.com/watch?v=…"
+                        className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {locale === 'es' ? 'Creador' : 'Creator'}
+                      </label>
+                      <select
+                        value={manualMediaForm.influencerId}
+                        onChange={(e) => setManualMediaForm(f => ({ ...f, influencerId: e.target.value }))}
+                        className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      >
+                        <option value="">{locale === 'es' ? 'Detectar desde la URL' : 'Detect from the URL'}</option>
+                        {influencers.filter(ci => ci.influencer).map(ci => (
+                          <option key={ci.influencer.id} value={ci.influencer.id}>
+                            @{ci.influencer.username} · {ci.influencer.platform.charAt(0) + ci.influencer.platform.slice(1).toLowerCase()}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {([
+                        { key: 'likes', label: 'Likes' },
+                        { key: 'comments', label: locale === 'es' ? 'Comentarios' : 'Comments' },
+                        { key: 'views', label: locale === 'es' ? 'Vistas' : 'Views' },
+                      ] as const).map(field => (
+                        <div key={field.key}>
+                          <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">{field.label}</label>
+                          <input
+                            type="number"
+                            min={0}
+                            inputMode="numeric"
+                            value={manualMediaForm[field.key]}
+                            onChange={(e) => setManualMediaForm(f => ({ ...f, [field.key]: e.target.value }))}
+                            placeholder="—"
+                            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+                    {locale === 'es'
+                      ? 'El creador debe ser miembro de la campaña. Si Apify está disponible las métricas se rellenan solas; si no, se guardan las que indiques (opcionales).'
+                      : 'The creator must be a campaign member. When Apify is available the metrics fill in automatically; otherwise the ones you enter (optional) are saved.'}
+                  </p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleAddManualMedia}
+                      disabled={isAddingManualMedia || !manualMediaForm.url.trim()}
+                    >
+                      {isAddingManualMedia ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          {locale === 'es' ? 'Añadiendo…' : 'Adding…'}
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="h-4 w-4" />
+                          {locale === 'es' ? 'Añadir publicación' : 'Add post'}
+                        </>
+                      )}
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => { setShowManualMedia(false); setManualMediaResult(null) }}>
+                      {locale === 'es' ? 'Cancelar' : 'Cancel'}
+                    </Button>
+                  </div>
+                  {manualMediaResult && (
+                    <div className={`mt-3 flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
+                      manualMediaResult.type === 'success'
+                        ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300'
+                        : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300'
+                    }`}>
+                      {manualMediaResult.type === 'success' ? (
+                        <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600" />
+                      ) : (
+                        <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                      )}
+                      <span className="flex-1">{manualMediaResult.message}</span>
+                      <button onClick={() => setManualMediaResult(null)} className="text-gray-400 hover:text-gray-600">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {media.length === 0 ? (
             <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 py-16 text-center shadow-sm">
               <Image className="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600" />
@@ -2327,6 +2750,7 @@ export default function CampaignDetailPage() {
               )}
             </div>
           )}
+          </div>
         </TabsContent>
 
           {/* Sub-tab: Stories */}
@@ -2717,12 +3141,25 @@ export default function CampaignDetailPage() {
           <div className="space-y-4">
             {/* Add Influencer Section */}
             {canEdit && (
-            <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-sm">
               <div className="flex items-center gap-2 mb-3">
                 <UserPlus className="h-4 w-4 text-purple-600" />
-                <h3 className="text-sm font-semibold text-gray-900">{t.campaigns.addInfluencers}</h3>
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{t.campaigns.addInfluencers}</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowBulkAdd(v => !v)}
+                  className={`ml-auto inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    showBulkAdd
+                      ? 'border-purple-300 dark:border-purple-700 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
+                      : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  <Users className="h-3.5 w-3.5" />
+                  {locale === 'es' ? 'Añadir varios' : 'Add several'}
+                  {showBulkAdd ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </button>
               </div>
-              <p className="mb-3 text-xs text-gray-500">{t.campaigns.addInfluencersDesc}</p>
+              <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">{t.campaigns.addInfluencersDesc}</p>
               <div className="flex items-center gap-2">
                 <input
                   type="text"
@@ -2769,6 +3206,222 @@ export default function CampaignDetailPage() {
                   >
                     <X className="h-3 w-3" />
                   </button>
+                </div>
+              )}
+
+              {/* Bulk add panel: paste handles/URLs or upload a CSV → one POST to /influencers/bulk */}
+              {showBulkAdd && (
+                <div className="mt-4 border-t border-gray-100 dark:border-gray-800 pt-4">
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_280px]">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {locale === 'es' ? 'Pegar lista' : 'Paste list'}
+                      </label>
+                      <textarea
+                        value={bulkText}
+                        onChange={(e) => { setBulkText(e.target.value); setBulkResult(null); setBulkError(null) }}
+                        rows={5}
+                        disabled={isBulkAdding}
+                        placeholder={locale === 'es'
+                          ? 'Pega @usuarios o URLs de perfil, uno por línea o separados por comas'
+                          : 'Paste @usernames or profile URLs, one per line or comma-separated'}
+                        className="w-full resize-y rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 disabled:opacity-60"
+                      />
+                    </div>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                          {locale === 'es' ? 'O sube un CSV' : 'Or upload a CSV'}
+                        </label>
+                        <label className={`flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/60 px-3 py-2 text-xs text-gray-600 dark:text-gray-300 hover:border-purple-400 hover:bg-purple-50/50 dark:hover:bg-purple-900/20 transition-colors ${isBulkAdding ? 'pointer-events-none opacity-60' : ''}`}>
+                          <Upload className="h-3.5 w-3.5 shrink-0 text-purple-600" />
+                          <span className="truncate">
+                            {bulkCsvName || (locale === 'es' ? 'Elegir archivo .csv' : 'Choose a .csv file')}
+                          </span>
+                          <input
+                            type="file"
+                            accept=".csv,text/csv,text/plain,.txt"
+                            onChange={handleBulkCsvChange}
+                            className="hidden"
+                          />
+                        </label>
+                        {bulkCsvName && (
+                          <button
+                            type="button"
+                            onClick={() => { setBulkCsvHandles([]); setBulkCsvName(null) }}
+                            className="mt-1 inline-flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                          >
+                            <X className="h-3 w-3" />
+                            {locale === 'es' ? `Quitar CSV (${bulkCsvHandles.length})` : `Remove CSV (${bulkCsvHandles.length})`}
+                          </button>
+                        )}
+                        <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
+                          {locale === 'es'
+                            ? 'Se usa la primera columna, o cualquier celda con @ o URL. La cabecera se ignora.'
+                            : 'First column, or any cell with @ or a URL. The header row is ignored.'}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                          {locale === 'es' ? 'Plataforma (si la URL no la indica)' : 'Platform (when the URL does not say)'}
+                        </label>
+                        <select
+                          value={effectiveBulkPlatform}
+                          onChange={(e) => setBulkPlatform(e.target.value as BulkPlatform)}
+                          disabled={isBulkAdding}
+                          className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 disabled:opacity-60"
+                        >
+                          <option value="INSTAGRAM">Instagram</option>
+                          <option value="TIKTOK">TikTok</option>
+                          <option value="YOUTUBE">YouTube</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Live count + action */}
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <p className="text-sm text-gray-700 dark:text-gray-300">
+                      <span className={`font-semibold ${bulkDetected.handles.length > 0 ? 'text-purple-700 dark:text-purple-300' : ''}`}>
+                        {bulkDetected.handles.length}
+                      </span>{' '}
+                      {locale === 'es'
+                        ? (bulkDetected.handles.length === 1 ? 'perfil detectado' : 'perfiles detectados')
+                        : (bulkDetected.handles.length === 1 ? 'profile detected' : 'profiles detected')}
+                      {bulkDetected.invalid > 0 && (
+                        <span className="ml-2 text-xs text-gray-400">
+                          ({bulkDetected.invalid} {locale === 'es' ? 'sin reconocer' : 'not recognised'})
+                        </span>
+                      )}
+                      {bulkDetected.handles.length > BULK_MAX_HANDLES && (
+                        <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">
+                          {locale === 'es'
+                            ? `Máximo ${BULK_MAX_HANDLES} por envío: se procesarán los ${BULK_MAX_HANDLES} primeros`
+                            : `Maximum ${BULK_MAX_HANDLES} per batch: the first ${BULK_MAX_HANDLES} will be processed`}
+                        </span>
+                      )}
+                    </p>
+                    <div className="ml-auto flex items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => { setBulkText(''); setBulkCsvHandles([]); setBulkCsvName(null); setBulkResult(null); setBulkError(null) }}
+                        disabled={isBulkAdding || (bulkText === '' && bulkCsvHandles.length === 0 && !bulkResult)}
+                      >
+                        {locale === 'es' ? 'Limpiar' : 'Clear'}
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={handleBulkAdd}
+                        disabled={isBulkAdding || bulkDetected.handles.length === 0}
+                      >
+                        {isBulkAdding ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            {locale === 'es' ? 'Añadiendo…' : 'Adding…'}
+                          </>
+                        ) : (
+                          <>
+                            <UserPlus className="h-4 w-4" />
+                            {locale === 'es' ? 'Añadir todos' : 'Add all'}
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Progress: one request; profiles unknown to the DB are analysed with Apify server-side */}
+                  {isBulkAdding && (
+                    <div className="mt-3 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 px-3 py-2.5">
+                      <div className="flex items-center gap-2 text-sm text-purple-800 dark:text-purple-200">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {locale === 'es'
+                          ? `Añadiendo ${Math.min(bulkDetected.handles.length, BULK_MAX_HANDLES)} perfiles…`
+                          : `Adding ${Math.min(bulkDetected.handles.length, BULK_MAX_HANDLES)} profiles…`}
+                      </div>
+                      <p className="mt-1 text-xs text-purple-600 dark:text-purple-300">
+                        {locale === 'es'
+                          ? 'Los que no estén en la base de datos se analizan con Apify (3 a la vez): puede tardar unos minutos. No cierres esta pestaña.'
+                          : 'Profiles not yet in the database are analysed with Apify (3 at a time): this can take a few minutes. Keep this tab open.'}
+                      </p>
+                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-purple-200 dark:bg-purple-900/60">
+                        <div className="h-full w-1/3 animate-pulse rounded-full bg-purple-600" />
+                      </div>
+                    </div>
+                  )}
+
+                  {bulkError && (
+                    <div className="mt-3 flex items-center gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+                      <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                      <span className="flex-1">{bulkError}</span>
+                      <button onClick={() => setBulkError(null)} className="text-gray-400 hover:text-gray-600">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Results summary */}
+                  {bulkResult && !isBulkAdding && (
+                    <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 px-3 py-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-green-100 dark:bg-green-900/40 px-2.5 py-0.5 text-xs font-semibold text-green-700 dark:text-green-300">
+                          <CheckCircle2 className="h-3 w-3" />
+                          {bulkResult.added} {locale === 'es' ? 'añadidos' : 'added'}
+                        </span>
+                        <span className="inline-flex items-center rounded-full bg-gray-200 dark:bg-gray-700 px-2.5 py-0.5 text-xs font-medium text-gray-700 dark:text-gray-300">
+                          {bulkResult.alreadyMember} {locale === 'es' ? 'ya estaban' : 'already in'}
+                        </span>
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                          bulkResult.notFound > 0
+                            ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+                        }`}>
+                          {bulkResult.notFound} {locale === 'es' ? 'no encontrados' : 'not found'}
+                        </span>
+                        {bulkResult.apifyUnavailable > 0 && (
+                          <span className="inline-flex items-center rounded-full bg-red-100 dark:bg-red-900/40 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-300">
+                            {bulkResult.apifyUnavailable} {locale === 'es' ? 'Apify no disponible' : 'Apify unavailable'}
+                          </span>
+                        )}
+                        {bulkResult.errors > 0 && (
+                          <span className="inline-flex items-center rounded-full bg-red-100 dark:bg-red-900/40 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-300">
+                            {bulkResult.errors} {locale === 'es' ? 'errores' : 'errors'}
+                          </span>
+                        )}
+                        <button onClick={() => setBulkResult(null)} className="ml-auto text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      {bulkResult.apifyUnavailable > 0 && (
+                        <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+                          {locale === 'es'
+                            ? 'Apify no está disponible (sin configurar o límite mensual alcanzado): los perfiles que aún no estaban en la base de datos no se han podido analizar. Vuelve a intentarlo más adelante.'
+                            : 'Apify is unavailable (not configured or monthly limit reached): profiles not yet in the database could not be analysed. Try again later.'}
+                        </p>
+                      )}
+                      {bulkResult.results.some(r => r.status !== 'added' && r.status !== 'created_and_added') && (
+                        <ul className="mt-2 max-h-40 space-y-0.5 overflow-y-auto text-xs text-gray-600 dark:text-gray-400">
+                          {bulkResult.results
+                            .filter(r => r.status !== 'added' && r.status !== 'created_and_added')
+                            .map((r, i) => (
+                              <li key={`${r.handle}-${i}`} className="flex items-center gap-2">
+                                <span className="truncate font-mono">{r.handle}</span>
+                                <span className="shrink-0 text-gray-400">
+                                  {r.status === 'already_member'
+                                    ? (locale === 'es' ? 'ya estaba' : 'already in')
+                                    : r.status === 'not_found'
+                                      ? (locale === 'es' ? 'no encontrado' : 'not found')
+                                      : r.status === 'apify_unavailable'
+                                        ? (locale === 'es' ? 'Apify no disponible' : 'Apify unavailable')
+                                        : (r.error || (locale === 'es' ? 'error' : 'error'))}
+                                </span>
+                              </li>
+                            ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -4193,6 +4846,28 @@ export default function CampaignDetailPage() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Toast (revalidation result and other one-off notices) */}
+      {toast && (
+        <div
+          role="status"
+          className={`fixed bottom-6 right-6 z-50 flex max-w-md items-start gap-3 rounded-xl border px-4 py-3 shadow-lg ${
+            toast.type === 'success'
+              ? 'border-green-200 dark:border-green-800 bg-white dark:bg-gray-900'
+              : 'border-red-200 dark:border-red-800 bg-white dark:bg-gray-900'
+          }`}
+        >
+          {toast.type === 'success' ? (
+            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-600" />
+          ) : (
+            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+          )}
+          <p className="flex-1 text-sm text-gray-800 dark:text-gray-100">{toast.message}</p>
+          <button onClick={() => setToast(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 

@@ -4,6 +4,30 @@ import { getSession } from '@/lib/auth'
 import { CampaignStatus } from '@/generated/prisma/client'
 import { calculateCampaignEMV } from '@/lib/emv'
 
+// Brands are not a Prisma model: Setting 'campaign_brand_{campaignId}' holds
+// the brandId, and Setting key=brandId holds JSON { name, logo?, ... } (see
+// src/lib/brand-scope.ts). The report cover needs name + logo. Never throws.
+async function resolveCampaignBrand(
+  campaignId: string
+): Promise<{ name: string; logo: string | null } | null> {
+  try {
+    const mapping = await prisma.setting.findUnique({
+      where: { key: `campaign_brand_${campaignId}` },
+    })
+    if (!mapping?.value) return null
+    const brandSetting = await prisma.setting.findUnique({ where: { key: mapping.value } })
+    if (!brandSetting) return null
+    const data = JSON.parse(brandSetting.value) as { name?: unknown; logo?: unknown }
+    if (!data || typeof data.name !== 'string' || !data.name.trim()) return null
+    return {
+      name: data.name.trim(),
+      logo: typeof data.logo === 'string' && data.logo.trim() ? data.logo.trim() : null,
+    }
+  } catch {
+    return null
+  }
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -190,7 +214,10 @@ export async function GET(
       }))
     )
 
-    return NextResponse.json({ campaign, overview: { ...overview, emvBasic: emv.basic, emvExtended: emv.extended }, timeline })
+    // Brand info for the report cover: { name, logo } | null
+    const brand = await resolveCampaignBrand(id)
+
+    return NextResponse.json({ campaign: { ...campaign, brand }, overview: { ...overview, emvBasic: emv.basic, emvExtended: emv.extended }, timeline })
   } catch (error) {
     console.error('Get campaign error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

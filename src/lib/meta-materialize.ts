@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db'
 import { Platform, MediaType } from '@/generated/prisma/client'
+import { isWithinCampaignDates } from '@/lib/campaign-capture'
 
 /**
  * Materialize Meta Graph API content (MetaMedia + MetaStoryMention) into the
@@ -37,14 +38,11 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
   if (brandTokens.length === 0) return stats
   const tokenIds = brandTokens.map(t => t.id)
 
-  const startDate = campaign.startDate ? new Date(campaign.startDate) : null
-  const endDate = campaign.endDate ? new Date(campaign.endDate) : null
-  const inRange = (d: Date | null) => {
-    if (!d) return true // mirror Apify tracking: keep undated items
-    if (startDate && d < startDate) return false
-    if (endDate && d > endDate) return false
-    return true
-  }
+  // Rule (2) of precise capture: undated items can't be proven inside the
+  // campaign window → NOT captured. Same window logic as every other capture
+  // path (endDate's whole day counts). Meta rows are brand-tagged by
+  // construction (rule 3), and membership (rule 1) is enforced via igMembers.
+  const inRange = (d: Date | null) => isWithinCampaignDates(campaign, d)
   const normalize = (u: string) => u.toLowerCase().replace(/^@/, '').trim()
   const shortcodeOf = (permalink: string | null) => {
     if (!permalink) return null
@@ -109,7 +107,10 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
           where: { id: existing.id },
           data: {
             ...metaMetrics,
-            campaignId, // claim for this campaign (same semantics as the Apify pass)
+            // Claim for this campaign only when the row is unattached or
+            // already ours — a row can belong to ONE campaign and another
+            // campaign's attachment must not be stolen (same as the Apify pass)
+            ...(!existing.campaignId || existing.campaignId === campaignId ? { campaignId } : {}),
             // Keep the larger like/comment counts (Apify sometimes sees more
             // recent numbers than a stale Meta sync)
             likes: Math.max(existing.likes, metaMetrics.likes),

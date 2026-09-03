@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
+import { ensureContact } from '@/lib/contacts'
 
 export async function GET(
   request: NextRequest,
@@ -90,6 +91,13 @@ export async function POST(
       data: { listId: id, influencerId },
       include: { influencer: true },
     })
+
+    // An influencer saved to a list becomes a Contact of the list owner
+    // (and of the acting admin when they manage someone else's list).
+    await ensureContact(influencerId, list.userId)
+    if (session.id !== list.userId) {
+      await ensureContact(influencerId, session.id)
+    }
 
     return NextResponse.json({ item }, { status: 201 })
   } catch (error) {

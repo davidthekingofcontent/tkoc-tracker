@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { scrapeHashtag, scrapeAccountMentions, scrapeProfile, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
-import type { HashtagResult } from '@/lib/apify'
+import { scrapeHashtag, scrapeAccountMentions, scrapeProfile, scrapeStories, isApifyConfigured, isApifyExhausted } from '@/lib/apify'
 import { syncMetaConnection } from '@/lib/meta-sync'
 import { materializeMetaContent } from '@/lib/meta-materialize'
+import {
+  captureMemberContent,
+  revalidateCampaignMedia,
+  mediaMatchesCampaignRules,
+  campaignHasTargets,
+  scrapedPostToRuleItem,
+  scrapedStoryToRuleItem,
+  upsertCampaignPost,
+  upsertCampaignStory,
+} from '@/lib/campaign-capture'
 import { Platform } from '@/generated/prisma/client'
 
 export async function POST(
@@ -50,17 +59,32 @@ export async function POST(
       )
     }
 
+    // PRECISE CAPTURE: a campaign with no target accounts/hashtags captures
+    // NOTHING from scraped sources (rule 3 can never be satisfied). The UI
+    // surfaces `targetsConfigured` so the PM knows why.
+    const targetsConfigured = campaignHasTargets(campaign)
+
     const results = {
+      targetsConfigured,
       hashtagsScraped: 0,
       postsFromHashtags: 0,
       postsFromMentions: 0,
       postsFound: 0,
+      postsRejectedByRules: 0,
       postsFilteredByCountry: 0,
       influencersFound: 0,
+      memberPostsCaptured: 0,
+      memberPostsSkipped: 0,
       storiesCaptured: 0,
+      storiesRejectedByRules: 0,
       storyError: null as string | null,
       metaSync: { connections: 0, media: 0, stories: 0, mentions: 0 },
+      revalidation: { kept: 0, detached: 0 },
       errors: [] as string[],
+    }
+
+    if (!targetsConfigured) {
+      results.errors.push('La campaña no tiene cuentas ni hashtags objetivo: no se captura contenido hasta configurarlos.')
     }
 
     // ===== META GRAPH API SYNC (PRIMARY SOURCE) =====
@@ -265,52 +289,16 @@ export async function POST(
                 continue // Skip media tracking for non-members
               }
 
-              // Save the posts (respecting campaign start date) — member only
-              const campaignStart = campaign.startDate ? new Date(campaign.startDate) : null
+              // Save the posts — member only, and ONLY those that pass the
+              // campaign rules (dated inside [startDate, endDate] AND
+              // referencing a target account/hashtag).
               for (const post of result.posts) {
                 if (!post.externalId) continue
-                // Skip posts before campaign start date
-                if (campaignStart && post.postedAt && new Date(post.postedAt) < campaignStart) continue
-                try {
-                  await prisma.media.upsert({
-                    where: {
-                      externalId_platform: {
-                        externalId: post.externalId,
-                        platform,
-                      },
-                    },
-                    create: {
-                      externalId: post.externalId,
-                      platform,
-                      mediaType: post.mediaType,
-                      caption: post.caption,
-                      mediaUrl: post.mediaUrl,
-                      thumbnailUrl: post.thumbnailUrl,
-                      permalink: post.permalink,
-                      likes: post.likes,
-                      comments: post.comments,
-                      shares: post.shares,
-                      saves: post.saves,
-                      views: post.views,
-                      hashtags: post.hashtags,
-                      mentions: post.mentions,
-                      postedAt: post.postedAt ? new Date(post.postedAt) : null,
-                      influencerId: influencer.id,
-                      campaignId: id,
-                    },
-                    update: {
-                      likes: post.likes,
-                      comments: post.comments,
-                      shares: post.shares,
-                      saves: post.saves,
-                      views: post.views,
-                      campaignId: id,
-                    },
-                  })
-                  postsInThisBatch++
-                } catch {
-                  // Skip invalid media
+                if (!mediaMatchesCampaignRules(campaign, scrapedPostToRuleItem(post))) {
+                  results.postsRejectedByRules++
+                  continue
                 }
+                if (await upsertCampaignPost(id, influencer.id, platform, post)) postsInThisBatch++
               }
 
               results.influencersFound++
@@ -363,7 +351,6 @@ export async function POST(
 
           const mentionResults = await scrapeAccountMentions(account, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 50)
           let postsInThisBatch = 0
-          const campaignStartDate = campaign.startDate ? new Date(campaign.startDate) : null
 
           for (const result of mentionResults) {
             if (!result.authorUsername) continue
@@ -432,26 +419,12 @@ export async function POST(
 
               for (const post of result.posts) {
                 if (!post.externalId) continue
-                // Date filter
-                if (campaignStartDate && post.postedAt) {
-                  if (new Date(post.postedAt) < campaignStartDate) continue
+                // Campaign rules: inside [startDate, endDate] AND references a target
+                if (!mediaMatchesCampaignRules(campaign, scrapedPostToRuleItem(post))) {
+                  results.postsRejectedByRules++
+                  continue
                 }
-                try {
-                  await prisma.media.upsert({
-                    where: { externalId_platform: { externalId: post.externalId, platform } },
-                    create: {
-                      externalId: post.externalId, platform, mediaType: post.mediaType,
-                      caption: post.caption, mediaUrl: post.mediaUrl, thumbnailUrl: post.thumbnailUrl,
-                      permalink: post.permalink, likes: post.likes, comments: post.comments,
-                      shares: post.shares, saves: post.saves, views: post.views,
-                      hashtags: post.hashtags, mentions: post.mentions,
-                      postedAt: post.postedAt ? new Date(post.postedAt) : null,
-                      influencerId: influencer.id, campaignId: id,
-                    },
-                    update: { likes: post.likes, comments: post.comments, shares: post.shares, saves: post.saves, views: post.views, campaignId: id },
-                  })
-                  postsInThisBatch++
-                } catch { /* skip */ }
+                if (await upsertCampaignPost(id, influencer.id, platform, post)) postsInThisBatch++
               }
               results.influencersFound++
             } catch { /* skip */ }
@@ -467,151 +440,34 @@ export async function POST(
     }
 
     // ===== CAMPAIGN MEMBER POST CAPTURE =====
-    // For every creator the user has added to this campaign, scrape their profile
-    // and capture posts that mention the brand (even if they didn't use #hashtag
-    // or @mention exactly — match against caption/hashtags/mentions case-insensitively)
+    // For every creator the PM added to this campaign, scrape their profile and
+    // keep ONLY the posts that pass the campaign rules (member + inside the
+    // campaign dates + references a target account/hashtag). Stories for
+    // Instagram members are batched below in a single Apify call, so the
+    // per-member story scrape is skipped here.
     const existingInfluencers = campaign.influencers || []
-    const campaignStartDate = campaign.startDate ? new Date(campaign.startDate) : null
-    const campaignEndDate = campaign.endDate ? new Date(campaign.endDate) : null
-
-    // Build brand keyword set for matching (normalized + raw)
-    // Normalize: lowercase, strip accents, remove spaces/dots/hyphens/underscores
-    function normalize(s: string): string {
-      return s.toLowerCase()
-        .normalize('NFD').replace(/[̀-ͯ]/g, '') // strip accents
-        .replace(/[\s._\-/]/g, '') // remove spaces, dots, underscores, hyphens, slashes
-    }
-
-    const brandKeywords = new Set<string>()
-    for (const h of campaign.targetHashtags) {
-      const clean = h.toLowerCase().replace(/^#/, '').trim()
-      if (clean) {
-        brandKeywords.add(clean)
-        brandKeywords.add(normalize(clean))
-      }
-    }
-    for (const a of campaign.targetAccounts) {
-      const clean = a.toLowerCase().replace(/^@/, '').trim()
-      if (clean) {
-        brandKeywords.add(clean)
-        brandKeywords.add(normalize(clean))
-      }
-    }
-
-    function postMentionsBrand(post: { caption: string | null; hashtags: string[]; mentions: string[] }): boolean {
-      if (brandKeywords.size === 0) return true // No brand targets configured → keep all
-      const rawHaystack = [
-        (post.caption || '').toLowerCase(),
-        ...post.hashtags.map(h => h.toLowerCase().replace(/^#/, '')),
-        ...post.mentions.map(m => m.toLowerCase().replace(/^@/, '')),
-      ].join(' ')
-      // Match against both the raw haystack and a normalized version
-      // (so "PC Componentes" matches keyword "pccomponentes")
-      const normHaystack = normalize(rawHaystack)
-      for (const kw of brandKeywords) {
-        if (rawHaystack.includes(kw)) return true
-        if (normHaystack.includes(kw)) return true
-      }
-      return false
-    }
 
     for (const ci of existingInfluencers) {
-      const inf = ci.influencer
-      try {
-        const scraped = await scrapeProfile(inf.username, inf.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
-        if (!scraped) continue
-
-        // Update influencer metadata
-        await prisma.influencer.update({
-          where: { id: inf.id },
-          data: {
-            displayName: scraped.displayName,
-            bio: scraped.bio,
-            avatarUrl: scraped.avatarUrl,
-            followers: scraped.followers,
-            following: scraped.following,
-            postsCount: scraped.postsCount,
-            engagementRate: scraped.engagementRate,
-            avgLikes: scraped.avgLikes,
-            avgComments: scraped.avgComments,
-            avgViews: scraped.avgViews,
-            isVerified: scraped.isVerified,
-            lastScraped: new Date(),
-          },
-        })
-
-        // Capture posts from this member that mention the brand within campaign dates
-        let memberPostsCaptured = 0
-        for (const post of scraped.recentPosts) {
-          if (!post.externalId) continue
-
-          // Date filter
-          if (post.postedAt) {
-            const postDate = new Date(post.postedAt)
-            if (campaignStartDate && postDate < campaignStartDate) continue
-            if (campaignEndDate && postDate > campaignEndDate) continue
-          }
-
-          // Brand mention filter
-          if (!postMentionsBrand(post)) continue
-
-          try {
-            await prisma.media.upsert({
-              where: {
-                externalId_platform: {
-                  externalId: post.externalId,
-                  platform: inf.platform as Platform,
-                },
-              },
-              create: {
-                externalId: post.externalId,
-                platform: inf.platform as Platform,
-                mediaType: post.mediaType,
-                caption: post.caption,
-                mediaUrl: post.mediaUrl,
-                thumbnailUrl: post.thumbnailUrl,
-                permalink: post.permalink,
-                likes: post.likes,
-                comments: post.comments,
-                shares: post.shares,
-                saves: post.saves,
-                views: post.views,
-                hashtags: post.hashtags,
-                mentions: post.mentions,
-                postedAt: post.postedAt ? new Date(post.postedAt) : null,
-                influencerId: inf.id,
-                campaignId: id,
-              },
-              update: {
-                likes: post.likes,
-                comments: post.comments,
-                shares: post.shares,
-                saves: post.saves,
-                views: post.views,
-                campaignId: id,
-              },
-            })
-            memberPostsCaptured++
-          } catch {
-            // Skip duplicate/invalid posts
-          }
-        }
-        results.postsFound += memberPostsCaptured
-        if (memberPostsCaptured > 0) {
-          results.influencersFound++
-        }
-      } catch {
-        // Skip profile refresh errors
+      if (isApifyExhausted()) {
+        results.errors.push('Apify monthly limit exhausted — member capture stopped early')
+        break
       }
+      const capture = await captureMemberContent(id, ci.influencerId, { skipStories: true })
+      results.memberPostsCaptured += capture.captured
+      results.memberPostsSkipped += capture.skipped
+      results.postsFound += capture.captured
+      if (capture.captured > 0) results.influencersFound++
     }
 
     // ===== STORY CAPTURE =====
-    // Capture Instagram Stories from all campaign influencers
+    // One batched Apify call for every Instagram member. A story is attached
+    // ONLY if it passes the campaign rules: dated inside the campaign window
+    // AND its mentions[]/hashtags[] reference a target of THIS campaign.
     const instagramInfluencers = existingInfluencers
       .filter(ci => ci.influencer.platform === 'INSTAGRAM')
       .map(ci => ci.influencer)
 
-    if (instagramInfluencers.length > 0) {
+    if (instagramInfluencers.length > 0 && targetsConfigured && !isApifyExhausted()) {
       try {
         const storyJob = await prisma.scrapeJob.create({
           data: {
@@ -632,43 +488,19 @@ export async function POST(
         let storiesInBatch = 0
 
         for (const storyResult of storyResults) {
-          // Find the matching influencer
+          // Find the matching influencer (rule 1: member of this campaign)
           const matchingInf = instagramInfluencers.find(
             i => i.username.toLowerCase() === storyResult.username.toLowerCase()
           )
           if (!matchingInf) continue
 
           for (const story of storyResult.stories) {
-            try {
-              await prisma.media.upsert({
-                where: {
-                  externalId_platform: {
-                    externalId: story.externalId,
-                    platform: 'INSTAGRAM' as Platform,
-                  },
-                },
-                create: {
-                  externalId: story.externalId,
-                  platform: 'INSTAGRAM' as Platform,
-                  mediaType: 'STORY',
-                  mediaUrl: story.mediaUrl,
-                  thumbnailUrl: story.thumbnailUrl,
-                  views: story.views,
-                  mentions: story.mentions,
-                  hashtags: story.hashtags,
-                  postedAt: story.postedAt ? new Date(story.postedAt) : null,
-                  influencerId: matchingInf.id,
-                  campaignId: id,
-                },
-                update: {
-                  views: story.views,
-                  campaignId: id,
-                },
-              })
-              storiesInBatch++
-            } catch {
-              // Skip duplicate/invalid stories
+            if (!story.externalId) continue
+            if (!mediaMatchesCampaignRules(campaign, scrapedStoryToRuleItem(story))) {
+              results.storiesRejectedByRules++
+              continue
             }
+            if (await upsertCampaignStory(id, matchingInf.id, story)) storiesInBatch++
           }
         }
 
@@ -690,14 +522,27 @@ export async function POST(
       }
     }
 
+    // ===== REVALIDATION =====
+    // Re-judge everything currently attached to the campaign against the rules
+    // (membership, dates, brand reference). Rows that no longer qualify are
+    // detached (campaignId = null) — never deleted.
+    try {
+      results.revalidation = await revalidateCampaignMedia(id)
+    } catch (err) {
+      results.errors.push(`Revalidation failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    }
+
     return NextResponse.json({
       message: 'Tracking completed',
       summary: {
+        targetsConfigured: results.targetsConfigured,
         postsFromHashtags: results.postsFromHashtags,
         postsFromMentions: results.postsFromMentions,
+        memberPostsCaptured: results.memberPostsCaptured,
         storiesCaptured: results.storiesCaptured,
         storyError: results.storyError,
         metaSync: results.metaSync,
+        revalidation: results.revalidation,
       },
       results,
     })

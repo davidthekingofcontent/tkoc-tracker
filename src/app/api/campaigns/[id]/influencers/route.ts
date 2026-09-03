@@ -3,6 +3,25 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { InfluencerStatus } from '@/generated/prisma/client'
 import { notifyAllTeam } from '@/lib/notifications'
+import { ensureContact } from '@/lib/contacts'
+import { captureMemberContent } from '@/lib/campaign-capture'
+
+/** Statuses from which a creator is confirmed (or later) — content capture
+ *  is triggered automatically when a member reaches one of them. */
+const CAPTURE_TRIGGER_STATUSES = new Set<InfluencerStatus>([
+  InfluencerStatus.AGREED,
+  InfluencerStatus.CONTRACTED,
+  InfluencerStatus.SHIPPING,
+  InfluencerStatus.POSTED,
+  InfluencerStatus.COMPLETED,
+])
+
+/** Fire-and-forget precise capture for one member. Never throws, never awaited. */
+function triggerMemberCapture(campaignId: string, influencerId: string, reason: string): void {
+  captureMemberContent(campaignId, influencerId)
+    .then(r => console.log(`[Campaign/Influencers] Capture (${reason}) for ${influencerId} in ${campaignId}: ${r.captured} captured, ${r.skipped} skipped`))
+    .catch(err => console.error(`[Campaign/Influencers] Capture (${reason}) failed:`, err instanceof Error ? err.message : err))
+}
 
 export async function POST(
   request: NextRequest,
@@ -49,6 +68,17 @@ export async function POST(
       data: { campaignId: id, influencerId, source: 'manual' },
       include: { influencer: true },
     })
+
+    // CRM: make sure the creator exists as a contact for this user (status 'new')
+    try {
+      await ensureContact(influencerId, session.id)
+    } catch (err) {
+      console.error('[Campaign/Influencers] ensureContact failed:', err instanceof Error ? err.message : err)
+    }
+
+    // Precise capture: scrape the new member's recent content and keep only what
+    // passes the campaign rules. Fire-and-forget — the add must not wait for Apify.
+    triggerMemberCapture(id, influencerId, 'added')
 
     // Notify team
     notifyAllTeam({
@@ -127,6 +157,16 @@ export async function PATCH(
       },
       include: { influencer: true },
     })
+
+    // Confirmed-or-later status → capture the member's content (fire-and-forget).
+    // Only on an actual transition, so re-saving the same status doesn't re-scrape.
+    if (
+      status !== undefined &&
+      CAPTURE_TRIGGER_STATUSES.has(status as InfluencerStatus) &&
+      existing.status !== status
+    ) {
+      triggerMemberCapture(id, influencerId, `status→${status}`)
+    }
 
     return NextResponse.json({ item: updated })
   } catch (error) {

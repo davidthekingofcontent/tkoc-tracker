@@ -1343,3 +1343,151 @@ export async function isApifyConfiguredAsync(): Promise<boolean> {
   const dbToken = await getTokenFromDb()
   return !!dbToken
 }
+
+// ============ SINGLE POST BY URL (manual campaign additions) ============
+
+export interface ScrapedSinglePost {
+  externalId: string | null
+  caption: string | null
+  likes: number
+  comments: number
+  views: number
+  thumbnailUrl: string | null
+  postedAt: string | null
+  ownerUsername: string | null
+  mediaType: ScrapedPost['mediaType']
+  hashtags: string[]
+  mentions: string[]
+}
+
+function nonNegative(n: unknown): number {
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.round(n) : 0
+}
+
+function mapInstagramSinglePost(item: Record<string, unknown>): ScrapedSinglePost | null {
+  // The Apify IG actors emit { error, errorDescription } items for private/removed posts
+  if (item.error || item.errorDescription) return null
+  const caption = (item.caption as string) || ''
+  const type = ((item.type as string) || '').toLowerCase()
+  const productType = ((item.productType as string) || '').toLowerCase()
+  let mediaType: ScrapedPost['mediaType'] = 'POST'
+  if (type.includes('video') || productType === 'clips' || productType === 'reels' || productType === 'igtv') mediaType = 'REEL'
+  else if (type.includes('sidecar') || type.includes('carousel')) mediaType = 'CAROUSEL'
+
+  // Keep the same '#tag' / '@user' shape the tracking passes store from captions
+  const rawTags = Array.isArray(item.hashtags) ? (item.hashtags as unknown[]) : []
+  const rawMentions = Array.isArray(item.mentions) ? (item.mentions as unknown[]) : []
+  const hashtags = rawTags.length
+    ? rawTags.map(h => `#${String(h).replace(/^#/, '')}`)
+    : (caption.match(/#\w+/g) || [])
+  const mentions = rawMentions.length
+    ? rawMentions.map(m => `@${String(m).replace(/^@/, '')}`)
+    : (caption.match(/@\w+/g) || [])
+
+  return {
+    // Same precedence as the tracking passes (numeric id first) so a later
+    // profile/hashtag scrape upserts onto this row instead of duplicating it
+    externalId: (item.id as string) || (item.shortCode as string) || null,
+    caption: caption || null,
+    likes: nonNegative(item.likesCount), // -1 when likes are hidden
+    comments: nonNegative(item.commentsCount),
+    views: nonNegative(item.videoViewCount) || nonNegative(item.videoPlayCount),
+    thumbnailUrl: (item.thumbnailUrl as string) || (item.displayUrl as string) || null,
+    postedAt: (item.timestamp as string) || null,
+    ownerUsername: (item.ownerUsername as string) || null,
+    mediaType,
+    hashtags,
+    mentions,
+  }
+}
+
+function mapTikTokSinglePost(item: Record<string, unknown>): ScrapedSinglePost | null {
+  if (item.error) return null
+  const authorMeta = (item.authorMeta as Record<string, unknown>) || {}
+  const text = (item.text as string) || ''
+  const rawTags = Array.isArray(item.hashtags) ? (item.hashtags as { name?: string }[]) : []
+  const covers = (item.covers as Record<string, string>) || {}
+  const videoMeta = (item.videoMeta as Record<string, unknown>) || {}
+  const createTime = item.createTime as number | undefined
+
+  return {
+    externalId: item.id != null ? String(item.id) : null,
+    caption: text || null,
+    likes: nonNegative(item.diggCount),
+    comments: nonNegative(item.commentCount),
+    views: nonNegative(item.playCount),
+    thumbnailUrl: covers.default || (videoMeta.coverUrl as string) || (item.coverUrl as string) || null,
+    postedAt: (item.createTimeISO as string)
+      || (createTime ? new Date(createTime * 1000).toISOString() : null),
+    ownerUsername: (authorMeta.name as string) || (authorMeta.uniqueId as string) || null,
+    mediaType: 'VIDEO',
+    hashtags: rawTags.filter(h => h?.name).map(h => `#${h.name}`),
+    mentions: text.match(/@\w+/g) || [],
+  }
+}
+
+/**
+ * Enrich ONE post/reel/video from its public URL (used when a PM adds content
+ * to a campaign by hand). Instagram: apify~instagram-post-scraper first, then
+ * apify~instagram-scraper as fallback. TikTok: clockworks~free-tiktok-scraper.
+ * YouTube: not supported (returns null → caller falls back to manual metrics).
+ * Never throws — any failure (incl. exhausted monthly limit) returns null.
+ */
+export async function scrapeSinglePost(url: string): Promise<ScrapedSinglePost | null> {
+  if (isApifyExhausted()) return null
+
+  let host = ''
+  try {
+    host = new URL(url).hostname.toLowerCase()
+  } catch {
+    return null
+  }
+
+  const cacheKey = `post:${url}`
+  const cached = cacheGet<ScrapedSinglePost | null>(cacheKey)
+  if (cached !== undefined) {
+    console.log(`[Apify] Cache hit for ${cacheKey} — skipping paid scrape`)
+    return cached
+  }
+
+  let result: ScrapedSinglePost | null = null
+  try {
+    if (host.includes('instagram.com') || host.includes('instagr.am')) {
+      let items: Record<string, unknown>[] = []
+      try {
+        items = await runActor('apify~instagram-post-scraper', { directUrls: [url], resultsLimit: 1 })
+      } catch (err) {
+        if (isExhaustedError(err)) return null
+        console.warn('[Apify] instagram-post-scraper failed for single post, trying instagram-scraper:', err instanceof Error ? err.message : err)
+      }
+      if (items.length === 0) {
+        items = await runActor('apify~instagram-scraper', { directUrls: [url], resultsType: 'posts', resultsLimit: 1 })
+      }
+      for (const item of items) {
+        result = mapInstagramSinglePost(item)
+        if (result) break
+      }
+    } else if (host.includes('tiktok.com')) {
+      const items = await runActor('clockworks~free-tiktok-scraper', {
+        postURLs: [url],
+        resultsPerPage: 1,
+        shouldDownloadVideos: false,
+      })
+      for (const item of items) {
+        result = mapTikTokSinglePost(item)
+        if (result) break
+      }
+    } else {
+      return null
+    }
+  } catch (err) {
+    if (isExhaustedError(err)) return null
+    console.error('[Apify] Single post scrape failed:', err instanceof Error ? err.message : err)
+    return null
+  }
+
+  // Don't negative-cache empties caused by the exhausted-limit circuit breaker
+  if (result === null && isApifyExhausted()) return null
+  cacheSet(cacheKey, result, result ? LIST_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS)
+  return result
+}

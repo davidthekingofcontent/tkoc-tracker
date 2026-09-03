@@ -14,11 +14,13 @@ import {
   MapPin,
   Users,
   TrendingUp,
+  Link2,
 } from 'lucide-react'
 import { useI18n } from '@/i18n/context'
 import { Avatar } from '@/components/ui/avatar'
 import { proxyImg } from '@/lib/proxy-image'
 import { formatNumber } from '@/lib/utils'
+import { parseCreatorHandle } from '@/lib/handles'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,6 +37,7 @@ interface SourceCreator {
   categories: string[]
   spainFitLevel: string | null
   geoCity: string | null
+  origin?: 'creator_profile' | 'influencer' | 'apify'
 }
 
 interface LookalikeResult {
@@ -59,9 +62,40 @@ interface ListItem {
   name: string
 }
 
+type PlatformKey = 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
+
+type SearchReason = 'source_unknown_apify_unavailable' | 'source_not_found' | 'no_candidates'
+
+interface SearchMeta {
+  detectedPlatform: PlatformKey
+  platformSource: 'url' | 'selector'
+  parsedHandle: string
+  reason: SearchReason | null
+  message: string | null
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const PLATFORM_LABEL: Record<PlatformKey, string> = {
+  INSTAGRAM: 'Instagram',
+  TIKTOK: 'TikTok',
+  YOUTUBE: 'YouTube',
+}
+
+/**
+ * Client-side hint only: which platform a pasted URL points at. The server
+ * runs the same parser and echoes `detectedPlatform` back; this just keeps
+ * the dropdown in sync as you type.
+ */
+function detectPlatformFromInput(input: string): PlatformKey | null {
+  try {
+    return parseCreatorHandle(input).platform
+  } catch {
+    return null
+  }
+}
 
 function getProfileUrl(username: string, platform: string): string {
   switch (platform.toUpperCase()) {
@@ -87,6 +121,18 @@ function PlatformIcon({ platform }: { platform: string }) {
   }
 }
 
+function PlatformChip({ platform, fromUrl, isEs }: { platform: string; fromUrl: boolean; isEs: boolean }) {
+  const label = PLATFORM_LABEL[platform.toUpperCase() as PlatformKey] || platform
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-purple-200 dark:border-purple-800 bg-white dark:bg-gray-800 px-2.5 py-0.5 text-[11px] font-medium text-purple-700 dark:text-purple-300">
+      {fromUrl ? <Link2 className="h-3 w-3" /> : <PlatformIcon platform={platform} />}
+      {fromUrl
+        ? (isEs ? `${label} · detectado por la URL` : `${label} · detected from URL`)
+        : label}
+    </span>
+  )
+}
+
 function ScoreBadge({ score }: { score: number }) {
   let colorClass = 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
   if (score >= 85) {
@@ -107,27 +153,27 @@ function SpainFitBadge({ level }: { level: string | null }) {
 
   const config: Record<string, { emoji: string; labelEs: string; className: string }> = {
     confirmed: {
-      emoji: '\uD83C\uDDEA\uD83C\uDDF8',
+      emoji: '🇪🇸',
       labelEs: 'Confirmado',
       className: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400',
     },
     probable: {
-      emoji: '\uD83D\uDFE1',
+      emoji: '🟡',
       labelEs: 'Probable',
       className: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400',
     },
     partial: {
-      emoji: '\uD83D\uDFE0',
+      emoji: '🟠',
       labelEs: 'Parcial',
       className: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400',
     },
     hispanic_global: {
-      emoji: '\uD83C\uDF0E',
+      emoji: '🌎',
       labelEs: 'Hispano global',
       className: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400',
     },
     latam: {
-      emoji: '\uD83C\uDF0E',
+      emoji: '🌎',
       labelEs: 'LATAM',
       className: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
     },
@@ -161,9 +207,11 @@ function LookalikesContent() {
   const searchParams = useSearchParams()
 
   const [handle, setHandle] = useState('')
-  const [platform, setPlatform] = useState('INSTAGRAM')
+  const [platform, setPlatform] = useState<PlatformKey>('INSTAGRAM')
+  const [urlPlatform, setUrlPlatform] = useState<PlatformKey | null>(null)
   const [source, setSource] = useState<SourceCreator | null>(null)
   const [results, setResults] = useState<LookalikeResult[]>([])
+  const [meta, setMeta] = useState<SearchMeta | null>(null)
   const [searching, setSearching] = useState(false)
   const [searched, setSearched] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -200,27 +248,46 @@ function LookalikesContent() {
       .catch(() => {})
   }, [])
 
+  const handleInputChange = (value: string) => {
+    setHandle(value)
+    const detected = detectPlatformFromInput(value)
+    setUrlPlatform(detected)
+    if (detected) setPlatform(detected) // URL wins over the dropdown
+  }
+
   const doSearch = useCallback(async (searchHandle: string, searchPlatform: string) => {
-    if (!searchHandle.trim()) return
+    const raw = searchHandle.trim()
+    if (!raw) return
     setSearching(true)
     setSearched(false)
     setErrorMsg(null)
     setSource(null)
     setResults([])
+    setMeta(null)
 
     try {
       const res = await fetch('/api/creators/lookalikes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          handle: searchHandle.replace(/^@/, '').trim(),
-          platform: searchPlatform.toUpperCase(),
-        }),
+        // Send the input as-is (URL or @user); the server parses it
+        body: JSON.stringify({ handle: raw, platform: searchPlatform.toUpperCase() }),
       })
-      if (res.ok) {
-        const data = await res.json()
+      const data = await res.json().catch(() => null)
+      if (res.ok && data) {
         setSource(data.source || null)
         setResults(data.lookalikes || [])
+        const detected = (data.detectedPlatform || searchPlatform).toUpperCase() as PlatformKey
+        setMeta({
+          detectedPlatform: detected,
+          platformSource: data.platformSource === 'url' ? 'url' : 'selector',
+          parsedHandle: data.parsedHandle || raw,
+          reason: data.reason || null,
+          message: data.message || null,
+        })
+        if (data.platformSource === 'url') setPlatform(detected)
+      } else if (res.status === 400 && data?.error) {
+        setErrorMsg(data.error)
+        setResults([])
       } else {
         setErrorMsg(t.lookalikes.errorSearch)
         setResults([])
@@ -237,11 +304,14 @@ function LookalikesContent() {
   // Auto-search from URL params on mount
   useEffect(() => {
     const urlHandle = searchParams.get('handle')
-    const urlPlatform = searchParams.get('platform') || 'INSTAGRAM'
+    const urlPlatformParam = (searchParams.get('platform') || 'INSTAGRAM').toUpperCase()
     if (urlHandle) {
       setHandle(urlHandle)
-      setPlatform(urlPlatform.toUpperCase())
-      doSearch(urlHandle, urlPlatform)
+      const detected = detectPlatformFromInput(urlHandle)
+      setUrlPlatform(detected)
+      const effective = detected || (['INSTAGRAM', 'TIKTOK', 'YOUTUBE'].includes(urlPlatformParam) ? urlPlatformParam as PlatformKey : 'INSTAGRAM')
+      setPlatform(effective)
+      doSearch(urlHandle, effective)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -289,6 +359,10 @@ function LookalikesContent() {
     }
   }
 
+  const placeholder = isEs ? 'Pega @usuario o la URL del perfil' : 'Paste @user or the profile URL'
+  const detectedFromUrl = meta?.platformSource === 'url'
+  const emptyIsUnavailable = meta?.reason === 'source_unknown_apify_unavailable'
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -306,8 +380,10 @@ function LookalikesContent() {
         <div className="flex gap-3">
           <select
             value={platform}
-            onChange={(e) => setPlatform(e.target.value)}
-            className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-800"
+            onChange={(e) => setPlatform(e.target.value as PlatformKey)}
+            disabled={urlPlatform !== null}
+            title={urlPlatform ? (isEs ? 'La plataforma viene de la URL pegada' : 'Platform comes from the pasted URL') : undefined}
+            className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-800 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <option value="INSTAGRAM">Instagram</option>
             <option value="TIKTOK">TikTok</option>
@@ -318,9 +394,9 @@ function LookalikesContent() {
             <input
               type="text"
               value={handle}
-              onChange={(e) => setHandle(e.target.value)}
+              onChange={(e) => handleInputChange(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder={t.lookalikes.inputPlaceholder}
+              placeholder={placeholder}
               className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 py-2 pl-10 pr-4 text-sm text-gray-900 dark:text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-800"
             />
           </div>
@@ -333,6 +409,16 @@ function LookalikesContent() {
             {searching ? t.lookalikes.finding : t.lookalikes.find}
           </button>
         </div>
+
+        {/* Live hint: platform detected in the pasted URL */}
+        {urlPlatform && (
+          <p className="mt-2 flex items-center gap-1.5 text-xs text-purple-700 dark:text-purple-300">
+            <Link2 className="h-3.5 w-3.5" />
+            {isEs
+              ? `Plataforma detectada en la URL: ${PLATFORM_LABEL[urlPlatform]}`
+              : `Platform detected from the URL: ${PLATFORM_LABEL[urlPlatform]}`}
+          </p>
+        )}
 
         {/* Apify exhausted note */}
         {apifyDown && (
@@ -368,10 +454,30 @@ function LookalikesContent() {
         </div>
       )}
 
-      {/* No results */}
+      {/* Source not resolved */}
       {searched && !searching && !source && !errorMsg && (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-16">
-          <p className="text-sm text-gray-500 dark:text-gray-400">{t.lookalikes.noResults}</p>
+        <div
+          className={`flex flex-col items-center justify-center gap-3 rounded-xl border p-8 text-center ${
+            emptyIsUnavailable
+              ? 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20'
+              : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'
+          }`}
+        >
+          {meta && (
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <PlatformChip platform={meta.detectedPlatform} fromUrl={detectedFromUrl} isEs={isEs} />
+              {meta.parsedHandle && (
+                <span className="text-xs text-gray-500 dark:text-gray-400">@{meta.parsedHandle}</span>
+              )}
+            </div>
+          )}
+          <p
+            className={`max-w-lg text-sm ${
+              emptyIsUnavailable ? 'text-amber-800 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'
+            }`}
+          >
+            {meta?.message || t.lookalikes.noResults}
+          </p>
         </div>
       )}
 
@@ -380,9 +486,16 @@ function LookalikesContent() {
         <>
           {/* Source Creator Card */}
           <div className="rounded-xl border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 p-5">
-            <p className="text-xs font-semibold uppercase tracking-wider text-purple-600 dark:text-purple-400 mb-3">
-              {t.lookalikes.sourceCreator}
-            </p>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wider text-purple-600 dark:text-purple-400">
+                {t.lookalikes.sourceCreator}
+              </p>
+              <PlatformChip
+                platform={meta?.detectedPlatform || source.platform}
+                fromUrl={detectedFromUrl}
+                isEs={isEs}
+              />
+            </div>
             <div className="flex items-center gap-4">
               <Avatar
                 src={proxyImg(source.avatarUrl)}
@@ -450,7 +563,7 @@ function LookalikesContent() {
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {results.map((item) => (
                 <div
-                  key={item.id}
+                  key={`${item.source}-${item.id}`}
                   className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 hover:shadow-md hover:border-purple-300 dark:hover:border-purple-600 transition-all"
                 >
                   {/* Top: avatar + name + score */}
@@ -551,9 +664,9 @@ function LookalikesContent() {
           ) : (
             searched &&
             !searching && (
-              <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-16">
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  {t.lookalikes.noResults}
+              <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-8 py-16 text-center">
+                <p className="max-w-lg text-sm text-gray-500 dark:text-gray-400">
+                  {meta?.message || t.lookalikes.noResults}
                 </p>
               </div>
             )

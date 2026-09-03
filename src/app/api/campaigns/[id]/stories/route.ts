@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
+import { isWithinCampaignDates } from '@/lib/campaign-capture'
 
 export async function GET(
   request: NextRequest,
@@ -141,10 +142,13 @@ export async function POST(
       )
     }
 
-    // Verify influencer is in this campaign
+    // Rule (1): the creator must be a member of this campaign
     const ci = await prisma.campaignInfluencer.findFirst({
       where: { campaignId: id, influencerId },
-      include: { influencer: { select: { platform: true } } },
+      include: {
+        influencer: { select: { platform: true } },
+        campaign: { select: { startDate: true, endDate: true } },
+      },
     })
 
     if (!ci) {
@@ -154,6 +158,36 @@ export async function POST(
       )
     }
 
+    // Rule (2): dated inside the campaign window. A hand-added story defaults
+    // to "now"; once the campaign has ended that default falls outside the
+    // window, so the PM must supply the real publication date.
+    let resolvedPostedAt: Date
+    if (postedAt !== undefined && postedAt !== null && postedAt !== '') {
+      resolvedPostedAt = new Date(String(postedAt))
+      if (Number.isNaN(resolvedPostedAt.getTime())) {
+        return NextResponse.json({ error: 'postedAt no es una fecha válida' }, { status: 400 })
+      }
+    } else {
+      resolvedPostedAt = new Date()
+    }
+
+    if (!isWithinCampaignDates(ci.campaign, resolvedPostedAt)) {
+      const fmt = (d: Date) => d.toISOString().slice(0, 10)
+      const window = `${fmt(ci.campaign.startDate)} – ${ci.campaign.endDate ? fmt(ci.campaign.endDate) : 'sin fecha de fin'}`
+      return NextResponse.json(
+        {
+          error: postedAt
+            ? `La story se publicó el ${fmt(resolvedPostedAt)}, fuera del periodo de la campaña (${window}).`
+            : `La campaña ya terminó (${window}): indica la fecha de publicación de la story (postedAt).`,
+          needsPostedAt: !postedAt,
+        },
+        { status: 400 }
+      )
+    }
+
+    // Manual additions are exempt from the brand-keyword rule only (the PM
+    // asserts relevance); `source: 'manual'` is what keeps revalidation from
+    // detaching a hand-added story that carries no mentions/hashtags.
     const story = await prisma.media.create({
       data: {
         platform: ci.influencer.platform,
@@ -165,9 +199,11 @@ export async function POST(
         reach: reach || 0,
         impressions: impressions || 0,
         comments: replies || 0,
-        postedAt: postedAt ? new Date(postedAt) : new Date(),
+        postedAt: resolvedPostedAt,
         mentions: mentions || [],
         hashtags: hashtags || [],
+        source: 'manual',
+        dataSource: 'manual',
         influencerId,
         campaignId: id,
       },

@@ -1,11 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { isApifyConfiguredAsync, scrapeStories } from '@/lib/apify'
+import { isApifyConfiguredAsync, isApifyExhausted, scrapeStories } from '@/lib/apify'
 import { notifyAllTeam } from '@/lib/notifications'
+import {
+  mediaMatchesCampaignRules,
+  campaignHasTargets,
+  scrapedStoryToRuleItem,
+  upsertCampaignStory,
+} from '@/lib/campaign-capture'
 
 /**
  * Cron job endpoint: Scrape Instagram stories for all influencers in active campaigns.
  * Should be called every 4-6 hours via an external cron service (e.g., cron-job.org, Railway cron).
+ *
+ * PRECISE CAPTURE: a story is attached to a campaign ONLY IF
+ *   (1) the creator is a member of THAT campaign,
+ *   (2) it is dated inside THAT campaign's [startDate, endDate],
+ *   (3) its mentions[]/hashtags[] reference one of THAT campaign's targets.
+ * Rules are evaluated PER CAMPAIGN when a creator belongs to several.
  *
  * Security: Uses CRON_SECRET header to authenticate.
  * Usage: GET /api/cron/stories (with header x-cron-secret)
@@ -25,6 +37,9 @@ export async function GET(request: NextRequest) {
     if (!isConfigured) {
       return NextResponse.json({ error: 'Apify not configured' }, { status: 400 })
     }
+    if (isApifyExhausted()) {
+      return NextResponse.json({ error: 'Apify monthly limit exhausted', storiesFound: 0 }, { status: 503 })
+    }
 
     // Find all active campaigns (ACTIVE or IN_PROGRESS)
     const activeCampaigns = await prisma.campaign.findMany({
@@ -32,12 +47,18 @@ export async function GET(request: NextRequest) {
         status: { in: ['ACTIVE'] },
         type: { in: ['INFLUENCER_TRACKING', 'UGC'] },
       },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        targetAccounts: true,
+        targetHashtags: true,
+        startDate: true,
+        endDate: true,
         influencers: {
           where: {
             status: { in: ['POSTED', 'CONTRACTED', 'AGREED'] },
           },
-          include: {
+          select: {
             influencer: {
               select: { id: true, username: true, platform: true },
             },
@@ -50,30 +71,41 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ message: 'No active campaigns', storiesFound: 0 })
     }
 
-    // Collect all Instagram usernames across campaigns
-    const usernameMap = new Map<string, { influencerId: string; campaignIds: string[] }>()
+    // Campaigns without targets can never satisfy rule (3) → skip them entirely
+    const campaignsById = new Map<string, (typeof activeCampaigns)[number]>()
+    for (const c of activeCampaigns) {
+      if (!campaignHasTargets(c)) {
+        console.log(`[Cron/Stories] Campaign "${c.name}" has no target accounts/hashtags — skipping`)
+        continue
+      }
+      campaignsById.set(c.id, c)
+    }
 
-    for (const campaign of activeCampaigns) {
+    // Collect all Instagram usernames across campaigns (lowercased for matching)
+    const usernameMap = new Map<string, { influencerId: string; username: string; campaignIds: string[] }>()
+
+    for (const campaign of campaignsById.values()) {
       for (const ci of campaign.influencers) {
         if (ci.influencer.platform !== 'INSTAGRAM') continue
-        const username = ci.influencer.username
-        const existing = usernameMap.get(username)
+        const key = ci.influencer.username.toLowerCase()
+        const existing = usernameMap.get(key)
         if (existing) {
           if (!existing.campaignIds.includes(campaign.id)) {
             existing.campaignIds.push(campaign.id)
           }
         } else {
-          usernameMap.set(username, {
+          usernameMap.set(key, {
             influencerId: ci.influencer.id,
+            username: ci.influencer.username,
             campaignIds: [campaign.id],
           })
         }
       }
     }
 
-    const usernames = Array.from(usernameMap.keys())
+    const usernames = Array.from(usernameMap.values()).map(m => m.username)
     if (usernames.length === 0) {
-      return NextResponse.json({ message: 'No Instagram influencers in active campaigns', storiesFound: 0 })
+      return NextResponse.json({ message: 'No Instagram influencers in active campaigns with targets', storiesFound: 0 })
     }
 
     console.log(`[Cron/Stories] Scraping stories for ${usernames.length} influencers: ${usernames.join(', ')}`)
@@ -81,52 +113,44 @@ export async function GET(request: NextRequest) {
     // Scrape in batches of 20 (Apify limit)
     let totalStories = 0
     let newStories = 0
+    let rejectedByRules = 0
 
     for (let i = 0; i < usernames.length; i += 20) {
+      if (isApifyExhausted()) break
       const batch = usernames.slice(i, i + 20)
       const results = await scrapeStories(batch, 'INSTAGRAM')
 
       for (const result of results) {
-        const mapping = usernameMap.get(result.username)
+        const mapping = usernameMap.get(result.username.toLowerCase())
         if (!mapping) continue
 
         for (const story of result.stories) {
           totalStories++
+          if (!story.externalId) continue
 
-          // Check if this story already exists in DB (by externalId)
+          // Media has a global unique on (externalId, platform): a story can
+          // belong to at most ONE campaign. Skip stories already attached; a
+          // previously detached row (campaignId null) may be re-claimed.
           const existing = await prisma.media.findFirst({
-            where: {
-              externalId: story.externalId,
-              platform: 'INSTAGRAM',
-              mediaType: 'STORY',
-            },
+            where: { externalId: story.externalId, platform: 'INSTAGRAM' },
+            select: { id: true, campaignId: true },
+          })
+          if (existing?.campaignId) continue
+
+          // Evaluate the rules PER CAMPAIGN; attach to the first campaign that qualifies
+          const item = scrapedStoryToRuleItem(story)
+          const matchingCampaignId = mapping.campaignIds.find(cid => {
+            const campaign = campaignsById.get(cid)
+            return campaign ? mediaMatchesCampaignRules(campaign, item) : false
           })
 
-          if (existing) continue // Skip already-tracked stories
+          if (!matchingCampaignId) {
+            rejectedByRules++
+            continue
+          }
 
-          // Save story to DB for each campaign this influencer belongs to
-          for (const campaignId of mapping.campaignIds) {
-            try {
-              await prisma.media.create({
-                data: {
-                  externalId: story.externalId,
-                  platform: 'INSTAGRAM',
-                  mediaType: 'STORY',
-                  mediaUrl: story.mediaUrl,
-                  thumbnailUrl: story.thumbnailUrl,
-                  views: story.views,
-                  postedAt: story.postedAt ? new Date(story.postedAt) : new Date(),
-                  mentions: story.mentions,
-                  hashtags: story.hashtags,
-                  influencerId: mapping.influencerId,
-                  campaignId,
-                },
-              })
-              newStories++
-            } catch (err) {
-              // Unique constraint violation = already exists, skip
-              console.log(`[Cron/Stories] Skipping duplicate story: ${story.externalId}`)
-            }
+          if (await upsertCampaignStory(matchingCampaignId, mapping.influencerId, story)) {
+            newStories++
           }
         }
       }
@@ -142,14 +166,15 @@ export async function GET(request: NextRequest) {
       }).catch(() => {})
     }
 
-    console.log(`[Cron/Stories] Done. Total: ${totalStories}, New: ${newStories}`)
+    console.log(`[Cron/Stories] Done. Total: ${totalStories}, New: ${newStories}, Rejected by rules: ${rejectedByRules}`)
 
     return NextResponse.json({
       success: true,
       usernamesChecked: usernames.length,
       totalStories,
       newStories,
-      campaigns: activeCampaigns.length,
+      rejectedByRules,
+      campaigns: campaignsById.size,
     })
   } catch (error) {
     console.error('[Cron/Stories] Error:', error)

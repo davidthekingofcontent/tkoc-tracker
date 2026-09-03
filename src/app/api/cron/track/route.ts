@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { scrapeHashtag, scrapeAccountMentions, scrapeStories, isApifyConfigured, detectCountry } from '@/lib/apify'
+import { scrapeHashtag, scrapeAccountMentions, scrapeStories, isApifyConfigured, isApifyExhausted, detectCountry } from '@/lib/apify'
 import { searchVideos as ytSearchVideos, isYouTubeApiConfigured } from '@/lib/youtube-api'
+import {
+  mediaMatchesCampaignRules,
+  campaignHasTargets,
+  scrapedPostToRuleItem,
+  scrapedStoryToRuleItem,
+  upsertCampaignPost,
+  upsertCampaignStory,
+} from '@/lib/campaign-capture'
 
 function formatFollowers(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
@@ -115,7 +123,6 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
     source: string
   ): Promise<number> {
     let postsFound = 0
-    const campaignStartDate = campaign.startDate ? new Date(campaign.startDate) : null
 
     for (const result of scrapedResults) {
       if (!result.authorUsername) continue
@@ -255,51 +262,13 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
           continue // Skip media tracking for non-members
         }
 
-        // Creator IS a campaign member — proceed with Media tracking
+        // Creator IS a campaign member — store ONLY posts that pass the campaign
+        // rules: dated inside [startDate, endDate] AND referencing a target
+        // account/hashtag (undated posts are never captured).
         for (const post of result.posts) {
           if (!post.externalId) continue
-
-          // Date filter: skip posts older than campaign start date
-          if (campaignStartDate && post.postedAt) {
-            const postDate = new Date(post.postedAt)
-            if (postDate < campaignStartDate) continue
-          }
-
-          try {
-            await prisma.media.upsert({
-              where: {
-                externalId_platform: { externalId: post.externalId, platform },
-              },
-              create: {
-                externalId: post.externalId,
-                platform,
-                mediaType: post.mediaType,
-                caption: post.caption,
-                mediaUrl: post.mediaUrl,
-                thumbnailUrl: post.thumbnailUrl,
-                permalink: post.permalink,
-                likes: post.likes,
-                comments: post.comments,
-                shares: post.shares,
-                saves: post.saves,
-                views: post.views,
-                hashtags: post.hashtags,
-                mentions: post.mentions,
-                postedAt: post.postedAt ? new Date(post.postedAt) : null,
-                influencerId: influencer.id,
-                campaignId: campaign.id,
-              },
-              update: {
-                likes: post.likes,
-                comments: post.comments,
-                shares: post.shares,
-                saves: post.saves,
-                views: post.views,
-                campaignId: campaign.id,
-              },
-            })
-            postsFound++
-          } catch { /* skip duplicate */ }
+          if (!mediaMatchesCampaignRules(campaign, scrapedPostToRuleItem(post))) continue
+          if (await upsertCampaignPost(campaign.id, influencer.id, platform, post)) postsFound++
         }
       } catch { /* skip */ }
     }
@@ -383,10 +352,21 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
 
   console.log(`[Cron/Track] Post/mention tracking done: ${results.campaignsProcessed} campaigns, ${results.totalPostsFound} posts found`)
 
-  // Story tracking for campaigns with Instagram influencers
+  // Story tracking for campaigns with Instagram influencers.
+  // PRECISE CAPTURE: a story is attached to a campaign ONLY if the creator is
+  // a member of THAT campaign, it is dated inside THAT campaign's window and
+  // its mentions[]/hashtags[] reference one of THAT campaign's targets.
   for (const campaign of campaignsWithInfluencers) {
     const igInfluencers = campaign.influencers.filter(ci => ci.influencer.platform === 'INSTAGRAM')
     if (igInfluencers.length === 0) continue
+    if (!campaignHasTargets(campaign)) {
+      console.log(`[Cron/Track] Campaign "${campaign.name}" has no target accounts/hashtags — skipping stories`)
+      continue
+    }
+    if (isApifyExhausted()) {
+      results.errors.push('Apify monthly limit exhausted — story tracking skipped')
+      break
+    }
 
     try {
       // Idempotency: skip stories if already scraped within the dedup window
@@ -397,37 +377,15 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
       const storyResults = await scrapeStories(usernames, 'INSTAGRAM')
 
       for (const sr of storyResults) {
-        const influencer = await prisma.influencer.findFirst({
-          where: { username: sr.username, platform: 'INSTAGRAM' },
-        })
-        if (!influencer) continue
+        // Rule (1): must be a member of THIS campaign (not just any tracked creator)
+        const member = igInfluencers.find(ci => ci.influencer.username.toLowerCase() === sr.username.toLowerCase())
+        if (!member) continue
 
         for (const story of sr.stories) {
-          try {
-            await prisma.media.upsert({
-              where: {
-                externalId_platform: { externalId: story.externalId, platform: 'INSTAGRAM' },
-              },
-              create: {
-                externalId: story.externalId,
-                platform: 'INSTAGRAM',
-                mediaType: 'STORY',
-                mediaUrl: story.mediaUrl,
-                thumbnailUrl: story.thumbnailUrl,
-                views: story.views,
-                mentions: story.mentions,
-                hashtags: story.hashtags,
-                postedAt: story.postedAt ? new Date(story.postedAt) : null,
-                influencerId: influencer.id,
-                campaignId: campaign.id,
-              },
-              update: {
-                views: story.views,
-                campaignId: campaign.id,
-              },
-            })
-            results.storiesCaptured++
-          } catch { /* skip duplicate */ }
+          if (!story.externalId) continue
+          // Rules (2) + (3)
+          if (!mediaMatchesCampaignRules(campaign, scrapedStoryToRuleItem(story))) continue
+          if (await upsertCampaignStory(campaign.id, member.influencerId, story)) results.storiesCaptured++
         }
       }
     } catch (err) {

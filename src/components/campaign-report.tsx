@@ -22,6 +22,8 @@ import {
   BarChart3,
   Search,
   ShieldCheck,
+  Building2,
+  CalendarDays,
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
@@ -73,6 +75,11 @@ interface ReportMedia {
   } | null
 }
 
+interface ReportBrand {
+  name?: string | null
+  logo?: string | null
+}
+
 interface ReportCampaign {
   id?: string
   name?: string
@@ -80,6 +87,8 @@ interface ReportCampaign {
   startDate?: string | null
   endDate?: string | null
   platforms?: string[]
+  /** Resolved by both APIs from Setting 'campaign_brand_{id}'; null when unassigned */
+  brand?: ReportBrand | null
   influencers?: ReportMember[]
   media?: ReportMedia[]
 }
@@ -215,6 +224,44 @@ function MediaThumb({ src, alt }: { src?: string | null; alt: string }) {
   )
 }
 
+/**
+ * TKOC wordmark for the cover. The PNG is a 2084x2084 square with the logo
+ * as a thin horizontal strip in the vertical centre (rows ~45%-55%), so we
+ * crop with object-fit: cover on a 9:1 box instead of rendering the whole
+ * (mostly transparent) square. Served straight from /public — no proxy.
+ */
+function TkocLogo({ className = '' }: { className?: string }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src="/images/tkoc-logo-full.png"
+      alt="The King of Content"
+      className={`block h-8 w-72 max-w-full object-cover object-center ${className}`}
+    />
+  )
+}
+
+function CoverBrandLogo({ src, name }: { src?: string | null; name: string }) {
+  const [error, setError] = useState(false)
+  const url = src ? proxyImg(src) : ''
+  if (!url || error) {
+    return (
+      <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-2xl border border-purple-100 bg-purple-50 dark:border-purple-900/50 dark:bg-purple-900/30">
+        <Building2 className="h-9 w-9 text-purple-600 dark:text-purple-400" />
+      </div>
+    )
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt={name}
+      className="h-20 w-20 shrink-0 rounded-2xl border border-gray-200 bg-white object-contain p-2 dark:border-gray-700"
+      onError={() => setError(true)}
+    />
+  )
+}
+
 function StatCard({
   icon: Icon,
   label,
@@ -267,6 +314,14 @@ function formatDate(value?: string | null): string {
   const d = new Date(value)
   if (isNaN(d.getTime())) return ''
   return d.toLocaleDateString('es-ES')
+}
+
+/** "3 de septiembre de 2026" — for the cover, where there is room */
+function formatLongDate(value?: string | Date | null): string {
+  if (!value) return ''
+  const d = value instanceof Date ? value : new Date(value)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
 }
 
 // ---------------------------------------------------------------------------
@@ -482,6 +537,18 @@ export function CampaignReport({
   // API never does — brands must never see fees/CPM).
   const showCpm = !isPortal && report.creators.some(c => c.fee !== null)
 
+  // Cover data — brand is optional (falls back to campaign name only)
+  const brandName = campaign.brand?.name?.trim() || ''
+  const coverStart = formatLongDate(campaign.startDate)
+  const coverEnd = formatLongDate(campaign.endDate)
+  const coverDateRange = coverStart
+    ? (coverEnd ? `${coverStart} — ${coverEnd}` : `Desde el ${coverStart} · en curso`)
+    : (coverEnd ? `Hasta el ${coverEnd}` : '')
+  const generatedOn = formatLongDate(new Date())
+  const platformsLabel = (campaign.platforms || [])
+    .map(p => p.charAt(0) + p.slice(1).toLowerCase())
+    .join(' · ')
+
   return (
     <div id="campaign-report" className="space-y-6">
       {/* Print styles: hide app chrome, white background, avoid card splits */}
@@ -499,11 +566,102 @@ export function CampaignReport({
           }
           .print-keep { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
           .print-card { break-inside: avoid; page-break-inside: avoid; }
+          /* Cover = page 1: fill the sheet (92vh leaves slack so it never
+             spills into a blank page 2), then force a page break. */
+          .print-cover {
+            min-height: 92vh;
+            break-after: page;
+            page-break-after: always;
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+          }
           @page { margin: 12mm; }
         }
       `}</style>
 
-      {/* 1. Header */}
+      {/* 0. Actions — screen only, never printed */}
+      <div className="no-print flex items-center justify-end gap-3 print:hidden">
+        <Link href={resolvedBackHref}>
+          <Button variant="secondary" size="sm">
+            <ArrowLeft className="h-4 w-4" />
+            Volver
+          </Button>
+        </Link>
+        <Button variant="primary" size="sm" onClick={() => window.print()}>
+          <Printer className="h-4 w-4" />
+          Exportar PDF
+        </Button>
+      </div>
+
+      {/* 1. Cover — TKOC standard: page 1 of the PDF, tall hero on screen.
+          Same markup for dashboard and portal. */}
+      <section
+        aria-label="Portada del informe"
+        className="print-cover relative flex min-h-[70vh] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white p-8 shadow-sm sm:p-12 dark:border-gray-700 dark:bg-gray-900"
+      >
+        {/* Purple accent stripe — kept in print */}
+        <div
+          aria-hidden="true"
+          className="print-keep absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-purple-700 via-purple-500 to-purple-300"
+        />
+        {/* Soft glow — screen only */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-24 -top-24 h-80 w-80 rounded-full bg-purple-200/40 blur-3xl print:hidden dark:bg-purple-700/15"
+        />
+
+        {/* Top: agency wordmark */}
+        <div className="relative">
+          <TkocLogo />
+        </div>
+
+        {/* Middle: brand, campaign, report kind, period */}
+        <div className="relative flex flex-1 flex-col justify-center py-14">
+          {brandName && (
+            <div className="mb-8 flex items-center gap-4">
+              <CoverBrandLogo src={campaign.brand?.logo} name={brandName} />
+              <div className="min-w-0">
+                <p className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                  Marca
+                </p>
+                <p className="truncate text-xl font-semibold text-gray-900 dark:text-gray-100">
+                  {brandName}
+                </p>
+              </div>
+            </div>
+          )}
+          <h1 className="text-4xl font-bold leading-tight tracking-tight text-gray-900 sm:text-5xl dark:text-gray-100">
+            {campaign.name || 'Campaña'}
+          </h1>
+          <p className="print-keep mt-3 text-xl font-medium text-purple-600 dark:text-purple-400">
+            Informe de resultados
+          </p>
+          {(coverDateRange || platformsLabel) && (
+            <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-600 dark:text-gray-300">
+              {coverDateRange && (
+                <span className="inline-flex items-center gap-2">
+                  <CalendarDays className="h-4 w-4 shrink-0 text-purple-600 dark:text-purple-400" />
+                  {coverDateRange}
+                </span>
+              )}
+              {platformsLabel && <span>{platformsLabel}</span>}
+            </div>
+          )}
+        </div>
+
+        {/* Bottom: provenance */}
+        <div className="relative flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 pt-5 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
+          <span>Generado el {generatedOn}</span>
+          <span>
+            Elaborado por{' '}
+            <span className="font-semibold text-gray-900 dark:text-gray-100">The King of Content</span>
+          </span>
+        </div>
+      </section>
+
+      {/* 1b. Header — compact running header for page 2 onwards */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex flex-wrap items-center gap-3">
@@ -529,18 +687,6 @@ export function CampaignReport({
             <span>&middot;</span>
             <span>Generado el {new Date().toLocaleDateString('es-ES')}</span>
           </div>
-        </div>
-        <div className="no-print flex items-center gap-3 print:hidden">
-          <Link href={resolvedBackHref}>
-            <Button variant="secondary" size="sm">
-              <ArrowLeft className="h-4 w-4" />
-              Volver
-            </Button>
-          </Link>
-          <Button variant="primary" size="sm" onClick={() => window.print()}>
-            <Printer className="h-4 w-4" />
-            Exportar PDF
-          </Button>
         </div>
       </div>
 

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { Platform } from '@/generated/prisma/client'
 import { scrapeProfile, isApifyConfigured, isApifyExhausted, getApifyResumeDate } from '@/lib/apify'
+import { ensureContact } from '@/lib/contacts'
 
 export async function POST(request: NextRequest) {
   try {
@@ -121,6 +122,9 @@ export async function POST(request: NextRequest) {
             },
           })
 
+          // Every analyzed influencer becomes a Contact of the user who analyzed it
+          await ensureContact(influencer.id, session.id)
+
           // Save recent posts as media records
           let savedMediaCount = 0
           for (const post of scraped.recentPosts) {
@@ -220,6 +224,7 @@ export async function POST(request: NextRequest) {
 
     // If we have existing data (even if scraping failed), return it
     if (existing) {
+      await ensureContact(existing.id, session.id)
       return NextResponse.json({
         influencer: existing,
         analyzed: true,
@@ -241,6 +246,8 @@ export async function POST(request: NextRequest) {
         _count: { select: { campaigns: true, media: true } },
       },
     })
+
+    await ensureContact(newInfluencer.id, session.id)
 
     return NextResponse.json({
       influencer: newInfluencer,
