@@ -86,11 +86,16 @@ async function graphFetch<T>(path: string, opts: GraphFetchOpts = {}): Promise<T
     url.searchParams.set(k, String(v))
   }
 
+  // One timer covers headers AND body: /tags has been seen sending 200 + a
+  // partial body and then stalling, which the headers-only abort would miss
+  // (undici's own bodyTimeout only kicks in after 300s of silence).
   let res: Response
+  let text: string
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), GRAPH_TIMEOUT_MS)
   try {
     res = await fetch(url.toString(), { method, signal: ac.signal })
+    text = await res.text()
   } catch (err) {
     const aborted = err instanceof Error && err.name === 'AbortError'
     throw new MetaApiError(
@@ -104,7 +109,6 @@ async function graphFetch<T>(path: string, opts: GraphFetchOpts = {}): Promise<T
     clearTimeout(timer)
   }
 
-  const text = await res.text()
   if (!res.ok) {
     // Do NOT log the URL or tokens. Just path + status.
     throw new MetaApiError(
