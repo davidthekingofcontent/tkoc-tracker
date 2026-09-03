@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { findMediaBySameLink } from '@/lib/campaign-capture'
 import { isApifyConfiguredAsync } from '@/lib/apify'
 import { fetchProfile } from '@/lib/platform-client'
 import { isYouTubeApiConfigured } from '@/lib/youtube-api'
@@ -154,6 +155,29 @@ export async function GET(request: NextRequest) {
             }
 
             try {
+              // Same post already stored via the Meta Graph API (different
+              // externalId)? Attach/refresh that row instead of creating a twin.
+              const twin = await findMediaBySameLink(inf.platform, post.permalink)
+              if (twin) {
+                if (twin.campaignId && twin.campaignId !== campaignId) continue
+                await prisma.media.update({
+                  where: { id: twin.id },
+                  data: {
+                    likes: Math.max(twin.likes, post.likes),
+                    comments: Math.max(twin.comments, post.comments),
+                    shares: post.shares,
+                    saves: post.saves,
+                    views: post.views,
+                    ...(post.caption ? { caption: post.caption } : {}),
+                    ...(post.thumbnailUrl ? { thumbnailUrl: post.thumbnailUrl } : {}),
+                    ...(post.mediaUrl ? { mediaUrl: post.mediaUrl } : {}),
+                    hashtags: post.hashtags,
+                    mentions: post.mentions,
+                    campaignId,
+                  },
+                })
+                continue
+              }
               await prisma.media.create({
                 data: {
                   externalId: post.externalId,

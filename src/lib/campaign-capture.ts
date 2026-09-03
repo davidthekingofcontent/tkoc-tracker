@@ -187,6 +187,36 @@ type ClaimDecision = 'create' | 'claim' | 'refresh' | 'skip'
  *   refresh → ours, but manual: refresh metrics only, keep source/campaign
  *   skip    → held by another campaign, or manual content of another campaign
  */
+/**
+ * Instagram shortcode from any permalink variant (/p/, /reel/, /tv/). The same
+ * post gets a different externalId from Apify (numeric pk) and from the Meta
+ * Graph API (media id), so externalId alone cannot dedupe across sources —
+ * the shortcode in the permalink is the only shared key.
+ */
+export function instagramShortcode(permalink: string | null | undefined): string | null {
+  if (!permalink) return null
+  const m = permalink.match(/\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]{5,})/)
+  return m ? m[1] : null
+}
+
+/**
+ * Existing Media row for the same post found via a different source (e.g. a
+ * meta_api row materialized before Apify saw the post). Instagram only — other
+ * platforms share ids across sources.
+ */
+export async function findMediaBySameLink(
+  platform: Platform,
+  permalink: string | null | undefined
+): Promise<{ id: string; externalId: string | null; campaignId: string | null; source: string; likes: number; comments: number } | null> {
+  if (platform !== 'INSTAGRAM') return null
+  const code = instagramShortcode(permalink)
+  if (!code) return null
+  return prisma.media.findFirst({
+    where: { platform, permalink: { contains: `/${code}` } },
+    select: { id: true, externalId: true, campaignId: true, source: true, likes: true, comments: true },
+  })
+}
+
 async function decideClaim(
   externalId: string,
   platform: Platform,
@@ -247,7 +277,34 @@ export async function upsertCampaignPost(
           },
         })
         return true
-      case 'create':
+      case 'create': {
+        // Same post already stored under another source's externalId (Meta
+        // materialized it first)? Upgrade that row instead of creating a twin
+        // that would double-count in the campaign.
+        const twin = await findMediaBySameLink(platform, post.permalink)
+        if (twin) {
+          if (twin.source === 'manual') return twin.campaignId === campaignId
+          if (twin.campaignId && twin.campaignId !== campaignId) return false
+          await prisma.media.update({
+            where: { id: twin.id },
+            data: {
+              // Apify's public counts can be fresher than a stale Meta sync
+              likes: Math.max(twin.likes, post.likes),
+              comments: Math.max(twin.comments, post.comments),
+              shares: post.shares,
+              saves: post.saves,
+              views: post.views,
+              ...(post.caption ? { caption: post.caption } : {}),
+              ...(post.hashtags?.length ? { hashtags: post.hashtags } : {}),
+              ...(post.mentions?.length ? { mentions: post.mentions } : {}),
+              ...(post.thumbnailUrl ? { thumbnailUrl: post.thumbnailUrl } : {}),
+              ...(post.mediaUrl ? { mediaUrl: post.mediaUrl } : {}),
+              ...(toDate(post.postedAt) ? { postedAt: toDate(post.postedAt) } : {}),
+              campaignId,
+            },
+          })
+          return true
+        }
         await prisma.media.create({
           data: {
             externalId: post.externalId,
@@ -267,6 +324,7 @@ export async function upsertCampaignPost(
           },
         })
         return true
+      }
     }
   } catch (err) {
     // A concurrent pass created the row between our lookup and the create:
