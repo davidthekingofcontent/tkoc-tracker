@@ -40,11 +40,11 @@ export async function POST(
   }
 
   // Same as the cron: push freshly-synced Meta content into every ACTIVE
-  // campaign of the connection owner, so a manual "Sincronizar" is enough for
-  // tagged posts to show up in campaigns without waiting for the next cron.
+  // campaign of the agency, so a manual "Sincronizar" is enough for tagged
+  // posts to show up in campaigns without waiting for the next cron.
   let materialized = { created: 0, updated: 0, campaigns: 0 }
-  if (connection.userId) {
-    const campaignIds = await listCampaignsForMaterialize([connection.userId])
+  {
+    const campaignIds = await listCampaignsForMaterialize()
     for (const campaignId of campaignIds) {
       try {
         const m = await materializeMetaContent(campaignId)

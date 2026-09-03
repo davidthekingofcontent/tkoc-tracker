@@ -61,10 +61,11 @@ export async function GET(request: NextRequest) {
   }
 
   // Materialize freshly-synced Meta content into every ACTIVE campaign of the
-  // synced users, so it flows into campaign metrics without manual tracking.
+  // agency (PMs create the monthly campaigns; the brand connection belongs to
+  // the owner), so it flows into campaign metrics without manual tracking.
   let materialized = { created: 0, updated: 0 }
   if (syncedUserIds.size > 0) {
-    const campaignIds = await listCampaignsForMaterialize(Array.from(syncedUserIds))
+    const campaignIds = await listCampaignsForMaterialize()
     for (const campaignId of campaignIds) {
       try {
         const m = await materializeMetaContent(campaignId)

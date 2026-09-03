@@ -99,7 +99,7 @@ export async function POST(
           platform: 'INSTAGRAM',
           tokenType: 'brand',
           isValid: true,
-          userId: campaign.userId,
+          // agency-wide: PM campaigns must use the owner's brand connection
         },
         select: { id: true },
       })

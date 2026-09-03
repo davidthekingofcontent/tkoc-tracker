@@ -15,16 +15,17 @@ import { isWithinCampaignDates } from '@/lib/campaign-capture'
  *   post, the row is upgraded in place with Meta's real metrics.
  */
 /**
- * ACTIVE campaigns of the given owners in materialization order: the most
+ * ACTIVE campaigns in materialization order: the most
  * specific campaign (shortest date window) first, "always on" (no end date)
  * last. A Media row belongs to ONE campaign and is never moved, so when a
  * creator sits in both a monthly campaign and an annual/always-on one, the
  * monthly campaign must get the first claim on their post.
  */
-export async function listCampaignsForMaterialize(userIds: string[]): Promise<string[]> {
-  if (userIds.length === 0) return []
+export async function listCampaignsForMaterialize(): Promise<string[]> {
+  // All ACTIVE campaigns of the agency, whoever created them (see brandTokens
+  // note in materializeMetaContent).
   const rows = await prisma.campaign.findMany({
-    where: { userId: { in: userIds }, status: 'ACTIVE' },
+    where: { status: 'ACTIVE' },
     select: { id: true, startDate: true, endDate: true, createdAt: true },
   })
   const span = (c: { startDate: Date | null; endDate: Date | null }) =>
@@ -51,8 +52,12 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
   }
   if (igMembers.size === 0) return stats
 
+  // Brand connections are AGENCY-wide: the Vileda account was connected by
+  // the owner, but the monthly campaigns are created by the project managers
+  // (other users). Scoping tokens by campaign.userId left every PM campaign
+  // without Meta content.
   const brandTokens = await prisma.socialToken.findMany({
-    where: { platform: 'INSTAGRAM', tokenType: 'brand', userId: campaign.userId },
+    where: { platform: 'INSTAGRAM', tokenType: 'brand', isValid: true },
     select: { id: true },
   })
   if (brandTokens.length === 0) return stats
