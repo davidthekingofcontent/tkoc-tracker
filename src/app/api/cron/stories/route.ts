@@ -59,8 +59,10 @@ export async function GET(request: NextRequest) {
         influencers: {
           // Stories are scraped with a PAY-PER-STORY actor, so only creators the
           // PM has CONFIRMED (Acordado or later) are scanned. Posts still follow
-          // plain membership. Real-time story @mentions also arrive for free via
-          // the Meta webhook (/api/meta/webhooks/instagram) regardless of status.
+          // plain membership. Story @mentions of the brand also arrive in real
+          // time through the Instagram Messaging webhook (story_mention) for
+          // creators of any status, once the brand's Instagram allows message
+          // access to the app.
           where: {
             status: { in: ['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'] },
           },

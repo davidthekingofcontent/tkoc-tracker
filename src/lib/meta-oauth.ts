@@ -162,8 +162,14 @@ export const META_BRAND_SCOPES = [
   'pages_show_list',
   'pages_read_engagement',
   // Lets us subscribe the brand's Page to the app (POST /{page-id}/subscribed_apps),
-  // which Meta requires before it delivers Instagram webhooks (story @mentions).
+  // which Meta requires before it delivers Instagram webhooks.
   'pages_manage_metadata',
+  // Story @mentions are delivered ONLY through the Instagram Messaging webhook
+  // (`messages` field, attachment type story_mention) — the `mentions` field and
+  // mentioned_media do not cover stories ("Mentions on Stories are not
+  // supported"). Reading those messages and resolving the sender's username
+  // needs instagram_manage_messages.
+  'instagram_manage_messages',
   'business_management',
 ]
 

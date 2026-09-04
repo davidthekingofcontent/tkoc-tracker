@@ -1,24 +1,39 @@
 /**
- * Meta Webhooks — Instagram object (story/post @mentions of the brand).
+ * Meta Webhooks — Instagram object.
  *
  * GET  → subscription verification handshake (hub.mode / hub.verify_token / hub.challenge)
- * POST → signed notifications. We only act on the `mentions` field: Meta
- *        sends { media_id } (plus comment_id for comment mentions). We fetch the
- *        mentioned media through the brand's own IG id (mentioned_media), store
- *        it as MetaMedia/MetaStoryMention with the creator as igUsername and the
- *        brand handle in mentions, and materialize it into every campaign whose
- *        rules it satisfies. This is how a creator's STORY mentioning @vileda.es
- *        reaches the campaign in real time and for free (no Apify).
+ * POST → signed notifications. What we act on:
+ *
+ *   • `messaging[]` entries whose message carries a `story_mention` attachment
+ *     (Instagram Messaging webhook, field `messages`): a creator @mentioned the
+ *     brand in a STORY. Meta gives the story CDN url and the creator's IGSID;
+ *     we resolve the username, store a STORY MetaMedia row (creator as
+ *     igUsername, url only — Meta forbids caching the media itself) and
+ *     attribute it to the campaigns where the creator is a member, the date is
+ *     inside the window and the brand is a target. This is the ONLY real-time
+ *     story path: `mentioned_media` says "Mentions on Stories are not supported".
+ *
+ *   • `changes[]` with field `mentions` (caption/comment @mentions on feed
+ *     posts): IGNORED on purpose. Comment mentions are written by anyone (not
+ *     the post owner) and would let any Instagram user inject a member's post
+ *     into a campaign; caption mentions of members are already captured by the
+ *     Apify profile pass and cannot be deduped here (mentioned_media has no
+ *     permalink). Logged only.
+ *
+ * Meta wants a fast 2xx and retries otherwise, so the response is sent right
+ * after signature verification and the work runs in `after()`.
  *
  * Env: META_APP_SECRET (signature), META_WEBHOOK_VERIFY_TOKEN (handshake).
  */
 
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { createHmac, timingSafeEqual } from 'crypto'
 import { prisma } from '@/lib/db'
 import { decrypt } from '@/lib/encryption'
-import { getMentionedMedia } from '@/lib/meta-api'
-import { materializeMetaContent, listCampaignsForMaterialize } from '@/lib/meta-materialize'
+import { getIgsidProfile } from '@/lib/meta-api'
+import { materializeMetaContent } from '@/lib/meta-materialize'
+
+export const dynamic = 'force-dynamic'
 
 export async function GET(request: NextRequest) {
   const url = request.nextUrl
@@ -32,22 +47,122 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ error: 'Verification failed' }, { status: 403 })
 }
 
-interface WebhookChange {
-  field?: string
-  value?: { media_id?: string; comment_id?: string; [k: string]: unknown }
+interface StoryMentionEvent {
+  brandIgId: string
+  senderIgsid: string
+  messageId: string
+  storyUrl: string
+  timestamp: Date
 }
+
 interface WebhookEntry {
   id?: string
   time?: number
-  changes?: WebhookChange[]
+  changes?: Array<{ field?: string; value?: { media_id?: string; comment_id?: string } }>
+  messaging?: Array<{
+    sender?: { id?: string }
+    recipient?: { id?: string }
+    timestamp?: number
+    message?: {
+      mid?: string
+      is_echo?: boolean
+      attachments?: Array<{ type?: string; payload?: { url?: string } }>
+    }
+  }>
 }
 
 function verifySignature(rawBody: string, header: string | null, appSecret: string): boolean {
   if (!header || !header.startsWith('sha256=')) return false
-  const received = Buffer.from(header.slice(7), 'hex')
+  let received: Buffer
+  try { received = Buffer.from(header.slice(7), 'hex') } catch { return false }
   const expected = createHmac('sha256', appSecret).update(rawBody, 'utf8').digest()
   if (received.length !== expected.length) return false
   try { return timingSafeEqual(received, expected) } catch { return false }
+}
+
+function extractStoryMentions(entries: WebhookEntry[]): StoryMentionEvent[] {
+  const out: StoryMentionEvent[] = []
+  for (const entry of entries) {
+    for (const m of entry.messaging ?? []) {
+      if (m.message?.is_echo) continue // our own outgoing messages
+      const brandIgId = m.recipient?.id || entry.id
+      const senderIgsid = m.sender?.id
+      const mid = m.message?.mid
+      if (!brandIgId || !senderIgsid || !mid) continue
+      for (const a of m.message?.attachments ?? []) {
+        if (a.type !== 'story_mention' || !a.payload?.url) continue
+        out.push({
+          brandIgId,
+          senderIgsid,
+          messageId: mid,
+          storyUrl: a.payload.url,
+          timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+        })
+      }
+    }
+  }
+  return out
+}
+
+async function handleStoryMention(ev: StoryMentionEvent): Promise<void> {
+  const token = await prisma.socialToken.findFirst({
+    where: { platform: 'INSTAGRAM', tokenType: 'brand', isValid: true, platformUserId: ev.brandIgId },
+  })
+  if (!token) { console.warn(`[Meta/Webhook] story mention for unknown brand IG id ${ev.brandIgId}`); return }
+  const pageToken = decrypt(token.accessToken)
+
+  const profile = await getIgsidProfile(ev.senderIgsid, pageToken)
+  const creator = (profile?.username || '').toLowerCase().replace(/^@/, '')
+  if (!creator) { console.warn(`[Meta/Webhook] could not resolve username for IGSID ${ev.senderIgsid}`); return }
+
+  // Only creators we know (members of some campaign) are worth a row; the
+  // attribution below re-checks membership per campaign anyway.
+  const influencer = await prisma.influencer.findFirst({
+    where: { platform: 'INSTAGRAM', username: { equals: creator, mode: 'insensitive' } },
+    select: { id: true },
+  })
+  if (!influencer) { console.log(`[Meta/Webhook] @${creator} mentioned the brand in a story but is not in the database — ignored`); return }
+
+  const igMediaId = `story_mention_${ev.messageId}`
+  await prisma.metaMedia.upsert({
+    where: { socialTokenId_igMediaId: { socialTokenId: token.id, igMediaId } },
+    create: {
+      socialTokenId: token.id,
+      igMediaId,
+      mediaType: 'STORY',
+      igUsername: creator,
+      caption: null,
+      mediaUrl: ev.storyUrl,
+      thumbnailUrl: ev.storyUrl,
+      permalink: `https://www.instagram.com/stories/${creator}/`,
+      postedAt: ev.timestamp,
+      likeCount: 0,
+      commentsCount: 0,
+      lastSyncedAt: new Date(),
+    },
+    update: { igUsername: creator, mediaUrl: ev.storyUrl, thumbnailUrl: ev.storyUrl, postedAt: ev.timestamp, lastSyncedAt: new Date() },
+  })
+  await prisma.metaStoryMention.upsert({
+    where: { socialTokenId_mentionMediaId: { socialTokenId: token.id, mentionMediaId: igMediaId } },
+    create: { socialTokenId: token.id, mentionMediaId: igMediaId, mentionUsername: creator, mentionedAt: ev.timestamp, matchedCreatorId: influencer.id },
+    update: { mentionUsername: creator, mentionedAt: ev.timestamp, matchedCreatorId: influencer.id },
+  })
+
+  // Attribute only in the campaigns this creator belongs to (rules re-checked inside).
+  const memberships = await prisma.campaignInfluencer.findMany({
+    where: { influencerId: influencer.id, campaign: { status: 'ACTIVE' } },
+    select: { campaignId: true },
+  })
+  let created = 0
+  for (const { campaignId } of memberships) {
+    try {
+      const r = await materializeMetaContent(campaignId)
+      created += r.created
+    } catch (err) {
+      console.error(`[Meta/Webhook] materialize ${campaignId} failed:`, err instanceof Error ? err.message : err)
+    }
+  }
+  console.log(`[Meta/Webhook] story mention by @${creator} → ${memberships.length} campaign(s) checked, ${created} row(s) created`)
 }
 
 export async function POST(request: NextRequest) {
@@ -64,82 +179,22 @@ export async function POST(request: NextRequest) {
   try { payload = JSON.parse(rawBody) } catch { return NextResponse.json({ error: 'Bad JSON' }, { status: 400 }) }
   if (payload.object !== 'instagram') return NextResponse.json({ ok: true, ignored: payload.object })
 
-  let handled = 0
-  const touchedTokenUsers = new Set<string>()
-  for (const entry of payload.entry ?? []) {
-    const igId = entry.id
-    if (!igId) continue
-    for (const change of entry.changes ?? []) {
-      if (change.field !== 'mentions') continue
-      const mediaId = change.value?.media_id
-      if (!mediaId) continue
-      try {
-        const token = await prisma.socialToken.findFirst({
-          where: { platform: 'INSTAGRAM', tokenType: 'brand', isValid: true, platformUserId: igId },
-        })
-        if (!token) { console.warn(`[Meta/Webhook] mention for unknown IG id ${igId}`); continue }
-        const snap = await prisma.metaAccountSnapshot.findFirst({
-          where: { socialTokenId: token.id }, orderBy: { capturedAt: 'desc' }, select: { igUsername: true },
-        })
-        const brandHandle = (snap?.igUsername || '').toLowerCase().replace(/^@/, '')
-        const pageToken = decrypt(token.accessToken)
-        const media = await getMentionedMedia(igId, pageToken, mediaId)
-        if (!media) { console.warn(`[Meta/Webhook] mentioned_media ${mediaId} not readable`); continue }
-        const creator = (media.username || '').toLowerCase().replace(/^@/, '')
-        if (!creator) continue
-        const postedAt = media.timestamp ? new Date(media.timestamp) : new Date()
-        const mediaType = (media.media_type || 'STORY').toUpperCase()
-
-        await prisma.metaMedia.upsert({
-          where: { socialTokenId_igMediaId: { socialTokenId: token.id, igMediaId: media.id } },
-          create: {
-            socialTokenId: token.id,
-            igMediaId: media.id,
-            mediaType,
-            igUsername: creator,
-            caption: media.caption ?? null,
-            mediaUrl: media.media_url ?? null,
-            thumbnailUrl: media.media_url ?? null,
-            permalink: mediaType === 'STORY' ? `https://www.instagram.com/stories/${creator}/` : null,
-            postedAt,
-            likeCount: media.like_count ?? 0,
-            commentsCount: media.comments_count ?? 0,
-            lastSyncedAt: new Date(),
-          },
-          update: {
-            igUsername: creator,
-            caption: media.caption ?? null,
-            mediaUrl: media.media_url ?? null,
-            postedAt,
-            lastSyncedAt: new Date(),
-          },
-        })
-        await prisma.metaStoryMention.upsert({
-          where: { socialTokenId_mentionMediaId: { socialTokenId: token.id, mentionMediaId: media.id } },
-          create: { socialTokenId: token.id, mentionMediaId: media.id, mentionUsername: creator, mentionedAt: postedAt },
-          update: { mentionUsername: creator, mentionedAt: postedAt },
-        })
-        handled++
-        if (token.userId) touchedTokenUsers.add(token.userId)
-        console.log(`[Meta/Webhook] @${creator} mentioned @${brandHandle} in ${mediaType} ${media.id}`)
-      } catch (err) {
-        console.error('[Meta/Webhook] mention handling failed:', err instanceof Error ? err.message : err)
-      }
-    }
+  const entries = payload.entry ?? []
+  const storyMentions = extractStoryMentions(entries)
+  const ignoredMentionChanges = entries.reduce((n, e) => n + (e.changes ?? []).filter(c => c.field === 'mentions').length, 0)
+  if (ignoredMentionChanges > 0) {
+    console.log(`[Meta/Webhook] ${ignoredMentionChanges} feed/comment mention change(s) ignored (not attributed by design)`)
   }
 
-  // Attribute right away: the mention only counts in campaigns where the
-  // creator is a member, the date is inside the window and the brand is a target.
-  if (handled > 0) {
-    try {
-      const campaignIds = await listCampaignsForMaterialize()
-      for (const id of campaignIds) {
-        await materializeMetaContent(id).catch(err => console.error(`[Meta/Webhook] materialize ${id} failed:`, err instanceof Error ? err.message : err))
+  if (storyMentions.length > 0) {
+    after(async () => {
+      for (const ev of storyMentions) {
+        try { await handleStoryMention(ev) } catch (err) {
+          console.error('[Meta/Webhook] story mention failed:', err instanceof Error ? err.message : err)
+        }
       }
-    } catch (err) {
-      console.error('[Meta/Webhook] materialize pass failed:', err instanceof Error ? err.message : err)
-    }
+    })
   }
 
-  return NextResponse.json({ ok: true, handled })
+  return NextResponse.json({ ok: true, storyMentions: storyMentions.length, ignored: ignoredMentionChanges })
 }

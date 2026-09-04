@@ -712,6 +712,27 @@ export async function subscribePageToApp(pageId: string, pageToken: string, fiel
   return !!res.success
 }
 
+/**
+ * Profile of an Instagram-scoped user id (IGSID) as seen from the Messaging
+ * API — the `sender.id` of a message / story_mention webhook. Needs
+ * instagram_manage_messages. Returns null when Meta refuses (private account
+ * that does not follow the brand, or missing permission).
+ */
+export async function getIgsidProfile(
+  igsid: string,
+  token: string
+): Promise<{ username?: string; name?: string; profile_pic?: string } | null> {
+  try {
+    return await graphFetch<{ username?: string; name?: string; profile_pic?: string }>(`/${igsid}`, {
+      accessToken: token,
+      params: { fields: 'name,username,profile_pic' },
+    })
+  } catch (err) {
+    if (err instanceof MetaApiError && (err.status === 400 || err.status === 403 || err.status === 404)) return null
+    throw err
+  }
+}
+
 // ============ DELETION ============
 
 /**
