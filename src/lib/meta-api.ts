@@ -651,6 +651,67 @@ export function isPermissionError(err: MetaApiError): boolean {
   }
 }
 
+// ============ MENTIONS (webhook follow-up) ============
+
+export interface MentionedMedia {
+  id: string
+  media_type?: string
+  media_url?: string
+  caption?: string
+  timestamp?: string
+  username?: string
+  owner?: { id: string }
+  like_count?: number
+  comments_count?: number
+}
+
+/**
+ * The media (story, post or reel) in which the IG Business account was
+ * @mentioned. Only reachable by media id, which the `mentions` webhook
+ * delivers — there is no listing endpoint. Requires instagram_manage_comments.
+ */
+export async function getMentionedMedia(
+  igBusinessId: string,
+  token: string,
+  mediaId: string
+): Promise<MentionedMedia | null> {
+  try {
+    const res = await graphFetch<{ mentioned_media?: MentionedMedia; id?: string }>(`/${igBusinessId}`, {
+      accessToken: token,
+      params: {
+        fields: `mentioned_media.media_id(${mediaId}){id,media_type,media_url,caption,timestamp,username,owner,like_count,comments_count}`,
+      },
+    })
+    return res.mentioned_media ?? null
+  } catch (err) {
+    if (err instanceof MetaApiError && (err.status === 400 || err.status === 404)) return null
+    throw err
+  }
+}
+
+/** Page fields the brand's Page is subscribed to for this app (needs pages_manage_metadata). */
+export async function getPageSubscribedApps(pageId: string, pageToken: string): Promise<Array<{ id: string; name?: string; subscribed_fields?: string[] }>> {
+  const res = await graphFetch<{ data?: Array<{ id: string; name?: string; subscribed_fields?: string[] }> }>(`/${pageId}/subscribed_apps`, {
+    accessToken: pageToken,
+  })
+  return res.data ?? []
+}
+
+/**
+ * Install the app on the brand's Page so Meta delivers Instagram webhooks for
+ * the linked IG Business account. `subscribed_fields` must name at least one
+ * Page field; the Instagram fields themselves (mentions, comments…) are chosen
+ * in the App Dashboard → Webhooks → Instagram.
+ */
+export async function subscribePageToApp(pageId: string, pageToken: string, fields: string[] = ['feed']): Promise<boolean> {
+  const res = await graphFetch<{ success?: boolean }>(`/${pageId}/subscribed_apps`, {
+    method: 'POST',
+    accessToken: pageToken,
+    params: { subscribed_fields: fields.join(',') },
+  })
+  return !!res.success
+}
+
 // ============ DELETION ============
 
 /**

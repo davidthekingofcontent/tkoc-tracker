@@ -14,6 +14,7 @@ export async function GET() {
     TOKEN_ENCRYPTION_KEY: !!process.env.TOKEN_ENCRYPTION_KEY,
     APIFY_API_KEY: !!process.env.APIFY_API_KEY,
     JWT_SECRET: !!process.env.JWT_SECRET,
+      META_WEBHOOK_VERIFY_TOKEN: !!process.env.META_WEBHOOK_VERIFY_TOKEN,
   }
 
   // Count Meta connections (no secrets, just counts)

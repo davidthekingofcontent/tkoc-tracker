@@ -161,6 +161,9 @@ export const META_BRAND_SCOPES = [
   'instagram_manage_comments',
   'pages_show_list',
   'pages_read_engagement',
+  // Lets us subscribe the brand's Page to the app (POST /{page-id}/subscribed_apps),
+  // which Meta requires before it delivers Instagram webhooks (story @mentions).
+  'pages_manage_metadata',
   'business_management',
 ]
 

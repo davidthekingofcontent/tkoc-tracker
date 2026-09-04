@@ -57,8 +57,13 @@ export async function GET(request: NextRequest) {
         startDate: true,
         endDate: true,
         influencers: {
-          // Rule (1) is MEMBERSHIP, same as posts — PMs rarely move statuses
-          // past Prospecto, so filtering by status silently captured nothing.
+          // Stories are scraped with a PAY-PER-STORY actor, so only creators the
+          // PM has CONFIRMED (Acordado or later) are scanned. Posts still follow
+          // plain membership. Real-time story @mentions also arrive for free via
+          // the Meta webhook (/api/meta/webhooks/instagram) regardless of status.
+          where: {
+            status: { in: ['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'] },
+          },
           select: {
             status: true,
             influencer: {
@@ -115,7 +120,8 @@ export async function GET(request: NextRequest) {
 
     const usernames = Array.from(usernameMap.values()).map(m => m.username)
     if (usernames.length === 0) {
-      return NextResponse.json({ message: 'No Instagram influencers in active campaigns with targets', storiesFound: 0 })
+      console.log('[Cron/Stories] No CONFIRMED (Acordado+) Instagram creators in live campaigns — nothing scraped (PMs must set the status)')
+      return NextResponse.json({ message: 'No confirmed Instagram creators (status Acordado or later) in live campaigns with targets', storiesFound: 0 })
     }
 
     console.log(`[Cron/Stories] Scraping stories for ${usernames.length} influencers across ${campaignsById.size} live campaigns (pay-per-story actor): ${usernames.join(', ')}`)
