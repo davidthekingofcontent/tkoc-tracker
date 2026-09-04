@@ -42,11 +42,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Apify monthly limit exhausted', storiesFound: 0 }, { status: 503 })
     }
 
-    // Find all active campaigns (ACTIVE or IN_PROGRESS)
+    // All ACTIVE campaigns, whatever their type: the rule is membership + brand
+    // tag + dates (the annual "contratos" campaign is Social Listening and must
+    // receive its members' stories too).
     const activeCampaigns = await prisma.campaign.findMany({
       where: {
         status: { in: ['ACTIVE'] },
-        type: { in: ['INFLUENCER_TRACKING', 'UGC'] },
       },
       select: {
         id: true,
