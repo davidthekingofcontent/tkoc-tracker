@@ -395,6 +395,7 @@ export default function PricingPage() {
           engagementRate: parseFloat(form.engagementRate) || 0,
           fee,
           format: form.format || undefined,
+          locale: locale === 'es' ? 'es' : 'en',
         }),
       })
 

@@ -3,13 +3,35 @@
  *
  * Evolves the CPM Calculator into a narrative-driven decision tool.
  * Instead of just showing if a CPM is green/yellow/red, it tells you:
- * - What this creator should cost based on their performance
- * - How the asked fee compares to market
+ * - What this creator should cost based on the market (p25/p50/p75/p90 per
+ *   platform × tier × format, from the shared benchmark config)
+ * - How the asked fee compares to that range, once market (country) and
+ *   commercial modifiers (rights, whitelisting, exclusivity…) are applied
  * - A specific recommendation with savings/overcost
- * - Context about WHY (engagement, views, tier position)
+ * - Context about WHY (views vs expected, tier position, CPM)
+ *
+ * Business rules (David + audit, 2026-09-04): followers only pick the tier;
+ * the fee is evaluated against the format's percentiles; modifiers apply on
+ * p50 additively and are shown itemized; the market multiplier scales by country.
  */
 
-import { calculateCPM, detectTier, type CPMResult, type Platform as CPMPlatform } from './cpm-calculator'
+import { calculateCPM, formatLabel, tierLabel, type CPMResult } from './cpm-calculator'
+import {
+  DEFAULT_BENCHMARKS,
+  applyModifiers,
+  detectTier,
+  getFeeRange,
+  normalizeFormat,
+  normalizePlatform,
+  type AppliedModifier,
+  type BenchmarkConfig,
+  type DealTerms,
+  type FeeFormat,
+  type FeeRange,
+  type PercentileLabels,
+  type Platform,
+  type Tier,
+} from './benchmarks'
 
 // ============ TYPES ============
 
@@ -21,115 +43,156 @@ export interface DealAdvisorInput {
   avgLikes: number
   avgComments: number
   engagementRate: number
-  askedFee: number           // What the creator is asking
+  askedFee: number           // What the creator is asking (for ONE piece of `format`)
   agreedFee?: number | null  // What was negotiated (if any)
-  format?: string            // reel, post, story, video, short
+  format?: string | null     // reel, post, story, video, integration, dedicated, short (normalized)
+  /** ISO-3166 alpha-2 country of the campaign/creator → market multiplier (ES = 1.0). */
+  country?: string | null
+  /** Commercial terms → modifiers applied on p50 (rights, whitelisting, exclusivity, urgency…). */
+  terms?: DealTerms | null
 }
+
+export interface DealAdvisorOptions {
+  config?: BenchmarkConfig
+  locale?: 'es' | 'en'
+}
+
+export type DealVerdict = 'excellent_deal' | 'fair_deal' | 'slightly_above' | 'overpriced' | 'way_overpriced'
+export type PercentileBand = 'p25' | 'p50' | 'p75' | 'p90' | 'above_p90'
+
+export interface PercentileRange { p25: number; p50: number; p75: number; p90: number }
 
 export interface DealAdvisorResult {
   // Core verdict
-  verdict: 'excellent_deal' | 'fair_deal' | 'slightly_above' | 'overpriced' | 'way_overpriced'
+  verdict: DealVerdict
   verdictSignal: 'green' | 'yellow' | 'red'
-  verdictLabel: string       // "Excellent Deal", "Overpriced", etc.
+  verdictLabel: string       // "Precio de mercado", "Caro", etc. (localized)
 
   // Pricing analysis
   askedFee: number
+  /** Recommended range = market range (p25–p75) × performance multiplier. */
   recommendedFeeMin: number
   recommendedFeeMax: number
+  /** Recommended target = p50 after market, modifiers and performance. */
+  recommendedFee: number
+  /** Market range p25 / p75 after market multiplier and modifiers (no performance adjustment). */
   marketRangeMin: number
   marketRangeMax: number
-  savingsOrOvercost: number  // positive = savings, negative = overcost
+  savingsOrOvercost: number  // positive = savings vs recommendedFee, negative = overcost
   savingsPercent: number
 
   // CPM data
   cpmReal: number
   cpmBenchmark: number | null
   cpmSignal: 'green' | 'yellow' | 'red' | 'gray'
-  tier: string
+  tier: Tier
 
   // Narrative
-  narrative: string           // Full paragraph explaining the deal
-  negotiationTip: string      // One-liner for negotiation
+  narrative: string           // Full paragraph explaining the deal (localized)
+  negotiationTip: string      // One-liner for negotiation (localized)
   narrativeKey: string        // i18n key
 
   // Underlying CPM result
   cpmResult: CPMResult
-}
 
-// ============ MARKET RANGES ============
-
-// Extended market ranges by platform × tier (€)
-// Format: [min, target, max, ceiling]
-const MARKET_RANGES: Record<string, Record<string, [number, number, number, number]>> = {
-  INSTAGRAM: {
-    NANO:  [50, 100, 200, 300],
-    MICRO: [150, 300, 500, 700],
-    MID:   [400, 700, 1200, 1800],
-    MACRO: [800, 1500, 2500, 4000],
-    MEGA:  [2000, 4000, 7000, 12000],
-  },
-  TIKTOK: {
-    NANO:  [30, 80, 150, 250],
-    MICRO: [100, 200, 400, 600],
-    MID:   [300, 600, 1000, 1500],
-    MACRO: [600, 1200, 2000, 3500],
-    MEGA:  [1500, 3000, 5500, 10000],
-  },
-  YOUTUBE: {
-    NANO:  [100, 200, 400, 600],
-    MICRO: [300, 500, 800, 1200],
-    MID:   [600, 1200, 2000, 3000],
-    MACRO: [1500, 3000, 5000, 8000],
-    MEGA:  [3000, 6000, 10000, 20000],
-  },
+  // ---- Benchmark context (added 2026-09) ----
+  locale: 'es' | 'en'
+  format: FeeFormat
+  country: string | null
+  /** Market multiplier applied (ES = 1.0). */
+  marketMultiplier: number
+  /** Seed range for platform × tier × format, market-scaled, BEFORE modifiers. */
+  seedRange: PercentileRange
+  /** Range after market multiplier and modifiers (the one the pricing scenarios use). */
+  marketRange: PercentileRange
+  /** Range after market, modifiers AND performance (the one the verdict uses). */
+  recommendedRange: PercentileRange
+  /** Itemized modifiers applied on p50 (e.g. "Derechos 30 días +20 %"). */
+  appliedModifiers: AppliedModifier[]
+  /** Sum of modifier shares (0.20 = +20 %). */
+  modifiersPct: number
+  /** p50 after market and modifiers — the reference price to negotiate around. */
+  referenceFee: number
+  /** Where the asked fee sits: ≤p25, ≤p50, ≤p75, ≤p90 or above (against recommendedRange). */
+  percentileBand: PercentileBand
+  /** Label of that band, from the config ("Buen precio", "Precio de mercado"…). */
+  percentileLabel: string
+  percentileLabels: PercentileLabels
+  /** avgViews ÷ expected views for the format, clamped 0.7–1.5. */
+  performanceMultiplier: number
+  benchmarkVersion: string
 }
 
 // ============ MAIN FUNCTION ============
 
-export function analyzeDeal(input: DealAdvisorInput): DealAdvisorResult {
-  const tier = detectTier(input.followers)
-  const platformKey = input.platform as CPMPlatform
+export function analyzeDeal(input: DealAdvisorInput, options: DealAdvisorOptions = {}): DealAdvisorResult {
+  const config = options.config ?? DEFAULT_BENCHMARKS
+  const locale: 'es' | 'en' = options.locale === 'en' ? 'en' : 'es'
+  const platform = normalizePlatform(input.platform)
+  const tier = detectTier(input.followers || 0)
+  const format = normalizeFormat(platform, input.format)
+  const country = input.country ? input.country.toUpperCase() : null
+  const labels = config.percentileLabels[locale] || DEFAULT_BENCHMARKS.percentileLabels[locale]
 
-  // Get CPM analysis
+  // 1. CPM analysis (fee ÷ median views of the format × 1000 vs format × tier thresholds)
   const cpmResult = calculateCPM({
-    platform: platformKey,
+    platform,
     followers: input.followers,
     avgViews: input.avgViews,
     fee: input.askedFee,
-  })
+    format,
+  }, locale, config)
 
-  // Get market range for this tier
-  const range = MARKET_RANGES[input.platform]?.[tier] || [100, 500, 1000, 2000]
-  const [rangeMin, rangeTarget, rangeMax, rangeCeiling] = range
+  // 2. Market range for platform × tier × format, scaled by country
+  const seed = getFeeRange(config, platform, tier, format, country)
+  const seedRange = toRange(seed.range)
 
-  // Adjust range based on actual performance
-  // If creator performs significantly above/below tier average, adjust
-  const performanceMultiplier = calculatePerformanceMultiplier(input)
-  const adjustedMin = Math.round(rangeMin * performanceMultiplier)
-  const adjustedMax = Math.round(rangeMax * performanceMultiplier)
+  // 3. Commercial modifiers on p50 (and the whole range scaled by the same share)
+  const mods = applyModifiers(seed.range[1], input.terms, config, locale)
+  const scale = 1 + mods.totalPct
+  const marketArr: FeeRange = [
+    Math.round(seed.range[0] * scale),
+    mods.fee,
+    Math.round(seed.range[2] * scale),
+    Math.round(seed.range[3] * scale),
+  ]
+  const marketRange = toRange(marketArr)
+  const referenceFee = mods.fee
 
-  // Determine verdict
-  const { verdict, verdictSignal, verdictLabel } = determineVerdict(
-    input.askedFee, adjustedMin, adjustedMax, rangeTarget * performanceMultiplier, rangeCeiling * performanceMultiplier
-  )
+  // 4. Performance: views vs what the format usually gets for this follower count
+  const performanceMultiplier = calculatePerformanceMultiplier(platform, format, input.followers, input.avgViews)
+  const recArr = marketArr.map(v => Math.round(v * performanceMultiplier)) as FeeRange
+  const recommendedRange = toRange(recArr)
 
-  // Calculate savings/overcost
-  const midPoint = Math.round((adjustedMin + adjustedMax) / 2)
-  const savingsOrOvercost = midPoint - input.askedFee
-  const savingsPercent = midPoint > 0 ? Math.round((savingsOrOvercost / midPoint) * 100) : 0
+  // 5. Verdict against the performance-adjusted percentiles
+  const { verdict, verdictSignal, band } = determineVerdict(input.askedFee, recArr)
+  const verdictLabel = VERDICT_LABELS[locale][verdict]
+  const percentileLabel = band === 'above_p90'
+    ? (locale === 'es' ? 'Fuera de mercado' : 'Out of market')
+    : labels[band]
 
-  // Generate narrative
-  const { narrative, negotiationTip, narrativeKey } = generateNarrative(input, verdict, tier, adjustedMin, adjustedMax, cpmResult)
+  // 6. Savings / overcost vs the recommended target (p50)
+  const recommendedFee = recArr[1]
+  const savingsOrOvercost = recommendedFee - input.askedFee
+  const savingsPercent = recommendedFee > 0 ? Math.round((savingsOrOvercost / recommendedFee) * 100) : 0
+
+  // 7. Narrative
+  const ctx: NarrativeContext = {
+    input, locale, verdict, tier, platform, format, recArr, marketArr, cpmResult,
+    performanceMultiplier, applied: mods.applied, marketMultiplier: seed.multiplier, country, labels,
+  }
+  const { narrative, negotiationTip, narrativeKey } = generateNarrative(ctx)
 
   return {
     verdict,
     verdictSignal,
     verdictLabel,
     askedFee: input.askedFee,
-    recommendedFeeMin: adjustedMin,
-    recommendedFeeMax: adjustedMax,
-    marketRangeMin: rangeMin,
-    marketRangeMax: rangeMax,
+    recommendedFeeMin: recArr[0],
+    recommendedFeeMax: recArr[2],
+    recommendedFee,
+    marketRangeMin: marketArr[0],
+    marketRangeMax: marketArr[2],
     savingsOrOvercost,
     savingsPercent,
     cpmReal: cpmResult.cpmReal || 0,
@@ -140,94 +203,197 @@ export function analyzeDeal(input: DealAdvisorInput): DealAdvisorResult {
     negotiationTip,
     narrativeKey,
     cpmResult,
+    locale,
+    format,
+    country,
+    marketMultiplier: seed.multiplier,
+    seedRange,
+    marketRange,
+    recommendedRange,
+    appliedModifiers: mods.applied,
+    modifiersPct: mods.totalPct,
+    referenceFee,
+    percentileBand: band,
+    percentileLabel,
+    percentileLabels: labels,
+    performanceMultiplier,
+    benchmarkVersion: config.version,
   }
 }
 
 // ============ HELPERS ============
 
-function calculatePerformanceMultiplier(input: DealAdvisorInput): number {
-  // If views are significantly above/below what's expected for follower count
-  if (input.followers <= 0 || input.avgViews <= 0) return 1.0
+function toRange(r: FeeRange): PercentileRange {
+  return { p25: r[0], p50: r[1], p75: r[2], p90: r[3] }
+}
 
-  const viewToFollowerRatio = input.avgViews / input.followers
+/** Expected views as a share of followers, per platform × format. */
+export const EXPECTED_VIEW_RATES: Record<Platform, Partial<Record<FeeFormat, number>> & { default: number }> = {
+  INSTAGRAM: { REEL: 0.20, POST: 0.10, STORY: 0.07, default: 0.20 },
+  TIKTOK: { VIDEO: 0.30, default: 0.30 },
+  YOUTUBE: { INTEGRATION: 0.10, DEDICATED: 0.10, SHORT: 0.10, default: 0.10 },
+}
 
-  // Expected ratios by platform
-  const expectedRatios: Record<string, number> = {
-    INSTAGRAM: 0.15,  // 15% of followers see content
-    TIKTOK: 0.30,     // TikTok has higher organic reach
-    YOUTUBE: 0.10,    // YouTube is more subscription-based
-  }
+export const PERFORMANCE_CLAMP: [number, number] = [0.7, 1.5]
 
-  const expected = expectedRatios[input.platform] || 0.15
-  const ratio = viewToFollowerRatio / expected
+/**
+ * avgViews ÷ (followers × expected rate), clamped to 0.7–1.5 so an outlier
+ * never moves the fee by more than ±50 % / −30 %.
+ */
+export function calculatePerformanceMultiplier(platform: Platform, format: FeeFormat, followers: number, avgViews: number): number {
+  if (!followers || followers <= 0 || !avgViews || avgViews <= 0) return 1.0
+  const rates = EXPECTED_VIEW_RATES[platform] || EXPECTED_VIEW_RATES.INSTAGRAM
+  const expected = rates[format] ?? rates.default
+  const ratio = (avgViews / followers) / expected
+  const clamped = Math.max(PERFORMANCE_CLAMP[0], Math.min(PERFORMANCE_CLAMP[1], ratio))
+  return Math.round(clamped * 100) / 100
+}
 
-  // Clamp multiplier: 0.6x to 1.8x
-  return Math.max(0.6, Math.min(1.8, ratio))
+const VERDICT_LABELS: Record<'es' | 'en', Record<DealVerdict, string>> = {
+  es: {
+    excellent_deal: 'Muy buen precio',
+    fair_deal: 'Precio de mercado',
+    slightly_above: 'Algo por encima del mercado',
+    overpriced: 'Caro',
+    way_overpriced: 'Muy caro',
+  },
+  en: {
+    excellent_deal: 'Excellent deal',
+    fair_deal: 'Fair deal',
+    slightly_above: 'Slightly above market',
+    overpriced: 'Overpriced',
+    way_overpriced: 'Way overpriced',
+  },
 }
 
 function determineVerdict(
-  fee: number, min: number, max: number, target: number, ceiling: number
-): { verdict: DealAdvisorResult['verdict']; verdictSignal: DealAdvisorResult['verdictSignal']; verdictLabel: string } {
-  if (fee <= min) {
-    return { verdict: 'excellent_deal', verdictSignal: 'green', verdictLabel: 'Excellent Deal' }
-  }
-  if (fee <= target) {
-    return { verdict: 'fair_deal', verdictSignal: 'green', verdictLabel: 'Fair Deal' }
-  }
-  if (fee <= max) {
-    return { verdict: 'slightly_above', verdictSignal: 'yellow', verdictLabel: 'Slightly Above Market' }
-  }
-  if (fee <= ceiling) {
-    return { verdict: 'overpriced', verdictSignal: 'red', verdictLabel: 'Overpriced' }
-  }
-  return { verdict: 'way_overpriced', verdictSignal: 'red', verdictLabel: 'Way Overpriced' }
+  fee: number, [p25, p50, p75, p90]: FeeRange
+): { verdict: DealVerdict; verdictSignal: DealAdvisorResult['verdictSignal']; band: PercentileBand } {
+  if (fee <= p25) return { verdict: 'excellent_deal', verdictSignal: 'green', band: 'p25' }
+  if (fee <= p50) return { verdict: 'fair_deal', verdictSignal: 'green', band: 'p50' }
+  if (fee <= p75) return { verdict: 'slightly_above', verdictSignal: 'yellow', band: 'p75' }
+  if (fee <= p90) return { verdict: 'overpriced', verdictSignal: 'red', band: 'p90' }
+  return { verdict: 'way_overpriced', verdictSignal: 'red', band: 'above_p90' }
 }
 
-function generateNarrative(
-  input: DealAdvisorInput,
-  verdict: string,
-  tier: string,
-  recMin: number,
-  recMax: number,
+interface NarrativeContext {
+  input: DealAdvisorInput
+  locale: 'es' | 'en'
+  verdict: DealVerdict
+  tier: Tier
+  platform: Platform
+  format: FeeFormat
+  recArr: FeeRange
+  marketArr: FeeRange
   cpmResult: CPMResult
-): { narrative: string; negotiationTip: string; narrativeKey: string } {
+  performanceMultiplier: number
+  applied: AppliedModifier[]
+  marketMultiplier: number
+  country: string | null
+  labels: PercentileLabels
+}
+
+const eur = (n: number) => `€${Math.round(n).toLocaleString()}`
+const pct = (p: number) => `${p > 0 ? '+' : ''}${Math.round(p * 100)} %`
+const PLATFORM_NAME: Record<Platform, string> = { INSTAGRAM: 'Instagram', TIKTOK: 'TikTok', YOUTUBE: 'YouTube' }
+
+function generateNarrative(ctx: NarrativeContext): { narrative: string; negotiationTip: string; narrativeKey: string } {
+  const { input, locale, verdict, tier, platform, format, recArr, cpmResult, performanceMultiplier, applied, marketMultiplier, country } = ctx
+  const es = locale === 'es'
+  const [recMin, recP50, recMax, recP90] = recArr
   const fee = input.askedFee
-  const feeStr = `€${fee.toLocaleString()}`
-  const rangeStr = `€${recMin.toLocaleString()}-€${recMax.toLocaleString()}`
+  const feeStr = eur(fee)
+  const rangeStr = `${eur(recMin)}–${eur(recMax)}`
+  const p50Str = eur(recP50)
+  const p90Str = eur(recP90)
   const cpmStr = `€${(cpmResult.cpmReal || 0).toFixed(0)}`
+  const cpmTargetStr = cpmResult.cpmTarget !== null ? `€${cpmResult.cpmTarget}` : null
   const viewsStr = input.avgViews.toLocaleString()
-  const platform = input.platform.charAt(0) + input.platform.slice(1).toLowerCase()
-  const tierLabel = tier.charAt(0) + tier.slice(1).toLowerCase()
+  const platformStr = PLATFORM_NAME[platform] || platform
+  const tierStr = tierLabel(tier)
+  const fmtStr = formatLabel(format, locale)
+  const who = `@${input.username}`
+
+  // Context sentences shared by every verdict
+  const perfNote = performanceMultiplier > 1.05
+    ? (es ? ` Sus vistas están por encima de lo habitual para su tamaño (×${performanceMultiplier.toFixed(2)} sobre el rango).` : ` Their views are above what is usual for their size (×${performanceMultiplier.toFixed(2)} on the range).`)
+    : performanceMultiplier < 0.95
+      ? (es ? ` Sus vistas están por debajo de lo habitual para su tamaño (×${performanceMultiplier.toFixed(2)} sobre el rango).` : ` Their views are below what is usual for their size (×${performanceMultiplier.toFixed(2)} on the range).`)
+      : ''
+  const modsNote = applied.length > 0
+    ? (es
+      ? ` El rango incluye ${applied.map(a => `${a.label} ${pct(a.pct)}`).join(', ')}.`
+      : ` The range includes ${applied.map(a => `${a.label} ${pct(a.pct)}`).join(', ')}.`)
+    : ''
+  const marketNote = country && marketMultiplier !== 1
+    ? (es ? ` Mercado ${country} (×${marketMultiplier}).` : ` ${country} market (×${marketMultiplier}).`)
+    : ''
+  const cpmNote = cpmTargetStr
+    ? (es ? `CPM ${cpmStr} frente a un objetivo de ${cpmTargetStr}` : `CPM ${cpmStr} vs a target of ${cpmTargetStr}`)
+    : (es ? `CPM ${cpmStr}` : `CPM ${cpmStr}`)
+  // Fee benchmark and CPM performance are two separate checks: warn when they disagree.
+  const feeOk = verdict === 'excellent_deal' || verdict === 'fair_deal'
+  const cpmMaxStr = cpmResult.cpmMax !== null ? `€${cpmResult.cpmMax}` : null
+  const cpmCaveat = feeOk && cpmResult.trafficLight === 'red' && cpmMaxStr
+    ? (es
+      ? ` Ojo: el CPM supera el máximo aceptable (${cpmMaxStr}) para este formato y tier; sus vistas no justifican el fee aunque el precio esté en rango${cpmResult.feeMax !== null ? ` (por CPM no pagar más de ${eur(cpmResult.feeMax)})` : ''}.`
+      : ` Note: the CPM exceeds the max acceptable (${cpmMaxStr}) for this format and tier; the views don't justify the fee even though the price is in range${cpmResult.feeMax !== null ? ` (by CPM don't pay more than ${eur(cpmResult.feeMax)})` : ''}.`)
+    : !feeOk && cpmResult.trafficLight === 'green'
+      ? (es
+        ? ` Eso sí, el CPM está dentro del objetivo: sus vistas son altas para el fee que pide.`
+        : ` That said, the CPM is within target: the views are high for the fee asked.`)
+      : ''
+  const tail = `${cpmCaveat}${perfNote}${modsNote}${marketNote}`
 
   switch (verdict) {
     case 'excellent_deal':
       return {
-        narrative: `@${input.username} is asking ${feeStr} which is below the market range of ${rangeStr} for a ${tierLabel} ${platform} creator. With ${viewsStr} avg views, their CPM is ${cpmStr} — excellent value. This is a strong deal.`,
-        negotiationTip: `Accept this fee. It\'s below market — locking it in is smart.`,
+        narrative: es
+          ? `${who} pide ${feeStr} por un ${fmtStr}, por debajo del rango de mercado de ${rangeStr} para un creador ${tierStr} de ${platformStr}. Con ${viewsStr} vistas medias, ${cpmNote}: muy buen valor.${tail}`
+          : `${who} is asking ${feeStr} for a ${fmtStr}, below the market range of ${rangeStr} for a ${tierStr} ${platformStr} creator. With ${viewsStr} avg views, ${cpmNote}: excellent value.${tail}`,
+        negotiationTip: es
+          ? `Aceptar este fee. Está por debajo de mercado: cerrarlo ya es lo inteligente.`
+          : `Accept this fee. It's below market — locking it in is smart.`,
         narrativeKey: 'deal_excellent',
       }
     case 'fair_deal':
       return {
-        narrative: `@${input.username} is asking ${feeStr}, within the fair range of ${rangeStr} for a ${tierLabel} ${platform} creator. With ${viewsStr} avg views and a CPM of ${cpmStr}, this is a reasonable deal aligned with market standards.`,
-        negotiationTip: `Fair price. You could try negotiating to ${`€${recMin.toLocaleString()}`} but this fee is defensible.`,
+        narrative: es
+          ? `${who} pide ${feeStr} por un ${fmtStr}, dentro del rango de mercado de ${rangeStr} (precio de mercado ${p50Str}) para un creador ${tierStr} de ${platformStr}. Con ${viewsStr} vistas medias, ${cpmNote}: un acuerdo razonable y alineado con el mercado.${tail}`
+          : `${who} is asking ${feeStr} for a ${fmtStr}, within the market range of ${rangeStr} (market price ${p50Str}) for a ${tierStr} ${platformStr} creator. With ${viewsStr} avg views, ${cpmNote}: a reasonable deal aligned with the market.${tail}`,
+        negotiationTip: es
+          ? `Precio justo. Puedes intentar bajar a ${eur(recMin)}, pero este fee es defendible.`
+          : `Fair price. You could try negotiating to ${eur(recMin)} but this fee is defensible.`,
         narrativeKey: 'deal_fair',
       }
     case 'slightly_above':
       return {
-        narrative: `@${input.username} is asking ${feeStr}, slightly above the recommended range of ${rangeStr}. Their CPM of ${cpmStr} is higher than the ${tierLabel} benchmark. The fee might be justified if engagement or content quality is exceptional.`,
-        negotiationTip: `Negotiate down to ${rangeStr}. Mention market benchmarks to support your counter-offer.`,
+        narrative: es
+          ? `${who} pide ${feeStr} por un ${fmtStr}, por encima del precio de mercado (${p50Str}) aunque dentro del máximo justificable (${eur(recMax)}) para un creador ${tierStr} de ${platformStr}. ${cpmNote.charAt(0).toUpperCase()}${cpmNote.slice(1)}. Solo se justifica si el engagement o la calidad del contenido son excepcionales.${tail}`
+          : `${who} is asking ${feeStr} for a ${fmtStr}, above the market price (${p50Str}) though within the max justifiable (${eur(recMax)}) for a ${tierStr} ${platformStr} creator. ${cpmNote.charAt(0).toUpperCase()}${cpmNote.slice(1)}. Only justified if engagement or content quality is exceptional.${tail}`,
+        negotiationTip: es
+          ? `Negociar hacia ${p50Str} (rango ${rangeStr}). Apóyate en los benchmarks de mercado para la contraoferta.`
+          : `Negotiate down to ${p50Str} (range ${rangeStr}). Mention market benchmarks to support your counter-offer.`,
         narrativeKey: 'deal_above',
       }
     case 'overpriced':
       return {
-        narrative: `@${input.username} is asking ${feeStr} — significantly above the market range of ${rangeStr} for a ${tierLabel} ${platform} creator. With ${viewsStr} avg views, the CPM of ${cpmStr} is well above benchmark. Consider negotiating or exploring alternatives.`,
-        negotiationTip: `Counter at ${rangeStr}. If they won\'t budge, look at similar creators in this tier — there are better deals available.`,
+        narrative: es
+          ? `${who} pide ${feeStr} por un ${fmtStr}, claramente por encima del rango de mercado de ${rangeStr} para un creador ${tierStr} de ${platformStr} (solo excepcionalmente se paga hasta ${p90Str}). Con ${viewsStr} vistas medias, ${cpmNote}: muy por encima del benchmark. Negociar o buscar alternativas.${tail}`
+          : `${who} is asking ${feeStr} for a ${fmtStr}, clearly above the market range of ${rangeStr} for a ${tierStr} ${platformStr} creator (only exceptionally up to ${p90Str}). With ${viewsStr} avg views, ${cpmNote}: well above benchmark. Negotiate or explore alternatives.${tail}`,
+        negotiationTip: es
+          ? `Contraofertar en ${rangeStr}. Si no cede, mira creadores similares de este tier: hay mejores acuerdos disponibles.`
+          : `Counter at ${rangeStr}. If they won't budge, look at similar creators in this tier — there are better deals available.`,
         narrativeKey: 'deal_overpriced',
       }
     default: // way_overpriced
       return {
-        narrative: `@${input.username} is asking ${feeStr} — this is far above any reasonable market range (${rangeStr}) for a ${tierLabel} ${platform} creator. The CPM of ${cpmStr} is unsustainable. We strongly recommend exploring alternatives.`,
-        negotiationTip: `Do not accept this fee. Counter at ${rangeStr} or find an alternative creator.`,
+        narrative: es
+          ? `${who} pide ${feeStr} por un ${fmtStr}, muy por encima de cualquier rango razonable (${rangeStr}, excepcional hasta ${p90Str}) para un creador ${tierStr} de ${platformStr}. ${cpmNote.charAt(0).toUpperCase()}${cpmNote.slice(1)}: insostenible. Recomendamos buscar alternativas.${tail}`
+          : `${who} is asking ${feeStr} for a ${fmtStr}, far above any reasonable market range (${rangeStr}, exceptional up to ${p90Str}) for a ${tierStr} ${platformStr} creator. ${cpmNote.charAt(0).toUpperCase()}${cpmNote.slice(1)}: unsustainable. We strongly recommend exploring alternatives.${tail}`,
+        negotiationTip: es
+          ? `No aceptar este fee. Contraofertar en ${rangeStr} o buscar otro creador.`
+          : `Do not accept this fee. Counter at ${rangeStr} or find an alternative creator.`,
         narrativeKey: 'deal_way_overpriced',
       }
   }

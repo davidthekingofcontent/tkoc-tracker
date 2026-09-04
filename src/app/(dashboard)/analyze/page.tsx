@@ -50,7 +50,8 @@ import { StatCard } from '@/components/ui/stat-card'
 import { Avatar } from '@/components/ui/avatar'
 import { formatNumber } from '@/lib/utils'
 import { AddToModal } from '@/components/add-to-modal'
-import { calculateCPM, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
+import { calculateCPM, type CPMInput, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
+import { normalizeFormat, normalizePlatform } from '@/lib/benchmarks'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 
 import { proxyImg } from '@/lib/proxy-image'
@@ -431,12 +432,16 @@ export default function AnalyzePage() {
     }
   }
 
-  const cpmResult = profile ? calculateCPM({
+  // No format selector on this page yet → platform default (Instagram REEL, TikTok VIDEO, YouTube INTEGRATION).
+  // `format` selects the CPM threshold (format × tier) in the benchmark-aware calculator.
+  const cpmInput: (CPMInput & { format?: string }) | null = profile ? {
     fee: hypotheticalFee ? parseFloat(hypotheticalFee) : null,
     avgViews: profile.avgViews || 0,
     platform: (profile.platform || 'INSTAGRAM') as CPMPlatform,
     followers: profile.followers || 0,
-  }, locale as 'en' | 'es') : null
+    format: normalizeFormat(normalizePlatform(profile.platform), undefined),
+  } : null
+  const cpmResult = cpmInput ? calculateCPM(cpmInput, locale as 'en' | 'es') : null
 
   const trafficColors: Record<string, string> = {
     green: 'bg-green-100 text-green-800 border-green-300',

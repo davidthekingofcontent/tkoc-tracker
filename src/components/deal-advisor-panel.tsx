@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { TrendingUp, TrendingDown, DollarSign, Target, ChevronDown, ChevronUp, MessageSquare } from 'lucide-react'
 import { useI18n } from '@/i18n/context'
+import type { AppliedModifier, DealTerms } from '@/lib/benchmarks'
 
 /**
  * Deal Advisor™ Panel — Shows pricing intelligence when viewing/editing an influencer fee.
@@ -19,6 +20,14 @@ interface DealAdvisorPanelProps {
   engagementRate: number
   fee: number // current asked/agreed fee
   compact?: boolean // for inline use in tables
+  /** Negotiation format (REEL, POST, STORY, VIDEO, INTEGRATION, DEDICATED, SHORT). */
+  format?: string
+  /** ISO-3166 alpha-2 of the campaign/creator → market multiplier. */
+  country?: string | null
+  /** Commercial terms → modifiers on p50 (rights, whitelisting, exclusivity…). */
+  terms?: DealTerms
+  /** Brand whose benchmark overrides should be used. */
+  brandId?: string | null
 }
 
 interface DealResult {
@@ -38,6 +47,13 @@ interface DealResult {
   tier: string
   narrative: string
   negotiationTip: string
+  // Benchmark context (optional: older responses may not carry them)
+  format?: string
+  marketMultiplier?: number
+  appliedModifiers?: AppliedModifier[]
+  referenceFee?: number
+  percentileLabel?: string
+  percentileLabels?: { p25: string; p50: string; p75: string; p90: string }
 }
 
 const VERDICT_STYLES: Record<string, { bg: string; text: string; icon: string }> = {
@@ -48,7 +64,7 @@ const VERDICT_STYLES: Record<string, { bg: string; text: string; icon: string }>
   way_overpriced: { bg: 'bg-red-100 dark:bg-red-900/30', text: 'text-red-700 dark:text-red-300', icon: '🔴' },
 }
 
-export function DealAdvisorPanel({ username, platform, followers, avgViews, avgLikes, avgComments, engagementRate, fee, compact = false }: DealAdvisorPanelProps) {
+export function DealAdvisorPanel({ username, platform, followers, avgViews, avgLikes, avgComments, engagementRate, fee, compact = false, format, country, terms, brandId }: DealAdvisorPanelProps) {
   const { locale } = useI18n()
   const [result, setResult] = useState<DealResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -67,7 +83,14 @@ export function DealAdvisorPanel({ username, platform, followers, avgViews, avgL
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'deal-advisor',
-          data: { username, platform, followers, avgViews, avgLikes, avgComments, engagementRate, askedFee: fee },
+          data: {
+            username, platform, followers, avgViews, avgLikes, avgComments, engagementRate, askedFee: fee,
+            format: format || undefined,
+            country: country || undefined,
+            terms: terms || undefined,
+            brandId: brandId || undefined,
+            locale,
+          },
         }),
       })
       if (res.ok) {
@@ -100,7 +123,7 @@ export function DealAdvisorPanel({ username, platform, followers, avgViews, avgL
         </button>
         {expanded && result && (
           <div className="absolute z-50 mt-1 right-0 top-full w-80 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-xl">
-            <DealContent result={result} onClose={() => setExpanded(false)} />
+            <DealContent result={result} onClose={() => setExpanded(false)} locale={locale} />
           </div>
         )}
       </div>
@@ -134,15 +157,18 @@ export function DealAdvisorPanel({ username, platform, followers, avgViews, avgL
 
       {expanded && result && (
         <div className="mt-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-sm">
-          <DealContent result={result} onClose={() => setExpanded(false)} />
+          <DealContent result={result} onClose={() => setExpanded(false)} locale={locale} />
         </div>
       )}
     </div>
   )
 }
 
-function DealContent({ result, onClose }: { result: DealResult; onClose: () => void }) {
+function DealContent({ result, onClose, locale = 'es' }: { result: DealResult; onClose: () => void; locale?: string }) {
   const style = VERDICT_STYLES[result.verdict] || VERDICT_STYLES.fair_deal
+  const es = locale === 'es'
+  const modifiers = result.appliedModifiers || []
+  const fmtPct = (p: number) => `${p > 0 ? '+' : p < 0 ? '−' : ''}${Math.abs(Math.round(p * 100))} %`
 
   // Market range bar positioning
   const rangeMin = result.recommendedFeeMin
@@ -158,7 +184,7 @@ function DealContent({ result, onClose }: { result: DealResult; onClose: () => v
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className={`text-sm font-bold ${style.text}`}>{style.icon} {result.verdictLabel}</span>
-          <span className="text-[10px] text-gray-400">{result.tier}</span>
+          <span className="text-[10px] text-gray-400">{result.tier}{result.format ? ` · ${result.format}` : ''}</span>
         </div>
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xs">✕</button>
       </div>
@@ -182,10 +208,35 @@ function DealContent({ result, onClose }: { result: DealResult; onClose: () => v
           />
         </div>
         <div className="flex justify-between text-[10px]">
-          <span className="text-gray-400">Recommended range</span>
+          <span className="text-gray-400">{es ? 'Rango recomendado' : 'Recommended range'}</span>
           <span className={`font-semibold ${style.text}`}>Fee: €{result.askedFee.toLocaleString()}</span>
         </div>
       </div>
+
+      {/* Reference fee (p50 after market + modifiers) and itemized modifiers */}
+      {(typeof result.referenceFee === 'number' || modifiers.length > 0) && (
+        <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-2.5 py-2 text-[11px] space-y-1">
+          {typeof result.referenceFee === 'number' && (
+            <div className="flex justify-between">
+              <span className="text-gray-500 dark:text-gray-400">
+                {result.percentileLabels?.p50 || (es ? 'Precio de mercado' : 'Market price')}
+                {modifiers.length > 0 ? (es ? ' (con modificadores)' : ' (with modifiers)') : ''}
+              </span>
+              <span className="font-semibold text-gray-700 dark:text-gray-200">€{result.referenceFee.toLocaleString()}</span>
+            </div>
+          )}
+          {modifiers.length > 0 && (
+            <ul className="space-y-0.5">
+              {modifiers.map(m => (
+                <li key={m.key} className="flex justify-between text-gray-500 dark:text-gray-400">
+                  <span>{m.label}</span>
+                  <span className={m.pct >= 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}>{fmtPct(m.pct)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* Key metrics */}
       <div className="grid grid-cols-3 gap-2 text-center">
@@ -198,7 +249,7 @@ function DealContent({ result, onClose }: { result: DealResult; onClose: () => v
           <p className="text-sm font-bold text-gray-700 dark:text-gray-200">€{result.cpmBenchmark?.toFixed(0) || '—'}</p>
         </div>
         <div className={`rounded-lg p-2 ${result.savingsOrOvercost >= 0 ? 'bg-emerald-50 dark:bg-emerald-900/20' : 'bg-red-50 dark:bg-red-900/20'}`}>
-          <p className="text-[10px] text-gray-400">{result.savingsOrOvercost >= 0 ? 'Savings' : 'Overcost'}</p>
+          <p className="text-[10px] text-gray-400">{result.savingsOrOvercost >= 0 ? (es ? 'Ahorro' : 'Savings') : (es ? 'Sobrecoste' : 'Overcost')}</p>
           <p className={`text-sm font-bold ${result.savingsOrOvercost >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
             {result.savingsOrOvercost >= 0 ? '+' : ''}€{result.savingsOrOvercost.toLocaleString()}
           </p>

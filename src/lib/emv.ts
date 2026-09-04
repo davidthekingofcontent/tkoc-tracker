@@ -53,7 +53,7 @@ export type FollowerTier = 'NANO' | 'MICRO' | 'MID' | 'MACRO' | 'MEGA'
 export interface EmvRates {
   cpmRates: {
     INSTAGRAM: { post: number; reel: number; story: number }
-    TIKTOK: { video: number; viral: number }
+    TIKTOK: { video: number }
     YOUTUBE: { video: number; short: number }
   }
   cpc: number
@@ -77,13 +77,13 @@ export interface EmvRates {
 export const DEFAULT_EMV_RATES: EmvRates = {
   cpmRates: {
     INSTAGRAM: { post: 10.0, reel: 14.0, story: 8.0 },
-    TIKTOK: { video: 7.5, viral: 5.0 },
-    YOUTUBE: { video: 15.0, short: 6.0 },
+    TIKTOK: { video: 8.0 },
+    YOUTUBE: { video: 15.0, short: 8.0 },
   },
   cpc: 0.5,
   engagementValues: {
     INSTAGRAM: { like: 0.10, comment: 0.80, share: 1.50, save: 1.20 },
-    TIKTOK: { like: 0.08, comment: 0.60, share: 1.20, save: 0.90 },
+    TIKTOK: { like: 0.06, comment: 0.60, share: 1.20, save: 0.90 },
     YOUTUBE: { like: 0.12, comment: 1.00, share: 1.50, save: 0.00 },
   },
   // Instagram story reach as a share of followers. Public 2024-25 benchmarks
@@ -321,6 +321,6 @@ function toMs(d: Date | string | null | undefined): number {
 }
 
 export const EMV_METHODOLOGY = {
-  en: 'EMV = (Audience/1000 × CPM by content type) + (Clicks × CPC) + Engagement Value. Posts and reels use only real data (impressions > reach > views). Instagram stories without real views are valued with an ESTIMATED audience: followers × tier rate (nano 15%, micro 10%, mid 7%, macro 5%, mega 4%), −15% per consecutive story; real views entered by the PM always win. Estimated values are flagged.',
-  es: 'EMV = (Audiencia/1000 × CPM por tipo de contenido) + (Clics × CPC) + Valor del engagement. Posts y reels usan solo datos reales (impresiones > alcance > vistas). Las stories de Instagram sin vistas reales se valoran con una audiencia ESTIMADA: seguidores × porcentaje por tier (nano 15 %, micro 10 %, mid 7 %, macro 5 %, mega 4 %), −15 % por cada story consecutiva; si la PM registra las vistas reales, mandan. Los valores estimados se marcan como tales.',
+  en: 'EMV = (Audience/1000 × CPM by content type) + (Clicks × CPC) + Engagement Value. Posts and reels use only real data (impressions > reach > views). Instagram stories without real views are valued with an ESTIMATED audience: followers × tier rate (nano 15%, micro 10%, mid 7%, macro 5%, mega 4%), −15% per consecutive story; real views entered by the PM always win. Estimated values are flagged. Premium disclosure: the EMV CPMs (post 10 €, reel 14 €, story 8 €) are the paid-media reference (8 / 7 / 5 €) × a creator premium.',
+  es: 'EMV = (Audiencia/1000 × CPM por tipo de contenido) + (Clics × CPC) + Valor del engagement. Posts y reels usan solo datos reales (impresiones > alcance > vistas). Las stories de Instagram sin vistas reales se valoran con una audiencia ESTIMADA: seguidores × porcentaje por tier (nano 15 %, micro 10 %, mid 7 %, macro 5 %, mega 4 %), −15 % por cada story consecutiva; si la PM registra las vistas reales, mandan. Los valores estimados se marcan como tales. Transparencia de la prima: los CPM del EMV (post 10 €, reel 14 €, story 8 €) son la referencia de medios de pago (8 / 7 / 5 €) × una prima de creador.',
 }

@@ -1,60 +1,119 @@
 // CPM Calculator — Influencer Pricing Evaluation
-// Extensible config by platform + tier
+//
+// Thresholds come from the shared benchmark config (src/lib/benchmarks.ts,
+// seed "SPAIN 2026 v1", editable in Ajustes → Benchmarks). Followers only pick
+// the tier; the accepted CPM (fee ÷ median views of the format × 1000) depends
+// on platform × format × tier and falls with tier. Server code should load the
+// merged config with loadBenchmarkConfig() and pass it in; client code can use
+// DEFAULT_BENCHMARKS (the default).
 
-export type Platform = 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
-export type Tier = 'NANO' | 'MICRO' | 'MID' | 'MACRO' | 'MEGA'
+import {
+  DEFAULT_BENCHMARKS,
+  TIER_BOUNDS,
+  detectTier,
+  getCpmThreshold,
+  normalizeFormat,
+  normalizePlatform,
+  type BenchmarkConfig,
+  type FeeFormat,
+  type Platform,
+  type Tier,
+} from './benchmarks'
+
+export type { Platform, Tier, FeeFormat } from './benchmarks'
+export { detectTier }
 export type TrafficLight = 'green' | 'yellow' | 'red' | 'gray'
 
-// ============ THRESHOLDS CONFIG ============
-// Edit this table to add platforms, tiers, or adjust benchmarks
+// ============ THRESHOLDS (derived from the shared config) ============
 
 export interface CPMThreshold {
   platform: Platform
   tier: Tier
+  /** Negotiation format the threshold applies to (REEL / POST / STORY / VIDEO / INTEGRATION / DEDICATED / SHORT). */
+  format: FeeFormat
   minFollowers: number
   maxFollowers: number
   cpmTarget: number      // Green ceiling = CPM objetivo
   cpmMax: number         // Yellow ceiling = CPM máximo aceptable (above = red)
 }
 
-export const CPM_THRESHOLDS: CPMThreshold[] = [
-  // Instagram
-  { platform: 'INSTAGRAM', tier: 'MACRO', minFollowers: 250_000, maxFollowers: 1_000_000, cpmTarget: 16, cpmMax: 20 },
-  { platform: 'INSTAGRAM', tier: 'MEGA',  minFollowers: 1_000_001, maxFollowers: Infinity, cpmTarget: 13, cpmMax: 17 },
-
-  // TikTok
-  { platform: 'TIKTOK', tier: 'MACRO', minFollowers: 250_000, maxFollowers: 1_000_000, cpmTarget: 9, cpmMax: 11 },
-  { platform: 'TIKTOK', tier: 'MEGA',  minFollowers: 1_000_001, maxFollowers: Infinity, cpmTarget: 9, cpmMax: 12 },
-
-  // Future: add YouTube, Micro, Nano, etc.
-  // { platform: 'YOUTUBE', tier: 'MACRO', minFollowers: 250_000, maxFollowers: 1_000_000, cpmTarget: 12, cpmMax: 16 },
-]
-
-// ============ TIER DETECTION ============
-
-export function detectTier(followers: number): Tier {
-  if (followers < 10_000) return 'NANO'
-  if (followers < 50_000) return 'MICRO'
-  if (followers < 250_000) return 'MID'
-  if (followers < 1_000_001) return 'MACRO'
-  return 'MEGA'
+/** Default (headline) format per platform used when no format is given. */
+export const DEFAULT_CPM_FORMAT: Record<Platform, FeeFormat> = {
+  INSTAGRAM: 'REEL',
+  TIKTOK: 'VIDEO',
+  YOUTUBE: 'INTEGRATION',
 }
 
-export function findThreshold(platform: Platform, followers: number): CPMThreshold | null {
-  return CPM_THRESHOLDS.find(t =>
-    t.platform === platform &&
-    followers >= t.minFollowers &&
-    followers <= t.maxFollowers
-  ) || null
+/**
+ * Backward-compatible flat table: thresholds for the default format of each
+ * platform (Instagram REEL, TikTok VIDEO, YouTube INTEGRATION), every tier.
+ * Derived from DEFAULT_BENCHMARKS — do not edit here, edit the seed.
+ */
+export const CPM_THRESHOLDS: CPMThreshold[] = DEFAULT_BENCHMARKS.cpmThresholds
+  .filter(t => t.format === DEFAULT_CPM_FORMAT[t.platform])
+  .map(t => ({
+    platform: t.platform,
+    tier: t.tier,
+    format: t.format,
+    minFollowers: TIER_BOUNDS[t.tier][0],
+    maxFollowers: TIER_BOUNDS[t.tier][1],
+    cpmTarget: t.cpmTarget,
+    cpmMax: t.cpmMax,
+  }))
+
+/**
+ * Threshold for a platform + follower count (tier) + optional format.
+ * Kept for backward compatibility; new code can call getCpmThreshold() directly.
+ */
+export function findThreshold(
+  platform: Platform | string,
+  followers: number,
+  format?: string | null,
+  config: BenchmarkConfig = DEFAULT_BENCHMARKS
+): CPMThreshold | null {
+  const plat = normalizePlatform(platform)
+  const tier = detectTier(followers || 0)
+  const t = getCpmThreshold(config, plat, tier, format)
+  if (!t) return null
+  return {
+    platform: t.platform,
+    tier: t.tier,
+    format: t.format,
+    minFollowers: TIER_BOUNDS[t.tier][0],
+    maxFollowers: TIER_BOUNDS[t.tier][1],
+    cpmTarget: t.cpmTarget,
+    cpmMax: t.cpmMax,
+  }
 }
+
+// ============ LABELS ============
+
+const TIER_LABEL: Record<Tier, string> = { NANO: 'Nano', MICRO: 'Micro', MID: 'Mid', MACRO: 'Macro', MEGA: 'Mega' }
+
+const FORMAT_LABEL: Record<'es' | 'en', Record<FeeFormat, string>> = {
+  es: { POST: 'post', REEL: 'reel', STORY: 'story', VIDEO: 'vídeo', INTEGRATION: 'integración', DEDICATED: 'vídeo dedicado', SHORT: 'short' },
+  en: { POST: 'post', REEL: 'reel', STORY: 'story', VIDEO: 'video', INTEGRATION: 'integration', DEDICATED: 'dedicated video', SHORT: 'short' },
+}
+
+export function formatLabel(format: FeeFormat, locale: 'es' | 'en' = 'es'): string {
+  return FORMAT_LABEL[locale][format] || format.toLowerCase()
+}
+
+export function tierLabel(tier: Tier): string {
+  return TIER_LABEL[tier] || tier
+}
+
+const eur = (n: number) => `€${Math.round(n).toLocaleString()}`
 
 // ============ CPM CALCULATION ============
 
 export interface CPMInput {
-  fee: number | null        // What the influencer charges (€)
-  avgViews: number          // Average views per post
+  fee: number | null        // What the influencer charges (€) for ONE piece of this format
+  avgViews: number          // Median/average views per piece of this format
   platform: Platform
-  followers: number         // For tier detection
+  followers: number         // Only used to pick the tier
+  /** Negotiation format (REEL, POST, STORY, VIDEO, INTEGRATION, DEDICATED, SHORT). Defaults to the platform's headline format. */
+  format?: string | null
 }
 
 export interface CPMResult {
@@ -62,14 +121,16 @@ export interface CPMResult {
   cpmReal: number | null
   trafficLight: TrafficLight
   tier: Tier
+  /** Normalized format the thresholds were taken for. */
+  format: FeeFormat
 
   // Thresholds
   cpmTarget: number | null
   cpmMax: number | null
 
   // Pricing recommendation
-  feeRecommended: number | null
-  feeMax: number | null
+  feeRecommended: number | null   // avgViews/1000 × cpmTarget
+  feeMax: number | null           // avgViews/1000 × cpmMax
   savingsOrOvercost: number | null  // positive = overcost, negative = savings
 
   // Textual recommendation
@@ -81,35 +142,44 @@ export interface CPMResult {
   missingFields: string[]
 }
 
-export function calculateCPM(input: CPMInput, locale: 'en' | 'es' = 'es'): CPMResult {
-  const tier = detectTier(input.followers)
+export function calculateCPM(
+  input: CPMInput,
+  locale: 'en' | 'es' = 'es',
+  config: BenchmarkConfig = DEFAULT_BENCHMARKS
+): CPMResult {
+  const platform = normalizePlatform(input.platform)
+  const tier = detectTier(input.followers || 0)
+  const format = normalizeFormat(platform, input.format)
+  const es = locale === 'es'
+  const fmtStr = formatLabel(format, locale)
+  const tierStr = tierLabel(tier)
   const missingFields: string[] = []
 
-  if (!input.platform) missingFields.push(locale === 'es' ? 'plataforma' : 'platform')
-  if (!input.followers) missingFields.push(locale === 'es' ? 'seguidores' : 'followers')
+  if (!input.platform) missingFields.push(es ? 'plataforma' : 'platform')
+  if (!input.followers) missingFields.push(es ? 'seguidores' : 'followers')
   if (input.fee === null || input.fee === undefined) missingFields.push('fee')
-  if (!input.avgViews || input.avgViews <= 0) missingFields.push(locale === 'es' ? 'visualizaciones medias' : 'avg views')
+  if (!input.avgViews || input.avgViews <= 0) missingFields.push(es ? 'visualizaciones medias' : 'avg views')
 
-  const threshold = findThreshold(input.platform, input.followers)
+  const threshold = getCpmThreshold(config, platform, tier, format)
 
-  // If no threshold for this platform+tier combo
+  // No threshold for this platform × format × tier (should be rare: the seed covers every cell)
   if (!threshold) {
-    // Still calculate CPM if we have fee and views
     if (input.fee !== null && input.fee > 0 && input.avgViews > 0) {
       const cpmReal = (input.fee / input.avgViews) * 1000
       return {
         cpmReal: Math.round(cpmReal * 100) / 100,
         trafficLight: 'gray',
         tier,
+        format,
         cpmTarget: null,
         cpmMax: null,
         feeRecommended: null,
         feeMax: null,
         savingsOrOvercost: null,
-        recommendation: locale === 'es' ? 'Sin benchmarks' : 'No benchmarks',
-        recommendationDetail: locale === 'es'
-          ? `No hay benchmarks configurados para ${input.platform} ${tier}. CPM calculado: €${cpmReal.toFixed(2)}`
-          : `No benchmarks configured for ${input.platform} ${tier}. Calculated CPM: €${cpmReal.toFixed(2)}`,
+        recommendation: es ? 'Sin benchmarks' : 'No benchmarks',
+        recommendationDetail: es
+          ? `No hay benchmarks configurados para ${platform} ${fmtStr} ${tierStr}. CPM calculado: €${cpmReal.toFixed(2)}`
+          : `No benchmarks configured for ${platform} ${fmtStr} ${tierStr}. Calculated CPM: €${cpmReal.toFixed(2)}`,
         hasData: true,
         missingFields: [],
       }
@@ -119,13 +189,14 @@ export function calculateCPM(input: CPMInput, locale: 'en' | 'es' = 'es'): CPMRe
       cpmReal: null,
       trafficLight: 'gray',
       tier,
+      format,
       cpmTarget: null,
       cpmMax: null,
       feeRecommended: null,
       feeMax: null,
       savingsOrOvercost: null,
-      recommendation: locale === 'es' ? 'Sin datos' : 'No data',
-      recommendationDetail: locale === 'es' ? 'Faltan datos para calcular' : 'Missing data to calculate',
+      recommendation: es ? 'Sin datos' : 'No data',
+      recommendationDetail: es ? 'Faltan datos para calcular' : 'Missing data to calculate',
       hasData: false,
       missingFields,
     }
@@ -141,17 +212,18 @@ export function calculateCPM(input: CPMInput, locale: 'en' | 'es' = 'es'): CPMRe
       cpmReal: null,
       trafficLight: 'gray',
       tier,
+      format,
       cpmTarget: threshold.cpmTarget,
       cpmMax: threshold.cpmMax,
       feeRecommended,
       feeMax,
       savingsOrOvercost: null,
-      recommendation: locale === 'es' ? 'Introduce el fee' : 'Enter fee',
-      recommendationDetail: feeRecommended
-        ? (locale === 'es'
-          ? `Basado en sus views medias, el fee recomendado seria €${feeRecommended.toLocaleString()} (max €${feeMax?.toLocaleString()})`
-          : `Based on avg views, recommended fee is €${feeRecommended.toLocaleString()} (max €${feeMax?.toLocaleString()})`)
-        : (locale === 'es' ? 'Faltan datos para calcular' : 'Missing data to calculate'),
+      recommendation: es ? 'Introduce el fee' : 'Enter fee',
+      recommendationDetail: feeRecommended !== null && feeMax !== null
+        ? (es
+          ? `Con sus ${input.avgViews.toLocaleString()} vistas medias por ${fmtStr} (${tierStr}), el fee recomendado sería ${eur(feeRecommended)} (CPM objetivo €${threshold.cpmTarget}) y el máximo ${eur(feeMax)} (CPM máx. €${threshold.cpmMax})`
+          : `With ${input.avgViews.toLocaleString()} avg views per ${fmtStr} (${tierStr}), the recommended fee is ${eur(feeRecommended)} (target CPM €${threshold.cpmTarget}) and the max ${eur(feeMax)} (max CPM €${threshold.cpmMax})`)
+        : (es ? 'Faltan datos para calcular' : 'Missing data to calculate'),
       hasData: false,
       missingFields: input.fee === null ? ['fee'] : missingFields,
     }
@@ -170,28 +242,29 @@ export function calculateCPM(input: CPMInput, locale: 'en' | 'es' = 'es'): CPMRe
 
   if (cpmReal <= threshold.cpmTarget) {
     trafficLight = 'green'
-    recommendation = locale === 'es' ? 'Contratar' : 'Hire'
-    recommendationDetail = locale === 'es'
-      ? `Precio razonable. Intentar cerrar en torno a €${feeRecommended.toLocaleString()}`
-      : `Reasonable price. Try to close around €${feeRecommended.toLocaleString()}`
+    recommendation = es ? 'Contratar' : 'Hire'
+    recommendationDetail = es
+      ? `CPM €${cpmReal.toFixed(2)}, dentro del objetivo (€${threshold.cpmTarget}) para un ${fmtStr} de un creador ${tierStr}. Precio razonable: intentar cerrar en torno a ${eur(feeRecommended)}`
+      : `CPM €${cpmReal.toFixed(2)}, within the target (€${threshold.cpmTarget}) for a ${tierStr} creator's ${fmtStr}. Reasonable price: try to close around ${eur(feeRecommended)}`
   } else if (cpmReal <= threshold.cpmMax) {
     trafficLight = 'yellow'
-    recommendation = locale === 'es' ? 'Negociar' : 'Negotiate'
-    recommendationDetail = locale === 'es'
-      ? `Negociar. Intentar cerrar en €${feeRecommended.toLocaleString()} y no superar €${feeMax.toLocaleString()}`
-      : `Negotiate. Try to close at €${feeRecommended.toLocaleString()} and don't exceed €${feeMax.toLocaleString()}`
+    recommendation = es ? 'Negociar' : 'Negotiate'
+    recommendationDetail = es
+      ? `CPM €${cpmReal.toFixed(2)}, por encima del objetivo (€${threshold.cpmTarget}) pero dentro del máximo (€${threshold.cpmMax}) para un ${fmtStr} ${tierStr}. Negociar: intentar cerrar en ${eur(feeRecommended)} y no superar ${eur(feeMax)}`
+      : `CPM €${cpmReal.toFixed(2)}, above the target (€${threshold.cpmTarget}) but within the max (€${threshold.cpmMax}) for a ${tierStr} ${fmtStr}. Negotiate: try to close at ${eur(feeRecommended)} and don't exceed ${eur(feeMax)}`
   } else {
     trafficLight = 'red'
-    recommendation = locale === 'es' ? 'No contratar' : 'Don\'t hire'
-    recommendationDetail = locale === 'es'
-      ? `No contratar a este precio. Solo tendria sentido si acepta alrededor de €${feeRecommended.toLocaleString()} y en ningun caso por encima de €${feeMax.toLocaleString()}`
-      : `Don't hire at this price. Only makes sense if they accept around €${feeRecommended.toLocaleString()} and never above €${feeMax.toLocaleString()}`
+    recommendation = es ? 'No contratar' : 'Don\'t hire'
+    recommendationDetail = es
+      ? `CPM €${cpmReal.toFixed(2)}, por encima del máximo aceptable (€${threshold.cpmMax}) para un ${fmtStr} de un creador ${tierStr}. No contratar a este precio: solo tendría sentido si acepta alrededor de ${eur(feeRecommended)} y en ningún caso por encima de ${eur(feeMax)}`
+      : `CPM €${cpmReal.toFixed(2)}, above the max acceptable (€${threshold.cpmMax}) for a ${tierStr} creator's ${fmtStr}. Don't hire at this price: only makes sense if they accept around ${eur(feeRecommended)} and never above ${eur(feeMax)}`
   }
 
   return {
     cpmReal: Math.round(cpmReal * 100) / 100,
     trafficLight,
     tier,
+    format,
     cpmTarget: threshold.cpmTarget,
     cpmMax: threshold.cpmMax,
     feeRecommended,

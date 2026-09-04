@@ -1,108 +1,206 @@
 /**
  * Market Benchmark — Client-safe version (no prisma dependency).
- * Only uses built-in benchmark data, no DB queries.
- * Safe to import in 'use client' components.
+ * Pure functions over the shared benchmark config (src/lib/benchmarks.ts,
+ * seed "SPAIN 2026 v1"). Safe to import in 'use client' components: pass the
+ * config fetched from GET /api/settings/benchmarks when you have it, otherwise
+ * DEFAULT_BENCHMARKS is used.
+ *
+ * The server module (src/lib/market-benchmark.ts) reuses these helpers and adds
+ * the blend with the agency's own negotiations.
  */
 
-// Fee benchmarks by platform × tier × format: [p25, p50, p75, p90]
-const FEE_BENCHMARKS: Record<string, Record<string, Record<string, [number, number, number, number]>>> = {
-  INSTAGRAM: {
-    NANO:  { POST: [40, 80, 150, 250],   REEL: [60, 120, 200, 350],   STORY: [20, 50, 100, 150] },
-    MICRO: { POST: [120, 250, 450, 650],  REEL: [180, 350, 600, 900],  STORY: [60, 120, 200, 350] },
-    MID:   { POST: [350, 650, 1100, 1600], REEL: [450, 800, 1400, 2200], STORY: [150, 300, 500, 800] },
-    MACRO: { POST: [700, 1300, 2200, 3500], REEL: [900, 1700, 2800, 4500], STORY: [300, 600, 1000, 1600] },
-    MEGA:  { POST: [1800, 3500, 6000, 10000], REEL: [2500, 5000, 8000, 14000], STORY: [800, 1500, 2500, 4000] },
-  },
-  TIKTOK: {
-    NANO:  { VIDEO: [30, 70, 140, 220],   SHORT: [25, 55, 110, 180] },
-    MICRO: { VIDEO: [100, 220, 400, 600], SHORT: [80, 170, 300, 480] },
-    MID:   { VIDEO: [300, 600, 1000, 1500], SHORT: [220, 450, 750, 1100] },
-    MACRO: { VIDEO: [600, 1200, 2000, 3200], SHORT: [450, 900, 1500, 2400] },
-    MEGA:  { VIDEO: [1500, 3000, 5500, 9000], SHORT: [1100, 2200, 4000, 6500] },
-  },
-  YOUTUBE: {
-    NANO:  { VIDEO: [100, 200, 400, 600],   SHORT: [50, 100, 200, 350] },
-    MICRO: { VIDEO: [300, 550, 900, 1300],  SHORT: [150, 280, 450, 700] },
-    MID:   { VIDEO: [700, 1300, 2200, 3200], SHORT: [350, 650, 1100, 1600] },
-    MACRO: { VIDEO: [1500, 3000, 5000, 8000], SHORT: [700, 1400, 2300, 3800] },
-    MEGA:  { VIDEO: [3500, 7000, 12000, 20000], SHORT: [1500, 3000, 5000, 8500] },
-  },
-}
+import {
+  DEFAULT_BENCHMARKS,
+  detectTier,
+  getCpmThreshold,
+  getFeeRange,
+  normalizeFormat,
+  normalizePlatform,
+  type BenchmarkConfig,
+  type FeeFormat,
+  type FeeRange,
+  type PercentileLabels,
+  type Platform,
+  type Tier,
+} from './benchmarks'
 
-function detectTier(followers: number): string {
-  if (followers < 10_000) return 'NANO'
-  if (followers < 50_000) return 'MICRO'
-  if (followers < 250_000) return 'MID'
-  if (followers < 1_000_000) return 'MACRO'
-  return 'MEGA'
-}
-
-function getDefaultFormat(platform: string): string {
-  switch (platform) {
-    case 'INSTAGRAM': return 'REEL'
-    case 'TIKTOK': return 'VIDEO'
-    case 'YOUTUBE': return 'VIDEO'
-    default: return 'POST'
-  }
-}
+export type BenchmarkLocale = 'es' | 'en'
+export type FeePosition = 'below_market' | 'fair' | 'above_market' | 'overpriced'
+export type FeeBand = 'p25' | 'p50' | 'p75' | 'p90' | 'above_p90'
 
 export interface QuickBenchmark {
-  feeMin: number
-  feeTarget: number
-  feeMax: number
-  feeCeiling: number
-  tier: string
+  feeMin: number            // p25 — "Buen precio"
+  feeTarget: number         // p50 — "Precio de mercado"
+  feeMax: number            // p75 — "Máximo justificable"
+  feeCeiling: number        // p90 — "Excepcional (solo con justificación)"
+  tier: Tier
+  platform: Platform
+  format: FeeFormat
+  /** Market multiplier applied (ES = 1.0). */
+  marketMultiplier: number
+  country: string | null
+  /** CPM thresholds for this format × tier (fee ÷ median views × 1000). */
+  cpmTarget: number | null
+  cpmMax: number | null
+  labels: PercentileLabels
+  version: string
 }
 
-export function getQuickBenchmark(platform: string, followers: number, format?: string): QuickBenchmark {
-  const tier = detectTier(followers)
-  const fmt = format || getDefaultFormat(platform)
-  const fees = FEE_BENCHMARKS[platform]?.[tier]?.[fmt]
-    || FEE_BENCHMARKS[platform]?.[tier]?.[getDefaultFormat(platform)]
-    || [100, 300, 600, 1000]
-
-  return {
-    feeMin: fees[0],
-    feeTarget: fees[1],
-    feeMax: fees[2],
-    feeCeiling: fees[3],
-    tier,
-  }
+/** Percentile labels of a config in a locale (default Spanish). */
+export function getPercentileLabels(config: BenchmarkConfig = DEFAULT_BENCHMARKS, locale: BenchmarkLocale = 'es'): PercentileLabels {
+  return config.percentileLabels?.[locale] || DEFAULT_BENCHMARKS.percentileLabels[locale]
 }
 
 /**
- * Evaluate a fee against market benchmarks (client-safe, no DB).
+ * Seed benchmark (no own-negotiation blend) for platform × followers (tier) × format.
+ * `platform` accepts any casing; unknown → INSTAGRAM. `format` is normalized
+ * (legacy YouTube VIDEO → INTEGRATION, TikTok always VIDEO).
+ */
+export function getQuickBenchmark(
+  platform: string,
+  followers: number,
+  format?: string | null,
+  config: BenchmarkConfig = DEFAULT_BENCHMARKS,
+  country?: string | null,
+  locale: BenchmarkLocale = 'es'
+): QuickBenchmark {
+  const plat = normalizePlatform(platform)
+  const tier = detectTier(followers || 0)
+  const { range, format: fmt, multiplier } = getFeeRange(config, plat, tier, format, country)
+  const cpm = getCpmThreshold(config, plat, tier, fmt)
+  return {
+    feeMin: range[0],
+    feeTarget: range[1],
+    feeMax: range[2],
+    feeCeiling: range[3],
+    tier,
+    platform: plat,
+    format: fmt,
+    marketMultiplier: multiplier,
+    country: country ? country.toUpperCase() : null,
+    cpmTarget: cpm?.cpmTarget ?? null,
+    cpmMax: cpm?.cpmMax ?? null,
+    labels: getPercentileLabels(config, locale),
+    version: config.version,
+  }
+}
+
+export interface FeeEvaluation {
+  position: FeePosition
+  /** Which percentile band the fee falls in. */
+  band: FeeBand
+  /** Label of that band from the config ("Precio de mercado"…); "Fuera de mercado" above p90. */
+  label: string
+  /** Approximate percentile of the fee within the range (1–99). */
+  percentile: number
+  /** "€p25–€p75" */
+  marketRange: string
+  detail: string
+  tier: Tier
+  format: FeeFormat
+  labels: PercentileLabels
+}
+
+/**
+ * Evaluate a fee against a [p25, p50, p75, p90] range. Shared by the client and
+ * server evaluators so the wording and the bands stay identical.
+ */
+export function evaluateFeeAgainstRange(
+  fee: number,
+  range: FeeRange,
+  labels: PercentileLabels,
+  locale: BenchmarkLocale = 'es',
+  meta: { tier: Tier; format: FeeFormat; formatLabel?: string }
+): FeeEvaluation {
+  const [p25, p50, p75, p90] = range
+  const es = locale === 'es'
+  const eur = (n: number) => `€${Math.round(n).toLocaleString()}`
+  const lerp = (lo: number, hi: number, from: number, to: number) =>
+    hi > lo ? from + Math.round(((fee - lo) / (hi - lo)) * (to - from)) : from
+
+  let position: FeePosition
+  let band: FeeBand
+  let percentile: number
+  if (fee <= p25) {
+    position = 'below_market'; band = 'p25'
+    percentile = p25 > 0 ? Math.round((fee / p25) * 25) : 1
+  } else if (fee <= p50) {
+    position = 'fair'; band = 'p50'
+    percentile = lerp(p25, p50, 25, 50)
+  } else if (fee <= p75) {
+    position = 'fair'; band = 'p75'
+    percentile = lerp(p50, p75, 50, 75)
+  } else if (fee <= p90) {
+    position = 'above_market'; band = 'p90'
+    percentile = lerp(p75, p90, 75, 90)
+  } else {
+    position = 'overpriced'; band = 'above_p90'
+    percentile = 95
+  }
+  percentile = Math.max(1, Math.min(99, percentile))
+
+  const label = band === 'above_p90' ? (es ? 'Fuera de mercado' : 'Out of market') : labels[band]
+  const marketRange = `${eur(p25)}–${eur(p75)}`
+  const fmt = meta.formatLabel ? ` (${meta.formatLabel})` : ''
+
+  let detail: string
+  switch (band) {
+    case 'p25':
+      detail = es
+        ? `${eur(fee)} está por debajo del rango de mercado ${marketRange}${fmt}: ${labels.p25.toLowerCase()}.`
+        : `${eur(fee)} is below the market range ${marketRange}${fmt}: ${labels.p25.toLowerCase()}.`
+      break
+    case 'p50':
+      detail = es
+        ? `${eur(fee)} está dentro del rango de mercado ${marketRange}${fmt}, por debajo del precio de mercado (${eur(p50)}).`
+        : `${eur(fee)} is within the market range ${marketRange}${fmt}, below the market price (${eur(p50)}).`
+      break
+    case 'p75':
+      detail = es
+        ? `${eur(fee)} está dentro del rango de mercado ${marketRange}${fmt}, por encima del precio de mercado (${eur(p50)}) pero dentro del máximo justificable.`
+        : `${eur(fee)} is within the market range ${marketRange}${fmt}, above the market price (${eur(p50)}) but within the max justifiable.`
+      break
+    case 'p90':
+      detail = es
+        ? `${eur(fee)} supera el máximo justificable (${eur(p75)}); hasta ${eur(p90)} solo con justificación.`
+        : `${eur(fee)} exceeds the max justifiable (${eur(p75)}); up to ${eur(p90)} only with justification.`
+      break
+    default:
+      detail = es
+        ? `${eur(fee)} supera el techo de mercado de ${eur(p90)}. Buscar alternativas.`
+        : `${eur(fee)} exceeds the market ceiling of ${eur(p90)}. Consider alternatives.`
+  }
+
+  return { position, band, label, percentile, marketRange, detail, tier: meta.tier, format: meta.format, labels }
+}
+
+const FORMAT_LABEL: Record<BenchmarkLocale, Record<FeeFormat, string>> = {
+  es: { POST: 'post', REEL: 'reel', STORY: 'story', VIDEO: 'vídeo', INTEGRATION: 'integración', DEDICATED: 'vídeo dedicado', SHORT: 'short' },
+  en: { POST: 'post', REEL: 'reel', STORY: 'story', VIDEO: 'video', INTEGRATION: 'integration', DEDICATED: 'dedicated video', SHORT: 'short' },
+}
+
+export function benchmarkFormatLabel(format: FeeFormat, locale: BenchmarkLocale = 'es'): string {
+  return FORMAT_LABEL[locale][format] || format.toLowerCase()
+}
+
+/**
+ * Evaluate a fee against the seed market benchmarks (client-safe, no DB).
+ * Detail text in Spanish by default; pass locale 'en' for English.
  */
 export function evaluateFeeClient(
   fee: number,
   platform: string,
   followers: number,
-  format?: string
-): {
-  position: 'below_market' | 'fair' | 'above_market' | 'overpriced'
-  marketRange: string
-  detail: string
-} {
-  const benchmark = getQuickBenchmark(platform, followers, format)
-
-  let position: 'below_market' | 'fair' | 'above_market' | 'overpriced'
-
-  if (fee <= benchmark.feeMin) {
-    position = 'below_market'
-  } else if (fee <= benchmark.feeMax) {
-    position = 'fair'
-  } else if (fee <= benchmark.feeCeiling) {
-    position = 'above_market'
-  } else {
-    position = 'overpriced'
-  }
-
-  const marketRange = `€${benchmark.feeMin.toLocaleString()}-€${benchmark.feeMax.toLocaleString()}`
-
-  const detail = position === 'below_market' ? `€${fee.toLocaleString()} is below market (${marketRange}). Good value.` :
-                 position === 'fair' ? `€${fee.toLocaleString()} is within market range (${marketRange}).` :
-                 position === 'above_market' ? `€${fee.toLocaleString()} is above typical range (${marketRange}).` :
-                 `€${fee.toLocaleString()} exceeds market ceiling of €${benchmark.feeCeiling.toLocaleString()}.`
-
-  return { position, marketRange, detail }
+  format?: string | null,
+  config: BenchmarkConfig = DEFAULT_BENCHMARKS,
+  locale: BenchmarkLocale = 'es',
+  country?: string | null
+): FeeEvaluation {
+  const plat = normalizePlatform(platform)
+  const tier = detectTier(followers || 0)
+  const fmt = normalizeFormat(plat, format)
+  const { range } = getFeeRange(config, plat, tier, fmt, country)
+  return evaluateFeeAgainstRange(fee, range, getPercentileLabels(config, locale), locale, {
+    tier, format: fmt, formatLabel: benchmarkFormatLabel(fmt, locale),
+  })
 }

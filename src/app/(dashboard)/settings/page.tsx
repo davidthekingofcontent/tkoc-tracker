@@ -34,9 +34,113 @@ import {
   BarChart3,
   ChevronDown,
   ChevronRight,
+  Plus,
 } from "lucide-react"
 import { useTheme } from '@/components/theme-provider'
 import { cn } from '@/lib/utils'
+import {
+  DEFAULT_BENCHMARKS,
+  formatsFor,
+  type BenchmarkConfig,
+  type CommercialModifiers,
+  type CpmThreshold,
+  type FeeFormat,
+  type InternalBlendRules,
+  type Platform,
+  type Tier,
+} from '@/lib/benchmarks'
+
+// ---------- Benchmark labels (Ajustes → Benchmarks) ----------
+
+const BENCHMARK_PLATFORMS: Platform[] = ['INSTAGRAM', 'TIKTOK', 'YOUTUBE']
+const BENCHMARK_TIERS: Tier[] = ['NANO', 'MICRO', 'MID', 'MACRO', 'MEGA']
+const BENCHMARK_TIER_LABELS: Record<Tier, string> = {
+  NANO: 'Nano (< 10K)',
+  MICRO: 'Micro (10K-50K)',
+  MID: 'Mid (50K-250K)',
+  MACRO: 'Macro (250K-1M)',
+  MEGA: 'Mega (> 1M)',
+}
+const BENCHMARK_PLATFORM_LABELS: Record<Platform, string> = { INSTAGRAM: 'Instagram', TIKTOK: 'TikTok', YOUTUBE: 'YouTube' }
+const BENCHMARK_FORMAT_LABELS: Record<'es' | 'en', Record<FeeFormat, string>> = {
+  es: {
+    POST: 'Post',
+    REEL: 'Reel',
+    STORY: 'Story (1 unidad)',
+    VIDEO: 'Vídeo',
+    INTEGRATION: 'Integración (60-90 s)',
+    DEDICATED: 'Vídeo dedicado',
+    SHORT: 'Short',
+  },
+  en: {
+    POST: 'Post',
+    REEL: 'Reel',
+    STORY: 'Story (1 unit)',
+    VIDEO: 'Video',
+    INTEGRATION: 'Integration (60-90 s)',
+    DEDICATED: 'Dedicated video',
+    SHORT: 'Short',
+  },
+}
+
+type BenchmarkModifierField = { path: string; es: string; en: string }
+const BENCHMARK_MODIFIER_FIELDS: BenchmarkModifierField[] = [
+  { path: 'rights.d30', es: 'Derechos de uso 30 días', en: 'Usage rights 30 days' },
+  { path: 'rights.d90', es: 'Derechos de uso 90 días', en: 'Usage rights 90 days' },
+  { path: 'rights.d180', es: 'Derechos de uso 180 días', en: 'Usage rights 180 days' },
+  { path: 'rights.perpetual', es: 'Derechos perpetuos', en: 'Perpetual rights' },
+  { path: 'whitelisting', es: 'Whitelisting / Spark Ads', en: 'Whitelisting / Spark Ads' },
+  { path: 'exclusivity.d30', es: 'Exclusividad 30 días', en: 'Exclusivity 30 days' },
+  { path: 'exclusivity.d90', es: 'Exclusividad 90 días', en: 'Exclusivity 90 days' },
+  { path: 'exclusivity.d365', es: 'Exclusividad 12 meses', en: 'Exclusivity 12 months' },
+  { path: 'urgency', es: 'Urgencia (entrega < 7 días)', en: 'Urgency (delivery < 7 days)' },
+  { path: 'crossposting', es: 'Crossposting en 2ª plataforma', en: 'Crossposting on a 2nd platform' },
+  { path: 'bundle3', es: 'Bundle 3+ piezas (descuento, negativo)', en: 'Bundle 3+ pieces (discount, negative)' },
+  { path: 'recurring6m', es: 'Colaboración recurrente 6 meses (descuento, negativo)', en: 'Recurring collaboration 6 months (discount, negative)' },
+]
+
+function readModifier(m: CommercialModifiers, path: string): number {
+  const [a, b] = path.split('.')
+  const top = (m as unknown as Record<string, unknown>)[a]
+  if (b && top && typeof top === 'object') return Number((top as Record<string, number>)[b] ?? 0)
+  return Number(top ?? 0)
+}
+
+function writeModifier(m: CommercialModifiers, path: string, value: number): CommercialModifiers {
+  const [a, b] = path.split('.')
+  const next = JSON.parse(JSON.stringify(m)) as unknown as Record<string, unknown>
+  if (b) {
+    const top = { ...((next[a] as Record<string, number>) || {}) }
+    top[b] = value
+    next[a] = top
+  } else {
+    next[a] = value
+  }
+  return next as unknown as CommercialModifiers
+}
+
+type MarketRow = { code: string; multiplier: number }
+type BenchmarkMeta = { version: string; storyPackMultiplier: number; internalBlend: InternalBlendRules }
+type InternalStatSummary = { platform: Platform; tier: Tier; format: FeeFormat; n: number; updatedAt: string }
+
+function marketsToRows(markets: Record<string, number>): MarketRow[] {
+  return Object.entries(markets)
+    .map(([code, multiplier]) => ({ code, multiplier }))
+    .sort((a, b) => (a.code === 'ES' ? -1 : b.code === 'ES' ? 1 : a.code.localeCompare(b.code)))
+}
+
+function rowsToMarkets(rows: MarketRow[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const r of rows) {
+    const code = r.code.trim().toUpperCase()
+    if (/^[A-Z]{2}$/.test(code) && Number.isFinite(r.multiplier) && r.multiplier > 0) out[code] = r.multiplier
+  }
+  return out
+}
+
+function cloneDefaults(): BenchmarkConfig {
+  return JSON.parse(JSON.stringify(DEFAULT_BENCHMARKS)) as BenchmarkConfig
+}
 
 // ---------- Interfaces ----------
 
@@ -136,6 +240,8 @@ export default function SettingsPage() {
   const [currentUserRole, setCurrentUserRole] = useState<string>('')
   const [currentUserId, setCurrentUserId] = useState<string>('')
   const isAdmin = currentUserRole === 'ADMIN'
+  const L = (es: string, en: string) => (locale === 'es' ? es : en)
+  const percentileLabels = DEFAULT_BENCHMARKS.percentileLabels[locale === 'es' ? 'es' : 'en']
 
   // Profile state
   const [profileName, setProfileName] = useState(mockProfile.name)
@@ -188,8 +294,7 @@ export default function SettingsPage() {
   const [brandAssignmentSaving, setBrandAssignmentSaving] = useState<string | null>(null)
 
   // Benchmarks state
-  type FeeRangesData = Record<string, Record<string, Record<string, [number, number, number, number]>>>
-  type CpmRateEntry = { platform: string; tier: string; cpmTarget: number; cpmMax: number }
+  type FeeRangesData = BenchmarkConfig['feeRanges']
   type EmvRatesData = {
     cpmRates: Record<string, Record<string, number>>
     cpc: number
@@ -198,20 +303,26 @@ export default function SettingsPage() {
   storySequenceDecay?: number
 }
   const [benchmarkFeeRanges, setBenchmarkFeeRanges] = useState<FeeRangesData | null>(null)
-  const [benchmarkCpmRates, setBenchmarkCpmRates] = useState<CpmRateEntry[] | null>(null)
+  const [benchmarkCpmRates, setBenchmarkCpmRates] = useState<CpmThreshold[] | null>(null)
   const [benchmarkEmvRates, setBenchmarkEmvRates] = useState<EmvRatesData | null>(null)
+  const [benchmarkModifiers, setBenchmarkModifiers] = useState<CommercialModifiers | null>(null)
+  const [benchmarkMarkets, setBenchmarkMarkets] = useState<MarketRow[] | null>(null)
+  const [benchmarkMeta, setBenchmarkMeta] = useState<BenchmarkMeta | null>(null)
+  const [benchmarkInternalStats, setBenchmarkInternalStats] = useState<InternalStatSummary[]>([])
   const [benchmarksLoading, setBenchmarksLoading] = useState(true)
   const [benchmarkSaving, setBenchmarkSaving] = useState<string | null>(null)
   const [benchmarkSaveResult, setBenchmarkSaveResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [feeRangesOpen, setFeeRangesOpen] = useState(true)
   const [cpmThresholdsOpen, setCpmThresholdsOpen] = useState(false)
+  const [modifiersOpen, setModifiersOpen] = useState(false)
+  const [marketsOpen, setMarketsOpen] = useState(false)
   const [emvRatesOpen, setEmvRatesOpen] = useState(false)
 
   // Brand-specific benchmarks state
   const [benchmarkBrands, setBenchmarkBrands] = useState<{ id: string; name: string }[]>([])
   const [selectedBenchmarkBrand, setSelectedBenchmarkBrand] = useState<string>('')
   const [benchmarkBrandOverrides, setBenchmarkBrandOverrides] = useState<{
-    feeRanges: boolean; cpmRates: boolean; emvRates: boolean
+    feeRanges: boolean; cpmRates: boolean; emvRates: boolean; modifiers?: boolean
   } | null>(null)
 
   // ---------- Team Data Fetch ----------
@@ -291,10 +402,22 @@ export default function SettingsPage() {
       const res = await fetch(url)
       if (res.ok) {
         const data = await res.json()
-        setBenchmarkFeeRanges(data.feeRanges)
-        setBenchmarkCpmRates(data.cpmRates)
+        // The server returns the merged BenchmarkConfig the calculators consume;
+        // fall back to the legacy top-level keys / seed if an old server answers.
+        const cfg: BenchmarkConfig | null = data.config ?? null
+        const defaults = cloneDefaults()
+        setBenchmarkFeeRanges(cfg?.feeRanges ?? data.feeRanges ?? defaults.feeRanges)
+        setBenchmarkCpmRates(cfg?.cpmThresholds ?? data.cpmRates ?? defaults.cpmThresholds)
+        setBenchmarkModifiers(cfg?.modifiers ?? defaults.modifiers)
+        setBenchmarkMarkets(marketsToRows(cfg?.markets ?? defaults.markets))
+        setBenchmarkMeta({
+          version: cfg?.version ?? defaults.version,
+          storyPackMultiplier: cfg?.storyPackMultiplier ?? defaults.storyPackMultiplier,
+          internalBlend: cfg?.internalBlend ?? defaults.internalBlend,
+        })
+        setBenchmarkInternalStats(Array.isArray(data.internalStats) ? data.internalStats : [])
         setBenchmarkEmvRates(data.emvRates)
-        if (data.hasBrandOverrides) {
+        if (data.hasBrandOverrides && brandId) {
           setBenchmarkBrandOverrides(data.hasBrandOverrides)
         } else {
           setBenchmarkBrandOverrides(null)
@@ -356,34 +479,81 @@ export default function SettingsPage() {
     }
   }
 
-  async function saveBenchmark(key: string, value: unknown) {
-    setBenchmarkSaving(key)
+  /** PUT one or more benchmark keys in order; the spinner shows the first key. */
+  async function saveBenchmarks(entries: Array<[key: string, value: unknown]>): Promise<boolean> {
+    if (entries.length === 0) return true
+    setBenchmarkSaving(entries[0][0])
     setBenchmarkSaveResult(null)
     try {
-      const bodyObj: { key: string; value: unknown; brandId?: string } = { key, value }
-      if (selectedBenchmarkBrand) {
-        bodyObj.brandId = selectedBenchmarkBrand
-      }
-      const res = await fetch('/api/settings/benchmarks', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bodyObj),
-      })
-      if (res.ok) {
-        setBenchmarkSaveResult({ type: 'success', message: t.settings.savedSuccessfully })
-        setTimeout(() => setBenchmarkSaveResult(null), 3000)
-        // Refresh overrides info
+      for (const [key, value] of entries) {
+        const bodyObj: { key: string; value: unknown; brandId?: string } = { key, value }
         if (selectedBenchmarkBrand) {
-          fetchBenchmarks(selectedBenchmarkBrand)
+          bodyObj.brandId = selectedBenchmarkBrand
         }
-      } else {
-        setBenchmarkSaveResult({ type: 'error', message: t.settings.saveFailed })
+        const res = await fetch('/api/settings/benchmarks', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bodyObj),
+        })
+        if (!res.ok) {
+          let detail = ''
+          try { detail = (await res.json())?.error || '' } catch {}
+          setBenchmarkSaveResult({ type: 'error', message: detail ? `${t.settings.saveFailed}: ${detail}` : t.settings.saveFailed })
+          return false
+        }
       }
+      setBenchmarkSaveResult({ type: 'success', message: t.settings.savedSuccessfully })
+      setTimeout(() => setBenchmarkSaveResult(null), 3000)
+      // Refresh overrides info
+      if (selectedBenchmarkBrand) {
+        fetchBenchmarks(selectedBenchmarkBrand)
+      }
+      return true
     } catch {
       setBenchmarkSaveResult({ type: 'error', message: t.settings.saveFailed })
+      return false
     } finally {
       setBenchmarkSaving(null)
     }
+  }
+
+  function saveBenchmark(key: string, value: unknown) {
+    return saveBenchmarks([[key, value]])
+  }
+
+  /** Fee section saves the table and the pack multiplier / version (meta is global). */
+  function saveFeeSection() {
+    if (!benchmarkFeeRanges) return
+    const entries: Array<[string, unknown]> = [['benchmark_fee_ranges', benchmarkFeeRanges]]
+    if (benchmarkMeta) entries.push(['benchmark_meta', benchmarkMeta])
+    return saveBenchmarks(entries)
+  }
+
+  function saveMarketsSection() {
+    if (!benchmarkMarkets) return
+    return saveBenchmark('benchmark_markets', rowsToMarkets(benchmarkMarkets))
+  }
+
+  /** Reset one section to the seed (DEFAULT_BENCHMARKS) on screen; Save persists it. */
+  function resetBenchmarkSection(section: 'fees' | 'cpm' | 'modifiers' | 'markets') {
+    const d = cloneDefaults()
+    if (section === 'fees') {
+      setBenchmarkFeeRanges(d.feeRanges)
+      setBenchmarkMeta(prev => ({ version: d.version, storyPackMultiplier: d.storyPackMultiplier, internalBlend: prev?.internalBlend ?? d.internalBlend }))
+    } else if (section === 'cpm') {
+      setBenchmarkCpmRates(d.cpmThresholds)
+    } else if (section === 'modifiers') {
+      setBenchmarkModifiers(d.modifiers)
+    } else {
+      setBenchmarkMarkets(marketsToRows(d.markets))
+    }
+    setBenchmarkSaveResult({
+      type: 'success',
+      message: locale === 'es'
+        ? `Valores del seed ${d.version} cargados en pantalla. Pulsa Guardar para aplicarlos.`
+        : `Seed ${d.version} values loaded on screen. Click Save to apply them.`,
+    })
+    setTimeout(() => setBenchmarkSaveResult(null), 4000)
   }
 
   async function resetBrandBenchmarks() {
@@ -412,23 +582,64 @@ export default function SettingsPage() {
     }
   }
 
-  function updateFeeRange(platform: string, tier: string, format: string, index: number, value: number) {
+  function updateFeeRange(platform: Platform, tier: Tier, format: FeeFormat, index: number, value: number) {
     setBenchmarkFeeRanges(prev => {
       if (!prev) return prev
       const next = JSON.parse(JSON.stringify(prev)) as FeeRangesData
-      if (!next[platform]?.[tier]?.[format]) return prev
-      next[platform][tier][format][index] = value
+      if (!next[platform]) next[platform] = {} as FeeRangesData[Platform]
+      if (!next[platform][tier]) next[platform][tier] = {}
+      const cell = next[platform][tier][format] ?? DEFAULT_BENCHMARKS.feeRanges[platform][tier][format] ?? [0, 0, 0, 0]
+      const updated = [...cell] as [number, number, number, number]
+      updated[index] = value
+      next[platform][tier][format] = updated
       return next
     })
   }
 
-  function updateCpmRate(idx: number, field: 'cpmTarget' | 'cpmMax', value: number) {
+  function getCpmCell(platform: Platform, format: FeeFormat, tier: Tier): CpmThreshold | undefined {
+    return (benchmarkCpmRates || []).find(c => c.platform === platform && c.format === format && c.tier === tier)
+      || DEFAULT_BENCHMARKS.cpmThresholds.find(c => c.platform === platform && c.format === format && c.tier === tier)
+  }
+
+  function updateCpmCell(platform: Platform, format: FeeFormat, tier: Tier, field: 'cpmTarget' | 'cpmMax', value: number) {
     setBenchmarkCpmRates(prev => {
+      const list = prev ? [...prev] : []
+      const idx = list.findIndex(c => c.platform === platform && c.format === format && c.tier === tier)
+      if (idx >= 0) {
+        list[idx] = { ...list[idx], [field]: value }
+      } else {
+        const seed = DEFAULT_BENCHMARKS.cpmThresholds.find(c => c.platform === platform && c.format === format && c.tier === tier)
+        list.push({ platform, format, tier, cpmTarget: seed?.cpmTarget ?? 0, cpmMax: seed?.cpmMax ?? 0, [field]: value })
+      }
+      return list
+    })
+  }
+
+  function updateModifierPct(path: string, pct: number) {
+    setBenchmarkModifiers(prev => prev ? writeModifier(prev, path, Math.round(pct) / 100) : prev)
+  }
+
+  function updateMeta<K extends keyof BenchmarkMeta>(field: K, value: BenchmarkMeta[K]) {
+    setBenchmarkMeta(prev => prev ? { ...prev, [field]: value } : prev)
+  }
+
+  function updateMarketRow(idx: number, field: 'code' | 'multiplier', value: string | number) {
+    setBenchmarkMarkets(prev => {
       if (!prev) return prev
       const next = [...prev]
-      next[idx] = { ...next[idx], [field]: value }
+      next[idx] = field === 'code'
+        ? { ...next[idx], code: String(value).toUpperCase().slice(0, 2) }
+        : { ...next[idx], multiplier: Number(value) }
       return next
     })
+  }
+
+  function addMarketRow() {
+    setBenchmarkMarkets(prev => [...(prev || []), { code: '', multiplier: 1 }])
+  }
+
+  function removeMarketRow(idx: number) {
+    setBenchmarkMarkets(prev => prev ? prev.filter((_, i) => i !== idx) : prev)
   }
 
   function updateEmvCpmRate(platform: string, format: string, value: number) {
@@ -1549,7 +1760,7 @@ export default function SettingsPage() {
                 </div>
                 {selectedBenchmarkBrand && (
                   <>
-                    {benchmarkBrandOverrides && (benchmarkBrandOverrides.feeRanges || benchmarkBrandOverrides.cpmRates || benchmarkBrandOverrides.emvRates) ? (
+                    {benchmarkBrandOverrides && (benchmarkBrandOverrides.feeRanges || benchmarkBrandOverrides.cpmRates || benchmarkBrandOverrides.emvRates || benchmarkBrandOverrides.modifiers) ? (
                       <Badge variant="default">
                         {locale === 'es' ? 'Tiene configuraciones propias' : 'Has custom overrides'}
                       </Badge>
@@ -1589,7 +1800,7 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* ---- Section 1: Fee Ranges ---- */}
+            {/* ---- Section 1: Fee Ranges (p25/p50/p75/p90 per platform × tier × format) ---- */}
             <Card variant="elevated">
               <button
                 onClick={() => setFeeRangesOpen(!feeRangesOpen)}
@@ -1599,53 +1810,129 @@ export default function SettingsPage() {
                   {feeRangesOpen ? <ChevronDown className="h-5 w-5 text-purple-500" /> : <ChevronRight className="h-5 w-5 text-gray-400" />}
                   <div>
                     <h3 className="text-base font-semibold text-gray-900 dark:text-white">{t.settings.feeRanges}</h3>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t.settings.feeRangesDesc}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {L(
+                        'Fee por plataforma × tier × formato en percentiles del mercado: p25 Buen precio · p50 Precio de mercado · p75 Máximo justificable · p90 Excepcional. EUR sin IVA ni comisión de agencia.',
+                        'Fee per platform × tier × format as market percentiles: p25 Good price · p50 Market price · p75 Max justifiable · p90 Exceptional. EUR excl. VAT and agency commission.'
+                      )}
+                    </p>
                   </div>
                 </div>
+                {benchmarkMeta && (
+                  <Badge variant="default" className="shrink-0">{benchmarkMeta.version}</Badge>
+                )}
               </button>
               {feeRangesOpen && benchmarkFeeRanges && (
                 <CardContent>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-gray-200 dark:border-gray-700">
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.platform}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.tier}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.format}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.min}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.target}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.max}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.ceiling}</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                        {Object.entries(benchmarkFeeRanges).map(([platform, tiers]) =>
-                          Object.entries(tiers).map(([tier, formats]) =>
-                            Object.entries(formats).map(([format, values]) => (
-                              <tr key={`${platform}-${tier}-${format}`} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                                <td className="px-3 py-1.5 font-medium text-gray-900 dark:text-white">{platform}</td>
-                                <td className="px-3 py-1.5 text-gray-600 dark:text-gray-300">{tier}</td>
-                                <td className="px-3 py-1.5 text-gray-600 dark:text-gray-300">{format}</td>
-                                {[0, 1, 2, 3].map(i => (
-                                  <td key={i} className="px-3 py-1.5">
-                                    <Input
-                                      type="number"
-                                      value={values[i]}
-                                      onChange={e => updateFeeRange(platform, tier, format, i, Number(e.target.value))}
-                                      className="w-24 h-8 text-sm"
-                                    />
-                                  </td>
+                  {/* Version + story pack multiplier (global meta) */}
+                  <div className="flex flex-wrap items-end gap-4 mb-5 rounded-lg bg-gray-50 dark:bg-gray-800/50 p-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+                        {L('Versión de la configuración', 'Config version')}
+                      </label>
+                      <Input
+                        type="text"
+                        value={benchmarkMeta?.version ?? ''}
+                        onChange={e => updateMeta('version', e.target.value)}
+                        className="w-44 h-8 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+                        {L('Pack de 3 stories = story ×', 'Pack of 3 stories = story ×')}
+                      </label>
+                      <Input
+                        type="number"
+                        step="0.1"
+                        min="1"
+                        value={benchmarkMeta?.storyPackMultiplier ?? 2.5}
+                        onChange={e => updateMeta('storyPackMultiplier', Number(e.target.value))}
+                        className="w-24 h-8 text-sm"
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 flex-1 min-w-[240px]">
+                      {L(
+                        'Los seguidores solo eligen el tier; el fee se evalúa contra los percentiles del formato. Story = 1 unidad; un pack de 3 stories = story × 2,5 (los packs se negocian con descuento).',
+                        'Followers only pick the tier; the fee is evaluated against the format percentiles. Story = 1 unit; a pack of 3 stories = story × 2.5 (packs are negotiated with a discount).'
+                      )}
+                      {selectedBenchmarkBrand && (
+                        <span className="block mt-1 italic">{L('Versión y pack de stories son ajustes globales (no dependen de la marca).', 'Version and story pack are global settings (not brand-specific).')}</span>
+                      )}
+                    </p>
+                  </div>
+
+                  {BENCHMARK_PLATFORMS.map(platform => {
+                    const fmtLabels = BENCHMARK_FORMAT_LABELS[locale === 'es' ? 'es' : 'en']
+                    return (
+                      <div key={platform} className="mb-6 last:mb-0">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Badge variant={platform.toLowerCase() as 'instagram' | 'tiktok' | 'youtube'}>{BENCHMARK_PLATFORM_LABELS[platform]}</Badge>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            {formatsFor(platform).map(f => fmtLabels[f]).join(' · ')}
+                          </span>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b border-gray-200 dark:border-gray-700">
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.tier}</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.format}</th>
+                                {(['p25', 'p50', 'p75', 'p90'] as const).map(p => (
+                                  <th key={p} className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300">
+                                    <span className="uppercase">{percentileLabels[p]}</span>
+                                    <span className="ml-1 normal-case text-gray-400">({p})</span>
+                                  </th>
                                 ))}
                               </tr>
-                            ))
-                          )
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div className="flex justify-end mt-4">
+                            </thead>
+                            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                              {BENCHMARK_TIERS.map(tier =>
+                                formatsFor(platform).map((format, fi) => {
+                                  const values = benchmarkFeeRanges[platform]?.[tier]?.[format]
+                                    ?? DEFAULT_BENCHMARKS.feeRanges[platform][tier][format]
+                                    ?? [0, 0, 0, 0]
+                                  return (
+                                    <tr key={`${platform}-${tier}-${format}`} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                      <td className="px-3 py-1.5 font-medium text-gray-900 dark:text-white whitespace-nowrap">
+                                        {fi === 0 ? BENCHMARK_TIER_LABELS[tier] : ''}
+                                      </td>
+                                      <td className="px-3 py-1.5 text-gray-600 dark:text-gray-300 whitespace-nowrap">{fmtLabels[format]}</td>
+                                      {[0, 1, 2, 3].map(i => (
+                                        <td key={i} className="px-3 py-1.5">
+                                          <Input
+                                            type="number"
+                                            min="0"
+                                            step="10"
+                                            value={values[i]}
+                                            onChange={e => updateFeeRange(platform, tier, format, i, Number(e.target.value))}
+                                            className="w-24 h-8 text-sm"
+                                          />
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  )
+                                })
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )
+                  })}
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 mt-4">
                     <Button
-                      onClick={() => saveBenchmark('benchmark_fee_ranges', benchmarkFeeRanges)}
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => resetBenchmarkSection('fees')}
+                      className="gap-1.5"
+                      title={L(`Carga el seed ${DEFAULT_BENCHMARKS.version} en pantalla; pulsa Guardar para aplicarlo`, `Loads the ${DEFAULT_BENCHMARKS.version} seed on screen; click Save to apply it`)}
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      {L('Restaurar valores por defecto', 'Restore defaults')}
+                    </Button>
+                    <Button
+                      onClick={() => { void saveFeeSection() }}
                       disabled={benchmarkSaving === 'benchmark_fee_ranges'}
                       className="gap-2"
                     >
@@ -1661,7 +1948,50 @@ export default function SettingsPage() {
               )}
             </Card>
 
-            {/* ---- Section 2: CPM Thresholds ---- */}
+            {/* ---- Own negotiations (read-only) ---- */}
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-sm">
+              <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-white">{L('Negociaciones propias', 'Own negotiations')}</h4>
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {L(
+                    `Se mezclan con el seed por shrinkage (k = ${benchmarkMeta?.internalBlend.shrinkageK ?? DEFAULT_BENCHMARKS.internalBlend.shrinkageK}); a partir de ${benchmarkMeta?.internalBlend.minSample ?? DEFAULT_BENCHMARKS.internalBlend.minSample} negociaciones en una celda mandan los datos propios.`,
+                    `Blended with the seed by shrinkage (k = ${benchmarkMeta?.internalBlend.shrinkageK ?? DEFAULT_BENCHMARKS.internalBlend.shrinkageK}); from ${benchmarkMeta?.internalBlend.minSample ?? DEFAULT_BENCHMARKS.internalBlend.minSample} negotiations in a cell the own data dominates.`
+                  )}
+                </span>
+              </div>
+              {benchmarkInternalStats.filter(s => s.n > 0).length === 0 ? (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {L('Aún no hay negociaciones propias registradas: las calculadoras usan solo el seed.', 'No own negotiations recorded yet: the calculators use the seed only.')}
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {benchmarkInternalStats.filter(s => s.n > 0).map(s => {
+                    const minSample = benchmarkMeta?.internalBlend.minSample ?? DEFAULT_BENCHMARKS.internalBlend.minSample
+                    const fmtLabels = BENCHMARK_FORMAT_LABELS[locale === 'es' ? 'es' : 'en']
+                    const dominant = s.n >= minSample
+                    return (
+                      <span
+                        key={`${s.platform}-${s.tier}-${s.format}`}
+                        title={dominant ? L('Los datos propios dominan sobre el seed', 'Own data dominates the seed') : L('Aún pesa más el seed', 'The seed still weighs more')}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs',
+                          dominant
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400'
+                            : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300'
+                        )}
+                      >
+                        <span className="font-medium">
+                          {BENCHMARK_PLATFORM_LABELS[s.platform] ?? s.platform} · {(s.tier || '').charAt(0) + (s.tier || '').slice(1).toLowerCase()} · {fmtLabels[s.format] ?? s.format}
+                        </span>
+                        <span>{s.n} {L(s.n === 1 ? 'negociación' : 'negociaciones', s.n === 1 ? 'negotiation' : 'negotiations')}</span>
+                      </span>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* ---- Section 2: CPM thresholds (format × tier) ---- */}
             <Card variant="elevated">
               <button
                 onClick={() => setCpmThresholdsOpen(!cpmThresholdsOpen)}
@@ -1671,53 +2001,93 @@ export default function SettingsPage() {
                   {cpmThresholdsOpen ? <ChevronDown className="h-5 w-5 text-purple-500" /> : <ChevronRight className="h-5 w-5 text-gray-400" />}
                   <div>
                     <h3 className="text-base font-semibold text-gray-900 dark:text-white">{t.settings.cpmThresholds}</h3>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t.settings.cpmThresholdsDesc}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {L(
+                        'CPM = fee ÷ vistas medianas del formato × 1000; el CPM aceptable baja con el tamaño de la cuenta.',
+                        'CPM = fee ÷ median views of the format × 1000; the acceptable CPM falls with account size.'
+                      )}
+                    </p>
                   </div>
                 </div>
               </button>
               {cpmThresholdsOpen && benchmarkCpmRates && (
                 <CardContent>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                    {L(
+                      'Por celda: objetivo (verde, lo que aspiramos a pagar) y máximo (amarillo, tope aceptable; por encima, rojo). En EUR por 1.000 vistas.',
+                      'Per cell: target (green, what we aim to pay) and max (yellow, acceptable ceiling; above it, red). EUR per 1,000 views.'
+                    )}
+                  </p>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-gray-200 dark:border-gray-700">
                           <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.platform}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.tier}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.cpmTarget}</th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.cpmMax}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.format}</th>
+                          {BENCHMARK_TIERS.map(tier => (
+                            <th key={tier} className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase whitespace-nowrap">
+                              {BENCHMARK_TIER_LABELS[tier]}
+                              <span className="block normal-case text-[10px] text-gray-400 font-normal">{L('objetivo / máximo', 'target / max')}</span>
+                            </th>
+                          ))}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                        {benchmarkCpmRates.map((entry, idx) => (
-                          <tr key={`${entry.platform}-${entry.tier}`} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                            <td className="px-3 py-1.5 font-medium text-gray-900 dark:text-white">{entry.platform}</td>
-                            <td className="px-3 py-1.5 text-gray-600 dark:text-gray-300">{entry.tier}</td>
-                            <td className="px-3 py-1.5">
-                              <Input
-                                type="number"
-                                step="0.5"
-                                value={entry.cpmTarget}
-                                onChange={e => updateCpmRate(idx, 'cpmTarget', Number(e.target.value))}
-                                className="w-24 h-8 text-sm"
-                              />
-                            </td>
-                            <td className="px-3 py-1.5">
-                              <Input
-                                type="number"
-                                step="0.5"
-                                value={entry.cpmMax}
-                                onChange={e => updateCpmRate(idx, 'cpmMax', Number(e.target.value))}
-                                className="w-24 h-8 text-sm"
-                              />
-                            </td>
-                          </tr>
-                        ))}
+                        {BENCHMARK_PLATFORMS.map(platform =>
+                          formatsFor(platform).map((format, fi) => (
+                            <tr key={`${platform}-${format}`} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                              <td className="px-3 py-1.5 font-medium text-gray-900 dark:text-white whitespace-nowrap">
+                                {fi === 0 ? BENCHMARK_PLATFORM_LABELS[platform] : ''}
+                              </td>
+                              <td className="px-3 py-1.5 text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                                {BENCHMARK_FORMAT_LABELS[locale === 'es' ? 'es' : 'en'][format]}
+                              </td>
+                              {BENCHMARK_TIERS.map(tier => {
+                                const cell = getCpmCell(platform, format, tier)
+                                return (
+                                  <td key={tier} className="px-3 py-1.5">
+                                    <div className="flex items-center gap-1">
+                                      <Input
+                                        type="number"
+                                        step="0.5"
+                                        min="0"
+                                        value={cell?.cpmTarget ?? 0}
+                                        onChange={e => updateCpmCell(platform, format, tier, 'cpmTarget', Number(e.target.value))}
+                                        className="w-[68px] h-8 text-sm border-emerald-300 dark:border-emerald-800"
+                                        title={L('CPM objetivo', 'CPM target')}
+                                      />
+                                      <span className="text-gray-400 text-xs">/</span>
+                                      <Input
+                                        type="number"
+                                        step="0.5"
+                                        min="0"
+                                        value={cell?.cpmMax ?? 0}
+                                        onChange={e => updateCpmCell(platform, format, tier, 'cpmMax', Number(e.target.value))}
+                                        className="w-[68px] h-8 text-sm border-amber-300 dark:border-amber-800"
+                                        title={L('CPM máximo', 'CPM max')}
+                                      />
+                                    </div>
+                                  </td>
+                                )
+                              })}
+                            </tr>
+                          ))
+                        )}
                       </tbody>
                     </table>
                   </div>
-                  <div className="flex justify-end mt-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mt-4">
                     <Button
-                      onClick={() => saveBenchmark('benchmark_cpm_rates', benchmarkCpmRates)}
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => resetBenchmarkSection('cpm')}
+                      className="gap-1.5"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      {L('Restaurar valores por defecto', 'Restore defaults')}
+                    </Button>
+                    <Button
+                      onClick={() => { void saveBenchmark('benchmark_cpm_rates', benchmarkCpmRates) }}
                       disabled={benchmarkSaving === 'benchmark_cpm_rates'}
                       className="gap-2"
                     >
@@ -1733,7 +2103,183 @@ export default function SettingsPage() {
               )}
             </Card>
 
-            {/* ---- Section 3: EMV Rates ---- */}
+            {/* ---- Section 3: Commercial modifiers (applied on p50, additive) ---- */}
+            <Card variant="elevated">
+              <button
+                onClick={() => setModifiersOpen(!modifiersOpen)}
+                className="flex w-full items-center justify-between px-6 py-4 text-left"
+              >
+                <div className="flex items-center gap-3">
+                  {modifiersOpen ? <ChevronDown className="h-5 w-5 text-purple-500" /> : <ChevronRight className="h-5 w-5 text-gray-400" />}
+                  <div>
+                    <h3 className="text-base font-semibold text-gray-900 dark:text-white">{L('Modificadores comerciales', 'Commercial modifiers')}</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {L(
+                        'Recargos y descuentos en % sobre el precio de mercado (p50). Se suman entre sí y la calculadora los muestra desglosados.',
+                        'Surcharges and discounts in % on the market price (p50). They add up and the calculator itemizes them.'
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </button>
+              {modifiersOpen && benchmarkModifiers && (
+                <CardContent>
+                  <div className="grid gap-x-8 gap-y-2 sm:grid-cols-2">
+                    {BENCHMARK_MODIFIER_FIELDS.map(field => (
+                      <div key={field.path} className="flex items-center justify-between gap-3 py-1 border-b border-gray-100 dark:border-gray-800">
+                        <span className="text-sm text-gray-700 dark:text-gray-300">{locale === 'es' ? field.es : field.en}</span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Input
+                            type="number"
+                            step="5"
+                            value={Math.round(readModifier(benchmarkModifiers, field.path) * 100)}
+                            onChange={e => updateModifierPct(field.path, Number(e.target.value))}
+                            className="w-20 h-8 text-sm text-right"
+                          />
+                          <span className="text-xs text-gray-500 w-4">%</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mt-4">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => resetBenchmarkSection('modifiers')}
+                      className="gap-1.5"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      {L('Restaurar valores por defecto', 'Restore defaults')}
+                    </Button>
+                    <Button
+                      onClick={() => { void saveBenchmark('benchmark_modifiers', benchmarkModifiers) }}
+                      disabled={benchmarkSaving === 'benchmark_modifiers'}
+                      className="gap-2"
+                    >
+                      {benchmarkSaving === 'benchmark_modifiers' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Check className="h-4 w-4" />
+                      )}
+                      {t.common.save}
+                    </Button>
+                  </div>
+                </CardContent>
+              )}
+            </Card>
+
+            {/* ---- Section 4: Markets (country → price multiplier, global) ---- */}
+            <Card variant="elevated">
+              <button
+                onClick={() => setMarketsOpen(!marketsOpen)}
+                className="flex w-full items-center justify-between px-6 py-4 text-left"
+              >
+                <div className="flex items-center gap-3">
+                  {marketsOpen ? <ChevronDown className="h-5 w-5 text-purple-500" /> : <ChevronRight className="h-5 w-5 text-gray-400" />}
+                  <div>
+                    <h3 className="text-base font-semibold text-gray-900 dark:text-white">{L('Mercados', 'Markets')}</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {L(
+                        'Multiplicador de precio por país de la campaña o de la influencer (código ISO de 2 letras; ES = 1,0). Ajuste global, no depende de la marca.',
+                        'Price multiplier by campaign or influencer country (2-letter ISO code; ES = 1.0). Global setting, not brand-specific.'
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </button>
+              {marketsOpen && benchmarkMarkets && (
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <table className="w-full max-w-md text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200 dark:border-gray-700">
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{L('País', 'Country')}</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{L('Multiplicador', 'Multiplier')}</th>
+                          <th className="px-3 py-2" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                        {benchmarkMarkets.map((row, idx) => {
+                          const duplicate = row.code && benchmarkMarkets.some((r, i) => i !== idx && r.code === row.code)
+                          const invalid = row.code.length > 0 && !/^[A-Z]{2}$/.test(row.code)
+                          return (
+                            <tr key={idx} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                              <td className="px-3 py-1.5">
+                                <Input
+                                  type="text"
+                                  maxLength={2}
+                                  placeholder="ES"
+                                  value={row.code}
+                                  onChange={e => updateMarketRow(idx, 'code', e.target.value)}
+                                  className={cn('w-20 h-8 text-sm uppercase', (duplicate || invalid) && 'border-red-300 focus:border-red-500')}
+                                  title={duplicate ? L('Código repetido', 'Duplicate code') : invalid ? L('Usa 2 letras (ISO-3166)', 'Use 2 letters (ISO-3166)') : undefined}
+                                />
+                              </td>
+                              <td className="px-3 py-1.5">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-xs text-gray-400">×</span>
+                                  <Input
+                                    type="number"
+                                    step="0.05"
+                                    min="0.05"
+                                    value={row.multiplier}
+                                    onChange={e => updateMarketRow(idx, 'multiplier', e.target.value)}
+                                    className="w-24 h-8 text-sm"
+                                  />
+                                </div>
+                              </td>
+                              <td className="px-3 py-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => removeMarketRow(idx)}
+                                  className="text-gray-400 hover:text-red-500 transition-colors"
+                                  title={L('Quitar país', 'Remove country')}
+                                  aria-label={L('Quitar país', 'Remove country')}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <Button variant="secondary" size="sm" onClick={addMarketRow} className="gap-1.5 mt-3">
+                    <Plus className="h-3.5 w-3.5" />
+                    {L('Añadir país', 'Add country')}
+                  </Button>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                    {L('Los países sin multiplicador se tratan como ×1,0. Las filas con código vacío o repetido no se guardan.', 'Countries without a multiplier count as ×1.0. Rows with an empty or duplicate code are not saved.')}
+                  </p>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mt-4">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => resetBenchmarkSection('markets')}
+                      className="gap-1.5"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      {L('Restaurar valores por defecto', 'Restore defaults')}
+                    </Button>
+                    <Button
+                      onClick={() => { void saveMarketsSection() }}
+                      disabled={benchmarkSaving === 'benchmark_markets'}
+                      className="gap-2"
+                    >
+                      {benchmarkSaving === 'benchmark_markets' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Check className="h-4 w-4" />
+                      )}
+                      {t.common.save}
+                    </Button>
+                  </div>
+                </CardContent>
+              )}
+            </Card>
+
+            {/* ---- Section 5: EMV Rates (unchanged; see src/lib/emv.ts) ---- */}
             <Card variant="elevated">
               <button
                 onClick={() => setEmvRatesOpen(!emvRatesOpen)}

@@ -2,63 +2,115 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { DEFAULT_EMV_RATES as EMV_DEFAULTS, mergeEmvRates } from '@/lib/emv'
+import { mergeBenchmarkConfig } from '@/lib/benchmarks'
+import { loadBenchmarkConfig, loadInternalStats, invalidateBenchmarkCaches } from '@/lib/benchmarks-server'
 
-// Base keys we store in the settings table
-const BENCHMARK_BASE_KEYS = [
+/**
+ * Ajustes → Benchmarks.
+ *
+ * GET  (any authenticated user): the merged BenchmarkConfig the calculators
+ *      consume (loadBenchmarkConfig), the EMV rates, the own-negotiation
+ *      sample sizes and which keys a brand overrides. Legacy top-level keys
+ *      feeRanges / cpmRates / emvRates are kept for old client code.
+ * PUT  (ADMIN): { key, value, brandId? } — saves one Setting row and drops the
+ *      server caches. Brand-scoped keys get the `_{brandId}` suffix; markets
+ *      and meta are always global (loadBenchmarkConfig only reads them globally).
+ * DELETE (ADMIN): ?key=benchmark_x[&brandId=y] — removes an override (brand or
+ *      global). `key=all` with brandId removes every brand override.
+ */
+
+// Keys that may be scoped per brand (loadBenchmarkConfig reads `${key}_${brandId}` first).
+const BRAND_SCOPED_KEYS = [
   'benchmark_fee_ranges',
   'benchmark_cpm_rates',
   'benchmark_emv_rates',
+  'benchmark_modifiers',
 ] as const
 
-// Default fee ranges from market-benchmark-client.ts
-const DEFAULT_FEE_RANGES: Record<string, Record<string, Record<string, [number, number, number, number]>>> = {
-  INSTAGRAM: {
-    NANO:  { POST: [40, 80, 150, 250],   REEL: [60, 120, 200, 350],   STORY: [20, 50, 100, 150] },
-    MICRO: { POST: [120, 250, 450, 650],  REEL: [180, 350, 600, 900],  STORY: [60, 120, 200, 350] },
-    MID:   { POST: [350, 650, 1100, 1600], REEL: [450, 800, 1400, 2200], STORY: [150, 300, 500, 800] },
-    MACRO: { POST: [700, 1300, 2200, 3500], REEL: [900, 1700, 2800, 4500], STORY: [300, 600, 1000, 1600] },
-    MEGA:  { POST: [1800, 3500, 6000, 10000], REEL: [2500, 5000, 8000, 14000], STORY: [800, 1500, 2500, 4000] },
-  },
-  TIKTOK: {
-    NANO:  { VIDEO: [30, 70, 140, 220],   SHORT: [25, 55, 110, 180] },
-    MICRO: { VIDEO: [100, 220, 400, 600], SHORT: [80, 170, 300, 480] },
-    MID:   { VIDEO: [300, 600, 1000, 1500], SHORT: [220, 450, 750, 1100] },
-    MACRO: { VIDEO: [600, 1200, 2000, 3200], SHORT: [450, 900, 1500, 2400] },
-    MEGA:  { VIDEO: [1500, 3000, 5500, 9000], SHORT: [1100, 2200, 4000, 6500] },
-  },
-  YOUTUBE: {
-    NANO:  { VIDEO: [100, 200, 400, 600],   SHORT: [50, 100, 200, 350] },
-    MICRO: { VIDEO: [300, 550, 900, 1300],  SHORT: [150, 280, 450, 700] },
-    MID:   { VIDEO: [700, 1300, 2200, 3200], SHORT: [350, 650, 1100, 1600] },
-    MACRO: { VIDEO: [1500, 3000, 5000, 8000], SHORT: [700, 1400, 2300, 3800] },
-    MEGA:  { VIDEO: [3500, 7000, 12000, 20000], SHORT: [1500, 3000, 5000, 8500] },
-  },
-}
+// Keys that only exist globally.
+const GLOBAL_ONLY_KEYS = ['benchmark_markets', 'benchmark_meta'] as const
 
-// Default CPM thresholds from cpm-calculator.ts
-const DEFAULT_CPM_RATES = [
-  { platform: 'INSTAGRAM', tier: 'MACRO', cpmTarget: 16, cpmMax: 20 },
-  { platform: 'INSTAGRAM', tier: 'MEGA',  cpmTarget: 13, cpmMax: 17 },
-  { platform: 'TIKTOK',   tier: 'MACRO', cpmTarget: 9,  cpmMax: 11 },
-  { platform: 'TIKTOK',   tier: 'MEGA',  cpmTarget: 9,  cpmMax: 12 },
-]
+const BENCHMARK_BASE_KEYS = [...BRAND_SCOPED_KEYS, ...GLOBAL_ONLY_KEYS] as const
+type BenchmarkKey = (typeof BENCHMARK_BASE_KEYS)[number]
 
 // Default EMV rates — single source of truth in src/lib/emv.ts
 const DEFAULT_EMV_RATES = EMV_DEFAULTS
 
-/** Build the actual settings keys, optionally scoped to a brand */
-function getBenchmarkKeys(brandId?: string): string[] {
-  const suffix = brandId ? `_${brandId}` : ''
-  return BENCHMARK_BASE_KEYS.map(k => `${k}${suffix}`)
+function isBenchmarkKey(key: unknown): key is BenchmarkKey {
+  return typeof key === 'string' && (BENCHMARK_BASE_KEYS as readonly string[]).includes(key)
 }
 
-/** Check if a key (possibly brand-scoped) is a valid benchmark key */
-function isValidBenchmarkKey(key: string): boolean {
-  // Match base keys or brand-scoped keys like benchmark_fee_ranges_brand_123_abc
-  return BENCHMARK_BASE_KEYS.some(base => key === base || key.startsWith(`${base}_`))
+function isBrandScoped(key: BenchmarkKey): boolean {
+  return (BRAND_SCOPED_KEYS as readonly string[]).includes(key)
 }
 
-// GET — return current benchmark settings (from DB or defaults)
+/** Brand-scoped storage keys for a brand */
+function brandKeys(brandId: string): string[] {
+  return BRAND_SCOPED_KEYS.map(k => `${k}_${brandId}`)
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
+/**
+ * Light shape validation: reject values whose top-level shape is wrong and make
+ * sure mergeBenchmarkConfig can digest them (it is tolerant, so this mostly
+ * catches "sent the wrong key" mistakes rather than bad numbers).
+ */
+function validateValue(key: BenchmarkKey, value: unknown): string | null {
+  switch (key) {
+    case 'benchmark_fee_ranges': {
+      if (!isPlainObject(value)) return 'benchmark_fee_ranges must be an object { PLATFORM: { TIER: { FORMAT: [p25,p50,p75,p90] } } }'
+      mergeBenchmarkConfig({ feeRanges: value })
+      return null
+    }
+    case 'benchmark_cpm_rates': {
+      if (!Array.isArray(value)) return 'benchmark_cpm_rates must be a list [{ platform, format, tier, cpmTarget, cpmMax }]'
+      for (const row of value as unknown[]) {
+        if (!isPlainObject(row)) return 'benchmark_cpm_rates rows must be objects'
+        if (!Number.isFinite(Number(row.cpmTarget)) || !Number.isFinite(Number(row.cpmMax))) return 'cpmTarget and cpmMax must be numbers'
+        if (Number(row.cpmTarget) < 0 || Number(row.cpmMax) < 0) return 'CPM thresholds cannot be negative'
+      }
+      mergeBenchmarkConfig({ cpmThresholds: value })
+      return null
+    }
+    case 'benchmark_modifiers': {
+      if (!isPlainObject(value)) return 'benchmark_modifiers must be an object'
+      const numericLeaves: unknown[] = []
+      for (const v of Object.values(value)) {
+        if (isPlainObject(v)) numericLeaves.push(...Object.values(v))
+        else numericLeaves.push(v)
+      }
+      if (numericLeaves.some(v => typeof v !== 'number' || !Number.isFinite(v))) return 'benchmark_modifiers values must be numbers (shares, e.g. 0.25)'
+      mergeBenchmarkConfig({ modifiers: value })
+      return null
+    }
+    case 'benchmark_markets': {
+      if (!isPlainObject(value)) return 'benchmark_markets must be an object { ES: 1.0, PT: 0.8, ... }'
+      for (const [code, mult] of Object.entries(value)) {
+        if (!/^[A-Za-z]{2}$/.test(code)) return `Invalid country code "${code}" (ISO-3166 alpha-2 expected)`
+        if (typeof mult !== 'number' || !Number.isFinite(mult) || mult <= 0) return `Multiplier for ${code} must be a positive number`
+      }
+      mergeBenchmarkConfig({ markets: value })
+      return null
+    }
+    case 'benchmark_meta': {
+      if (!isPlainObject(value)) return 'benchmark_meta must be an object { version, storyPackMultiplier, internalBlend }'
+      if (value.version !== undefined && typeof value.version !== 'string') return 'version must be a string'
+      if (value.storyPackMultiplier !== undefined && (typeof value.storyPackMultiplier !== 'number' || !(value.storyPackMultiplier > 0))) return 'storyPackMultiplier must be a positive number'
+      if (value.internalBlend !== undefined && !isPlainObject(value.internalBlend)) return 'internalBlend must be an object { minSample, shrinkageK, trimPct }'
+      mergeBenchmarkConfig({ version: value.version, storyPackMultiplier: value.storyPackMultiplier, internalBlend: value.internalBlend })
+      return null
+    }
+    case 'benchmark_emv_rates': {
+      if (!isPlainObject(value)) return 'benchmark_emv_rates must be an object'
+      return null
+    }
+  }
+}
+
+// GET — merged config + EMV rates + own-negotiation sample sizes
 // Accepts optional ?brandId=xxx to load brand-specific benchmarks
 export async function GET(request: NextRequest) {
   try {
@@ -70,90 +122,48 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const brandId = searchParams.get('brandId') || undefined
 
-    const keys = getBenchmarkKeys(brandId)
+    const [config, stats, rows] = await Promise.all([
+      loadBenchmarkConfig(brandId),
+      loadInternalStats(),
+      prisma.setting.findMany({
+        where: { key: { in: [...BRAND_SCOPED_KEYS, ...(brandId ? brandKeys(brandId) : [])] } },
+      }),
+    ])
+    const byKey = new Map(rows.map(r => [r.key, r.value]))
+    const brandValue = (base: string) => (brandId ? byKey.get(`${base}_${brandId}`) : undefined)
 
-    // Read brand-specific benchmark settings from DB
-    const settings = await prisma.setting.findMany({
-      where: { key: { in: keys } },
-    })
-
-    const settingsMap: Record<string, string> = {}
-    for (const s of settings) {
-      settingsMap[s.key] = s.value
-    }
-
-    const suffix = brandId ? `_${brandId}` : ''
-
-    // If brand-specific, try brand keys first; if not found, fall back to global, then defaults
-    let feeRanges: unknown
-    let cpmRates: unknown
+    // EMV rates — same resolution as before: brand raw → global merged → defaults
+    // (global scope: raw stored value → defaults).
     let emvRates: unknown
-
     if (brandId) {
-      // Try brand-specific first
-      const brandFee = settingsMap[`benchmark_fee_ranges${suffix}`]
-      const brandCpm = settingsMap[`benchmark_cpm_rates${suffix}`]
-      const brandEmv = settingsMap[`benchmark_emv_rates${suffix}`]
-
-      // For brand-specific, also fetch global as fallback
-      const globalKeys = getBenchmarkKeys()
-      const globalSettings = await prisma.setting.findMany({
-        where: { key: { in: globalKeys } },
-      })
-      const globalMap: Record<string, string> = {}
-      for (const s of globalSettings) {
-        globalMap[s.key] = s.value
-      }
-
-      feeRanges = brandFee
-        ? JSON.parse(brandFee)
-        : globalMap['benchmark_fee_ranges']
-          ? JSON.parse(globalMap['benchmark_fee_ranges'])
-          : DEFAULT_FEE_RANGES
-
-      cpmRates = brandCpm
-        ? JSON.parse(brandCpm)
-        : globalMap['benchmark_cpm_rates']
-          ? JSON.parse(globalMap['benchmark_cpm_rates'])
-          : DEFAULT_CPM_RATES
-
+      const brandEmv = brandValue('benchmark_emv_rates')
+      const globalEmv = byKey.get('benchmark_emv_rates')
       emvRates = brandEmv
         ? JSON.parse(brandEmv)
-        : globalMap['benchmark_emv_rates']
-          ? mergeEmvRates(JSON.parse(globalMap['benchmark_emv_rates']))
+        : globalEmv
+          ? mergeEmvRates(JSON.parse(globalEmv))
           : DEFAULT_EMV_RATES
-
-      // Tell the client which keys have brand-specific overrides
-      return NextResponse.json({
-        feeRanges,
-        cpmRates,
-        emvRates,
-        brandId,
-        hasBrandOverrides: {
-          feeRanges: !!brandFee,
-          cpmRates: !!brandCpm,
-          emvRates: !!brandEmv,
-        },
-      })
+    } else {
+      const globalEmv = byKey.get('benchmark_emv_rates')
+      emvRates = globalEmv ? JSON.parse(globalEmv) : DEFAULT_EMV_RATES
     }
 
-    // Global (no brandId)
-    feeRanges = settingsMap['benchmark_fee_ranges']
-      ? JSON.parse(settingsMap['benchmark_fee_ranges'])
-      : DEFAULT_FEE_RANGES
-
-    cpmRates = settingsMap['benchmark_cpm_rates']
-      ? JSON.parse(settingsMap['benchmark_cpm_rates'])
-      : DEFAULT_CPM_RATES
-
-    emvRates = settingsMap['benchmark_emv_rates']
-      ? JSON.parse(settingsMap['benchmark_emv_rates'])
-      : DEFAULT_EMV_RATES
+    const hasBrandOverrides = {
+      feeRanges: !!brandValue('benchmark_fee_ranges'),
+      cpmRates: !!brandValue('benchmark_cpm_rates'),
+      modifiers: !!brandValue('benchmark_modifiers'),
+      emvRates: !!brandValue('benchmark_emv_rates'),
+    }
 
     return NextResponse.json({
-      feeRanges,
-      cpmRates,
+      config,
       emvRates,
+      internalStats: stats.map(s => ({ platform: s.platform, tier: s.tier, format: s.format, n: s.n, updatedAt: s.updatedAt })),
+      hasBrandOverrides,
+      brandId: brandId ?? null,
+      // Legacy top-level keys for old client code
+      feeRanges: config.feeRanges,
+      cpmRates: config.cpmThresholds,
     })
   } catch (error) {
     console.error('Failed to load benchmarks:', error)
@@ -161,8 +171,9 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// PUT — save benchmark overrides (ADMIN only)
-// Accepts optional brandId in body to save brand-specific benchmarks
+// PUT — save one benchmark key (ADMIN only)
+// Body: { key, value, brandId? }. Brand-scoped keys are stored as `${key}_${brandId}`;
+// benchmark_markets and benchmark_meta are always stored globally.
 export async function PUT(request: NextRequest) {
   try {
     const session = await getSession(request)
@@ -181,13 +192,22 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Missing key or value' }, { status: 400 })
     }
 
-    // Validate that the base key is valid
-    if (!BENCHMARK_BASE_KEYS.includes(key as typeof BENCHMARK_BASE_KEYS[number])) {
+    if (!isBenchmarkKey(key)) {
       return NextResponse.json({ error: 'Invalid benchmark key' }, { status: 400 })
     }
 
-    // Build the actual storage key (brand-scoped if brandId provided)
-    const storageKey = brandId ? `${key}_${brandId}` : key
+    let validationError: string | null = null
+    try {
+      validationError = validateValue(key, value)
+    } catch (err) {
+      validationError = err instanceof Error ? err.message : 'Invalid value'
+    }
+    if (validationError) {
+      return NextResponse.json({ error: validationError }, { status: 400 })
+    }
+
+    const scoped = !!brandId && isBrandScoped(key)
+    const storageKey = scoped ? `${key}_${brandId}` : key
     const serialized = JSON.stringify(value)
 
     await prisma.setting.upsert({
@@ -196,15 +216,19 @@ export async function PUT(request: NextRequest) {
       create: { key: storageKey, value: serialized },
     })
 
-    return NextResponse.json({ success: true, key: storageKey })
+    invalidateBenchmarkCaches()
+
+    return NextResponse.json({ success: true, key: storageKey, scope: scoped ? 'brand' : 'global' })
   } catch (error) {
     console.error('Failed to update benchmark:', error)
     return NextResponse.json({ error: 'Failed to update benchmark' }, { status: 500 })
   }
 }
 
-// DELETE — reset brand-specific benchmarks back to global (ADMIN only)
-// Accepts ?brandId=xxx&key=benchmark_fee_ranges (or 'all' to reset all)
+// DELETE — remove a benchmark override (ADMIN only)
+//   ?brandId=xxx&key=all                → all brand overrides back to global
+//   ?brandId=xxx&key=benchmark_fee_ranges → one brand override back to global
+//   ?key=benchmark_fee_ranges           → the global override back to the seed defaults
 export async function DELETE(request: NextRequest) {
   try {
     const session = await getSession(request)
@@ -220,26 +244,29 @@ export async function DELETE(request: NextRequest) {
     const brandId = searchParams.get('brandId')
     const key = searchParams.get('key') // specific key or 'all'
 
-    if (!brandId) {
-      return NextResponse.json({ error: 'brandId is required' }, { status: 400 })
+    if (!key) {
+      return NextResponse.json({ error: 'key parameter is required' }, { status: 400 })
     }
 
+    let deleted: string[]
     if (key === 'all') {
-      // Delete all brand-specific benchmark overrides
-      const brandKeys = getBenchmarkKeys(brandId)
-      await prisma.setting.deleteMany({
-        where: { key: { in: brandKeys } },
-      })
-    } else if (key && isValidBenchmarkKey(key)) {
-      const storageKey = `${key}_${brandId}`
-      await prisma.setting.deleteMany({
-        where: { key: storageKey },
-      })
+      if (!brandId) {
+        return NextResponse.json({ error: 'key=all requires brandId' }, { status: 400 })
+      }
+      deleted = brandKeys(brandId)
+    } else if (isBenchmarkKey(key)) {
+      if (brandId && !isBrandScoped(key)) {
+        return NextResponse.json({ error: `${key} is global and has no brand override` }, { status: 400 })
+      }
+      deleted = [brandId ? `${key}_${brandId}` : key]
     } else {
       return NextResponse.json({ error: 'Invalid key parameter' }, { status: 400 })
     }
 
-    return NextResponse.json({ success: true })
+    await prisma.setting.deleteMany({ where: { key: { in: deleted } } })
+    invalidateBenchmarkCaches()
+
+    return NextResponse.json({ success: true, deleted })
   } catch (error) {
     console.error('Failed to reset benchmark:', error)
     return NextResponse.json({ error: 'Failed to reset benchmark' }, { status: 500 })

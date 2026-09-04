@@ -20,7 +20,7 @@ import {
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { formatNumber } from '@/lib/utils'
 import { useI18n } from '@/i18n/context'
-import { calculateCPM, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
+import { calculateCPM, type CPMInput, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { CampaignNotesButton } from '@/components/campaign-notes'
 import { InfluencerHistoryButton } from '@/components/influencer-history'
@@ -35,6 +35,7 @@ import { RiskSignalsBadge } from '@/components/risk-signals-badge'
 import { SpainFitLink } from '@/components/spain-fit-badge'
 import { calculateCreatorScore } from '@/lib/creator-score'
 import { evaluateFeeClient } from '@/lib/market-benchmark-client'
+import { normalizeFormat, normalizePlatform, formatsFor, type DealTerms, type FeeFormat } from '@/lib/benchmarks'
 import { proxyImg } from '@/lib/proxy-image'
 import { useRole } from '@/hooks/use-role'
 import {
@@ -102,6 +103,15 @@ interface CampaignInfluencer {
   status: string
   portfolioUrl: string | null
   contentDelivered: boolean
+  // Deal terms (commercial modifiers evaluated against the benchmarks)
+  askingFee?: number | null
+  negotiatedFormat?: string | null
+  rightsDays?: number | null
+  exclusivityDays?: number | null
+  whitelisting?: boolean
+  urgent?: boolean
+  crossposting?: boolean
+  dealClosedAt?: string | null
   shippingName: string | null
   shippingAddress1: string | null
   shippingAddress2: string | null
@@ -127,6 +137,20 @@ interface CampaignInfluencer {
     standardFee: number | null
   }
 }
+
+/** Labels for the negotiated-format select (canonical FeeFormat values from '@/lib/benchmarks'). STORY = one story. */
+const FORMAT_LABELS: Record<FeeFormat, { es: string; en: string }> = {
+  POST: { es: 'Post', en: 'Post' },
+  REEL: { es: 'Reel', en: 'Reel' },
+  STORY: { es: 'Story (1 ud.)', en: 'Story (single)' },
+  VIDEO: { es: 'Vídeo', en: 'Video' },
+  INTEGRATION: { es: 'Integración', en: 'Integration' },
+  DEDICATED: { es: 'Vídeo dedicado', en: 'Dedicated video' },
+  SHORT: { es: 'Short', en: 'Short' },
+}
+
+/** Fields of a CampaignInfluencer that describe the commercial terms of the deal (PATCH payload). */
+type DealTermsPatch = Partial<Pick<CampaignInfluencer, 'askingFee' | 'negotiatedFormat' | 'rightsDays' | 'exclusivityDays' | 'whitelisting' | 'urgent' | 'crossposting'>>
 
 interface CampaignMedia {
   id: string
@@ -556,7 +580,8 @@ export default function CampaignDetailPage() {
   // CPM fee editing
   const [editingFee, setEditingFee] = useState<Record<string, string>>({})
   const [whitelistingAds, setWhitelistingAds] = useState<Record<string, boolean>>({})
-  const [exclusivity, setExclusivity] = useState<Record<string, boolean>>({})
+  const [exclusivity, setExclusivity] = useState<Record<string, number>>({}) // 0 = none, else 30 / 90 / 365 days
+  const [editingAskingFee, setEditingAskingFee] = useState<Record<string, string>>({})
   const [savingFee, setSavingFee] = useState<string | null>(null)
 
   // Edit campaign modal
@@ -649,6 +674,10 @@ export default function CampaignDetailPage() {
       if (res.ok) {
         const data = await res.json()
         setCampaign(data.campaign)
+        // Deal toggles start from what is persisted on each row
+        const loaded: CampaignInfluencer[] = data.campaign?.influencers || []
+        setWhitelistingAds(Object.fromEntries(loaded.map(ci => [ci.id, !!ci.whitelisting])))
+        setExclusivity(Object.fromEntries(loaded.map(ci => [ci.id, ci.exclusivityDays || 0])))
         setOverview(data.overview)
         setTimeline(data.timeline || [])
         // If exactly 20 media items, there may be more
@@ -1002,13 +1031,47 @@ export default function CampaignDetailPage() {
     setSavingFee(null)
   }
 
+  /** Persist commercial terms of a deal. Optimistic update so the calculators re-evaluate at once; the refetch confirms. */
+  async function handleSaveDealTerms(ci: CampaignInfluencer, patch: DealTermsPatch) {
+    setCampaign(prev => prev
+      ? { ...prev, influencers: prev.influencers.map(x => (x.id === ci.id ? { ...x, ...patch } : x)) }
+      : prev)
+    try {
+      await fetch(`/api/campaigns/${campaignId}/influencers`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ influencerId: ci.influencer.id, ...patch }),
+      })
+      await fetchCampaign()
+    } catch { /* ignore */ }
+  }
+
+  /** Negotiated format of the deal; default by platform: REEL / VIDEO / INTEGRATION. */
+  function negotiatedFormatFor(ci: CampaignInfluencer): FeeFormat {
+    return normalizeFormat(normalizePlatform(ci.influencer?.platform), ci.negotiatedFormat)
+  }
+
+  /** Commercial terms fed to the benchmarks (modifiers on p50). Local toggles win over the loaded row. */
+  function dealTermsFor(ci: CampaignInfluencer): DealTerms {
+    return {
+      rightsDays: ci.rightsDays ?? null,
+      whitelisting: whitelistingAds[ci.id] ?? ci.whitelisting ?? false,
+      exclusivityDays: (exclusivity[ci.id] ?? ci.exclusivityDays) || null,
+      urgent: ci.urgent ?? false,
+      crossposting: ci.crossposting ?? false,
+    }
+  }
+
   function getCPMForInfluencer(ci: CampaignInfluencer): CPMResult {
-    return calculateCPM({
+    // `format` selects the CPM threshold (format × tier) in the benchmark-aware calculator.
+    const input: CPMInput & { format?: string } = {
       fee: ci.cost || null,
       avgViews: ci.influencer?.avgViews || 0,
       platform: (ci.influencer?.platform || 'INSTAGRAM') as CPMPlatform,
       followers: ci.influencer?.followers || 0,
-    }, locale as 'en' | 'es')
+      format: negotiatedFormatFor(ci),
+    }
+    return calculateCPM(input, locale as 'en' | 'es')
   }
 
   function toggleInfluencerSort(field: SortField) {
@@ -1885,6 +1948,9 @@ export default function CampaignDetailPage() {
                       {locale === 'es'
                         ? 'El EMV es una estimacion del coste equivalente que habria supuesto obtener un alcance, interaccion e intencion similares mediante medios pagados. No representa ventas ni ROI directo.'
                         : 'EMV is an estimate of the equivalent cost of achieving similar reach, interaction, and intent through paid media. It does not represent sales or direct ROI.'}
+                      {locale === 'es'
+                        ? ' CPM EMV: post 10 €, reel 14 €, story 8 € (referencia de medios de pago 8 / 7 / 5 € × prima de contenido de creador).'
+                        : ' EMV CPM: post €10, reel €14, story €8 (paid-media reference €8 / €7 / €5 × creator-content premium).'}
                       {(overview.emvEstimatedStories || 0) > 0 && (
                         <span className="mt-1 block text-amber-700 dark:text-amber-400">
                           {locale === 'es'
@@ -3573,8 +3639,10 @@ export default function CampaignDetailPage() {
 
                       // Market benchmark for fee
                       const feeEval = (ci.agreedFee && ci.agreedFee > 0)
-                        ? evaluateFeeClient(ci.agreedFee, ci.influencer.platform, ci.influencer.followers || 0)
+                        ? evaluateFeeClient(ci.agreedFee, ci.influencer.platform, ci.influencer.followers || 0, negotiatedFormatFor(ci))
                         : null
+                      const isWhitelisted = whitelistingAds[ci.id] ?? ci.whitelisting ?? false
+                      const exclDays = (exclusivity[ci.id] ?? ci.exclusivityDays) || 0
                       const trafficColors = {
                         green: 'bg-green-100 text-green-800 border-green-300',
                         yellow: 'bg-amber-100 text-amber-800 border-amber-300',
@@ -3668,7 +3736,9 @@ export default function CampaignDetailPage() {
                           </div>
 
                           {/* CPM Evaluation Row */}
-                          <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-6 gap-3 items-end">
+                          <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-8 gap-3 items-end">
+                            {/* Deal inputs: agreed fee · asking fee · negotiated format */}
+                            <div className="col-span-3 grid grid-cols-3 gap-2 items-start">
                             {/* Fee Input */}
                             <div>
                               <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">
@@ -3702,6 +3772,48 @@ export default function CampaignDetailPage() {
                                   {locale === 'es' ? 'Tarifa estándar' : 'Standard rate'}: €{ci.influencer.standardFee.toLocaleString()}
                                 </p>
                               )}
+                            </div>
+
+                            {/* Asking fee (what the creator asked before negotiating) */}
+                            <div>
+                              <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">
+                                {locale === 'es' ? 'Fee solicitado (€)' : 'Asking fee (€)'}
+                              </label>
+                              <input
+                                type="number"
+                                value={editingAskingFee[ci.id] !== undefined ? editingAskingFee[ci.id] : (ci.askingFee ?? '')}
+                                onChange={(e) => canEdit && setEditingAskingFee(prev => ({ ...prev, [ci.id]: e.target.value }))}
+                                onBlur={() => {
+                                  if (!canEdit) return
+                                  const val = editingAskingFee[ci.id]
+                                  if (val !== undefined && val !== String(ci.askingFee ?? '')) {
+                                    handleSaveDealTerms(ci, { askingFee: parseFloat(val) || null })
+                                  }
+                                }}
+                                onKeyDown={(e) => { if (canEdit && e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                                readOnly={!canEdit}
+                                placeholder="0"
+                                title={locale === 'es' ? 'Lo que pidió la creadora antes de negociar' : 'What the creator asked before negotiating'}
+                                className={`w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 ${!canEdit ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                              />
+                            </div>
+
+                            {/* Negotiated format (drives the p25/p50/p75/p90 cell and the CPM threshold) */}
+                            <div>
+                              <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">
+                                {locale === 'es' ? 'Formato' : 'Format'}
+                              </label>
+                              <select
+                                value={negotiatedFormatFor(ci)}
+                                onChange={(e) => canEdit && handleSaveDealTerms(ci, { negotiatedFormat: e.target.value })}
+                                disabled={!canEdit}
+                                className={`w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 ${!canEdit ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'}`}
+                              >
+                                {formatsFor(normalizePlatform(ci.influencer.platform)).map(f => (
+                                  <option key={f} value={f}>{FORMAT_LABELS[f][locale === 'es' ? 'es' : 'en']}</option>
+                                ))}
+                              </select>
+                            </div>
                             </div>
 
                             {/* CPM Real */}
@@ -3782,6 +3894,9 @@ export default function CampaignDetailPage() {
                               avgComments={ci.influencer.avgComments || 0}
                               engagementRate={ci.influencer.engagementRate || 0}
                               fee={ci.agreedFee || ci.cost || 0}
+                              format={negotiatedFormatFor(ci)}
+                              country={campaign?.country ?? null}
+                              terms={dealTermsFor(ci)}
                             />
                             <RiskSignalsBadge
                               influencerData={{
@@ -3802,40 +3917,66 @@ export default function CampaignDetailPage() {
 
                           {/* Whitelisting / Exclusivity Toggles */}
                           <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center gap-4 flex-wrap">
-                            {/* Whitelisting / Spark Ads */}
-                            <label className="flex items-center gap-2 cursor-pointer select-none group">
+                            {/* Whitelisting / Spark Ads (persisted → modifier +40 % on p50) */}
+                            <label className={`flex items-center gap-2 select-none group ${canEdit ? 'cursor-pointer' : 'cursor-default'}`}>
                               <input
                                 type="checkbox"
-                                checked={whitelistingAds[ci.id] || false}
-                                onChange={() => setWhitelistingAds(prev => ({ ...prev, [ci.id]: !prev[ci.id] }))}
-                                className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500 cursor-pointer"
+                                checked={isWhitelisted}
+                                disabled={!canEdit}
+                                onChange={() => {
+                                  if (!canEdit) return
+                                  const next = !isWhitelisted
+                                  setWhitelistingAds(prev => ({ ...prev, [ci.id]: next }))
+                                  handleSaveDealTerms(ci, { whitelisting: next })
+                                }}
+                                className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500 cursor-pointer disabled:cursor-not-allowed"
                               />
                               <span className="text-xs text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors">
                                 {locale === 'es' ? 'Derechos Ads / Spark Ads' : 'Whitelisting / Spark Ads'}
                               </span>
-                              {whitelistingAds[ci.id] && (
+                              {isWhitelisted && (
                                 <span className="inline-flex items-center rounded-full bg-purple-100 dark:bg-purple-900/30 px-2 py-0.5 text-[10px] font-bold text-purple-700 dark:text-purple-300 uppercase tracking-wider">
                                   ADS
                                 </span>
                               )}
                             </label>
-                            {/* Exclusivity */}
-                            <label className="flex items-center gap-2 cursor-pointer select-none group">
-                              <input
-                                type="checkbox"
-                                checked={exclusivity[ci.id] || false}
-                                onChange={() => setExclusivity(prev => ({ ...prev, [ci.id]: !prev[ci.id] }))}
-                                className="h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500 cursor-pointer"
-                              />
-                              <span className="text-xs text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors">
-                                {locale === 'es' ? 'Exclusividad' : 'Exclusivity'}
-                              </span>
-                              {exclusivity[ci.id] && (
-                                <span className="inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:text-amber-300 uppercase tracking-wider">
-                                  EXCL
+                            {/* Exclusivity (persisted as exclusivityDays: 30 by default, 90 / 365 via the select) */}
+                            <div className="flex items-center gap-2">
+                              <label className={`flex items-center gap-2 select-none group ${canEdit ? 'cursor-pointer' : 'cursor-default'}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={exclDays > 0}
+                                  disabled={!canEdit}
+                                  onChange={() => {
+                                    if (!canEdit) return
+                                    const next = exclDays > 0 ? 0 : 30
+                                    setExclusivity(prev => ({ ...prev, [ci.id]: next }))
+                                    handleSaveDealTerms(ci, { exclusivityDays: next || null })
+                                  }}
+                                  className="h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500 cursor-pointer disabled:cursor-not-allowed"
+                                />
+                                <span className="text-xs text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors">
+                                  {locale === 'es' ? 'Exclusividad' : 'Exclusivity'}
                                 </span>
+                              </label>
+                              {exclDays > 0 && (
+                                <select
+                                  value={exclDays}
+                                  disabled={!canEdit}
+                                  onChange={(e) => {
+                                    if (!canEdit) return
+                                    const next = parseInt(e.target.value, 10) || 30
+                                    setExclusivity(prev => ({ ...prev, [ci.id]: next }))
+                                    handleSaveDealTerms(ci, { exclusivityDays: next })
+                                  }}
+                                  className="rounded-full border border-amber-300 bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:text-amber-300 uppercase tracking-wider outline-none focus:ring-1 focus:ring-amber-500 disabled:cursor-not-allowed"
+                                >
+                                  <option value={30}>{locale === 'es' ? '30 días' : '30 days'}</option>
+                                  <option value={90}>{locale === 'es' ? '90 días' : '90 days'}</option>
+                                  <option value={365}>{locale === 'es' ? '12 meses' : '12 months'}</option>
+                                </select>
                               )}
-                            </label>
+                            </div>
                           </div>
 
                           {/* Notes & History & Remove */}
@@ -4350,6 +4491,9 @@ export default function CampaignDetailPage() {
                             avgComments={ci.influencer.avgComments || 0}
                             engagementRate={ci.influencer.engagementRate || 0}
                             fee={ci.agreedFee || ci.cost || 0}
+                            format={negotiatedFormatFor(ci)}
+                            country={campaign?.country ?? null}
+                            terms={dealTermsFor(ci)}
                           />
                           <RiskSignalsBadge
                             influencerData={{

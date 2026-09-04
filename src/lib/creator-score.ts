@@ -1,3 +1,5 @@
+import { DEFAULT_BENCHMARKS, getCpmThreshold, normalizePlatform, type Tier } from '@/lib/benchmarks'
+
 /**
  * Creator Score™ — A single 0-100 index that synthesizes an influencer's
  * professional value for brand collaborations.
@@ -70,11 +72,7 @@ const ENGAGEMENT_BENCHMARKS: Record<string, Record<string, number>> = {
 }
 
 // CPM benchmarks (€ per 1000 views) by platform and tier
-const CPM_BENCHMARKS: Record<string, Record<string, number>> = {
-  INSTAGRAM: { NANO: 25, MICRO: 20, MID: 18, MACRO: 16, MEGA: 13 },
-  TIKTOK:    { NANO: 15, MICRO: 12, MID: 10, MACRO: 9, MEGA: 9 },
-  YOUTUBE:   { NANO: 30, MICRO: 25, MID: 20, MACRO: 18, MEGA: 15 },
-}
+// CPM reference comes from the shared benchmark seed (src/lib/benchmarks.ts), default format per platform.
 
 // ============ HELPERS ============
 
@@ -151,7 +149,7 @@ function calcValueEfficiency(input: CreatorScoreInput): { score: number; detail:
   }
 
   const tier = detectTier(input.followers)
-  const cpmBenchmark = CPM_BENCHMARKS[input.platform]?.[tier] || 15
+  const cpmBenchmark = getCpmThreshold(DEFAULT_BENCHMARKS, normalizePlatform(input.platform), tier as Tier)?.cpmTarget || 15
   const actualCPM = (fee / input.avgViews) * 1000
 
   // Ratio: lower CPM = better value. benchmark/actual = efficiency

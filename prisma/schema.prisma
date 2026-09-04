@@ -253,6 +253,16 @@ model CampaignInfluencer {
   portfolioUrl  String?   // UGC creator portfolio link
   contentDelivered Boolean @default(false) // Whether UGC content has been delivered
 
+  // Deal terms (commercial modifiers evaluated against the pricing benchmarks)
+  askingFee        Float?    // Fee the creator asked for (before negotiation)
+  negotiatedFormat String?   // POST | REEL | STORY | VIDEO | INTEGRATION | DEDICATED | SHORT
+  rightsDays       Int?      // Usage/paid rights: 30 / 90 / 180 / -1 (perpetual)
+  exclusivityDays  Int?      // Category exclusivity: 30 / 90 / 365
+  whitelisting     Boolean   @default(false) // Whitelisting / Spark Ads
+  urgent           Boolean   @default(false) // Delivery in < 7 days
+  crossposting     Boolean   @default(false) // Same content on a second platform
+  dealClosedAt     DateTime? // Set when agreedFee first becomes > 0
+
   // Shipping / Fulfillment data
   shippingName     String?   // Recipient name
   shippingAddress1 String?   // Address line 1

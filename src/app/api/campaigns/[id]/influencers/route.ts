@@ -23,6 +23,27 @@ function triggerMemberCapture(campaignId: string, influencerId: string, reason: 
     .catch(err => console.error(`[Campaign/Influencers] Capture (${reason}) failed:`, err instanceof Error ? err.message : err))
 }
 
+/** Negotiation formats accepted for CampaignInfluencer.negotiatedFormat (see FeeFormat in '@/lib/benchmarks'). */
+const DEAL_FORMATS = new Set(['POST', 'REEL', 'STORY', 'VIDEO', 'INTEGRATION', 'DEDICATED', 'SHORT'])
+
+/** Optional day count: null/'' clears; 0 → null; integers only (-1 allowed when `allowPerpetual`). undefined = invalid. */
+function parseDays(v: unknown, allowPerpetual = false): number | null | undefined {
+  if (v === null || v === '') return null
+  const n = typeof v === 'number' ? v : parseInt(String(v), 10)
+  if (!Number.isInteger(n)) return undefined
+  if (n === 0) return null
+  if (n < 0) return allowPerpetual && n === -1 ? -1 : undefined
+  return n
+}
+
+/** Optional non-negative money amount: null/'' clears; undefined = invalid. */
+function parseMoney(v: unknown): number | null | undefined {
+  if (v === null || v === '') return null
+  const n = typeof v === 'number' ? v : parseFloat(String(v))
+  if (!Number.isFinite(n) || n < 0) return undefined
+  return n
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -116,6 +137,8 @@ export async function PATCH(
       shippingName, shippingAddress1, shippingAddress2, shippingCity,
       shippingPostCode, shippingCountry, shippingPhone, shippingEmail,
       shippingProduct, shippingQty, shippingComments,
+      // Deal terms (commercial modifiers evaluated against the benchmarks)
+      askingFee, negotiatedFormat, rightsDays, exclusivityDays, whitelisting, urgent, crossposting,
     } = body
 
     if (!influencerId) {
@@ -126,6 +149,32 @@ export async function PATCH(
       return NextResponse.json({ error: 'Invalid status value' }, { status: 400 })
     }
 
+    // ---- Deal terms validation ----
+    let format: string | null | undefined
+    if (negotiatedFormat !== undefined) {
+      if (negotiatedFormat === null || negotiatedFormat === '') {
+        format = null
+      } else {
+        const f = String(negotiatedFormat).toUpperCase()
+        if (!DEAL_FORMATS.has(f)) {
+          return NextResponse.json({ error: `Invalid negotiatedFormat. Allowed: ${[...DEAL_FORMATS].join(', ')}` }, { status: 400 })
+        }
+        format = f
+      }
+    }
+    const rights = rightsDays !== undefined ? parseDays(rightsDays, true) : undefined
+    if (rightsDays !== undefined && rights === undefined) {
+      return NextResponse.json({ error: 'rightsDays must be an integer number of days (30/90/180) or -1 for perpetual' }, { status: 400 })
+    }
+    const excl = exclusivityDays !== undefined ? parseDays(exclusivityDays) : undefined
+    if (exclusivityDays !== undefined && excl === undefined) {
+      return NextResponse.json({ error: 'exclusivityDays must be a positive integer number of days (30/90/365)' }, { status: 400 })
+    }
+    const asking = askingFee !== undefined ? parseMoney(askingFee) : undefined
+    if (askingFee !== undefined && asking === undefined) {
+      return NextResponse.json({ error: 'askingFee must be a non-negative number' }, { status: 400 })
+    }
+
     const existing = await prisma.campaignInfluencer.findUnique({
       where: { campaignId_influencerId: { campaignId: id, influencerId } },
     })
@@ -134,11 +183,28 @@ export async function PATCH(
       return NextResponse.json({ error: 'Influencer not in this campaign' }, { status: 404 })
     }
 
+    // The deal closes the first time agreedFee goes from empty/0 to > 0 (never re-stamped).
+    const newAgreedFee = agreedFee !== undefined ? (parseFloat(agreedFee) || 0) : undefined
+    const closesDeal =
+      newAgreedFee !== undefined &&
+      newAgreedFee > 0 &&
+      !(existing.agreedFee && existing.agreedFee > 0) &&
+      !existing.dealClosedAt
+
     const updated = await prisma.campaignInfluencer.update({
       where: { id: existing.id },
       data: {
         ...(cost !== undefined && { cost: parseFloat(cost) || 0 }),
-        ...(agreedFee !== undefined && { agreedFee: parseFloat(agreedFee) || 0 }),
+        ...(newAgreedFee !== undefined && { agreedFee: newAgreedFee }),
+        ...(closesDeal && { dealClosedAt: new Date() }),
+        // Deal terms
+        ...(asking !== undefined && { askingFee: asking }),
+        ...(format !== undefined && { negotiatedFormat: format }),
+        ...(rights !== undefined && { rightsDays: rights }),
+        ...(excl !== undefined && { exclusivityDays: excl }),
+        ...(whitelisting !== undefined && { whitelisting: !!whitelisting }),
+        ...(urgent !== undefined && { urgent: !!urgent }),
+        ...(crossposting !== undefined && { crossposting: !!crossposting }),
         ...(notes !== undefined && { notes }),
         ...(status !== undefined && { status: status as InfluencerStatus }),
         ...(portfolioUrl !== undefined && { portfolioUrl: portfolioUrl || null }),

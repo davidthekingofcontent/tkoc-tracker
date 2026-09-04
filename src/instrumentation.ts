@@ -7,6 +7,9 @@ const EIGHT_HOURS_MS = 8 * 60 * 60 * 1000
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000
 const FIVE_MINUTES_MS = 5 * 60 * 1000
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
+/** Node timers cap at 2^31-1 ms (~24.8 days); a longer delay fires immediately. Long intervals are chained. */
+const MAX_TIMER_MS = 2_147_483_647
 
 interface CronJob {
   name: string
@@ -36,6 +39,7 @@ const CRON_JOBS: CronJob[] = [
   { name: 'live-capture-enrich', path: '/api/live-capture/enrich', intervalMs: FOUR_HOURS_MS,   initialDelayMs: 8 * 60 * 1000,        auth: 'header', method: 'POST' },
   { name: 'meta-sync',          path: '/api/cron/meta-sync',          intervalMs: TWO_HOURS_MS,        initialDelayMs: 12 * 60 * 1000, auth: 'header' },
   { name: 'meta-token-refresh', path: '/api/cron/meta-token-refresh', intervalMs: TWENTY_FOUR_HOURS_MS, initialDelayMs: 30 * 60 * 1000, auth: 'header' },
+  { name: 'benchmarks',         path: '/api/cron/benchmarks',         intervalMs: THIRTY_DAYS_MS,       initialDelayMs: 40 * 60 * 1000, auth: 'header' }, // own negotiations → benchmark cells (cheap, idempotent)
 ]
 
 // Per-job failure tracking. State is per-process and resets on every deploy/restart — acceptable.
@@ -151,6 +155,28 @@ async function executeCron(job: CronJob) {
   }
 }
 
+/**
+ * setInterval that survives intervals above Node's 2^31-1 ms cap by chaining
+ * setTimeouts (a plain setInterval(fn, 30 days) would fire every 1 ms).
+ */
+function scheduleEvery(intervalMs: number, fn: () => void) {
+  if (intervalMs <= MAX_TIMER_MS) {
+    setInterval(fn, intervalMs)
+    return
+  }
+  const tick = (remaining: number) => {
+    setTimeout(() => {
+      if (remaining > MAX_TIMER_MS) {
+        tick(remaining - MAX_TIMER_MS)
+      } else {
+        fn()
+        tick(intervalMs)
+      }
+    }, Math.min(remaining, MAX_TIMER_MS))
+  }
+  tick(intervalMs)
+}
+
 export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
   if (process.env.NODE_ENV !== 'production') return
@@ -164,10 +190,10 @@ export async function register() {
       executeCron(job)
     }, job.initialDelayMs)
 
-    // Recurring interval
-    setInterval(() => {
+    // Recurring interval (safe for intervals longer than Node's timer cap)
+    scheduleEvery(job.intervalMs, () => {
       executeCron(job)
-    }, job.intervalMs)
+    })
 
     console.log(`[TKOC Cron] Scheduled: ${job.name} — initial in ${Math.round(job.initialDelayMs / 60000)}min, then every ${Math.round(job.intervalMs / 3600000)}h`)
   }

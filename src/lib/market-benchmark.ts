@@ -1,314 +1,238 @@
 /**
- * Market Benchmark™ — Reference pricing data for influencer collaborations.
+ * Market Benchmark™ — Reference pricing data for influencer collaborations (server).
  *
- * Provides market-standard pricing ranges by:
- * - Platform (Instagram, TikTok, YouTube)
- * - Tier (Nano, Micro, Mid, Macro, Mega)
- * - Format (Post, Reel, Story, Video, Short)
- * - Country (Spain, etc.)
+ * Source of truth: the shared benchmark config (src/lib/benchmarks.ts, seed
+ * "SPAIN 2026 v1", editable in Ajustes → Benchmarks, optionally per brand),
+ * blended with the agency's OWN negotiations per platform × tier × format
+ * (Setting benchmark_internal_stats, written by the recompute job) using
+ * shrinkage: blended = (n·own + k·seed) / (n + k), k = 10, min sample 20.
  *
- * Data sources:
- * 1. Built-in benchmark tables (curated from industry data)
- * 2. Historical campaign data (from campaigns managed in the platform)
+ * The blend happens on the Spain (×1.0) seed and the market multiplier of the
+ * requested country is applied afterwards, because own negotiations are stored
+ * in the currency/market they were closed in (Spain).
  *
- * Over time, as more campaigns are tracked, the benchmarks become
- * more accurate and platform-specific.
+ * Followers only pick the tier; fees are evaluated per format:
+ *   Instagram POST / REEL / STORY (ONE story), TikTok VIDEO,
+ *   YouTube INTEGRATION / DEDICATED / SHORT (legacy YouTube VIDEO = INTEGRATION).
  */
 
-import { prisma } from './db'
+import {
+  DEFAULT_BENCHMARKS,
+  blendFeeRange,
+  detectTier,
+  getCpmThreshold,
+  getFeeRange,
+  marketMultiplier,
+  normalizeFormat,
+  normalizePlatform,
+  type BenchmarkConfig,
+  type FeeFormat,
+  type FeeRange,
+  type PercentileLabels,
+  type Platform,
+  type Tier,
+} from './benchmarks'
+import { findCell, loadBenchmarkConfig, loadInternalStats } from './benchmarks-server'
+import {
+  benchmarkFormatLabel,
+  evaluateFeeAgainstRange,
+  getPercentileLabels,
+  getQuickBenchmark as getQuickBenchmarkClient,
+  type BenchmarkLocale,
+  type FeeEvaluation,
+  type QuickBenchmark,
+} from './market-benchmark-client'
+
+export type { BenchmarkLocale, FeeEvaluation, QuickBenchmark } from './market-benchmark-client'
 
 // ============ TYPES ============
 
 export interface BenchmarkQuery {
-  platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
+  platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE' | string
   followers: number
-  format?: string           // POST, REEL, STORY, VIDEO, SHORT
-  country?: string          // ISO code e.g. "ES"
+  format?: string | null    // POST, REEL, STORY, VIDEO, INTEGRATION, DEDICATED, SHORT (normalized)
+  country?: string | null   // ISO code e.g. "ES" → market multiplier
+  /** Brand whose benchmark overrides should be used (Setting suffix _{brandId}). */
+  brandId?: string | null
+  locale?: BenchmarkLocale
 }
 
 export interface BenchmarkResult {
-  tier: string
-  platform: string
-  format: string | null
+  tier: Tier
+  platform: Platform
+  format: FeeFormat
 
-  // Fee range (€)
-  feeMin: number            // 25th percentile
-  feeTarget: number         // 50th percentile (median)
-  feeMax: number            // 75th percentile
-  feeCeiling: number        // 90th percentile (above this = clearly overpriced)
+  // Fee range (€) — after own-negotiation blend and market multiplier
+  feeMin: number            // p25 — "Buen precio"
+  feeTarget: number         // p50 — "Precio de mercado"
+  feeMax: number            // p75 — "Máximo justificable"
+  feeCeiling: number        // p90 — "Excepcional (solo con justificación)"
 
-  // CPM range (€ per 1000 views)
-  cpmMin: number
+  // CPM range (€ per 1000 median views of the format)
+  cpmMin: number            // 0.6 × target (orientative floor)
   cpmTarget: number
   cpmMax: number
 
   // Context
-  dataPoints: number        // How many data points this is based on
-  source: 'benchmark' | 'historical' | 'blended'  // Where the data comes from
-  confidence: 'high' | 'medium' | 'low'          // How reliable is this
-  trend?: 'rising' | 'stable' | 'declining'       // Price trend
+  dataPoints: number        // Own negotiations in this cell (n)
+  source: 'seed' | 'blended' | 'internal'
+  confidence: 'high' | 'medium' | 'low'
+  trend?: 'rising' | 'stable' | 'declining'
   lastUpdated: string       // ISO date
-}
 
-// ============ BUILT-IN BENCHMARKS ============
-// Curated from industry reports, agency data, and market analysis
-// Format: [p25, p50, p75, p90]
-
-const FEE_BENCHMARKS: Record<string, Record<string, Record<string, [number, number, number, number]>>> = {
-  INSTAGRAM: {
-    NANO:  { POST: [40, 80, 150, 250],   REEL: [60, 120, 200, 350],   STORY: [20, 50, 100, 150] },
-    MICRO: { POST: [120, 250, 450, 650],  REEL: [180, 350, 600, 900],  STORY: [60, 120, 200, 350] },
-    MID:   { POST: [350, 650, 1100, 1600], REEL: [450, 800, 1400, 2200], STORY: [150, 300, 500, 800] },
-    MACRO: { POST: [700, 1300, 2200, 3500], REEL: [900, 1700, 2800, 4500], STORY: [300, 600, 1000, 1600] },
-    MEGA:  { POST: [1800, 3500, 6000, 10000], REEL: [2500, 5000, 8000, 14000], STORY: [800, 1500, 2500, 4000] },
-  },
-  TIKTOK: {
-    NANO:  { VIDEO: [30, 70, 140, 220],   SHORT: [25, 55, 110, 180] },
-    MICRO: { VIDEO: [100, 220, 400, 600], SHORT: [80, 170, 300, 480] },
-    MID:   { VIDEO: [300, 600, 1000, 1500], SHORT: [220, 450, 750, 1100] },
-    MACRO: { VIDEO: [600, 1200, 2000, 3200], SHORT: [450, 900, 1500, 2400] },
-    MEGA:  { VIDEO: [1500, 3000, 5500, 9000], SHORT: [1100, 2200, 4000, 6500] },
-  },
-  YOUTUBE: {
-    NANO:  { VIDEO: [100, 200, 400, 600],   SHORT: [50, 100, 200, 350] },
-    MICRO: { VIDEO: [300, 550, 900, 1300],  SHORT: [150, 280, 450, 700] },
-    MID:   { VIDEO: [700, 1300, 2200, 3200], SHORT: [350, 650, 1100, 1600] },
-    MACRO: { VIDEO: [1500, 3000, 5000, 8000], SHORT: [700, 1400, 2300, 3800] },
-    MEGA:  { VIDEO: [3500, 7000, 12000, 20000], SHORT: [1500, 3000, 5000, 8500] },
-  },
-}
-
-const CPM_BENCHMARKS: Record<string, Record<string, [number, number, number]>> = {
-  INSTAGRAM: { NANO: [15, 25, 40], MICRO: [12, 20, 30], MID: [10, 18, 28], MACRO: [8, 16, 25], MEGA: [6, 13, 22] },
-  TIKTOK:    { NANO: [8, 15, 25], MICRO: [6, 12, 20], MID: [5, 10, 18], MACRO: [4, 9, 15], MEGA: [3, 9, 14] },
-  YOUTUBE:   { NANO: [12, 22, 35], MICRO: [10, 18, 30], MID: [8, 15, 25], MACRO: [6, 13, 22], MEGA: [5, 11, 18] },
-}
-
-// ============ TIER DETECTION ============
-
-function detectTier(followers: number): string {
-  if (followers < 10_000) return 'NANO'
-  if (followers < 50_000) return 'MICRO'
-  if (followers < 250_000) return 'MID'
-  if (followers < 1_000_000) return 'MACRO'
-  return 'MEGA'
+  // Benchmark metadata
+  version: string
+  labels: PercentileLabels
+  /** Market multiplier applied (ES = 1.0). */
+  marketMultiplier: number
+  country: string | null
+  /** Seed range (Spain, before blend and market multiplier). */
+  seedRange: FeeRange
+  /** Weight of the own data in the blend (n / (n + k)). */
+  blendWeight: number
+  /** Story pack of 3 = one story × this. */
+  storyPackMultiplier: number
 }
 
 // ============ MAIN FUNCTIONS ============
 
 /**
- * Get market benchmark for a specific query.
- * Combines built-in benchmarks with historical data from the platform.
+ * Market benchmark for a query: merged config (global + brand) blended with the
+ * agency's own negotiation cell, then scaled to the requested market.
  */
 export async function getMarketBenchmark(query: BenchmarkQuery): Promise<BenchmarkResult> {
-  const tier = detectTier(query.followers)
-  const format = query.format || getDefaultFormat(query.platform)
+  const [config, stats] = await Promise.all([loadBenchmarkConfig(query.brandId), loadInternalStats()])
+  const platform = normalizePlatform(query.platform)
+  const tier = detectTier(query.followers || 0)
+  const format = normalizeFormat(platform, query.format)
+  const locale: BenchmarkLocale = query.locale === 'en' ? 'en' : 'es'
+  const country = query.country ? query.country.toUpperCase() : null
 
-  // 1. Get built-in benchmark
-  const builtIn = getBuiltInBenchmark(query.platform, tier, format)
+  // 1. Seed range for Spain (multiplier 1) — the blend must happen in the same market as the own data
+  const seed = getFeeRange(config, platform, tier, format)
 
-  // 2. Try to enrich with historical data from campaigns
-  const historical = await getHistoricalBenchmark(query.platform, tier, format, query.country)
+  // 2. Blend with the own-negotiation cell by shrinkage
+  const cell = findCell(stats, platform, tier, format)
+  const blended = blendFeeRange(seed.range, cell, config.internalBlend)
 
-  // 3. Blend if historical data is available
-  if (historical && historical.dataPoints >= 5) {
-    return blendBenchmarks(builtIn, historical, tier, query.platform, format)
+  // 3. Market multiplier for the requested country
+  const multiplier = marketMultiplier(config, country)
+  const range = blended.range.map(v => Math.round(v * multiplier)) as FeeRange
+
+  // 4. CPM acceptance for this format × tier
+  const cpm = getCpmThreshold(config, platform, tier, format)
+  const cpmTarget = cpm?.cpmTarget ?? 15
+  const cpmMax = cpm?.cpmMax ?? 25
+
+  const confidence: BenchmarkResult['confidence'] =
+    blended.source === 'internal' ? 'high'
+      : blended.source === 'blended' ? (blended.n >= config.internalBlend.minSample ? 'high' : 'medium')
+        : 'medium'
+
+  return {
+    tier,
+    platform,
+    format,
+    feeMin: range[0],
+    feeTarget: range[1],
+    feeMax: range[2],
+    feeCeiling: range[3],
+    cpmMin: Math.round(cpmTarget * 0.6 * 10) / 10,
+    cpmTarget,
+    cpmMax,
+    dataPoints: blended.n,
+    source: blended.source,
+    confidence,
+    trend: 'stable',
+    lastUpdated: (cell?.updatedAt || new Date().toISOString()).split('T')[0],
+    version: config.version,
+    labels: getPercentileLabels(config, locale),
+    marketMultiplier: multiplier,
+    country,
+    seedRange: seed.range,
+    blendWeight: blended.weight,
+    storyPackMultiplier: config.storyPackMultiplier,
   }
-
-  return builtIn
 }
 
 /**
- * Quick benchmark without async DB query (uses built-in data only).
+ * Quick benchmark without async DB query (seed config only, no own-negotiation blend).
+ * Sync; pass a loaded config to honour Ajustes overrides.
  */
-export function getQuickBenchmark(platform: string, followers: number, format?: string): BenchmarkResult {
-  const tier = detectTier(followers)
-  const fmt = format || getDefaultFormat(platform)
-  return getBuiltInBenchmark(platform, tier, fmt)
+export function getQuickBenchmark(
+  platform: string,
+  followers: number,
+  format?: string | null,
+  config: BenchmarkConfig = DEFAULT_BENCHMARKS,
+  country?: string | null,
+  locale: BenchmarkLocale = 'es'
+): BenchmarkResult {
+  const q: QuickBenchmark = getQuickBenchmarkClient(platform, followers, format, config, country, locale)
+  const cpmTarget = q.cpmTarget ?? 15
+  const cpmMax = q.cpmMax ?? 25
+  const seed = getFeeRange(config, q.platform, q.tier, q.format)
+  return {
+    tier: q.tier,
+    platform: q.platform,
+    format: q.format,
+    feeMin: q.feeMin,
+    feeTarget: q.feeTarget,
+    feeMax: q.feeMax,
+    feeCeiling: q.feeCeiling,
+    cpmMin: Math.round(cpmTarget * 0.6 * 10) / 10,
+    cpmTarget,
+    cpmMax,
+    dataPoints: 0,
+    source: 'seed',
+    confidence: 'medium',
+    trend: 'stable',
+    lastUpdated: new Date().toISOString().split('T')[0],
+    version: q.version,
+    labels: q.labels,
+    marketMultiplier: q.marketMultiplier,
+    country: q.country,
+    seedRange: seed.range,
+    blendWeight: 0,
+    storyPackMultiplier: config.storyPackMultiplier,
+  }
 }
 
 /**
- * Get benchmark context for a specific fee — is it fair?
+ * Is this fee fair? Sync evaluation against the seed range (pass a loaded
+ * config to honour Ajustes overrides). Texts in Spanish by default, English
+ * with locale 'en'.
  */
 export function evaluateFee(
   fee: number,
   platform: string,
   followers: number,
-  format?: string
-): {
-  position: 'below_market' | 'fair' | 'above_market' | 'overpriced'
-  percentile: number
-  marketRange: string
-  detail: string
-} {
-  const benchmark = getQuickBenchmark(platform, followers, format)
-
-  let position: 'below_market' | 'fair' | 'above_market' | 'overpriced'
-  let percentile: number
-
-  if (fee <= benchmark.feeMin) {
-    position = 'below_market'
-    percentile = Math.round((fee / benchmark.feeMin) * 25)
-  } else if (fee <= benchmark.feeTarget) {
-    position = 'fair'
-    percentile = 25 + Math.round(((fee - benchmark.feeMin) / (benchmark.feeTarget - benchmark.feeMin)) * 25)
-  } else if (fee <= benchmark.feeMax) {
-    position = 'fair'
-    percentile = 50 + Math.round(((fee - benchmark.feeTarget) / (benchmark.feeMax - benchmark.feeTarget)) * 25)
-  } else if (fee <= benchmark.feeCeiling) {
-    position = 'above_market'
-    percentile = 75 + Math.round(((fee - benchmark.feeMax) / (benchmark.feeCeiling - benchmark.feeMax)) * 15)
-  } else {
-    position = 'overpriced'
-    percentile = 95
-  }
-
-  percentile = Math.max(1, Math.min(99, percentile))
-  const marketRange = `€${benchmark.feeMin.toLocaleString()}-€${benchmark.feeMax.toLocaleString()}`
-
-  const detail = position === 'below_market' ? `€${fee.toLocaleString()} is below the market range of ${marketRange}. Good value.` :
-                 position === 'fair' ? `€${fee.toLocaleString()} falls within the market range of ${marketRange}.` :
-                 position === 'above_market' ? `€${fee.toLocaleString()} is above the typical range of ${marketRange}.` :
-                 `€${fee.toLocaleString()} exceeds the market ceiling of €${benchmark.feeCeiling.toLocaleString()}. Consider alternatives.`
-
-  return { position, percentile, marketRange, detail }
+  format?: string | null,
+  config: BenchmarkConfig = DEFAULT_BENCHMARKS,
+  locale: BenchmarkLocale = 'es',
+  country?: string | null
+): FeeEvaluation {
+  const plat = normalizePlatform(platform)
+  const tier = detectTier(followers || 0)
+  const fmt = normalizeFormat(plat, format)
+  const { range } = getFeeRange(config, plat, tier, fmt, country)
+  return evaluateFeeAgainstRange(fee, range, getPercentileLabels(config, locale), locale, {
+    tier, format: fmt, formatLabel: benchmarkFormatLabel(fmt, locale),
+  })
 }
 
-// ============ HELPERS ============
-
-function getDefaultFormat(platform: string): string {
-  switch (platform) {
-    case 'INSTAGRAM': return 'REEL'
-    case 'TIKTOK': return 'VIDEO'
-    case 'YOUTUBE': return 'VIDEO'
-    default: return 'POST'
-  }
-}
-
-function getBuiltInBenchmark(platform: string, tier: string, format: string): BenchmarkResult {
-  // Get fee benchmark
-  const fees = FEE_BENCHMARKS[platform]?.[tier]?.[format]
-    || FEE_BENCHMARKS[platform]?.[tier]?.[getDefaultFormat(platform)]
-    || [100, 300, 600, 1000]
-
-  // Get CPM benchmark
-  const cpms = CPM_BENCHMARKS[platform]?.[tier] || [10, 15, 25]
-
-  return {
-    tier,
-    platform,
-    format,
-    feeMin: fees[0],
-    feeTarget: fees[1],
-    feeMax: fees[2],
-    feeCeiling: fees[3],
-    cpmMin: cpms[0],
-    cpmTarget: cpms[1],
-    cpmMax: cpms[2],
-    dataPoints: 0,
-    source: 'benchmark',
-    confidence: 'medium',
-    lastUpdated: new Date().toISOString().split('T')[0],
-  }
-}
-
-async function getHistoricalBenchmark(
-  platform: string,
-  tier: string,
-  _format: string,
-  country?: string
-): Promise<{ fees: number[]; cpms: number[]; dataPoints: number } | null> {
-  try {
-    // Get follower ranges for this tier
-    const tierRanges: Record<string, [number, number]> = {
-      NANO: [0, 10_000],
-      MICRO: [10_000, 50_000],
-      MID: [50_000, 250_000],
-      MACRO: [250_000, 1_000_000],
-      MEGA: [1_000_000, 999_000_000],
-    }
-    const [minFollowers, maxFollowers] = tierRanges[tier] || [0, 999_000_000]
-
-    // Query historical fees from campaign influencers
-    const historicalData = await prisma.campaignInfluencer.findMany({
-      where: {
-        agreedFee: { gt: 0 },
-        influencer: {
-          platform: platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE',
-          followers: { gte: minFollowers, lt: maxFollowers },
-          ...(country ? { country } : {}),
-        },
-      },
-      select: {
-        agreedFee: true,
-        influencer: {
-          select: { avgViews: true },
-        },
-      },
-      take: 100,
-    })
-
-    if (historicalData.length < 3) return null
-
-    const fees = historicalData
-      .map(d => d.agreedFee)
-      .filter((f): f is number => f != null && f > 0)
-      .sort((a, b) => a - b)
-
-    const cpms = historicalData
-      .map(d => {
-        const views = d.influencer?.avgViews || 0
-        return views > 0 && d.agreedFee ? (d.agreedFee / views) * 1000 : null
-      })
-      .filter((c): c is number => c != null && c > 0)
-      .sort((a, b) => a - b)
-
-    return {
-      fees,
-      cpms,
-      dataPoints: fees.length,
-    }
-  } catch (error) {
-    console.error('[MarketBenchmark] Historical query error:', error)
-    return null
-  }
-}
-
-function blendBenchmarks(
-  builtIn: BenchmarkResult,
-  historical: { fees: number[]; cpms: number[]; dataPoints: number },
-  tier: string,
-  platform: string,
-  format: string | null
-): BenchmarkResult {
-  const fees = historical.fees
-  const cpms = historical.cpms
-
-  // Calculate percentiles from historical data
-  const p25 = (arr: number[]) => arr[Math.floor(arr.length * 0.25)] || 0
-  const p50 = (arr: number[]) => arr[Math.floor(arr.length * 0.50)] || 0
-  const p75 = (arr: number[]) => arr[Math.floor(arr.length * 0.75)] || 0
-  const p90 = (arr: number[]) => arr[Math.floor(arr.length * 0.90)] || 0
-
-  // Blend: 60% historical, 40% built-in (if enough data points)
-  const weight = historical.dataPoints >= 20 ? 0.7 :
-                 historical.dataPoints >= 10 ? 0.6 :
-                 0.5
-
-  return {
-    tier,
-    platform,
-    format,
-    feeMin: Math.round(p25(fees) * weight + builtIn.feeMin * (1 - weight)),
-    feeTarget: Math.round(p50(fees) * weight + builtIn.feeTarget * (1 - weight)),
-    feeMax: Math.round(p75(fees) * weight + builtIn.feeMax * (1 - weight)),
-    feeCeiling: Math.round(p90(fees) * weight + builtIn.feeCeiling * (1 - weight)),
-    cpmMin: cpms.length >= 3 ? Math.round(p25(cpms) * weight + builtIn.cpmMin * (1 - weight)) : builtIn.cpmMin,
-    cpmTarget: cpms.length >= 3 ? Math.round(p50(cpms) * weight + builtIn.cpmTarget * (1 - weight)) : builtIn.cpmTarget,
-    cpmMax: cpms.length >= 3 ? Math.round(p75(cpms) * weight + builtIn.cpmMax * (1 - weight)) : builtIn.cpmMax,
-    dataPoints: historical.dataPoints,
-    source: 'blended',
-    confidence: historical.dataPoints >= 20 ? 'high' : 'medium',
-    lastUpdated: new Date().toISOString().split('T')[0],
-  }
+/**
+ * Evaluate a fee against the BLENDED benchmark (own negotiations + seed, market-scaled).
+ * Async because it loads the config and the internal stats.
+ */
+export async function evaluateFeeBlended(
+  fee: number,
+  query: BenchmarkQuery
+): Promise<FeeEvaluation & { benchmark: BenchmarkResult }> {
+  const benchmark = await getMarketBenchmark(query)
+  const locale: BenchmarkLocale = query.locale === 'en' ? 'en' : 'es'
+  const range: FeeRange = [benchmark.feeMin, benchmark.feeTarget, benchmark.feeMax, benchmark.feeCeiling]
+  const evaluation = evaluateFeeAgainstRange(fee, range, benchmark.labels, locale, {
+    tier: benchmark.tier, format: benchmark.format, formatLabel: benchmarkFormatLabel(benchmark.format, locale),
+  })
+  return { ...evaluation, benchmark }
 }

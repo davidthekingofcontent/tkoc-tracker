@@ -14,6 +14,7 @@ import { assessRisks, type RiskAssessmentInput } from '@/lib/risk-signals'
 import { analyzeRepeatBatch, type RepeatRadarInput } from '@/lib/repeat-radar'
 import { generatePlaybook, type PlaybookInput } from '@/lib/campaign-playbook'
 import { getMarketBenchmark, evaluateFee, type BenchmarkQuery } from '@/lib/market-benchmark'
+import { loadBenchmarkConfig } from '@/lib/benchmarks-server'
 import { prisma } from '@/lib/db'
 import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import { calculateCampaignEMV } from '@/lib/emv'
@@ -34,7 +35,7 @@ export async function POST(request: NextRequest) {
         return handleCreatorScore(data as unknown as CreatorScoreInput)
 
       case 'deal-advisor':
-        return handleDealAdvisor(data as unknown as DealAdvisorInput)
+        return handleDealAdvisor(data as unknown as DealAdvisorRequest)
 
       case 'risk-signals':
         return handleRiskSignals(data as unknown as RiskAssessmentInput)
@@ -49,7 +50,7 @@ export async function POST(request: NextRequest) {
         return handleBenchmark(data as unknown as BenchmarkQuery)
 
       case 'evaluate-fee':
-        return handleEvaluateFee(data as { fee: number; platform: string; followers: number; format?: string })
+        return handleEvaluateFee(data as unknown as EvaluateFeeRequest)
 
       default:
         return NextResponse.json({ error: `Unknown intelligence type: ${type}` }, { status: 400 })
@@ -67,8 +68,16 @@ function handleCreatorScore(input: CreatorScoreInput) {
   return NextResponse.json(result)
 }
 
-function handleDealAdvisor(input: DealAdvisorInput) {
-  const result = analyzeDeal(input)
+/**
+ * Deal Advisor request = DealAdvisorInput (+ format, country, terms) plus
+ * brandId (benchmark overrides) and locale ('es' default | 'en').
+ */
+type DealAdvisorRequest = DealAdvisorInput & { brandId?: string | null; locale?: 'es' | 'en' }
+
+async function handleDealAdvisor(data: DealAdvisorRequest) {
+  const { brandId, locale, ...input } = data
+  const config = await loadBenchmarkConfig(brandId)
+  const result = analyzeDeal(input, { config, locale: locale === 'en' ? 'en' : 'es' })
   return NextResponse.json(result)
 }
 
@@ -262,12 +271,35 @@ async function handlePlaybook(data: { campaignId: string }) {
   }
 }
 
+/** Benchmark query: platform, followers, format?, country?, brandId?, locale? — config + own stats are loaded inside. */
 async function handleBenchmark(query: BenchmarkQuery) {
-  const result = await getMarketBenchmark(query)
+  const result = await getMarketBenchmark({
+    ...query,
+    locale: query.locale === 'en' ? 'en' : 'es',
+  })
   return NextResponse.json(result)
 }
 
-function handleEvaluateFee(data: { fee: number; platform: string; followers: number; format?: string }) {
-  const result = evaluateFee(data.fee, data.platform, data.followers, data.format)
+interface EvaluateFeeRequest {
+  fee: number
+  platform: string
+  followers: number
+  format?: string | null
+  country?: string | null
+  brandId?: string | null
+  locale?: 'es' | 'en'
+}
+
+async function handleEvaluateFee(data: EvaluateFeeRequest) {
+  const config = await loadBenchmarkConfig(data.brandId)
+  const result = evaluateFee(
+    data.fee,
+    data.platform,
+    data.followers,
+    data.format,
+    config,
+    data.locale === 'en' ? 'en' : 'es',
+    data.country
+  )
   return NextResponse.json(result)
 }
