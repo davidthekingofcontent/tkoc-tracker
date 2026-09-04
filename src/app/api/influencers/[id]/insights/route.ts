@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import { getSession } from '@/lib/auth'
 
 const DAYS_OF_WEEK = [
@@ -39,7 +40,9 @@ export async function GET(
     )
   }
 
-  const { media, followers } = influencer
+  // One Media row per (post, campaign): count each post once for creator stats
+  const media = dedupeMediaByPost(influencer.media)
+  const { followers } = influencer
   const safeFollowers = followers > 0 ? followers : 1
 
   // ── Content type breakdown ──

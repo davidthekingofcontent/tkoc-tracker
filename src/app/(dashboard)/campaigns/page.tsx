@@ -162,6 +162,7 @@ export default function CampaignsPage() {
   const router = useRouter()
   const { canEdit } = useRole()
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
+  const [distinctMedia, setDistinctMedia] = useState<number | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [activeFilter, setActiveFilter] = useState('all')
@@ -173,6 +174,7 @@ export default function CampaignsPage() {
       if (res.ok) {
         const data = await res.json()
         setCampaigns(data.campaigns || [])
+        setDistinctMedia(typeof data.distinctMediaTotal === 'number' ? data.distinctMediaTotal : null)
       }
     } catch (err) {
       console.error('Error fetching campaigns:', err)
@@ -262,9 +264,10 @@ export default function CampaignsPage() {
   const stats = useMemo(() => {
     const active = campaigns.filter((c) => c.status === 'ACTIVE').length
     const profiles = campaigns.reduce((sum, c) => sum + (c._count?.influencers || 0), 0)
-    const media = campaigns.reduce((sum, c) => sum + (c._count?.media || 0), 0)
+    // Distinct posts (one Media row per post per campaign) when the API provides it
+    const media = distinctMedia ?? campaigns.reduce((sum, c) => sum + (c._count?.media || 0), 0)
     return { active, profiles, media, total: campaigns.length }
-  }, [campaigns])
+  }, [campaigns, distinctMedia])
 
   return (
     <div className="space-y-6">

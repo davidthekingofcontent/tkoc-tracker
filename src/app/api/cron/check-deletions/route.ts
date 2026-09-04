@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { notifyAllTeam } from '@/lib/notifications'
+import { mediaPostKey } from '@/lib/campaign-capture'
 
 const BATCH_SIZE = 50
 const DELAY_MS = 2000
@@ -48,52 +49,52 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ message: 'No media to check', checked: 0, deleted: 0 })
     }
 
-    console.log(`[Cron/CheckDeletions] Checking ${allMedia.length} posts...`)
+    // One Media row per (post, campaign): check each POST once, then mark every
+    // copy and send a single notification listing the affected campaigns.
+    const groups = new Map<string, typeof allMedia>()
+    for (const m of allMedia) {
+      const k = mediaPostKey(m)
+      const g = groups.get(k)
+      if (g) g.push(m); else groups.set(k, [m])
+    }
+    const posts = Array.from(groups.values())
+    console.log(`[Cron/CheckDeletions] Checking ${posts.length} posts (${allMedia.length} rows)...`)
 
     let totalChecked = 0
     let totalDeleted = 0
     const errors: string[] = []
 
-    // Process in batches
-    for (let i = 0; i < allMedia.length; i += BATCH_SIZE) {
-      const batch = allMedia.slice(i, i + BATCH_SIZE)
+    for (let i = 0; i < posts.length; i += BATCH_SIZE) {
+      const batch = posts.slice(i, i + BATCH_SIZE)
 
-      for (const media of batch) {
+      for (const copies of batch) {
+        const media = copies[0]
         if (!media.permalink) continue
 
         try {
           const isDeleted = await checkIfDeleted(media.permalink)
 
           if (isDeleted) {
-            // Mark as deleted
-            await prisma.media.update({
-              where: { id: media.id },
-              data: {
-                isDeleted: true,
-                deletedAt: new Date(),
-              },
+            await prisma.media.updateMany({
+              where: { id: { in: copies.map(c => c.id) } },
+              data: { isDeleted: true, deletedAt: new Date() },
             })
-
             totalDeleted++
 
-            // Notify team
-            const campaignName = media.campaign?.name || 'Unknown'
             const username = media.influencer?.username || 'Unknown'
+            const campaignNames = Array.from(new Set(copies.map(c => c.campaign?.name).filter(Boolean))) as string[]
             const campaignId = media.campaign?.id
-
             notifyAllTeam({
               type: 'post_deleted',
               title: `Post eliminado detectado`,
-              message: `⚠️ El influencer @${username} ha eliminado un post de la campaña ${campaignName}`,
+              message: `⚠️ El influencer @${username} ha eliminado un post de ${campaignNames.length > 1 ? 'las campañas' : 'la campaña'} ${campaignNames.join(', ') || 'Unknown'}`,
               link: campaignId ? `/campaigns/${campaignId}` : undefined,
             }).catch(() => {})
 
-            console.log(`[Cron/CheckDeletions] Detected deleted post: ${media.permalink} by @${username}`)
+            console.log(`[Cron/CheckDeletions] Detected deleted post: ${media.permalink} by @${username} (${copies.length} row(s))`)
           }
 
           totalChecked++
-
-          // Rate limit: wait between checks
           await new Promise(r => setTimeout(r, DELAY_MS))
         } catch (err) {
           const errMsg = `Error checking ${media.permalink}: ${err}`

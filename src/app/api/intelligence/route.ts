@@ -15,6 +15,7 @@ import { analyzeRepeatBatch, type RepeatRadarInput } from '@/lib/repeat-radar'
 import { generatePlaybook, type PlaybookInput } from '@/lib/campaign-playbook'
 import { getMarketBenchmark, evaluateFee, type BenchmarkQuery } from '@/lib/market-benchmark'
 import { prisma } from '@/lib/db'
+import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import { calculateCampaignEMV } from '@/lib/emv'
 
 export async function POST(request: NextRequest) {
@@ -92,6 +93,10 @@ async function handleRepeatRadar(data: { campaignId?: string }) {
         },
         media: {
           select: {
+            id: true,
+            externalId: true,
+            platform: true,
+            permalink: true,
             likes: true,
             comments: true,
             views: true,
@@ -121,8 +126,11 @@ async function handleRepeatRadar(data: { campaignId?: string }) {
         emvGenerated: number
       }>()
 
+      // A post that lives in several campaigns must feed the cross-campaign
+      // totals once: keep one copy per post (first campaign bucket wins).
+      const distinctMedia = dedupeMediaByPost(inf.media)
       for (const ci of inf.campaigns) {
-        const campaignMedia = inf.media.filter(m => m.campaignId === ci.campaignId)
+        const campaignMedia = distinctMedia.filter(m => m.campaignId === ci.campaignId)
         const totalLikes = campaignMedia.reduce((s, m) => s + m.likes, 0)
         const totalComments = campaignMedia.reduce((s, m) => s + m.comments, 0)
         const totalViews = campaignMedia.reduce((s, m) => s + m.views, 0)

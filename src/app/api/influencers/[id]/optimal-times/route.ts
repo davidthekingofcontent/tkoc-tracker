@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import { getSession } from '@/lib/auth'
 
 const DAYS_OF_WEEK = [
@@ -37,7 +38,8 @@ export async function GET(
     return NextResponse.json({ error: 'Influencer not found' }, { status: 404 })
   }
 
-  const { media } = influencer
+  // One Media row per (post, campaign): weight each post once
+  const media = dedupeMediaByPost(influencer.media)
 
   if (media.length === 0) {
     return NextResponse.json({

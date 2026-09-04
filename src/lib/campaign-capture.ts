@@ -199,6 +199,29 @@ export function instagramShortcode(permalink: string | null | undefined): string
 }
 
 /**
+ * Identity of a POST across its per-campaign copies and across sources:
+ * Instagram shortcode when available (Apify and Meta give the same post
+ * different externalIds), else externalId, else the row id.
+ */
+export function mediaPostKey(row: { id: string; externalId: string | null; platform: string; permalink: string | null }): string {
+  const sc = row.platform === 'INSTAGRAM' ? instagramShortcode(row.permalink) : null
+  if (sc) return `${row.platform}|sc:${sc}`
+  if (row.externalId) return `${row.platform}|${row.externalId}`
+  return `id|${row.id}`
+}
+
+/** Keep the first row of every distinct post (see mediaPostKey). */
+export function dedupeMediaByPost<T extends { id: string; externalId: string | null; platform: string; permalink: string | null }>(rows: T[]): T[] {
+  const seen = new Set<string>()
+  return rows.filter(r => {
+    const k = mediaPostKey(r)
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+}
+
+/**
  * Existing Media row for the same post found via a different source (e.g. a
  * meta_api row materialized before Apify saw the post), limited to THIS
  * campaign's row or an unattached one — rows of other campaigns are their own

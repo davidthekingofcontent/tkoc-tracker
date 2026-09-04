@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus, CampaignType, Prisma } from '@/generated/prisma/client'
 import { notifyAllTeam } from '@/lib/notifications'
@@ -120,7 +121,20 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    return NextResponse.json({ campaigns: campaignsWithBrand })
+    // Summary strip: DISTINCT posts across the listed campaigns (a post that
+    // qualifies for several campaigns has one row per campaign).
+    let distinctMediaTotal = 0
+    try {
+      const rows = await prisma.media.findMany({
+        where: { campaignId: { in: campaigns.map(c => c.id) } },
+        select: { id: true, externalId: true, platform: true, permalink: true },
+      })
+      distinctMediaTotal = dedupeMediaByPost(rows).length
+    } catch {
+      distinctMediaTotal = campaigns.reduce((sum, c) => sum + (c._count?.media || 0), 0)
+    }
+
+    return NextResponse.json({ campaigns: campaignsWithBrand, distinctMediaTotal })
   } catch (error) {
     console.error('List campaigns error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

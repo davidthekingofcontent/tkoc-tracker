@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { Platform } from '@/generated/prisma/client'
+import { dedupeMediaByPost } from '@/lib/campaign-capture'
 
 export async function GET(request: NextRequest) {
   try {
@@ -24,15 +25,20 @@ export async function GET(request: NextRequest) {
       whereClause.platform = platformFilter
     }
 
-    const media = await prisma.media.findMany({
+    // One row per (post, campaign): count each post once
+    const media = dedupeMediaByPost(await prisma.media.findMany({
       where: whereClause,
       select: {
+        id: true,
+        externalId: true,
+        platform: true,
+        permalink: true,
         hashtags: true,
         likes: true,
         comments: true,
         views: true,
       },
-    })
+    }))
 
     // Aggregate hashtags
     const hashtagMap = new Map<

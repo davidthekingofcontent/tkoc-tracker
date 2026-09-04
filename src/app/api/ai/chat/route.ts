@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '@/lib/db'
+import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import { getSession } from '@/lib/auth'
 import { PLATFORM_KNOWLEDGE } from '@/lib/ai-knowledge'
 
@@ -54,11 +55,15 @@ function sanitizeMessages(raw: unknown): Anthropic.MessageParam[] {
 }
 
 async function gatherPlatformContext() {
-  const [activeCampaigns, influencerCount, mediaCount, campaigns, topInfluencers, recentMedia] =
+  const [activeCampaigns, influencerCount, allAttachedMedia, campaigns, topInfluencers, recentMediaRaw] =
     await Promise.all([
       prisma.campaign.count({ where: { status: 'ACTIVE' } }),
       prisma.influencer.count(),
-      prisma.media.count(),
+      // One row per (post, campaign): the assistant reports DISTINCT posts
+      prisma.media.findMany({
+        where: { campaignId: { not: null } },
+        select: { id: true, externalId: true, platform: true, permalink: true },
+      }),
       prisma.campaign.findMany({
         where: { status: { not: 'ARCHIVED' } },
         select: {
@@ -105,8 +110,12 @@ async function gatherPlatformContext() {
       }),
       prisma.media.findMany({
         orderBy: { postedAt: 'desc' },
-        take: 25,
+        take: 60,
         select: {
+          id: true,
+          externalId: true,
+          platform: true,
+          permalink: true,
           mediaType: true,
           source: true,
           likes: true,
@@ -121,6 +130,9 @@ async function gatherPlatformContext() {
         },
       }),
     ])
+
+  const mediaCount = dedupeMediaByPost(allAttachedMedia).length
+  const recentMedia = dedupeMediaByPost(recentMediaRaw).slice(0, 25)
 
   return {
     overview: { activeCampaigns, totalInfluencers: influencerCount, totalMedia: mediaCount },
