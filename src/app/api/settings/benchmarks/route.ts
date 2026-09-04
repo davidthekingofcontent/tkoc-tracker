@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
+import { DEFAULT_EMV_RATES as EMV_DEFAULTS, mergeEmvRates } from '@/lib/emv'
 
 // Base keys we store in the settings table
 const BENCHMARK_BASE_KEYS = [
@@ -42,20 +43,8 @@ const DEFAULT_CPM_RATES = [
   { platform: 'TIKTOK',   tier: 'MEGA',  cpmTarget: 9,  cpmMax: 12 },
 ]
 
-// Default EMV rates from emv.ts
-const DEFAULT_EMV_RATES = {
-  cpmRates: {
-    INSTAGRAM: { post: 8.50, reel: 12.00, story: 5.00 },
-    TIKTOK:    { video: 7.50, viral: 5.00 },
-    YOUTUBE:   { video: 15.00, short: 6.00 },
-  },
-  cpc: 0.50,
-  engagementValues: {
-    INSTAGRAM: { like: 0.10, comment: 0.80, share: 1.50, save: 1.20 },
-    TIKTOK:    { like: 0.08, comment: 0.60, share: 1.20, save: 0.90 },
-    YOUTUBE:   { like: 0.12, comment: 1.00, share: 1.50, save: 0.00 },
-  },
-}
+// Default EMV rates — single source of truth in src/lib/emv.ts
+const DEFAULT_EMV_RATES = EMV_DEFAULTS
 
 /** Build the actual settings keys, optionally scoped to a brand */
 function getBenchmarkKeys(brandId?: string): string[] {
@@ -131,7 +120,7 @@ export async function GET(request: NextRequest) {
       emvRates = brandEmv
         ? JSON.parse(brandEmv)
         : globalMap['benchmark_emv_rates']
-          ? JSON.parse(globalMap['benchmark_emv_rates'])
+          ? mergeEmvRates(JSON.parse(globalMap['benchmark_emv_rates']))
           : DEFAULT_EMV_RATES
 
       // Tell the client which keys have brand-specific overrides

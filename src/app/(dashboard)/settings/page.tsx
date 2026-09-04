@@ -194,7 +194,9 @@ export default function SettingsPage() {
     cpmRates: Record<string, Record<string, number>>
     cpc: number
     engagementValues: Record<string, Record<string, number>>
-  }
+    storyReachRates?: Record<string, number>
+  storySequenceDecay?: number
+}
   const [benchmarkFeeRanges, setBenchmarkFeeRanges] = useState<FeeRangesData | null>(null)
   const [benchmarkCpmRates, setBenchmarkCpmRates] = useState<CpmRateEntry[] | null>(null)
   const [benchmarkEmvRates, setBenchmarkEmvRates] = useState<EmvRatesData | null>(null)
@@ -442,6 +444,12 @@ export default function SettingsPage() {
     })
   }
 
+  function updateEmvStoryRate(tier: string, value: number) {
+    setBenchmarkEmvRates(prev => prev ? { ...prev, storyReachRates: { ...(prev.storyReachRates || {}), [tier]: value / 100 } } : prev)
+  }
+  function updateEmvStoryDecay(value: number) {
+    setBenchmarkEmvRates(prev => prev ? { ...prev, storySequenceDecay: value / 100 } : prev)
+  }
   function updateEmvCpc(value: number) {
     setBenchmarkEmvRates(prev => prev ? { ...prev, cpc: value } : prev)
   }
@@ -1772,6 +1780,58 @@ export default function SettingsPage() {
                                 </tr>
                               ))
                             )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Story audience estimate: % of followers by tier + sequence decay */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Stories: audiencia estimada (% de seguidores)</h4>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">Las stories de Instagram no tienen vistas públicas. Cuando una story no tiene vistas reales, su audiencia se estima como seguidores × este porcentaje según el tamaño de la creadora; si la PM registra las vistas reales, mandan.</p>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-gray-200 dark:border-gray-700">
+                              {[['NANO', 'Nano (< 10K)'], ['MICRO', 'Micro (10K-50K)'], ['MID', 'Mid (50K-250K)'], ['MACRO', 'Macro (250K-1M)'], ['MEGA', 'Mega (> 1M)']].map(([k, label]) => (
+                                <th key={k} className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{label}</th>
+                              ))}
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Story siguiente</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              {['NANO', 'MICRO', 'MID', 'MACRO', 'MEGA'].map(tier => (
+                                <td key={tier} className="px-3 py-1.5">
+                                  <div className="flex items-center gap-1">
+                                    <Input
+                                      type="number"
+                                      step="1"
+                                      min="0"
+                                      max="100"
+                                      value={Math.round(((benchmarkEmvRates.storyReachRates || {})[tier] ?? 0) * 100)}
+                                      onChange={e => updateEmvStoryRate(tier, Number(e.target.value))}
+                                      className="w-20 h-8 text-sm"
+                                    />
+                                    <span className="text-xs text-gray-500">%</span>
+                                  </div>
+                                </td>
+                              ))}
+                              <td className="px-3 py-1.5">
+                                <div className="flex items-center gap-1">
+                                  <Input
+                                    type="number"
+                                    step="1"
+                                    min="1"
+                                    max="100"
+                                    value={Math.round((benchmarkEmvRates.storySequenceDecay ?? 0.85) * 100)}
+                                    onChange={e => updateEmvStoryDecay(Number(e.target.value))}
+                                    className="w-20 h-8 text-sm"
+                                  />
+                                  <span className="text-xs text-gray-500">% de la anterior</span>
+                                </div>
+                              </td>
+                            </tr>
                           </tbody>
                         </table>
                       </div>

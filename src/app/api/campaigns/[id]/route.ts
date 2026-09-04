@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus } from '@/generated/prisma/client'
 import { calculateCampaignEMV } from '@/lib/emv'
+import { loadEmvRates, campaignBrandId, getCreatorStoryViewRates } from '@/lib/emv-server'
 
 // Brands are not a Prisma model: Setting 'campaign_brand_{campaignId}' holds
 // the brandId, and Setting key=brandId holds JSON { name, logo?, ... } (see
@@ -197,10 +198,17 @@ export async function GET(
       select: {
         likes: true, comments: true, shares: true, saves: true,
         views: true, reach: true, impressions: true,
-        influencer: { select: { platform: true } },
+        mediaType: true, postedAt: true, influencerId: true,
+        influencer: { select: { platform: true, followers: true } },
       },
     })
 
+    // Rates from Ajustes → Benchmarks (brand override if the campaign has a
+    // brand) and each creator's real story view rate when known.
+    const [emvRates, storyViewRates] = await Promise.all([
+      loadEmvRates(await campaignBrandId(id)),
+      getCreatorStoryViewRates(Array.from(new Set(allMediaForEMV.map(m => m.influencerId)))),
+    ])
     const emv = calculateCampaignEMV(
       allMediaForEMV.map(m => ({
         platform: m.influencer?.platform || 'INSTAGRAM',
@@ -211,13 +219,18 @@ export async function GET(
         comments: m.comments || 0,
         shares: m.shares || 0,
         saves: m.saves || 0,
-      }))
+        mediaType: m.mediaType,
+        postedAt: m.postedAt,
+        influencerId: m.influencerId,
+        followers: m.influencer?.followers ?? null,
+      })),
+      { rates: emvRates, storyViewRates }
     )
 
     // Brand info for the report cover: { name, logo } | null
     const brand = await resolveCampaignBrand(id)
 
-    return NextResponse.json({ campaign: { ...campaign, brand }, overview: { ...overview, emvBasic: emv.basic, emvExtended: emv.extended }, timeline })
+    return NextResponse.json({ campaign: { ...campaign, brand }, overview: { ...overview, emvBasic: emv.basic, emvExtended: emv.extended, emvEstimatedStories: emv.estimatedStories, emvEstimatedAudience: emv.estimatedAudience, emvRealStories: emv.realStories }, timeline })
   } catch (error) {
     console.error('Get campaign error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

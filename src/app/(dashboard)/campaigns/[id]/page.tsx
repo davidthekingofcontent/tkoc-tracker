@@ -182,6 +182,9 @@ interface Overview {
   totalMedia: number
   emvBasic: number
   emvExtended: number
+  emvEstimatedStories?: number
+  emvEstimatedAudience?: number
+  emvRealStories?: number
   totalCost: number
 }
 
@@ -1882,6 +1885,13 @@ export default function CampaignDetailPage() {
                       {locale === 'es'
                         ? 'El EMV es una estimacion del coste equivalente que habria supuesto obtener un alcance, interaccion e intencion similares mediante medios pagados. No representa ventas ni ROI directo.'
                         : 'EMV is an estimate of the equivalent cost of achieving similar reach, interaction, and intent through paid media. It does not represent sales or direct ROI.'}
+                      {(overview.emvEstimatedStories || 0) > 0 && (
+                        <span className="mt-1 block text-amber-700 dark:text-amber-400">
+                          {locale === 'es'
+                            ? `* Incluye ${overview.emvEstimatedStories} ${overview.emvEstimatedStories === 1 ? 'story' : 'stories'} con audiencia estimada (≈ ${formatNumber(overview.emvEstimatedAudience || 0)} vistas: seguidores × % por tier). Si registras las vistas reales de la creadora, sustituyen la estimación.`
+                            : `* Includes ${overview.emvEstimatedStories} ${overview.emvEstimatedStories === 1 ? 'story' : 'stories'} with an estimated audience (≈ ${formatNumber(overview.emvEstimatedAudience || 0)} views: followers × tier rate). Real views entered for the creator replace the estimate.`}
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus } from '@/generated/prisma/client'
 import { calculateCampaignEMV } from '@/lib/emv'
+import { loadEmvRates, getCreatorStoryViewRates } from '@/lib/emv-server'
 import { instagramShortcode } from '@/lib/campaign-capture'
 
 export async function GET(request: NextRequest) {
@@ -118,10 +119,10 @@ export async function GET(request: NextRequest) {
     let totalLikes = 0
     let totalComments = 0
     type DashMedia = {
-      id: string; externalId: string | null; platform: string; permalink: string | null
+      id: string; externalId: string | null; platform: string; permalink: string | null; mediaType: string
       impressions: number; reach: number; views: number; likes: number; comments: number; shares: number; saves: number
       postedAt: Date | null; influencerId: string
-      influencer: { username: string }
+      influencer: { username: string; followers: number }
       campaign: { name: string } | null
     }
     let uniqueMedia: DashMedia[] = []
@@ -133,6 +134,7 @@ export async function GET(request: NextRequest) {
           externalId: true,
           platform: true,
           permalink: true,
+          mediaType: true,
           impressions: true,
           reach: true,
           views: true,
@@ -142,7 +144,7 @@ export async function GET(request: NextRequest) {
           saves: true,
           postedAt: true,
           influencerId: true,
-          influencer: { select: { username: true } },
+          influencer: { select: { username: true, followers: true } },
           campaign: { select: { name: true } },
         },
       })
@@ -154,7 +156,14 @@ export async function GET(request: NextRequest) {
         seen.add(key)
         return true
       })
-      totalEMV = calculateCampaignEMV(uniqueMedia)
+      const [emvRates, storyViewRates] = await Promise.all([
+        loadEmvRates(),
+        getCreatorStoryViewRates(Array.from(new Set(uniqueMedia.map(m => m.influencerId)))),
+      ])
+      totalEMV = calculateCampaignEMV(
+        uniqueMedia.map(m => ({ ...m, followers: m.influencer?.followers ?? null })),
+        { rates: emvRates, storyViewRates }
+      )
       totalMediaPosts = uniqueMedia.length
       for (const m of uniqueMedia) {
         totalViews += m.views || 0

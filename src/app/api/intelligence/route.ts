@@ -17,6 +17,7 @@ import { getMarketBenchmark, evaluateFee, type BenchmarkQuery } from '@/lib/mark
 import { prisma } from '@/lib/db'
 import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import { calculateCampaignEMV } from '@/lib/emv'
+import { loadEmvRates } from '@/lib/emv-server'
 
 export async function POST(request: NextRequest) {
   try {
@@ -97,6 +98,8 @@ async function handleRepeatRadar(data: { campaignId?: string }) {
             externalId: true,
             platform: true,
             permalink: true,
+            mediaType: true,
+            postedAt: true,
             likes: true,
             comments: true,
             views: true,
@@ -108,6 +111,7 @@ async function handleRepeatRadar(data: { campaignId?: string }) {
       },
       take: 100,
     })
+    const emvRates = await loadEmvRates()
 
     const inputs: RepeatRadarInput[] = influencers.map(inf => {
       // Group media by campaign
@@ -146,7 +150,11 @@ async function handleRepeatRadar(data: { campaignId?: string }) {
           comments: m.comments,
           shares: m.shares,
           saves: m.saves,
-        })))
+          mediaType: m.mediaType,
+          postedAt: m.postedAt,
+          influencerId: inf.id,
+          followers: inf.followers,
+        })), { rates: emvRates })
 
         campaignMap.set(ci.campaignId, {
           campaignId: ci.campaignId,
@@ -203,7 +211,9 @@ async function handlePlaybook(data: { campaignId: string }) {
 
     const totalSpent = campaign.influencers.reduce((sum, ci) => sum + (ci.agreedFee || 0), 0)
 
-    // Calculate EMV
+    // Calculate EMV (stories estimated from the creator's followers)
+    const followersById = new Map(campaign.influencers.map(ci => [ci.influencerId, ci.influencer.followers]))
+    const playbookRates = await loadEmvRates()
     const emvResult = calculateCampaignEMV(campaign.media.map(m => ({
       platform: m.platform,
       impressions: m.impressions,
@@ -213,7 +223,11 @@ async function handlePlaybook(data: { campaignId: string }) {
       comments: m.comments,
       shares: m.shares,
       saves: m.saves,
-    })))
+      mediaType: m.mediaType,
+      postedAt: m.postedAt,
+      influencerId: m.influencerId,
+      followers: followersById.get(m.influencerId) ?? null,
+    })), { rates: playbookRates })
 
     const influencerData = campaign.influencers.map(ci => {
       const infMedia = campaign.media.filter(m => m.influencerId === ci.influencerId)

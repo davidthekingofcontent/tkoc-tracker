@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { calculateCampaignEMV } from '@/lib/emv'
+import { loadEmvRates } from '@/lib/emv-server'
 import { instagramShortcode } from '@/lib/campaign-capture'
 
 interface BrandData {
@@ -94,6 +95,10 @@ export async function GET(request: NextRequest) {
             externalId: true,
             permalink: true,
             platform: true,
+            mediaType: true,
+            postedAt: true,
+            influencerId: true,
+            influencer: { select: { followers: true } },
             likes: true,
             comments: true,
             shares: true,
@@ -115,6 +120,7 @@ export async function GET(request: NextRequest) {
     // Group campaigns by derived brand name
     const brandMap = new Map<string, BrandData>()
     const brandSeenPosts = new Map<string, Set<string>>()
+    const emvRates = await loadEmvRates()
 
     for (const campaign of campaigns) {
       const brandName = deriveBrandName(campaign)
@@ -176,8 +182,11 @@ export async function GET(request: NextRequest) {
       brand.totalEngagements += campaignEngagements
       brand.totalViews += campaignViews
 
-      // EMV calculation (distinct posts only)
-      const emv = calculateCampaignEMV(distinct)
+      // EMV calculation (distinct posts only; stories estimated by followers)
+      const emv = calculateCampaignEMV(
+        distinct.map(m => ({ ...m, followers: m.influencer?.followers ?? null })),
+        { rates: emvRates }
+      )
       brand.totalEMV += emv.extended
 
       // Track platforms

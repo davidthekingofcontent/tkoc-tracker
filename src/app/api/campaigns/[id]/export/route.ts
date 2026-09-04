@@ -3,7 +3,8 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
-import { calculateEMV, calculateCampaignEMV, EMV_METHODOLOGY } from '@/lib/emv'
+import { calculateEMV, calculateCampaignEMV, EMV_METHODOLOGY, DEFAULT_EMV_RATES, type EmvRates } from '@/lib/emv'
+import { loadEmvRates, campaignBrandId } from '@/lib/emv-server'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -64,6 +65,9 @@ export async function GET(
     const customTitle = request.nextUrl.searchParams.get('title') || undefined
     const customSubtitle = request.nextUrl.searchParams.get('subtitle') || undefined
     const coverImageUrl = request.nextUrl.searchParams.get('coverImage') || undefined
+
+    // EMV rates for this campaign's brand (stories estimated from followers)
+    ;(campaign as CampaignData).emvRates = await loadEmvRates(await campaignBrandId(id))
 
     if (format === 'csv') return generateCSV(campaign)
     if (format === 'json') return generateJSON(campaign)
@@ -131,6 +135,8 @@ export async function POST(
     if (session.role === 'BRAND' && campaign.userId !== session.id) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
+
+    ;(campaign as CampaignData).emvRates = await loadEmvRates(await campaignBrandId(id))
 
     if (format === 'csv') return generateCSV(campaign)
     if (format === 'json') return generateJSON(campaign)
@@ -207,6 +213,8 @@ interface CampaignData {
       engagementRate: number
     } | null
   }[]
+  /** EMV rates (Ajustes → Benchmarks, brand override) attached by the handlers. */
+  emvRates?: EmvRates
 }
 
 // ============ INFLUENCER MEDIA AGGREGATION ============
@@ -224,6 +232,7 @@ interface InfluencerMediaMetrics {
 }
 
 function aggregateInfluencerMedia(campaign: CampaignData): Map<string, InfluencerMediaMetrics> {
+  const rates = campaign.emvRates ?? DEFAULT_EMV_RATES
   const map = new Map<string, InfluencerMediaMetrics>()
 
   for (const m of campaign.media) {
@@ -246,7 +255,8 @@ function aggregateInfluencerMedia(campaign: CampaignData): Map<string, Influence
       platform: m.influencer?.platform || 'INSTAGRAM',
       impressions: m.impressions, reach: m.reach, views: m.views,
       clicks: 0, likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-    })
+      mediaType: m.mediaType, followers: m.influencer?.followers ?? null,
+    }, rates)
     existing.totalEMV += mediaEMV.extended
 
     map.set(username, existing)
@@ -291,6 +301,7 @@ async function fetchImageBase64(url: string): Promise<string | null> {
 // ============ CSV ============
 
 function generateCSV(campaign: CampaignData): NextResponse {
+  const rates = campaign.emvRates ?? DEFAULT_EMV_RATES
   const lines: string[] = []
   const influencerMetrics = aggregateInfluencerMedia(campaign)
 
@@ -324,7 +335,8 @@ function generateCSV(campaign: CampaignData): NextResponse {
     platform: m.influencer?.platform || 'INSTAGRAM',
     impressions: m.impressions, reach: m.reach, views: m.views,
     likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-  })))
+    mediaType: m.mediaType, postedAt: m.postedAt, influencerId: m.influencerId, followers: m.influencer?.followers ?? null,
+  })), { rates })
 
   const totalCost = campaign.influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0)
 
@@ -401,7 +413,8 @@ function generateCSV(campaign: CampaignData): NextResponse {
       platform: media.influencer?.platform || 'INSTAGRAM',
       impressions: media.impressions, reach: media.reach, views: media.views,
       clicks: 0, likes: media.likes, comments: media.comments, shares: media.shares, saves: media.saves,
-    })
+      mediaType: media.mediaType, followers: media.influencer?.followers ?? null,
+    }, rates)
     lines.push([
       media.postedAt ? new Date(media.postedAt).toLocaleDateString() : '',
       escapeCSV(media.influencer?.username || ''), escapeCSV(media.influencer?.platform || ''),
@@ -425,6 +438,7 @@ function generateCSV(campaign: CampaignData): NextResponse {
 // ============ JSON ============
 
 function generateJSON(campaign: CampaignData): NextResponse {
+  const rates = campaign.emvRates ?? DEFAULT_EMV_RATES
   const influencerMetrics = aggregateInfluencerMedia(campaign)
 
   let totalReach = 0, totalLikes = 0, totalComments = 0, totalShares = 0
@@ -446,7 +460,8 @@ function generateJSON(campaign: CampaignData): NextResponse {
     platform: m.influencer?.platform || 'INSTAGRAM',
     impressions: m.impressions, reach: m.reach, views: m.views,
     likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-  })))
+    mediaType: m.mediaType, postedAt: m.postedAt, influencerId: m.influencerId, followers: m.influencer?.followers ?? null,
+  })), { rates })
 
   const totalCost = campaign.influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0)
 
@@ -510,7 +525,8 @@ function generateJSON(campaign: CampaignData): NextResponse {
         platform: m.influencer?.platform || 'INSTAGRAM',
         impressions: m.impressions, reach: m.reach, views: m.views,
         clicks: 0, likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-      })
+        mediaType: m.mediaType, followers: m.influencer?.followers ?? null,
+      }, rates)
       return {
         postedAt: m.postedAt,
         influencer: m.influencer?.username || null,
@@ -544,6 +560,7 @@ function generateJSON(campaign: CampaignData): NextResponse {
 // ============ PDF GENERATION ============
 
 async function generatePDF(campaign: CampaignData, options?: { customTitle?: string; customSubtitle?: string; coverImageUrl?: string; coverImageBase64?: string; notes?: string; sections?: string[] }): Promise<NextResponse> {
+  const rates = campaign.emvRates ?? DEFAULT_EMV_RATES
   const doc = new jsPDF('p', 'mm', 'a4')
   const W = doc.internal.pageSize.getWidth()   // 210
   const H = doc.internal.pageSize.getHeight()  // 297
@@ -582,7 +599,8 @@ async function generatePDF(campaign: CampaignData, options?: { customTitle?: str
     platform: m.influencer?.platform || 'INSTAGRAM',
     impressions: m.impressions, reach: m.reach, views: m.views,
     likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-  })))
+    mediaType: m.mediaType, postedAt: m.postedAt, influencerId: m.influencerId, followers: m.influencer?.followers ?? null,
+  })), { rates })
 
   // Pre-fetch thumbnail images for top posts (max 30)
   const topPosts = [...posts]

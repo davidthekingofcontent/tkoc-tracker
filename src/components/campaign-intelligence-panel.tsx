@@ -10,7 +10,7 @@ import {
   type CampaignObjective,
   type Signal,
 } from '@/lib/campaign-intelligence'
-import { calculateEMV } from '@/lib/emv'
+import { calculateCampaignEMV } from '@/lib/emv'
 
 // ============ TYPES ============
 
@@ -41,10 +41,13 @@ interface CampaignIntelligencePanelProps {
     views?: number | null
     reach?: number | null
     impressions?: number | null
+    mediaType?: string | null
+    postedAt?: string | Date | null
     influencer?: {
       id: string
       username: string
       platform: string
+      followers?: number | null
     }
   }>
   overview: {
@@ -130,18 +133,23 @@ export function CampaignIntelligencePanel({
       const inf = ci.influencer
       const influencerMedia = mediaByInfluencer.get(inf.id) || []
 
-      // Calculate per-influencer EMV
-      const emvResult = calculateEMV({
+      // Per-influencer EMV, per media item (CPM by content type; stories
+      // without real views estimated from followers). Default rates on the
+      // client — the campaign overview from the API is the authoritative figure.
+      const emvResult = calculateCampaignEMV(influencerMedia.map(m => ({
         platform: inf.platform,
-        impressions: influencerMedia.reduce((s, m) => s + (m.impressions || 0), 0),
-        reach: influencerMedia.reduce((s, m) => s + (m.reach || 0), 0),
-        views: influencerMedia.reduce((s, m) => s + (m.views || 0), 0),
-        clicks: 0,
-        likes: influencerMedia.reduce((s, m) => s + (m.likes || 0), 0),
-        comments: influencerMedia.reduce((s, m) => s + (m.comments || 0), 0),
-        shares: influencerMedia.reduce((s, m) => s + (m.shares || 0), 0),
-        saves: influencerMedia.reduce((s, m) => s + (m.saves || 0), 0),
-      })
+        impressions: m.impressions || 0,
+        reach: m.reach || 0,
+        views: m.views || 0,
+        likes: m.likes || 0,
+        comments: m.comments || 0,
+        shares: m.shares || 0,
+        saves: m.saves || 0,
+        mediaType: m.mediaType ?? null,
+        postedAt: m.postedAt ?? null,
+        influencerId: inf.id,
+        followers: inf.followers,
+      })))
 
       const fee = ci.agreedFee ?? ci.cost ?? 0
 
