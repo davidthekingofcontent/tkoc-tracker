@@ -341,7 +341,13 @@ model Media {
 
   commentsList  Comment[]
 
-  @@unique([externalId, platform])
+  // One row PER (post, campaign): a post that satisfies several campaigns'
+  // rules (member + brand tag + inside dates) counts in every one of them.
+  // Unattached rows (campaignId null, e.g. profile analysis) are not covered
+  // by the constraint — Postgres treats NULLs as distinct — so those paths
+  // dedupe with findFirst before creating.
+  @@unique([externalId, platform, campaignId])
+  @@index([externalId, platform])
   @@map("media")
 }
 

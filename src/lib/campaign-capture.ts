@@ -21,9 +21,11 @@ import type { MediaType, Platform } from '@/generated/prisma/client'
  * Content a PM attaches by hand (source 'manual') is exempt from rule (3)
  * ONLY — the PM asserts relevance — but rules (1) and (2) still apply.
  *
- * A Media row can belong to at most ONE campaign (global unique on
- * externalId + platform). The automated passes never re-point a row that
- * another campaign already holds and never touch a 'manual' row.
+ * A post counts in EVERY campaign whose rules it satisfies: there is one Media
+ * row per (post, campaign) — unique on (externalId, platform, campaignId).
+ * The date window and the creator's membership decide, never the order in
+ * which campaigns were scraped. Rows a PM attached by hand ('manual') are
+ * never re-tagged by a scrape.
  *
  * A campaign with NO targetAccounts and NO targetHashtags captures NOTHING
  * from scraped sources — the UI warns the PM to configure targets.
@@ -173,20 +175,15 @@ export function scrapedStoryToRuleItem(story: Pick<ScrapedStory, 'hashtags' | 'm
 // Persistence helpers (shared by the track routes)
 // ---------------------------------------------------------------------------
 
-type ClaimDecision = 'create' | 'claim' | 'refresh' | 'skip'
+type ClaimDecision =
+  | { kind: 'create' }
+  | { kind: 'claim'; rowId: string }   // this campaign's row, or an unattached one → update + attach
+  | { kind: 'refresh'; rowId: string } // this campaign's row is manual → metrics only
 
-/**
- * Ownership guard for the automated passes. A Media row can belong to at
- * most ONE campaign, so a scrape run for campaign B must never re-point a row
- * that campaign A already holds (otherwise two campaigns sharing a creator
- * flip the row back and forth on every run), and a row a PM attached by hand
- * (source 'manual') is never re-claimed or re-tagged by a scrape.
- *
- *   create  → no row yet
- *   claim   → row is unattached (previously detached) or already ours
- *   refresh → ours, but manual: refresh metrics only, keep source/campaign
- *   skip    → held by another campaign, or manual content of another campaign
- */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002'
+}
+
 /**
  * Instagram shortcode from any permalink variant (/p/, /reel/, /tv/). The same
  * post gets a different externalId from Apify (numeric pk) and from the Meta
@@ -201,45 +198,55 @@ export function instagramShortcode(permalink: string | null | undefined): string
 
 /**
  * Existing Media row for the same post found via a different source (e.g. a
- * meta_api row materialized before Apify saw the post). Instagram only — other
- * platforms share ids across sources.
+ * meta_api row materialized before Apify saw the post), limited to THIS
+ * campaign's row or an unattached one — rows of other campaigns are their own
+ * legitimate copies. Instagram only — other platforms share ids across sources.
  */
 export async function findMediaBySameLink(
   platform: Platform,
-  permalink: string | null | undefined
+  permalink: string | null | undefined,
+  campaignId: string
 ): Promise<{ id: string; externalId: string | null; campaignId: string | null; source: string; likes: number; comments: number } | null> {
   if (platform !== 'INSTAGRAM') return null
   const code = instagramShortcode(permalink)
   if (!code) return null
   return prisma.media.findFirst({
-    where: { platform, permalink: { contains: `/${code}` } },
+    where: {
+      platform,
+      permalink: { contains: `/${code}` },
+      OR: [{ campaignId }, { campaignId: null }],
+    },
+    orderBy: { campaignId: { sort: 'desc', nulls: 'last' } },
     select: { id: true, externalId: true, campaignId: true, source: true, likes: true, comments: true },
   })
 }
 
+/**
+ * Which row a scrape for `campaignId` should write:
+ *   claim   → this campaign already has a row for the post (refresh + keep
+ *             attached), or an unattached row exists (attach it here)
+ *   refresh → this campaign's row is 'manual': metrics only, keep source
+ *   create  → no row for this campaign yet (other campaigns' rows don't matter)
+ */
 async function decideClaim(
   externalId: string,
   platform: Platform,
   campaignId: string
 ): Promise<ClaimDecision> {
-  const existing = await prisma.media.findUnique({
-    where: { externalId_platform: { externalId, platform } },
-    select: { campaignId: true, source: true },
+  const ours = await prisma.media.findFirst({
+    where: { externalId, platform, campaignId },
+    select: { id: true, source: true },
   })
-  if (!existing) return 'create'
-  if (existing.source === 'manual') return existing.campaignId === campaignId ? 'refresh' : 'skip'
-  if (existing.campaignId && existing.campaignId !== campaignId) return 'skip'
-  return 'claim'
+  if (ours) return ours.source === 'manual' ? { kind: 'refresh', rowId: ours.id } : { kind: 'claim', rowId: ours.id }
+  const loose = await prisma.media.findFirst({
+    where: { externalId, platform, campaignId: null },
+    select: { id: true },
+    orderBy: { createdAt: 'asc' },
+  })
+  if (loose) return { kind: 'claim', rowId: loose.id }
+  return { kind: 'create' }
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return (err as { code?: string })?.code === 'P2002'
-}
-
-/**
- * Upsert a rule-passing scraped post as campaign Media. Never throws.
- * Returns true when the post is (now) attached to this campaign.
- */
 export async function upsertCampaignPost(
   campaignId: string,
   influencerId: string,
@@ -247,7 +254,6 @@ export async function upsertCampaignPost(
   post: ScrapedPost
 ): Promise<boolean> {
   if (!post.externalId) return false
-  const where = { externalId_platform: { externalId: post.externalId, platform } }
   const metrics = {
     likes: post.likes,
     comments: post.comments,
@@ -255,36 +261,34 @@ export async function upsertCampaignPost(
     saves: post.saves,
     views: post.views,
   }
+  const freshRuleInputs = {
+    ...(post.caption ? { caption: post.caption } : {}),
+    ...(post.hashtags?.length ? { hashtags: post.hashtags } : {}),
+    ...(post.mentions?.length ? { mentions: post.mentions } : {}),
+    ...(toDate(post.postedAt) ? { postedAt: toDate(post.postedAt) } : {}),
+  }
   try {
     const decision = await decideClaim(post.externalId, platform, campaignId)
-    switch (decision) {
-      case 'skip':
-        return false
+    switch (decision.kind) {
       case 'refresh':
-        await prisma.media.update({ where, data: metrics })
+        await prisma.media.update({ where: { id: decision.rowId }, data: metrics })
         return true
       case 'claim':
         await prisma.media.update({
-          where,
-          data: {
-            ...metrics,
-            // Keep the rule inputs fresh so revalidation judges current data
-            ...(post.caption ? { caption: post.caption } : {}),
-            ...(post.hashtags?.length ? { hashtags: post.hashtags } : {}),
-            ...(post.mentions?.length ? { mentions: post.mentions } : {}),
-            ...(toDate(post.postedAt) ? { postedAt: toDate(post.postedAt) } : {}),
-            campaignId,
-          },
+          where: { id: decision.rowId },
+          data: { ...metrics, ...freshRuleInputs, campaignId },
         })
         return true
       case 'create': {
-        // Same post already stored under another source's externalId (Meta
-        // materialized it first)? Upgrade that row instead of creating a twin
-        // that would double-count in the campaign.
-        const twin = await findMediaBySameLink(platform, post.permalink)
+        // Same post already stored for this campaign under another source's
+        // externalId (Meta materialized it first)? Upgrade that row instead of
+        // creating a twin that would double-count in the campaign.
+        const twin = await findMediaBySameLink(platform, post.permalink, campaignId)
         if (twin) {
-          if (twin.source === 'manual') return twin.campaignId === campaignId
-          if (twin.campaignId && twin.campaignId !== campaignId) return false
+          if (twin.source === 'manual') {
+            await prisma.media.update({ where: { id: twin.id }, data: metrics })
+            return true
+          }
           await prisma.media.update({
             where: { id: twin.id },
             data: {
@@ -294,12 +298,9 @@ export async function upsertCampaignPost(
               shares: post.shares,
               saves: post.saves,
               views: post.views,
-              ...(post.caption ? { caption: post.caption } : {}),
-              ...(post.hashtags?.length ? { hashtags: post.hashtags } : {}),
-              ...(post.mentions?.length ? { mentions: post.mentions } : {}),
+              ...freshRuleInputs,
               ...(post.thumbnailUrl ? { thumbnailUrl: post.thumbnailUrl } : {}),
               ...(post.mediaUrl ? { mediaUrl: post.mediaUrl } : {}),
-              ...(toDate(post.postedAt) ? { postedAt: toDate(post.postedAt) } : {}),
               campaignId,
             },
           })
@@ -327,8 +328,8 @@ export async function upsertCampaignPost(
       }
     }
   } catch (err) {
-    // A concurrent pass created the row between our lookup and the create:
-    // it is theirs now, the next run will judge it again.
+    // A concurrent pass created this campaign's row between our lookup and the
+    // create: it exists now, the next run will refresh it.
     if (!isUniqueViolation(err)) {
       console.error('[campaign-capture] post upsert failed:', err instanceof Error ? err.message : err)
     }
@@ -336,28 +337,21 @@ export async function upsertCampaignPost(
   }
 }
 
-/**
- * Upsert a rule-passing scraped story as campaign Media (STORY). Never throws.
- * Returns true when the story is (now) attached to this campaign.
- */
 export async function upsertCampaignStory(
   campaignId: string,
   influencerId: string,
   story: ScrapedStory
 ): Promise<boolean> {
   if (!story.externalId) return false
-  const where = { externalId_platform: { externalId: story.externalId, platform: 'INSTAGRAM' as Platform } }
   try {
     const decision = await decideClaim(story.externalId, 'INSTAGRAM', campaignId)
-    switch (decision) {
-      case 'skip':
-        return false
+    switch (decision.kind) {
       case 'refresh':
-        await prisma.media.update({ where, data: { views: story.views } })
+        await prisma.media.update({ where: { id: decision.rowId }, data: { views: story.views } })
         return true
       case 'claim':
         await prisma.media.update({
-          where,
+          where: { id: decision.rowId },
           data: {
             views: story.views,
             ...(story.mentions?.length ? { mentions: story.mentions } : {}),

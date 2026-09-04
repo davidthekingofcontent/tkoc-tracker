@@ -39,16 +39,21 @@ export async function GET(
       return NextResponse.json({ duplicates: [], stats: { total: 0, duplicateCount: 0, uniqueCount: 0 } })
     }
 
-    // Strategy 1: Find media with same externalId+platform in OTHER campaigns
+    // Strategy 1: the same post in OTHER campaigns attributed to a DIFFERENT
+    // creator. A post legitimately lives in every campaign whose rules it
+    // satisfies (one row per campaign), so same-creator copies are expected
+    // and NOT duplicates; a different creator on the same externalId is.
     const externalIds = campaignMedia
       .filter(m => m.externalId)
       .map(m => m.externalId!)
+    const creatorIds = Array.from(new Set(campaignMedia.map(m => m.influencer.id)))
 
     const crossCampaignDuplicates = externalIds.length > 0
       ? await prisma.media.findMany({
           where: {
             externalId: { in: externalIds },
             campaignId: { not: id },
+            influencerId: { notIn: creatorIds },
           },
           select: {
             id: true,

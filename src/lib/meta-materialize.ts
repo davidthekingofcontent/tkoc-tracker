@@ -9,10 +9,11 @@ import { isWithinCampaignDates } from '@/lib/campaign-capture'
  *
  * - Matches poster username against the campaign's INSTAGRAM member influencers
  * - Respects campaign start/end dates
- * - Dedups against Apify-captured rows by Instagram shortcode (Apify and Meta
- *   use different external IDs for the same post, but permalinks share the
- *   /p/{shortcode}/ or /reel/{shortcode}/ segment). When both captured the same
- *   post, the row is upgraded in place with Meta's real metrics.
+ * - One Media row per (post, campaign): a post counts in every campaign whose
+ *   rules it satisfies. Within a campaign, dedups against Apify-captured rows
+ *   by Instagram shortcode (Apify and Meta use different external IDs for the
+ *   same post, but permalinks share the /p/{shortcode}/ or /reel/{shortcode}/
+ *   segment) and upgrades that row in place with Meta's real metrics.
  */
 /**
  * ACTIVE campaigns in materialization order: the most
@@ -102,20 +103,21 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
     handledIgMediaIds.add(mm.igMediaId)
 
     try {
-      // Prefer upgrading an existing row for the same post. Apify and Meta use
-      // different externalIds for the same post, so the shortcode in the
-      // permalink is the only cross-source key — and the lookup must be
-      // platform-wide (NOT scoped to this campaign): an Apify row that is
-      // unattached or attached to another campaign would otherwise be invisible
-      // here and we'd create a twin. Media has a GLOBAL unique on
-      // (externalId, platform), so neither branch may be campaign-scoped.
+      // One row per (post, campaign): look for THIS campaign's row (by Graph id
+      // or by shortcode, since an Apify row uses a different externalId) or an
+      // unattached one to claim. Other campaigns' rows are their own copies.
       const shortcode = shortcodeOf(mm.permalink)
       const existing = await prisma.media.findFirst({
         where: {
           platform: 'INSTAGRAM' as Platform,
-          OR: [
-            { externalId: mm.igMediaId },
-            ...(shortcode ? [{ permalink: { contains: `/${shortcode}` } }] : []),
+          AND: [
+            {
+              OR: [
+                { externalId: mm.igMediaId },
+                ...(shortcode ? [{ permalink: { contains: `/${shortcode}` } }] : []),
+              ],
+            },
+            { OR: [{ campaignId }, { campaignId: null }] },
           ],
         },
         orderBy: { campaignId: { sort: 'desc', nulls: 'last' } },
@@ -133,24 +135,20 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
       }
 
       if (existing) {
-        const ours = !existing.campaignId || existing.campaignId === campaignId
         await prisma.media.update({
           where: { id: existing.id },
           data: {
             ...metaMetrics,
             // Manual rows keep their own bookkeeping; only enrich metrics.
             ...(existing.source === 'manual' ? { source: 'manual' } : {}),
-            // Claim for this campaign only when the row is unattached or
-            // already ours — a row can belong to ONE campaign and another
-            // campaign's attachment must not be stolen (same as the Apify pass)
-            ...(ours ? { campaignId } : {}),
+            campaignId,
             // Keep the larger like/comment counts (Apify sometimes sees more
             // recent numbers than a stale Meta sync)
             likes: Math.max(existing.likes, metaMetrics.likes),
             comments: Math.max(existing.comments, metaMetrics.comments),
           },
         })
-        if (ours) stats.updated++
+        stats.updated++
       } else {
         await prisma.media.create({
           data: {
@@ -182,9 +180,18 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
 
     try {
       const existing = await prisma.media.findFirst({
-        where: { platform: 'INSTAGRAM' as Platform, externalId: sm.mentionMediaId },
+        where: {
+          platform: 'INSTAGRAM' as Platform,
+          externalId: sm.mentionMediaId,
+          OR: [{ campaignId }, { campaignId: null }],
+        },
+        orderBy: { campaignId: { sort: 'desc', nulls: 'last' } },
+        select: { id: true, campaignId: true },
       })
-      if (existing) continue // stories carry no new metrics — nothing to upgrade
+      if (existing) {
+        if (!existing.campaignId) await prisma.media.update({ where: { id: existing.id }, data: { campaignId } })
+        continue // stories carry no new metrics — nothing else to upgrade
+      }
 
       await prisma.media.create({
         data: {

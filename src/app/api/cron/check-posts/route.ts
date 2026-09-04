@@ -115,19 +115,19 @@ export async function GET(request: NextRequest) {
         const profile = result.profile
         const dataSource = result.dataSource
 
-        // Check which posts are new (not in our DB yet)
-        const existingExternalIds = new Set(
+        // Which (post, campaign) pairs do we already hold? One row per campaign.
+        const existingPairs = new Set(
           (await prisma.media.findMany({
             where: {
               influencerId: inf.id,
               externalId: { in: profile.recentPosts.map(p => p.externalId).filter(Boolean) },
             },
-            select: { externalId: true },
-          })).map(m => m.externalId).filter(Boolean)
+            select: { externalId: true, campaignId: true },
+          })).map(m => `${m.externalId}|${m.campaignId ?? ''}`)
         )
 
         const newPosts = profile.recentPosts.filter(p =>
-          p.externalId && !existingExternalIds.has(p.externalId)
+          p.externalId && inf.campaignIds.some(cid => !existingPairs.has(`${p.externalId}|${cid}`))
         )
 
         if (newPosts.length === 0) continue
@@ -139,6 +139,7 @@ export async function GET(request: NextRequest) {
           for (const campaignId of inf.campaignIds) {
             const campaign = activeCampaigns.find(c => c.id === campaignId)
             if (!campaign) continue
+            if (existingPairs.has(`${post.externalId}|${campaignId}`)) continue
 
             // Check if post is relevant to this campaign (mentions target accounts or uses target hashtags)
             const postHashtags = post.hashtags.map(h => h.toLowerCase().replace('#', ''))
@@ -155,11 +156,10 @@ export async function GET(request: NextRequest) {
             }
 
             try {
-              // Same post already stored via the Meta Graph API (different
-              // externalId)? Attach/refresh that row instead of creating a twin.
-              const twin = await findMediaBySameLink(inf.platform, post.permalink)
+              // Same post already stored for this campaign via the Meta Graph
+              // API (different externalId)? Refresh that row instead of a twin.
+              const twin = await findMediaBySameLink(inf.platform, post.permalink, campaignId)
               if (twin) {
-                if (twin.campaignId && twin.campaignId !== campaignId) continue
                 await prisma.media.update({
                   where: { id: twin.id },
                   data: {

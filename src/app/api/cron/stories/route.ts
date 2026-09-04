@@ -128,29 +128,28 @@ export async function GET(request: NextRequest) {
           totalStories++
           if (!story.externalId) continue
 
-          // Media has a global unique on (externalId, platform): a story can
-          // belong to at most ONE campaign. Skip stories already attached; a
-          // previously detached row (campaignId null) may be re-claimed.
-          const existing = await prisma.media.findFirst({
-            where: { externalId: story.externalId, platform: 'INSTAGRAM' },
-            select: { id: true, campaignId: true },
-          })
-          if (existing?.campaignId) continue
-
-          // Evaluate the rules PER CAMPAIGN; attach to the first campaign that qualifies
+          // One row per (story, campaign): attach the story to EVERY campaign
+          // whose rules it satisfies (member + brand tag + inside dates).
           const item = scrapedStoryToRuleItem(story)
-          const matchingCampaignId = mapping.campaignIds.find(cid => {
+          const matchingCampaignIds = mapping.campaignIds.filter(cid => {
             const campaign = campaignsById.get(cid)
             return campaign ? mediaMatchesCampaignRules(campaign, item) : false
           })
 
-          if (!matchingCampaignId) {
+          if (matchingCampaignIds.length === 0) {
             rejectedByRules++
             continue
           }
 
-          if (await upsertCampaignStory(matchingCampaignId, mapping.influencerId, story)) {
-            newStories++
+          for (const cid of matchingCampaignIds) {
+            const already = await prisma.media.findFirst({
+              where: { externalId: story.externalId, platform: 'INSTAGRAM', campaignId: cid },
+              select: { id: true },
+            })
+            if (already) continue
+            if (await upsertCampaignStory(cid, mapping.influencerId, story)) {
+              newStories++
+            }
           }
         }
       }

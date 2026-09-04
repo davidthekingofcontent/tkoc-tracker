@@ -106,12 +106,20 @@ export async function GET(request: NextRequest) {
       totalInvestment = investmentData._sum.agreedFee || 0
     } catch { totalInvestment = 0 }
 
-    // 2. Total EMV - calculated from real media data
+    // 2-6. Media KPIs — counted per DISTINCT post. A post that satisfies several
+    // campaigns' rules has one Media row per campaign; the global dashboard must
+    // not count it twice (campaign pages keep their own per-campaign rows).
     let totalEMV = { basic: 0, extended: 0 }
+    let totalMediaPosts = 0
+    let totalViews = 0
+    let totalLikes = 0
+    let totalComments = 0
     try {
       const allMedia = await prisma.media.findMany({
         where: { campaign: campaignWhere },
         select: {
+          id: true,
+          externalId: true,
           platform: true,
           impressions: true,
           reach: true,
@@ -122,28 +130,20 @@ export async function GET(request: NextRequest) {
           saves: true,
         },
       })
-      totalEMV = calculateCampaignEMV(allMedia)
-    } catch { totalEMV = { basic: 0, extended: 0 } }
-
-    // 3-6. Media aggregates (totalMediaPosts, totalViews, totalLikes, totalComments)
-    let totalMediaPosts = 0
-    let totalViews = 0
-    let totalLikes = 0
-    let totalComments = 0
-    try {
-      const [mediaCount, mediaAgg] = await Promise.all([
-        prisma.media.count({
-          where: { campaign: campaignWhere },
-        }),
-        prisma.media.aggregate({
-          where: { campaign: campaignWhere },
-          _sum: { views: true, likes: true, comments: true },
-        }),
-      ])
-      totalMediaPosts = mediaCount
-      totalViews = mediaAgg._sum.views || 0
-      totalLikes = mediaAgg._sum.likes || 0
-      totalComments = mediaAgg._sum.comments || 0
+      const seen = new Set<string>()
+      const uniqueMedia = allMedia.filter(m => {
+        const key = m.externalId ? `${m.platform}|${m.externalId}` : `id|${m.id}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      totalEMV = calculateCampaignEMV(uniqueMedia)
+      totalMediaPosts = uniqueMedia.length
+      for (const m of uniqueMedia) {
+        totalViews += m.views || 0
+        totalLikes += m.likes || 0
+        totalComments += m.comments || 0
+      }
     } catch { /* defaults remain 0 */ }
 
     // 7. Campaigns by status

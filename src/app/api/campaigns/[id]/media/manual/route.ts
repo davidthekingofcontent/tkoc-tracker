@@ -288,35 +288,32 @@ export async function POST(
     const platform = member.platform as Platform
     const externalId = scraped?.externalId || parsed.externalId
 
-    // ===== Find an existing row for this post =====
-    // Media has a GLOBAL unique on (externalId, platform). The tracking passes
-    // store the numeric id while an un-enriched manual add only knows the
-    // shortcode, so also match on the permalink needle (same trick as
-    // meta-materialize) to avoid creating a duplicate row for the same post.
+    // ===== Find an existing row for this post IN THIS CAMPAIGN =====
+    // Media is unique per (externalId, platform, campaignId): the same post may
+    // legitimately live in several campaigns. The tracking passes store the
+    // numeric id while an un-enriched manual add only knows the shortcode, so
+    // also match on the permalink needle (same trick as meta-materialize). An
+    // unattached row (campaignId null) can be claimed for this campaign.
     const existing = await prisma.media.findFirst({
       where: {
         platform,
-        OR: [
-          { externalId },
-          { externalId: parsed.externalId },
-          { permalink: { contains: parsed.permalinkNeedle } },
+        AND: [
+          {
+            OR: [
+              { externalId },
+              { externalId: parsed.externalId },
+              { permalink: { contains: parsed.permalinkNeedle } },
+            ],
+          },
+          { OR: [{ campaignId: id }, { campaignId: null }] },
         ],
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ campaignId: { sort: 'desc', nulls: 'last' } }, { createdAt: 'asc' }],
     })
 
     if (existing && existing.influencerId !== member.id) {
       return NextResponse.json(
         { error: 'Este contenido ya está registrado para otro creador.' },
-        { status: 409 }
-      )
-    }
-
-    // A row belongs to at most ONE campaign: never steal another campaign's
-    // attachment (detach it there first, then add it here).
-    if (existing?.campaignId && existing.campaignId !== id) {
-      return NextResponse.json(
-        { error: 'Este contenido ya está asignado a otra campaña.' },
         { status: 409 }
       )
     }
@@ -407,7 +404,7 @@ export async function POST(
           include,
         })
       } catch (err) {
-        // Concurrent add of the same post → unique (externalId, platform) violation
+        // Concurrent add of the same post → unique (externalId, platform, campaignId) violation
         if ((err as { code?: string })?.code === 'P2002') {
           return NextResponse.json(
             { error: 'Este contenido ya está registrado.' },

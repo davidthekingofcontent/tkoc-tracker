@@ -130,14 +130,27 @@ export async function POST(request: NextRequest) {
           for (const post of scraped.recentPosts) {
             if (!post.externalId) continue
             try {
-              await prisma.media.upsert({
-                where: {
-                  externalId_platform: {
-                    externalId: post.externalId,
-                    platform,
-                  },
+              // Profile analysis stores UNATTACHED rows (campaignId null). Media is
+              // unique per (post, campaign) and NULL campaignIds are not covered by
+              // the constraint, so dedupe explicitly before creating.
+              const loose = await prisma.media.findFirst({
+                where: { externalId: post.externalId, platform, campaignId: null },
+                select: { id: true },
+              })
+              if (loose) {
+                await prisma.media.update({
+                  where: { id: loose.id },
+                  data: {
+                  likes: post.likes,
+                  comments: post.comments,
+                  shares: post.shares,
+                  saves: post.saves,
+                  views: post.views,
                 },
-                create: {
+                })
+              } else {
+                await prisma.media.create({
+                  data: {
                   externalId: post.externalId,
                   platform,
                   mediaType: post.mediaType,
@@ -155,14 +168,8 @@ export async function POST(request: NextRequest) {
                   postedAt: post.postedAt ? new Date(post.postedAt) : null,
                   influencerId: influencer.id,
                 },
-                update: {
-                  likes: post.likes,
-                  comments: post.comments,
-                  shares: post.shares,
-                  saves: post.saves,
-                  views: post.views,
-                },
-              })
+                })
+              }
               savedMediaCount++
             } catch {
               // Skip duplicate or invalid media
