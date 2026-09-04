@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { calculateEMV, calculateCampaignEMV } from '@/lib/emv'
-import { loadEmvRates, campaignBrandId } from '@/lib/emv-server'
+import { calculateCampaignEMV } from '@/lib/emv'
+import { loadEmvRates, campaignBrandId, getCreatorStoryViewRates } from '@/lib/emv-server'
 
 export async function POST(request: NextRequest) {
   try {
@@ -74,13 +74,18 @@ export async function POST(request: NextRequest) {
 
     const totalEngagements = totalLikes + totalComments + totalShares
     const engRate = totalReach > 0 ? (totalEngagements / totalReach) * 100 : 0
-    const emvRates = await loadEmvRates(await campaignBrandId(campaign.id))
+    const [emvRates, storyViewRates] = await Promise.all([
+      loadEmvRates(await campaignBrandId(campaign.id)),
+      getCreatorStoryViewRates(Array.from(new Set(campaign.media.map(m => m.influencerId)))),
+    ])
+    // One computation: totals and per-item figures come from the same call
     const emv = calculateCampaignEMV(campaign.media.map(m => ({
       platform: m.influencer?.platform || 'INSTAGRAM',
       impressions: m.impressions || 0, reach: m.reach || 0, views: m.views || 0,
       likes: m.likes || 0, comments: m.comments || 0, shares: m.shares || 0, saves: m.saves || 0,
       mediaType: m.mediaType, postedAt: m.postedAt, influencerId: m.influencerId, followers: m.influencer?.followers ?? null,
-    })), { rates: emvRates })
+    })), { rates: emvRates, storyViewRates })
+    const emvItems = emv.items
 
     const totalCost = campaign.influencers.reduce(
       (sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0
@@ -92,7 +97,7 @@ export async function POST(request: NextRequest) {
       totalViews: number; totalReach: number; totalImpressions: number; totalEMV: number; mediaCount: number
     }>()
 
-    for (const m of campaign.media) {
+    for (const [mi, m] of campaign.media.entries()) {
       const username = m.influencer?.username || 'unknown'
       const existing = influencerMetricsMap.get(username) || {
         totalLikes: 0, totalComments: 0, totalShares: 0, totalSaves: 0,
@@ -106,13 +111,8 @@ export async function POST(request: NextRequest) {
       existing.totalReach += m.reach || 0
       existing.totalImpressions += m.impressions || 0
       existing.mediaCount++
-      const mediaEMV = calculateEMV({
-        platform: m.influencer?.platform || 'INSTAGRAM',
-        impressions: m.impressions || 0, reach: m.reach || 0, views: m.views || 0,
-        clicks: 0, likes: m.likes || 0, comments: m.comments || 0, shares: m.shares || 0, saves: m.saves || 0,
-        mediaType: m.mediaType, followers: m.influencer?.followers ?? null,
-      }, emvRates)
-      existing.totalEMV += mediaEMV.extended
+      const mediaEMV = emvItems[mi]
+      existing.totalEMV += mediaEMV?.extended ?? 0
       influencerMetricsMap.set(username, existing)
     }
 

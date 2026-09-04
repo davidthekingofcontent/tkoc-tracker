@@ -231,6 +231,9 @@ export interface CampaignEmvResult {
   realStories: number
   /** Sum of estimated story audience (for "≈ N vistas estimadas"). */
   estimatedAudience: number
+  /** Per-item results, aligned with the input array — use these for per-media
+   *  and per-creator figures so they always sum to the campaign total. */
+  items: EMVResult[]
 }
 
 /**
@@ -243,13 +246,14 @@ export function calculateCampaignEMV(media: CampaignEmvItem[], options: Campaign
     ? options.storyViewRates
     : new Map(Object.entries(options.storyViewRates || {}))
 
-  // Story sequence index per creator (only stories that will be estimated)
+  // Story sequence index per creator: EVERY story of the creator takes part
+  // in the sequence (a story with real views still occupies a position and
+  // bridges the 3h gap); only the estimated ones read the index later.
   const storyIndex = new Map<CampaignEmvItem, number>()
   const byCreator = new Map<string, CampaignEmvItem[]>()
   media.forEach((m, i) => {
     const isStory = (m.mediaType || '').toUpperCase() === 'STORY'
-    const hasReal = (m.impressions || 0) > 0 || (m.reach || 0) > 0 || (m.views || 0) > 0
-    if (!isStory || hasReal) return
+    if (!isStory) return
     const key = m.influencerId || `idx:${i}`
     const arr = byCreator.get(key) || []
     arr.push(m)
@@ -273,6 +277,7 @@ export function calculateCampaignEMV(media: CampaignEmvItem[], options: Campaign
   let estimatedStories = 0
   let realStories = 0
   let estimatedAudience = 0
+  const items: EMVResult[] = []
 
   for (const m of media) {
     const result = calculateEMV({
@@ -290,6 +295,7 @@ export function calculateCampaignEMV(media: CampaignEmvItem[], options: Campaign
       storyIndex: storyIndex.get(m) ?? 0,
       storyViewRate: m.influencerId ? rateMap.get(m.influencerId) ?? null : null,
     }, rates)
+    items.push(result)
     totalBasic += result.basic
     totalExtended += result.extended
     if ((m.mediaType || '').toUpperCase() === 'STORY') {
@@ -304,6 +310,7 @@ export function calculateCampaignEMV(media: CampaignEmvItem[], options: Campaign
     estimatedStories,
     realStories,
     estimatedAudience,
+    items,
   }
 }
 

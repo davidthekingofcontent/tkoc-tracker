@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { calculateCampaignEMV } from '@/lib/emv'
-import { loadEmvRates } from '@/lib/emv-server'
+import { loadEmvRates, getCreatorStoryViewRates } from '@/lib/emv-server'
 import { instagramShortcode } from '@/lib/campaign-capture'
 
 interface BrandData {
@@ -121,6 +121,9 @@ export async function GET(request: NextRequest) {
     const brandMap = new Map<string, BrandData>()
     const brandSeenPosts = new Map<string, Set<string>>()
     const emvRates = await loadEmvRates()
+    const storyViewRates = await getCreatorStoryViewRates(
+      Array.from(new Set(campaigns.flatMap(c => c.media.map(m => m.influencerId))))
+    )
 
     for (const campaign of campaigns) {
       const brandName = deriveBrandName(campaign)
@@ -185,7 +188,7 @@ export async function GET(request: NextRequest) {
       // EMV calculation (distinct posts only; stories estimated by followers)
       const emv = calculateCampaignEMV(
         distinct.map(m => ({ ...m, followers: m.influencer?.followers ?? null })),
-        { rates: emvRates }
+        { rates: emvRates, storyViewRates }
       )
       brand.totalEMV += emv.extended
 

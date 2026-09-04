@@ -3,8 +3,8 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
-import { calculateEMV, calculateCampaignEMV, EMV_METHODOLOGY, DEFAULT_EMV_RATES, type EmvRates } from '@/lib/emv'
-import { loadEmvRates, campaignBrandId } from '@/lib/emv-server'
+import { calculateEMV, calculateCampaignEMV, EMV_METHODOLOGY, DEFAULT_EMV_RATES, type EmvRates, type EMVResult } from '@/lib/emv'
+import { loadEmvRates, campaignBrandId, getCreatorStoryViewRates } from '@/lib/emv-server'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -68,6 +68,7 @@ export async function GET(
 
     // EMV rates for this campaign's brand (stories estimated from followers)
     ;(campaign as CampaignData).emvRates = await loadEmvRates(await campaignBrandId(id))
+    ;(campaign as CampaignData).storyViewRates = await getCreatorStoryViewRates(Array.from(new Set(campaign.media.map(m => m.influencerId))))
 
     if (format === 'csv') return generateCSV(campaign)
     if (format === 'json') return generateJSON(campaign)
@@ -137,6 +138,7 @@ export async function POST(
     }
 
     ;(campaign as CampaignData).emvRates = await loadEmvRates(await campaignBrandId(id))
+    ;(campaign as CampaignData).storyViewRates = await getCreatorStoryViewRates(Array.from(new Set(campaign.media.map(m => m.influencerId))))
 
     if (format === 'csv') return generateCSV(campaign)
     if (format === 'json') return generateJSON(campaign)
@@ -215,6 +217,35 @@ interface CampaignData {
   }[]
   /** EMV rates (Ajustes → Benchmarks, brand override) attached by the handlers. */
   emvRates?: EmvRates
+  /** Creators' real story view rates (views ÷ followers), attached by the handlers. */
+  storyViewRates?: Map<string, number>
+}
+
+type ExportMedia = CampaignData['media'][number]
+
+/**
+ * ONE EMV computation per document: campaign total + per-item results from the
+ * same call, so per-media rows, per-creator rows and the totals always agree
+ * (story sequence decay and the creator's real rate apply to every figure).
+ */
+function computeExportEmv(campaign: CampaignData) {
+  const rates = campaign.emvRates ?? DEFAULT_EMV_RATES
+  const result = calculateCampaignEMV(campaign.media.map(m => ({
+    platform: m.influencer?.platform || 'INSTAGRAM',
+    impressions: m.impressions, reach: m.reach, views: m.views,
+    likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
+    mediaType: m.mediaType, postedAt: m.postedAt, influencerId: m.influencerId, followers: m.influencer?.followers ?? null,
+  })), { rates, storyViewRates: campaign.storyViewRates })
+  const byMedia = new Map<ExportMedia, EMVResult>()
+  campaign.media.forEach((m, i) => byMedia.set(m, result.items[i]))
+  const emvOf = (m: ExportMedia): EMVResult =>
+    byMedia.get(m) ?? calculateEMV({
+      platform: m.influencer?.platform || 'INSTAGRAM',
+      impressions: m.impressions, reach: m.reach, views: m.views,
+      clicks: 0, likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
+      mediaType: m.mediaType, followers: m.influencer?.followers ?? null,
+    }, rates)
+  return { emv: result, emvOf }
 }
 
 // ============ INFLUENCER MEDIA AGGREGATION ============
@@ -232,7 +263,7 @@ interface InfluencerMediaMetrics {
 }
 
 function aggregateInfluencerMedia(campaign: CampaignData): Map<string, InfluencerMediaMetrics> {
-  const rates = campaign.emvRates ?? DEFAULT_EMV_RATES
+  const { emvOf } = computeExportEmv(campaign)
   const map = new Map<string, InfluencerMediaMetrics>()
 
   for (const m of campaign.media) {
@@ -251,12 +282,7 @@ function aggregateInfluencerMedia(campaign: CampaignData): Map<string, Influence
     existing.totalImpressions += m.impressions || 0
     existing.mediaCount++
 
-    const mediaEMV = calculateEMV({
-      platform: m.influencer?.platform || 'INSTAGRAM',
-      impressions: m.impressions, reach: m.reach, views: m.views,
-      clicks: 0, likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-      mediaType: m.mediaType, followers: m.influencer?.followers ?? null,
-    }, rates)
+    const mediaEMV = emvOf(m)
     existing.totalEMV += mediaEMV.extended
 
     map.set(username, existing)
@@ -301,7 +327,7 @@ async function fetchImageBase64(url: string): Promise<string | null> {
 // ============ CSV ============
 
 function generateCSV(campaign: CampaignData): NextResponse {
-  const rates = campaign.emvRates ?? DEFAULT_EMV_RATES
+  const { emv, emvOf } = computeExportEmv(campaign)
   const lines: string[] = []
   const influencerMetrics = aggregateInfluencerMedia(campaign)
 
@@ -331,12 +357,6 @@ function generateCSV(campaign: CampaignData): NextResponse {
 
   const totalEngagements = totalLikes + totalComments + totalShares
   const engRate = totalReach > 0 ? ((totalEngagements / totalReach) * 100).toFixed(2) : '0'
-  const emv = calculateCampaignEMV(campaign.media.map(m => ({
-    platform: m.influencer?.platform || 'INSTAGRAM',
-    impressions: m.impressions, reach: m.reach, views: m.views,
-    likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-    mediaType: m.mediaType, postedAt: m.postedAt, influencerId: m.influencerId, followers: m.influencer?.followers ?? null,
-  })), { rates })
 
   const totalCost = campaign.influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0)
 
@@ -409,12 +429,7 @@ function generateCSV(campaign: CampaignData): NextResponse {
   lines.push('Date,Influencer,Platform,Type,Likes,Comments,Shares,Saves,Views,Reach,Impressions,EMV,Link,Caption')
 
   for (const media of campaign.media) {
-    const mediaEMV = calculateEMV({
-      platform: media.influencer?.platform || 'INSTAGRAM',
-      impressions: media.impressions, reach: media.reach, views: media.views,
-      clicks: 0, likes: media.likes, comments: media.comments, shares: media.shares, saves: media.saves,
-      mediaType: media.mediaType, followers: media.influencer?.followers ?? null,
-    }, rates)
+    const mediaEMV = emvOf(media)
     lines.push([
       media.postedAt ? new Date(media.postedAt).toLocaleDateString() : '',
       escapeCSV(media.influencer?.username || ''), escapeCSV(media.influencer?.platform || ''),
@@ -438,7 +453,7 @@ function generateCSV(campaign: CampaignData): NextResponse {
 // ============ JSON ============
 
 function generateJSON(campaign: CampaignData): NextResponse {
-  const rates = campaign.emvRates ?? DEFAULT_EMV_RATES
+  const { emv, emvOf } = computeExportEmv(campaign)
   const influencerMetrics = aggregateInfluencerMedia(campaign)
 
   let totalReach = 0, totalLikes = 0, totalComments = 0, totalShares = 0
@@ -456,12 +471,6 @@ function generateJSON(campaign: CampaignData): NextResponse {
 
   const totalEngagements = totalLikes + totalComments + totalShares
   const engRate = totalReach > 0 ? (totalEngagements / totalReach) * 100 : 0
-  const emv = calculateCampaignEMV(campaign.media.map(m => ({
-    platform: m.influencer?.platform || 'INSTAGRAM',
-    impressions: m.impressions, reach: m.reach, views: m.views,
-    likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-    mediaType: m.mediaType, postedAt: m.postedAt, influencerId: m.influencerId, followers: m.influencer?.followers ?? null,
-  })), { rates })
 
   const totalCost = campaign.influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0)
 
@@ -521,12 +530,7 @@ function generateJSON(campaign: CampaignData): NextResponse {
       }
     }),
     media: campaign.media.map(m => {
-      const mediaEMV = calculateEMV({
-        platform: m.influencer?.platform || 'INSTAGRAM',
-        impressions: m.impressions, reach: m.reach, views: m.views,
-        clicks: 0, likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-        mediaType: m.mediaType, followers: m.influencer?.followers ?? null,
-      }, rates)
+      const mediaEMV = emvOf(m)
       return {
         postedAt: m.postedAt,
         influencer: m.influencer?.username || null,
@@ -560,7 +564,7 @@ function generateJSON(campaign: CampaignData): NextResponse {
 // ============ PDF GENERATION ============
 
 async function generatePDF(campaign: CampaignData, options?: { customTitle?: string; customSubtitle?: string; coverImageUrl?: string; coverImageBase64?: string; notes?: string; sections?: string[] }): Promise<NextResponse> {
-  const rates = campaign.emvRates ?? DEFAULT_EMV_RATES
+  const { emv, emvOf } = computeExportEmv(campaign)
   const doc = new jsPDF('p', 'mm', 'a4')
   const W = doc.internal.pageSize.getWidth()   // 210
   const H = doc.internal.pageSize.getHeight()  // 297
@@ -595,20 +599,10 @@ async function generatePDF(campaign: CampaignData, options?: { customTitle?: str
   const stories = campaign.media.filter(m => m.mediaType === 'STORY')
 
   // EMV
-  const emv = calculateCampaignEMV(campaign.media.map(m => ({
-    platform: m.influencer?.platform || 'INSTAGRAM',
-    impressions: m.impressions, reach: m.reach, views: m.views,
-    likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-    mediaType: m.mediaType, postedAt: m.postedAt, influencerId: m.influencerId, followers: m.influencer?.followers ?? null,
-  })), { rates })
 
   // Pre-fetch thumbnail images for top posts (max 30)
   const topPosts = [...posts]
-    .sort((a, b) => {
-      const emvA = calculateEMV({ platform: a.influencer?.platform || 'INSTAGRAM', impressions: a.impressions, reach: a.reach, views: a.views, clicks: 0, likes: a.likes, comments: a.comments, shares: a.shares, saves: a.saves })
-      const emvB = calculateEMV({ platform: b.influencer?.platform || 'INSTAGRAM', impressions: b.impressions, reach: b.reach, views: b.views, clicks: 0, likes: b.likes, comments: b.comments, shares: b.shares, saves: b.saves })
-      return emvB.extended - emvA.extended
-    })
+    .sort((a, b) => emvOf(b).extended - emvOf(a).extended)
     .slice(0, 30)
 
   const imagePromises = topPosts.map(p => p.thumbnailUrl ? fetchImageBase64(p.thumbnailUrl) : Promise.resolve(null))
@@ -918,11 +912,7 @@ async function generatePDF(campaign: CampaignData, options?: { customTitle?: str
 
     for (let i = 0; i < topPosts.length; i++) {
       const post = topPosts[i]
-      const postEMV = calculateEMV({
-        platform: post.influencer?.platform || 'INSTAGRAM',
-        impressions: post.impressions, reach: post.reach, views: post.views,
-        clicks: 0, likes: post.likes, comments: post.comments, shares: post.shares, saves: post.saves,
-      })
+      const postEMV = emvOf(post)
 
       const cardHeight = 56
       if (y + cardHeight > H - 20) {
@@ -1059,11 +1049,7 @@ async function generatePDF(campaign: CampaignData, options?: { customTitle?: str
     y += 14
 
     const storyRows = stories.map(s => {
-      const sEmv = calculateEMV({
-        platform: s.influencer?.platform || 'INSTAGRAM',
-        impressions: s.impressions, reach: s.reach, views: s.views,
-        clicks: 0, likes: s.likes, comments: s.comments, shares: s.shares, saves: s.saves,
-      })
+      const sEmv = emvOf(s)
       return [
         s.influencer?.username ? `@${s.influencer.username}` : '-',
         fmt(s.influencer?.followers || 0),
