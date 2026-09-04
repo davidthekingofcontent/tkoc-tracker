@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
 import { Platform, MediaType } from '@/generated/prisma/client'
-import { isWithinCampaignDates } from '@/lib/campaign-capture'
+import { isWithinCampaignDates, itemReferencesBrand, normalizeBrandToken } from '@/lib/campaign-capture'
 
 /**
  * Materialize Meta Graph API content (MetaMedia + MetaStoryMention) into the
@@ -64,6 +64,26 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
   if (brandTokens.length === 0) return stats
   const tokenIds = brandTokens.map(t => t.id)
 
+  // Which brand account each connection is (latest snapshot username). A
+  // tagged post is attributed to a campaign ONLY if that brand handle is one of
+  // the campaign's targetAccounts — otherwise a creator tagging @vileda.es would
+  // land in another brand's campaign just for being a member with matching dates.
+  const brandHandleByToken = new Map<string, string>()
+  for (const tokenId of tokenIds) {
+    const snap = await prisma.metaAccountSnapshot.findFirst({
+      where: { socialTokenId: tokenId },
+      orderBy: { capturedAt: 'desc' },
+      select: { igUsername: true },
+    })
+    if (snap?.igUsername) brandHandleByToken.set(tokenId, snap.igUsername.toLowerCase().replace(/^@/, '').trim())
+  }
+  const campaignTargets = new Set((campaign.targetAccounts || []).map(a => normalizeBrandToken(a.replace(/^[@#]+/, ''))))
+  const usableTokenIds = tokenIds.filter(id => {
+    const h = brandHandleByToken.get(id)
+    return !!h && campaignTargets.has(normalizeBrandToken(h))
+  })
+  if (usableTokenIds.length === 0) return stats // campaign has no target among the connected brands (or no targets at all)
+
   // Rule (2) of precise capture: undated items can't be proven inside the
   // campaign window → NOT captured. Same window logic as every other capture
   // path (endDate's whole day counts). Meta rows are brand-tagged by
@@ -87,12 +107,18 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
 
   const [metaMedia, storyMentions] = await Promise.all([
     prisma.metaMedia.findMany({
-      where: { socialTokenId: { in: tokenIds }, igUsername: { not: null } },
+      where: { socialTokenId: { in: usableTokenIds }, igUsername: { not: null } },
     }),
     prisma.metaStoryMention.findMany({
-      where: { socialTokenId: { in: tokenIds } },
+      where: { socialTokenId: { in: usableTokenIds } },
     }),
   ])
+  const captionMentions = (caption: string | null | undefined) =>
+    Array.from(new Set((caption || '').match(/@([A-Za-z0-9_.]+)/g)?.map(m => m.slice(1).toLowerCase()) ?? []))
+  const mentionsFor = (tokenId: string, caption: string | null | undefined) => {
+    const brand = brandHandleByToken.get(tokenId)!
+    return Array.from(new Set([brand, ...captionMentions(caption)]))
+  }
 
   const handledIgMediaIds = new Set<string>()
 
@@ -100,6 +126,9 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
     const member = mm.igUsername ? igMembers.get(normalize(mm.igUsername)) : undefined
     if (!member) continue
     if (!inRange(mm.postedAt)) continue
+    const mentions = mentionsFor(mm.socialTokenId, mm.caption)
+    // Rule (3) with the tagged brand as an explicit mention (also covers "no targets → nothing")
+    if (!itemReferencesBrand(campaign, { caption: mm.caption, hashtags: [], mentions })) continue
     handledIgMediaIds.add(mm.igMediaId)
 
     try {
@@ -139,6 +168,7 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
           where: { id: existing.id },
           data: {
             ...metaMetrics,
+            mentions: Array.from(new Set([...(existing.mentions || []), ...mentions])),
             // Manual rows keep their own bookkeeping; only enrich metrics.
             ...(existing.source === 'manual' ? { source: 'manual' } : {}),
             campaignId,
@@ -160,6 +190,7 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
             thumbnailUrl: mm.thumbnailUrl,
             permalink: mm.permalink,
             ...metaMetrics,
+            mentions,
             postedAt: mm.postedAt,
             influencerId: member.id,
             campaignId,
@@ -177,6 +208,8 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
     if (!member) continue
     if (!inRange(sm.mentionedAt)) continue
     if (handledIgMediaIds.has(sm.mentionMediaId)) continue // richer MetaMedia row already handled it
+    const storyMentions = mentionsFor(sm.socialTokenId, null)
+    if (!itemReferencesBrand(campaign, { caption: null, hashtags: [], mentions: storyMentions })) continue
 
     try {
       const existing = await prisma.media.findFirst({
@@ -200,6 +233,7 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
           mediaType: 'STORY' as MediaType,
           source: 'meta_api',
           dataSource: 'api',
+          mentions: storyMentions,
           postedAt: sm.mentionedAt,
           influencerId: member.id,
           campaignId,

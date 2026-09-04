@@ -46,14 +46,13 @@ export async function GET(
     const externalIds = campaignMedia
       .filter(m => m.externalId)
       .map(m => m.externalId!)
-    const creatorIds = Array.from(new Set(campaignMedia.map(m => m.influencer.id)))
+    const creatorByPost = new Map(campaignMedia.filter(m => m.externalId).map(m => [`${m.platform}|${m.externalId}`, m.influencer.id]))
 
-    const crossCampaignDuplicates = externalIds.length > 0
+    const crossCampaignRows = externalIds.length > 0
       ? await prisma.media.findMany({
           where: {
             externalId: { in: externalIds },
             campaignId: { not: id },
-            influencerId: { notIn: creatorIds },
           },
           select: {
             id: true,
@@ -69,6 +68,10 @@ export async function GET(
           },
         })
       : []
+    // Only a DIFFERENT creator on the same post is a duplicate/misattribution
+    const crossCampaignDuplicates = crossCampaignRows.filter(d =>
+      creatorByPost.get(`${d.platform}|${d.externalId}`) !== d.influencer.id
+    )
 
     // Strategy 2: Find same-caption duplicates within this campaign (different influencers posting identical content)
     const captionMap = new Map<string, typeof campaignMedia>()

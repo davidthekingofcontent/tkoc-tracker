@@ -4,6 +4,7 @@ import { getSession } from '@/lib/auth'
 import { scrapeComments } from '@/lib/apify'
 import { analyzeSentiment } from '@/lib/sentiment'
 import { Platform } from '@/generated/prisma/client'
+import { instagramShortcode } from '@/lib/campaign-capture'
 
 export async function GET(
   request: NextRequest,
@@ -24,10 +25,29 @@ export async function GET(
       ? { id: mediaIdFilter, campaignId: id }
       : { campaignId: id }
 
-    const mediaIds = await prisma.media.findMany({
+    // One Media row per (post, campaign) but comments hang off ONE row (Comment
+    // is unique per externalId+platform). Resolve this campaign's posts to ALL
+    // their copies so sentiment scraped from another campaign is visible here.
+    const ownRows = await prisma.media.findMany({
       where: mediaWhere,
-      select: { id: true },
+      select: { id: true, externalId: true, platform: true, permalink: true },
     })
+    const copyIds = new Set(ownRows.map(r => r.id))
+    const extIds = ownRows.map(r => r.externalId).filter((x): x is string => !!x)
+    const shortcodes = ownRows.map(r => r.platform === 'INSTAGRAM' ? instagramShortcode(r.permalink) : null).filter((x): x is string => !!x)
+    if (extIds.length > 0 || shortcodes.length > 0) {
+      const copies = await prisma.media.findMany({
+        where: {
+          OR: [
+            ...(extIds.length ? [{ externalId: { in: extIds } }] : []),
+            ...shortcodes.map(sc => ({ platform: 'INSTAGRAM' as Platform, permalink: { contains: `/${sc}` } })),
+          ],
+        },
+        select: { id: true },
+      })
+      for (const c of copies) copyIds.add(c.id)
+    }
+    const mediaIds = Array.from(copyIds).map(id => ({ id }))
 
     if (mediaIds.length === 0) {
       return NextResponse.json({

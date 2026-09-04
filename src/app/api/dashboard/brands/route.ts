@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { calculateCampaignEMV } from '@/lib/emv'
+import { instagramShortcode } from '@/lib/campaign-capture'
 
 interface BrandData {
   brandName: string
@@ -89,6 +90,9 @@ export async function GET(request: NextRequest) {
         },
         media: {
           select: {
+            id: true,
+            externalId: true,
+            permalink: true,
             platform: true,
             likes: true,
             comments: true,
@@ -110,6 +114,7 @@ export async function GET(request: NextRequest) {
 
     // Group campaigns by derived brand name
     const brandMap = new Map<string, BrandData>()
+    const brandSeenPosts = new Map<string, Set<string>>()
 
     for (const campaign of campaigns) {
       const brandName = deriveBrandName(campaign)
@@ -146,24 +151,33 @@ export async function GET(request: NextRequest) {
       }
 
       brand.totalInfluencers += uniqueInfluencerIds.size
-      brand.totalMedia += campaign.media.length
       brand.totalCost += campaignCost
 
-      // Media metrics
+      // Media metrics — per DISTINCT post across the brand's campaigns (a post
+      // that lives in the annual and the monthly campaign counts once here).
+      const seenPosts = brandSeenPosts.get(brandName) ?? new Set<string>()
+      brandSeenPosts.set(brandName, seenPosts)
+      const distinct = campaign.media.filter(m => {
+        const sc = m.platform === 'INSTAGRAM' ? instagramShortcode(m.permalink) : null
+        const key = sc ? `${m.platform}|sc:${sc}` : m.externalId ? `${m.platform}|${m.externalId}` : `id|${m.id}`
+        if (seenPosts.has(key)) return false
+        seenPosts.add(key)
+        return true
+      })
+      brand.totalMedia += distinct.length
+
       let campaignEngagements = 0
       let campaignViews = 0
-
-      for (const m of campaign.media) {
+      for (const m of distinct) {
         const engagements = (m.likes || 0) + (m.comments || 0) + (m.shares || 0) + (m.saves || 0)
         campaignEngagements += engagements
         campaignViews += m.views || 0
       }
-
       brand.totalEngagements += campaignEngagements
       brand.totalViews += campaignViews
 
-      // EMV calculation
-      const emv = calculateCampaignEMV(campaign.media)
+      // EMV calculation (distinct posts only)
+      const emv = calculateCampaignEMV(distinct)
       brand.totalEMV += emv.extended
 
       // Track platforms

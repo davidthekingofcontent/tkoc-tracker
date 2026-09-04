@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { findMediaBySameLink } from '@/lib/campaign-capture'
+import { campaignHasTargets, mediaMatchesCampaignRules, scrapedPostToRuleItem, upsertCampaignPost } from '@/lib/campaign-capture'
 import { isApifyConfiguredAsync } from '@/lib/apify'
 import { fetchProfile } from '@/lib/platform-client'
 import { isYouTubeApiConfigured } from '@/lib/youtube-api'
@@ -134,87 +134,46 @@ export async function GET(request: NextRequest) {
 
         console.log(`[Cron/CheckPosts] Found ${newPosts.length} new posts from @${inf.username}`)
 
-        // Save new posts to DB and check if they match campaign hashtags/mentions
+        // Save new posts: one row per (post, campaign) for EVERY campaign whose
+        // rules the post satisfies (member + brand reference + inside dates —
+        // the shared rule engine; a campaign without targets captures nothing).
         for (const post of newPosts) {
+          const attachedTo: Array<{ id: string; name: string }> = []
+          const item = scrapedPostToRuleItem(post)
           for (const campaignId of inf.campaignIds) {
             const campaign = activeCampaigns.find(c => c.id === campaignId)
             if (!campaign) continue
             if (existingPairs.has(`${post.externalId}|${campaignId}`)) continue
-
-            // Check if post is relevant to this campaign (mentions target accounts or uses target hashtags)
-            const postHashtags = post.hashtags.map(h => h.toLowerCase().replace('#', ''))
-            const postMentions = post.mentions.map(m => m.toLowerCase().replace('@', ''))
-            const campaignHashtags = campaign.targetHashtags.map(h => h.toLowerCase().replace('#', ''))
-            const campaignAccounts = campaign.targetAccounts.map(a => a.toLowerCase().replace('@', ''))
-
-            const matchesHashtag = campaignHashtags.length === 0 || campaignHashtags.some(h => postHashtags.includes(h))
-            const matchesMention = campaignAccounts.length === 0 || campaignAccounts.some(a => postMentions.includes(a))
-
-            // If campaign has targets, at least one must match
-            if (campaignHashtags.length > 0 || campaignAccounts.length > 0) {
-              if (!matchesHashtag && !matchesMention) continue
-            }
+            if (!campaignHasTargets(campaign) || !mediaMatchesCampaignRules(campaign, item)) continue
 
             try {
-              // Same post already stored for this campaign via the Meta Graph
-              // API (different externalId)? Refresh that row instead of a twin.
-              const twin = await findMediaBySameLink(inf.platform, post.permalink, campaignId)
-              if (twin) {
-                await prisma.media.update({
-                  where: { id: twin.id },
-                  data: {
-                    likes: Math.max(twin.likes, post.likes),
-                    comments: Math.max(twin.comments, post.comments),
-                    shares: post.shares,
-                    saves: post.saves,
-                    views: post.views,
-                    ...(post.caption ? { caption: post.caption } : {}),
-                    ...(post.thumbnailUrl ? { thumbnailUrl: post.thumbnailUrl } : {}),
-                    ...(post.mediaUrl ? { mediaUrl: post.mediaUrl } : {}),
-                    hashtags: post.hashtags,
-                    mentions: post.mentions,
-                    campaignId,
-                  },
-                })
-                continue
-              }
-              await prisma.media.create({
+              const ok = await upsertCampaignPost(campaignId, inf.id, inf.platform, post)
+              if (!ok) continue
+              await prisma.media.updateMany({
+                where: { externalId: post.externalId, platform: inf.platform, campaignId },
                 data: {
-                  externalId: post.externalId,
-                  platform: inf.platform,
-                  mediaType: post.mediaType,
-                  caption: post.caption,
-                  mediaUrl: post.mediaUrl,
-                  thumbnailUrl: post.thumbnailUrl,
-                  permalink: post.permalink,
-                  likes: post.likes,
-                  comments: post.comments,
-                  shares: post.shares,
-                  saves: post.saves,
-                  views: post.views,
-                  postedAt: post.postedAt ? new Date(post.postedAt) : null,
-                  hashtags: post.hashtags,
-                  mentions: post.mentions,
-                  influencerId: inf.id,
-                  campaignId,
                   dataSource,
                   isAdDisclosed: campaign.paymentType === 'PAID' ? hasAdDisclosure(post.caption) : false,
                 },
               })
+              existingPairs.add(`${post.externalId}|${campaignId}`)
               totalNewPosts++
-
-              // Send notification
-              const platformName = inf.platform === 'INSTAGRAM' ? 'Instagram' : inf.platform === 'TIKTOK' ? 'TikTok' : 'YouTube'
-              notifyAllTeam({
-                type: 'media_posted',
-                title: `@${inf.username} ha publicado`,
-                message: `@${inf.username} ha publicado en ${platformName} para la campaña "${campaign.name}". ${post.permalink ? `Ver: ${post.permalink}` : ''} Consejo: espera 7 días antes de revisar las métricas.`,
-                link: `/campaigns/${campaignId}`,
-              }).catch(() => {})
-
-            } catch {
-              // Skip duplicates
+              attachedTo.push({ id: campaign.id, name: campaign.name })
+            } catch (err) {
+              console.error('[Cron/CheckPosts] save failed:', err instanceof Error ? err.message : err)
             }
+          }
+
+          // One notification per post (not per campaign copy)
+          if (attachedTo.length > 0) {
+            const platformName = inf.platform === 'INSTAGRAM' ? 'Instagram' : inf.platform === 'TIKTOK' ? 'TikTok' : 'YouTube'
+            const names = attachedTo.map(c => `"${c.name}"`).join(', ')
+            notifyAllTeam({
+              type: 'media_posted',
+              title: `@${inf.username} ha publicado`,
+              message: `@${inf.username} ha publicado en ${platformName} para ${attachedTo.length > 1 ? 'las campañas' : 'la campaña'} ${names}. ${post.permalink ? `Ver: ${post.permalink}` : ''} Consejo: espera 7 días antes de revisar las métricas.`,
+              link: `/campaigns/${attachedTo[0].id}`,
+            }).catch(() => {})
           }
         }
 

@@ -133,13 +133,14 @@ export async function POST(request: NextRequest) {
               // Profile analysis stores UNATTACHED rows (campaignId null). Media is
               // unique per (post, campaign) and NULL campaignIds are not covered by
               // the constraint, so dedupe explicitly before creating.
-              const loose = await prisma.media.findFirst({
-                where: { externalId: post.externalId, platform, campaignId: null },
+              const anyRow = await prisma.media.findFirst({
+                where: { externalId: post.externalId, platform },
                 select: { id: true },
               })
-              if (loose) {
-                await prisma.media.update({
-                  where: { id: loose.id },
+              if (anyRow) {
+                // Refresh metrics on every copy (attached or not); never add a loose twin
+                await prisma.media.updateMany({
+                  where: { externalId: post.externalId, platform },
                   data: {
                   likes: post.likes,
                   comments: post.comments,

@@ -14,9 +14,9 @@ import type { MediaType, Platform } from '@/generated/prisma/client'
  *       undated content can't be proven in range → NOT captured
  *   (3) it references the brand: a target account in mentions[], a target
  *       hashtag in hashtags[], or a target keyword inside the caption
- *       (normalized: lowercase, accents stripped, spaces/dots/_/-// removed),
- *       OR it came from Meta's tagged/mention edges (source 'meta_api' is
- *       brand-tagged by construction — rules 1 and 2 still apply).
+ *       (normalized: lowercase, accents stripped, spaces/dots/_/-// removed).
+ *       Rows from Meta's tagged edge (source 'meta_api') carry the tagged
+ *       brand's handle in mentions[], so the same rule applies to them.
  *
  * Content a PM attaches by hand (source 'manual') is exempt from rule (3)
  * ONLY — the PM asserts relevance — but rules (1) and (2) still apply.
@@ -137,7 +137,9 @@ export function itemReferencesBrand(
  */
 export function mediaMatchesCampaignRules(campaign: CampaignRules, item: RuleItem): boolean {
   if (!isWithinCampaignDates(campaign, item.postedAt)) return false
-  if (item.source === 'meta_api') return true // brand-tagged by construction
+  // meta_api rows carry the tagged brand's handle in mentions[] (written by
+  // meta-materialize), so rule (3) is evaluated the same way for every source:
+  // a post tagging @vileda.es never lands in another brand's campaign.
   return itemReferencesBrand(campaign, item)
 }
 
@@ -286,7 +288,12 @@ export async function upsertCampaignPost(
         const twin = await findMediaBySameLink(platform, post.permalink, campaignId)
         if (twin) {
           if (twin.source === 'manual') {
-            await prisma.media.update({ where: { id: twin.id }, data: metrics })
+            // A detached manual row may be re-claimed by this campaign (rules
+            // 1-3 were just proven by the caller); keep source 'manual'.
+            await prisma.media.update({
+              where: { id: twin.id },
+              data: { ...metrics, ...(twin.campaignId ? {} : { campaignId }) },
+            })
             return true
           }
           await prisma.media.update({
@@ -542,6 +549,7 @@ export async function revalidateCampaignMedia(campaignId: string): Promise<{ kep
       id: true,
       influencerId: true,
       externalId: true,
+      platform: true,
       mediaType: true,
       caption: true,
       hashtags: true,
@@ -558,7 +566,7 @@ export async function revalidateCampaignMedia(campaignId: string): Promise<{ kep
     if (!isWithinCampaignDates(campaign, row.postedAt)) { toDetach.push(row.id); continue }
 
     const isManual = row.source === 'manual' || (row.mediaType === 'STORY' && !row.externalId)
-    if (isManual || row.source === 'meta_api') { result.kept++; continue }
+    if (isManual) { result.kept++; continue }
 
     // Rule (3) only for scraped rows
     if (itemReferencesBrand(campaign, row)) result.kept++
@@ -566,14 +574,24 @@ export async function revalidateCampaignMedia(campaignId: string): Promise<{ kep
   }
 
   if (toDetach.length > 0) {
-    const BATCH = 500
-    for (let i = 0; i < toDetach.length; i += BATCH) {
-      const ids = toDetach.slice(i, i + BATCH)
-      const updated = await prisma.media.updateMany({
-        where: { id: { in: ids }, campaignId },
-        data: { campaignId: null },
-      })
-      result.detached += updated.count
+    // One row per (post, campaign): if the post still lives in another campaign
+    // (or an unattached copy already exists) this copy is redundant → delete it;
+    // otherwise keep it as the single unattached copy (campaignId null).
+    const byId = new Map(rows.map(r => [r.id, r]))
+    for (const rowId of toDetach) {
+      const row = byId.get(rowId)!
+      const otherCopy = row.externalId
+        ? await prisma.media.findFirst({
+            where: { externalId: row.externalId, platform: row.platform, id: { not: rowId } },
+            select: { id: true },
+          })
+        : null
+      if (otherCopy) {
+        await prisma.media.delete({ where: { id: rowId } }).catch(() => {})
+      } else {
+        await prisma.media.update({ where: { id: rowId }, data: { campaignId: null } }).catch(() => {})
+      }
+      result.detached++
     }
     console.log(`[campaign-capture] Revalidated campaign ${campaignId}: ${result.kept} kept, ${result.detached} detached`)
   }
