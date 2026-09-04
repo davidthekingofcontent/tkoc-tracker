@@ -3,6 +3,7 @@ import type { Prisma } from '@/generated/prisma/client'
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000
 const FOUR_HOURS_MS = 4 * 60 * 60 * 1000
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000
+const EIGHT_HOURS_MS = 8 * 60 * 60 * 1000
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000
 const FIVE_MINUTES_MS = 5 * 60 * 1000
@@ -29,7 +30,7 @@ interface CronJob {
 const CRON_JOBS: CronJob[] = [
   { name: 'track',            path: '/api/cron/track',            intervalMs: SIX_HOURS_MS,    initialDelayMs: FIVE_MINUTES_MS,      auth: 'bearer' },
   { name: 'discovery',        path: '/api/cron/discovery',        intervalMs: TWELVE_HOURS_MS, initialDelayMs: 10 * 60 * 1000,       auth: 'header' },
-  { name: 'stories',          path: '/api/cron/stories',          intervalMs: SIX_HOURS_MS,    initialDelayMs: 15 * 60 * 1000,       auth: 'header' },
+  { name: 'stories',          path: '/api/cron/stories',          intervalMs: EIGHT_HOURS_MS,  initialDelayMs: 15 * 60 * 1000,       auth: 'header' },
   { name: 'check-posts',      path: '/api/cron/check-posts',      intervalMs: TWELVE_HOURS_MS, initialDelayMs: 20 * 60 * 1000,       auth: 'header' },
   { name: 'check-deletions',  path: '/api/cron/check-deletions',  intervalMs: TWENTY_FOUR_HOURS_MS, initialDelayMs: 25 * 60 * 1000,  auth: 'bearer' },
   { name: 'live-capture-enrich', path: '/api/live-capture/enrich', intervalMs: FOUR_HOURS_MS,   initialDelayMs: 8 * 60 * 1000,        auth: 'header', method: 'POST' },

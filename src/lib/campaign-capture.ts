@@ -398,6 +398,7 @@ export async function upsertCampaignStory(
             mediaType: 'STORY',
             mediaUrl: story.mediaUrl,
             thumbnailUrl: story.thumbnailUrl,
+            permalink: story.permalink ?? null,
             views: story.views,
             mentions: story.mentions || [],
             hashtags: story.hashtags || [],

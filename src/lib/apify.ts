@@ -791,6 +791,8 @@ export interface ScrapedStory {
   externalId: string
   mediaUrl: string | null
   thumbnailUrl: string | null
+  /** https://www.instagram.com/stories/{username}/{pk}/ — valid while the story is live */
+  permalink: string | null
   mediaType: 'STORY'
   views: number
   postedAt: string | null
@@ -807,27 +809,57 @@ export interface StoryResult {
 
 async function parseStoryItems(items: Record<string, unknown>[]): Promise<StoryResult[]> {
   const storyMap = new Map<string, ScrapedStory[]>()
+  const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : typeof v === 'number' ? String(v) : null)
 
   for (const item of items) {
+    // Raw IG story object (datavoyantlab / louisdeconinck) — owner under `user`;
+    // older/other actors use ownerUsername / owner.username.
+    const user = item.user as Record<string, unknown> | undefined
     const owner = item.owner as Record<string, unknown> | undefined
-    const username = (item.ownerUsername as string) || (owner?.username as string) || (item.user as Record<string, unknown>)?.username as string || ''
+    const username = (str(user?.username) || str(item.ownerUsername) || str(owner?.username) || str(item.username) || '').replace(/^@/, '')
     if (!username) continue
 
+    const pk = str(item.pk) || (str(item.id) || '').split('_')[0] || null
+    const externalId = pk || str(item.id) || `story_${username}_${str(item.taken_at) || str(item.takenAtTimestamp) || Date.now()}`
+
+    const imageCandidates = ((item.image_versions2 as Record<string, unknown> | undefined)?.candidates as Array<Record<string, unknown>> | undefined) || []
+    const videoVersions = (item.video_versions as Array<Record<string, unknown>> | undefined) || []
+    const imageUrl = str(imageCandidates[0]?.url) || str(item.displayUrl) || str(item.imageUrl) || null
+    const videoUrl = str(videoVersions[0]?.url) || str(item.videoUrl) || null
+
+    const takenAt = typeof item.taken_at === 'number' ? item.taken_at : typeof item.takenAtTimestamp === 'number' ? item.takenAtTimestamp : null
+    const expiringAt = typeof item.expiring_at === 'number' ? item.expiring_at : typeof item.expiringAtTimestamp === 'number' ? item.expiringAtTimestamp : null
+
+    // Mention stickers (`reel_mentions[].user.username`) and hashtag stickers
+    // (`story_hashtags[].hashtag.name`) are what rule (3) matches against.
+    const reelMentions = (item.reel_mentions as Array<Record<string, unknown>> | undefined) || []
+    const storyHashtags = (item.story_hashtags as Array<Record<string, unknown>> | undefined) || []
+    const linkStickers = (item.story_link_stickers as Array<Record<string, unknown>> | undefined) || []
+    const mentions = Array.from(new Set([
+      ...reelMentions.map(m => str((m.user as Record<string, unknown> | undefined)?.username)).filter((x): x is string => !!x),
+      ...((item.mentions as string[] | undefined) || []),
+    ].map(m => m.replace(/^@/, '').toLowerCase())))
+    const hashtags = Array.from(new Set([
+      ...storyHashtags.map(h => str((h.hashtag as Record<string, unknown> | undefined)?.name)).filter((x): x is string => !!x),
+      ...((item.hashtags as string[] | undefined) || []),
+    ].map(h => h.replace(/^#/, '').toLowerCase())))
+    const stickers = [
+      ...linkStickers.map(l => str((l.story_link as Record<string, unknown> | undefined)?.url)).filter((x): x is string => !!x),
+      ...((item.stickers as string[] | undefined) || []),
+    ]
+
     const story: ScrapedStory = {
-      externalId: (item.id as string) || (item.pk as number | string)?.toString() || `story_${username}_${(item.takenAtTimestamp as number) || Date.now()}`,
-      mediaUrl: (item.videoUrl as string) || (item.displayUrl as string) || (item.imageUrl as string) || null,
-      thumbnailUrl: (item.displayUrl as string) || (item.imageUrl as string) || (item.thumbnailUrl as string) || null,
+      externalId,
+      mediaUrl: videoUrl || imageUrl,
+      thumbnailUrl: imageUrl || str(item.thumbnailUrl),
+      permalink: pk ? `https://www.instagram.com/stories/${username}/${pk}/` : null,
       mediaType: 'STORY',
-      views: (item.viewerCount as number) || (item.views as number) || 0,
-      postedAt: (item.takenAtTimestamp as number)
-        ? new Date((item.takenAtTimestamp as number) * 1000).toISOString()
-        : (item.timestamp as string) || (item.takenAt as string) || null,
-      expiresAt: (item.expiringAtTimestamp as number)
-        ? new Date((item.expiringAtTimestamp as number) * 1000).toISOString()
-        : null,
-      mentions: ((item.mentions as string[]) || []),
-      hashtags: ((item.hashtags as string[]) || []),
-      stickers: ((item.stickers as string[]) || []),
+      views: (item.viewerCount as number) || (item.view_count as number) || (item.views as number) || 0,
+      postedAt: takenAt ? new Date(takenAt * 1000).toISOString() : str(item.timestamp) || str(item.takenAt) || null,
+      expiresAt: expiringAt ? new Date(expiringAt * 1000).toISOString() : null,
+      mentions,
+      hashtags,
+      stickers,
     }
 
     const existing = storyMap.get(username) || []
@@ -835,56 +867,43 @@ async function parseStoryItems(items: Record<string, unknown>[]): Promise<StoryR
     storyMap.set(username, existing)
   }
 
-  return Array.from(storyMap.entries()).map(([username, stories]) => ({
-    username,
-    stories,
-  }))
+  return Array.from(storyMap.entries()).map(([username, stories]) => ({ username, stories }))
 }
+
+/**
+ * Instagram stories via Apify. `apify~instagram-story-scraper` no longer exists
+ * (404 since at least Aug 2026) and `apify~instagram-scraper` does not return
+ * stories, so nothing was ever captured. Measured 2026-09-04: these two
+ * pay-per-result actors return the raw IG story objects for public accounts
+ * (owner, taken_at/expiring_at, image/video urls, mention + hashtag stickers)
+ * at ~$0.005-0.008 per story.
+ */
+const STORY_ACTORS = [
+  'datavoyantlab~advanced-instagram-stories-scraper',
+  'louisdeconinck~instagram-story-details-scraper',
+]
 
 async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[]> {
   const usernameSlice = usernames.slice(0, 20) // Max 20 at a time
   console.log(`[Apify] Story scrape requested for ${usernameSlice.length} usernames: ${usernameSlice.join(', ')}`)
 
-  // Primary attempt: dedicated story scraper
-  try {
-    console.log('[Apify] Trying primary actor: apify~instagram-story-scraper')
-    const items = await runActor('apify~instagram-story-scraper', {
-      usernames: usernameSlice,
-      resultsLimit: 100,
-    }, 600) // 10 min timeout for stories
-
-    if (items && items.length > 0) {
-      console.log(`[Apify] Primary story scraper returned ${items.length} items`)
-      return parseStoryItems(items)
-    }
-
-    console.warn(`[Apify] Primary story scraper returned 0 results for ${usernameSlice.length} usernames — trying fallback`)
-  } catch (err) {
-    console.error('[Apify] Primary story scraper failed:', err instanceof Error ? err.message : err)
-    console.warn('[Apify] Attempting fallback actor for stories...')
-  }
-
-  // Fallback: use general instagram-scraper with storiesOnly
-  try {
-    console.log('[Apify] Trying fallback actor: apify~instagram-scraper with storiesOnly=true')
-    const fallbackItems = await runActor('apify~instagram-scraper', {
-      usernames: usernameSlice,
-      resultsType: 'stories',
-      storiesOnly: true,
-      resultsLimit: 100,
-    }, 600) // 10 min timeout
-
-    if (!fallbackItems || fallbackItems.length === 0) {
-      console.warn(`[Apify] Fallback story scraper also returned 0 results for: ${usernameSlice.join(', ')}`)
+  for (const actor of STORY_ACTORS) {
+    try {
+      console.log(`[Apify] Trying story actor: ${actor}`)
+      const items = await runActor(actor, { usernames: usernameSlice }, 300)
+      if (items && items.length > 0) {
+        console.log(`[Apify] ${actor} returned ${items.length} story items`)
+        return parseStoryItems(items)
+      }
+      // A clean empty result is a real answer (nobody has live stories) — no need to pay a second actor
+      console.log(`[Apify] ${actor} returned 0 items for ${usernameSlice.length} usernames`)
       return []
+    } catch (err) {
+      if (err instanceof Error && err.message === 'APIFY_EXHAUSTED') throw err
+      console.error(`[Apify] Story actor ${actor} failed:`, err instanceof Error ? err.message : err)
     }
-
-    console.log(`[Apify] Fallback story scraper returned ${fallbackItems.length} items`)
-    return parseStoryItems(fallbackItems)
-  } catch (fallbackErr) {
-    console.error('[Apify] Fallback story scraper also failed:', fallbackErr instanceof Error ? fallbackErr.message : fallbackErr)
-    return []
   }
+  return []
 }
 
 export async function scrapeStories(usernames: string[], platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<StoryResult[]> {

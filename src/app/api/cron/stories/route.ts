@@ -5,6 +5,7 @@ import { notifyAllTeam } from '@/lib/notifications'
 import {
   mediaMatchesCampaignRules,
   campaignHasTargets,
+  isWithinCampaignDates,
   scrapedStoryToRuleItem,
   upsertCampaignStory,
 } from '@/lib/campaign-capture'
@@ -55,10 +56,10 @@ export async function GET(request: NextRequest) {
         startDate: true,
         endDate: true,
         influencers: {
-          where: {
-            status: { in: ['POSTED', 'CONTRACTED', 'AGREED'] },
-          },
+          // Rule (1) is MEMBERSHIP, same as posts — PMs rarely move statuses
+          // past Prospecto, so filtering by status silently captured nothing.
           select: {
+            status: true,
             influencer: {
               select: { id: true, username: true, platform: true },
             },
@@ -71,11 +72,19 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ message: 'No active campaigns', storiesFound: 0 })
     }
 
-    // Campaigns without targets can never satisfy rule (3) → skip them entirely
+    // Campaigns without targets can never satisfy rule (3) → skip them entirely.
+    // Stories live 24h, so only campaigns whose date window includes NOW can
+    // receive one (rule 2) — past/future campaigns are skipped, which also
+    // keeps the pay-per-story Apify cost bounded.
+    const now = new Date()
     const campaignsById = new Map<string, (typeof activeCampaigns)[number]>()
     for (const c of activeCampaigns) {
       if (!campaignHasTargets(c)) {
         console.log(`[Cron/Stories] Campaign "${c.name}" has no target accounts/hashtags — skipping`)
+        continue
+      }
+      if (!isWithinCampaignDates(c, now)) {
+        console.log(`[Cron/Stories] Campaign "${c.name}" is outside its date window today — skipping`)
         continue
       }
       campaignsById.set(c.id, c)
@@ -108,7 +117,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ message: 'No Instagram influencers in active campaigns with targets', storiesFound: 0 })
     }
 
-    console.log(`[Cron/Stories] Scraping stories for ${usernames.length} influencers: ${usernames.join(', ')}`)
+    console.log(`[Cron/Stories] Scraping stories for ${usernames.length} influencers across ${campaignsById.size} live campaigns (pay-per-story actor): ${usernames.join(', ')}`)
 
     // Scrape in batches of 20 (Apify limit)
     let totalStories = 0
