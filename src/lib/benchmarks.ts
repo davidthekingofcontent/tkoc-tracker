@@ -87,6 +87,8 @@ export interface BenchmarkConfig {
   modifiers: CommercialModifiers
   percentileLabels: { es: PercentileLabels; en: PercentileLabels }
   internalBlend: InternalBlendRules
+  /** Stored keys that overrode the seed in this merged config (absent/empty = pure seed). */
+  overrides?: string[]
 }
 
 // ============ SEED: SPAIN 2026 v1 ============
@@ -295,13 +297,16 @@ export function applyModifiers(
 // ============ INTERNAL NEGOTIATIONS → OWN PERCENTILES ============
 
 /** Why a cell is shown but not allowed to move the seed. */
-export type InternalCellExclusion = 'single_client' | 'few_clients' | 'flat_rate' | 'no_effective_sample'
+export type InternalCellExclusion = 'single_client' | 'few_clients' | 'flat_rate' | 'small_sample' | 'no_effective_sample'
 
 export interface InternalCellStats {
   platform: Platform
   tier: Tier
   format: FeeFormat
+  /** Deals in the cell (raw count, before trimming). */
   n: number
+  /** Values left after trimming trimPct from each tail (what the percentiles are computed on). */
+  nTrimmed?: number
   fees: FeeRange            // own p25/p50/p75/p90 after trimming
   cpm?: { p25: number; p50: number; p75: number } | null
   updatedAt: string
@@ -337,7 +342,7 @@ export function assessInternalCell(
   if (brands <= 1) reason = 'single_client'
   else if (brands < rules.minBrands) reason = 'few_clients'
   else if (flatRate) reason = 'flat_rate'
-  else if (nEffective < 1) reason = 'no_effective_sample'
+  else if (nEffective < Math.max(1, rules.minSample)) reason = 'small_sample'
   return { brands, nEffective, flatRate, eligible: reason === null, reason }
 }
 
@@ -389,10 +394,16 @@ export function blendFeeRange(seed: FeeRange, own: InternalCellStats | null | un
     return { range: seed, n: own.n, weight: 0, source: 'seed', excluded: own.reason ?? 'no_effective_sample' }
   }
   const nEff = typeof own.nEffective === 'number' && Number.isFinite(own.nEffective) ? Math.max(0, own.nEffective) : own.n
-  if (nEff < 1) return { range: seed, n: own.n, weight: 0, source: 'seed', excluded: 'no_effective_sample' }
-  const weight = nEff / (nEff + rules.shrinkageK)
-  const range = seed.map((s, i) => Math.round(own.fees[i] * weight + s * (1 - weight))) as FeeRange
-  return { range, n: own.n, weight, source: nEff >= rules.minSample && weight > 0.8 ? 'internal' : 'blended', excluded: null }
+  // minSample gates the blend: below it the seed stays untouched (the audit's "min 20 per cell").
+  if (nEff < Math.max(1, rules.minSample)) return { range: seed, n: own.n, weight: 0, source: 'seed', excluded: 'small_sample' }
+  const k = Number.isFinite(rules.shrinkageK) && rules.shrinkageK > 0 ? rules.shrinkageK : DEFAULT_BENCHMARKS.internalBlend.shrinkageK
+  const weight = nEff / (nEff + k)
+  // Sanity clamp: an own percentile below 0.25× or above 4× the seed is a data-entry error, not a market.
+  const range = seed.map((s, i) => {
+    const o = Math.min(Math.max(own.fees[i], s * 0.25), s * 4)
+    return Math.round(o * weight + s * (1 - weight))
+  }) as FeeRange
+  return { range, n: own.n, weight, source: weight >= 0.75 ? 'internal' : 'blended', excluded: null }
 }
 
 // ============ CONFIG MERGE (tolerant of old stored shapes) ============
@@ -402,6 +413,7 @@ const OLD_YT_ALIAS: Record<string, FeeFormat> = { VIDEO: 'INTEGRATION' }
 export function mergeBenchmarkConfig(partial: Partial<Record<string, unknown>> | null | undefined): BenchmarkConfig {
   const p = (partial || {}) as Record<string, unknown>
   const cfg: BenchmarkConfig = JSON.parse(JSON.stringify(DEFAULT_BENCHMARKS))
+  const overrides: string[] = []
 
   // Fee ranges: accept the legacy shape { INSTAGRAM: { NANO: { POST: [...] } } }
   const fr = p.feeRanges as Record<string, Record<string, Record<string, unknown>>> | undefined
@@ -415,41 +427,60 @@ export function mergeBenchmarkConfig(partial: Partial<Record<string, unknown>> |
           const raw = fr[plat][tierKey][fmtKey]
           if (!Array.isArray(raw) || raw.length < 4) continue
           const nums = raw.slice(0, 4).map(Number)
-          if (nums.some(n => !Number.isFinite(n) || n < 0)) continue
+          // Percentiles must be positive and monotonic (p25 ≤ p50 ≤ p75 ≤ p90); anything else is a typo, not a market.
+          if (nums.some(n => !Number.isFinite(n) || n <= 0)) continue
+          if (!(nums[0] <= nums[1] && nums[1] <= nums[2] && nums[2] <= nums[3])) continue
           let fmt = fmtKey.toUpperCase()
           if (platform === 'YOUTUBE' && OLD_YT_ALIAS[fmt]) fmt = OLD_YT_ALIAS[fmt]
           if (platform === 'TIKTOK' && fmt === 'SHORT') continue // dropped format
           if (!formatsFor(platform).includes(fmt as FeeFormat)) continue
           cfg.feeRanges[platform][tier][fmt as FeeFormat] = nums as FeeRange
+          if (!overrides.includes('feeRanges')) overrides.push('feeRanges')
         }
       }
     }
   }
-  if (typeof p.storyPackMultiplier === 'number' && p.storyPackMultiplier > 0) cfg.storyPackMultiplier = p.storyPackMultiplier
+  if (typeof p.storyPackMultiplier === 'number' && p.storyPackMultiplier > 0) {
+    cfg.storyPackMultiplier = p.storyPackMultiplier
+    overrides.push('storyPackMultiplier')
+  }
 
-  // CPM thresholds: accept the legacy list [{platform, tier, cpmTarget, cpmMax}] (no format → all formats of the platform)
+  // CPM thresholds: rows need a format. Legacy per-platform rows (no format) predate the
+  // format × tier model and were computed on a different basis, so they are ignored rather
+  // than copied onto every format of the platform.
   const ct = p.cpmThresholds ?? p.cpmRates
   if (Array.isArray(ct)) {
     for (const row of ct as Array<Record<string, unknown>>) {
+      if (!row || typeof row !== 'object' || !row.format) continue
       const platform = normalizePlatform(String(row.platform))
       const tier = String(row.tier || '').toUpperCase() as Tier
       const cpmTarget = Number(row.cpmTarget), cpmMax = Number(row.cpmMax)
       if (!TIERS.includes(tier) || !Number.isFinite(cpmTarget) || !Number.isFinite(cpmMax)) continue
-      const formats: FeeFormat[] = row.format ? [normalizeFormat(platform, String(row.format))] : formatsFor(platform)
-      for (const format of formats) {
-        const idx = cfg.cpmThresholds.findIndex(t => t.platform === platform && t.format === format && t.tier === tier)
-        const entry = { platform, format, tier, cpmTarget, cpmMax }
-        if (idx >= 0) cfg.cpmThresholds[idx] = entry; else cfg.cpmThresholds.push(entry)
-      }
+      if (cpmTarget <= 0 || cpmMax < cpmTarget) continue
+      const format = normalizeFormat(platform, String(row.format))
+      const idx = cfg.cpmThresholds.findIndex(t => t.platform === platform && t.format === format && t.tier === tier)
+      const entry = { platform, format, tier, cpmTarget, cpmMax }
+      if (idx >= 0) cfg.cpmThresholds[idx] = entry; else cfg.cpmThresholds.push(entry)
+      if (!overrides.includes('cpmThresholds')) overrides.push('cpmThresholds')
     }
   }
 
+  // Markets: a stored map REPLACES the seed map (so removing a country in Ajustes takes effect); ES is always 1.0.
   const mk = p.markets as Record<string, unknown> | undefined
   if (mk && typeof mk === 'object') {
-    for (const [k, v] of Object.entries(mk)) if (typeof v === 'number' && v > 0) cfg.markets[k.toUpperCase()] = v
+    const valid: Record<string, number> = {}
+    for (const [k, v] of Object.entries(mk)) {
+      const n = Number(v)
+      if (/^[A-Za-z]{2}$/.test(k) && Number.isFinite(n) && n > 0) valid[k.toUpperCase()] = n
+    }
+    if (Object.keys(valid).length > 0) {
+      cfg.markets = { ...valid, ES: 1 }
+      overrides.push('markets')
+    }
   }
   const mod = p.modifiers as Partial<CommercialModifiers> | undefined
   if (mod && typeof mod === 'object') {
+    overrides.push('modifiers')
     cfg.modifiers = {
       rights: { ...cfg.modifiers.rights, ...(mod.rights || {}) },
       whitelisting: typeof mod.whitelisting === 'number' ? mod.whitelisting : cfg.modifiers.whitelisting,
@@ -460,8 +491,23 @@ export function mergeBenchmarkConfig(partial: Partial<Record<string, unknown>> |
       recurring6m: typeof mod.recurring6m === 'number' ? mod.recurring6m : cfg.modifiers.recurring6m,
     }
   }
-  const ib = p.internalBlend as Partial<InternalBlendRules> | undefined
-  if (ib && typeof ib === 'object') cfg.internalBlend = { ...cfg.internalBlend, ...ib }
-  if (typeof p.version === 'string' && p.version) cfg.version = p.version
+  // Internal blend rules: each knob is validated; a bad value falls back to the seed value.
+  const ib = p.internalBlend as Record<string, unknown> | undefined
+  if (ib && typeof ib === 'object') {
+    const num = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isFinite(v) ? v
+        : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v)
+          : null
+    const minSample = num(ib.minSample), shrinkageK = num(ib.shrinkageK), trimPct = num(ib.trimPct)
+    const minBrands = num(ib.minBrands), maxAgeMonths = num(ib.maxAgeMonths)
+    if (minSample !== null && minSample >= 1) cfg.internalBlend.minSample = Math.round(minSample)
+    if (shrinkageK !== null && shrinkageK > 0) cfg.internalBlend.shrinkageK = shrinkageK
+    if (trimPct !== null && trimPct >= 0 && trimPct <= 0.45) cfg.internalBlend.trimPct = trimPct
+    if (minBrands !== null && minBrands >= 1) cfg.internalBlend.minBrands = Math.round(minBrands)
+    if (maxAgeMonths !== null && maxAgeMonths >= 1) cfg.internalBlend.maxAgeMonths = Math.round(maxAgeMonths)
+    overrides.push('internalBlend')
+  }
+  if (typeof p.version === 'string' && p.version) { cfg.version = p.version; overrides.push('version') }
+  cfg.overrides = overrides
   return cfg
 }

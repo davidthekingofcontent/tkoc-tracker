@@ -27,7 +27,8 @@ import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { useI18n } from '@/i18n/context'
 import { formatNumber } from '@/lib/utils'
-import { getQuickBenchmark, type QuickBenchmark } from '@/lib/market-benchmark-client'
+import { getQuickBenchmark, benchmarkFormatLabel, type QuickBenchmark } from '@/lib/market-benchmark-client'
+import { DEFAULT_BENCHMARKS, formatsFor, mergeBenchmarkConfig, normalizeFormat, normalizePlatform, type BenchmarkConfig } from '@/lib/benchmarks'
 import type { PricingAnalysisResult } from '@/app/api/pricing/analyze/route'
 
 // ============ TYPES ============
@@ -56,22 +57,14 @@ const INITIAL_FORM: FormData = {
   fee: '',
 }
 
-const FORMAT_OPTIONS: Record<string, { value: string; label: string }[]> = {
-  INSTAGRAM: [
-    { value: 'REEL', label: 'Reel' },
-    { value: 'POST', label: 'Post' },
-    { value: 'STORY', label: 'Story' },
-    { value: 'CAROUSEL', label: 'Carousel' },
-  ],
-  TIKTOK: [
-    { value: 'VIDEO', label: 'Video' },
-    { value: 'SHORT', label: 'Short' },
-    { value: 'CAROUSEL', label: 'Carousel' },
-  ],
-  YOUTUBE: [
-    { value: 'VIDEO', label: 'Video' },
-    { value: 'SHORT', label: 'Short' },
-  ],
+/**
+ * Formats priced by the benchmark seed for a platform, labelled in the UI locale
+ * (Instagram POST/REEL/STORY, TikTok VIDEO, YouTube INTEGRATION/DEDICATED/SHORT).
+ * Derived from formatsFor() so the calculator can never offer a format the seed
+ * does not price (the old list had TikTok Short/Carousel and no YouTube Dedicated).
+ */
+function formatOptions(platform: string, locale: 'es' | 'en'): { value: string; label: string }[] {
+  return formatsFor(normalizePlatform(platform)).map(f => ({ value: f, label: benchmarkFormatLabel(f, locale) }))
 }
 
 function PlatformIcon({ platform }: { platform: string }) {
@@ -231,6 +224,16 @@ export default function PricingPage() {
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<PricingAnalysisResult | null>(null)
   const [quickBenchmark, setQuickBenchmark] = useState<QuickBenchmark | null>(null)
+  // Merged benchmarks (Ajustes → Benchmarks) so the preview uses the same numbers as the server analysis.
+  const [benchmarkConfig, setBenchmarkConfig] = useState<BenchmarkConfig>(DEFAULT_BENCHMARKS)
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/settings/benchmarks')
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => { if (!cancelled && data?.config) setBenchmarkConfig(mergeBenchmarkConfig(data.config)) })
+      .catch(() => { /* keep the seed */ })
+    return () => { cancelled = true }
+  }, [])
 
   // Apify (live scraping) availability — banner shown when the monthly limit is exhausted
   const [apifyStatus, setApifyStatus] = useState<{ available: boolean; resumesAt: string | null } | null>(null)
@@ -265,20 +268,20 @@ export default function PricingPage() {
   useEffect(() => {
     const followers = parseInt(form.followers, 10)
     if (followers > 0) {
-      const bm = getQuickBenchmark(form.platform, followers, form.format || undefined)
+      const bm = getQuickBenchmark(form.platform, followers, form.format || undefined, benchmarkConfig, undefined, locale === 'en' ? 'en' : 'es')
       setQuickBenchmark(bm)
     } else {
       setQuickBenchmark(null)
     }
-  }, [form.followers, form.platform, form.format])
+  }, [form.followers, form.platform, form.format, benchmarkConfig, locale])
 
-  // Update format options when platform changes
+  // Keep the format valid for the platform (default = the platform's main format)
   useEffect(() => {
-    const formats = FORMAT_OPTIONS[form.platform]
-    if (formats && !formats.find(f => f.value === form.format)) {
-      setForm(prev => ({ ...prev, format: formats[0].value }))
+    const formats = formatOptions(form.platform, locale === 'en' ? 'en' : 'es')
+    if (!formats.find(f => f.value === form.format)) {
+      setForm(prev => ({ ...prev, format: normalizeFormat(normalizePlatform(form.platform), undefined) }))
     }
-  }, [form.platform, form.format])
+  }, [form.platform, form.format, locale])
 
   // Search by username — auto-detects platform from URL, falls back to checking all platforms
   const handleLookup = useCallback(async () => {
@@ -333,15 +336,12 @@ export default function PricingPage() {
       }
 
       if (inf) {
-        // Default format per platform
-        const defaultFormat = inf.platform === 'INSTAGRAM' ? 'REEL'
-          : inf.platform === 'TIKTOK' ? 'VIDEO'
-          : 'VIDEO'
+        const platformFormats = formatsFor(normalizePlatform(inf.platform)) as string[]
         setForm(prev => ({
           ...prev,
           username: cleanUsername,
           platform: inf.platform,
-          format: FORMAT_OPTIONS[inf.platform]?.some(f => f.value === prev.format) ? prev.format : defaultFormat,
+          format: platformFormats.includes(prev.format) ? prev.format : normalizeFormat(normalizePlatform(inf.platform), undefined),
           followers: String(inf.followers || ''),
           avgViews: String(inf.avgViews || ''),
           avgLikes: String(inf.avgLikes || ''),
@@ -485,7 +485,7 @@ export default function PricingPage() {
               label={isEs ? 'Formato' : 'Format'}
               value={form.format}
               onChange={e => updateField('format', e.target.value)}
-              options={FORMAT_OPTIONS[form.platform] || FORMAT_OPTIONS.INSTAGRAM}
+              options={formatOptions(form.platform, locale === 'en' ? 'en' : 'es')}
               className="dark:bg-gray-900 dark:border-gray-600 dark:text-gray-100"
             />
           </div>

@@ -35,7 +35,7 @@ import { RiskSignalsBadge } from '@/components/risk-signals-badge'
 import { SpainFitLink } from '@/components/spain-fit-badge'
 import { calculateCreatorScore } from '@/lib/creator-score'
 import { evaluateFeeClient } from '@/lib/market-benchmark-client'
-import { normalizeFormat, normalizePlatform, formatsFor, type DealTerms, type FeeFormat } from '@/lib/benchmarks'
+import { DEFAULT_BENCHMARKS, mergeBenchmarkConfig, normalizeFormat, normalizePlatform, formatsFor, type BenchmarkConfig, type DealTerms, type FeeFormat } from '@/lib/benchmarks'
 import { proxyImg } from '@/lib/proxy-image'
 import { useRole } from '@/hooks/use-role'
 import {
@@ -187,6 +187,8 @@ interface CampaignData {
   startDate: string | null
   endDate: string | null
   country: string | null
+  /** Brand id (Setting campaign_brand_{id}) → benchmark overrides of that brand. */
+  brandId?: string | null
   briefText: string | null
   briefFiles: string[]
   briefAttachments?: { id: string; fileName: string; fileType: string; fileSize: number; createdAt: string }[]
@@ -460,6 +462,19 @@ export default function CampaignDetailPage() {
   const { isBrand, canEdit } = useRole()
   const campaignId = params.id as string
   const [campaign, setCampaign] = useState<CampaignData | null>(null)
+  // Benchmarks from Ajustes (brand override when the campaign has a brand) so the CPM row,
+  // the fee badge and the Deal Advisor on one card evaluate against the SAME numbers.
+  const [benchmarkConfig, setBenchmarkConfig] = useState<BenchmarkConfig>(DEFAULT_BENCHMARKS)
+  const benchmarkBrandId = campaign?.brandId ?? null
+  useEffect(() => {
+    let cancelled = false
+    const qs = benchmarkBrandId ? `?brandId=${encodeURIComponent(benchmarkBrandId)}` : ''
+    fetch(`/api/settings/benchmarks${qs}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => { if (!cancelled && data?.config) setBenchmarkConfig(mergeBenchmarkConfig(data.config)) })
+      .catch(() => { /* keep the seed */ })
+    return () => { cancelled = true }
+  }, [benchmarkBrandId])
   const [overview, setOverview] = useState<Overview | null>(null)
   const [timeline, setTimeline] = useState<TimelinePoint[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -1071,7 +1086,7 @@ export default function CampaignDetailPage() {
       followers: ci.influencer?.followers || 0,
       format: negotiatedFormatFor(ci),
     }
-    return calculateCPM(input, locale as 'en' | 'es')
+    return calculateCPM(input, locale as 'en' | 'es', benchmarkConfig)
   }
 
   function toggleInfluencerSort(field: SortField) {
@@ -3639,7 +3654,7 @@ export default function CampaignDetailPage() {
 
                       // Market benchmark for fee
                       const feeEval = (ci.agreedFee && ci.agreedFee > 0)
-                        ? evaluateFeeClient(ci.agreedFee, ci.influencer.platform, ci.influencer.followers || 0, negotiatedFormatFor(ci))
+                        ? evaluateFeeClient(ci.agreedFee, ci.influencer.platform, ci.influencer.followers || 0, negotiatedFormatFor(ci), benchmarkConfig, locale === 'en' ? 'en' : 'es', campaign?.country ?? null)
                         : null
                       const isWhitelisted = whitelistingAds[ci.id] ?? ci.whitelisting ?? false
                       const exclDays = (exclusivity[ci.id] ?? ci.exclusivityDays) || 0
@@ -3897,6 +3912,7 @@ export default function CampaignDetailPage() {
                               format={negotiatedFormatFor(ci)}
                               country={campaign?.country ?? null}
                               terms={dealTermsFor(ci)}
+                              brandId={campaign?.brandId ?? null}
                             />
                             <RiskSignalsBadge
                               influencerData={{
@@ -3907,6 +3923,8 @@ export default function CampaignDetailPage() {
                                 avgViews: ci.influencer.avgViews || 0,
                                 platform: ci.influencer.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE',
                                 agreedFee: ci.agreedFee,
+                                format: negotiatedFormatFor(ci),
+                                brandId: campaign?.brandId ?? null,
                                 campaignPaymentType: campaign?.paymentType,
                                 totalCampaigns: 1,
                                 completedCampaigns: ci.status === 'COMPLETED' || ci.status === 'POSTED' ? 1 : 0,
@@ -4494,6 +4512,7 @@ export default function CampaignDetailPage() {
                             format={negotiatedFormatFor(ci)}
                             country={campaign?.country ?? null}
                             terms={dealTermsFor(ci)}
+                            brandId={campaign?.brandId ?? null}
                           />
                           <RiskSignalsBadge
                             influencerData={{
@@ -4504,6 +4523,8 @@ export default function CampaignDetailPage() {
                               avgViews: ci.influencer.avgViews || 0,
                               platform: ci.influencer.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE',
                               agreedFee: ci.agreedFee,
+                              format: negotiatedFormatFor(ci),
+                              brandId: campaign?.brandId ?? null,
                               campaignPaymentType: campaign?.paymentType,
                             }}
                             size="md"

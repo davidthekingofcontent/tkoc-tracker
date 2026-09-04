@@ -51,7 +51,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { formatNumber } from '@/lib/utils'
 import { AddToModal } from '@/components/add-to-modal'
 import { calculateCPM, type CPMInput, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
-import { normalizeFormat, normalizePlatform } from '@/lib/benchmarks'
+import { DEFAULT_BENCHMARKS, mergeBenchmarkConfig, normalizeFormat, normalizePlatform, type BenchmarkConfig } from '@/lib/benchmarks'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 
 import { proxyImg } from '@/lib/proxy-image'
@@ -214,6 +214,16 @@ export default function AnalyzePage() {
   const [selectedPlatform, setSelectedPlatform] = useState('INSTAGRAM')
   const [analyzing, setAnalyzing] = useState(false)
   const [profile, setProfile] = useState<AnalyzedProfile | null>(null)
+  // Benchmarks from Ajustes so the CPM card uses the same thresholds as the campaign pages and the Deal Advisor.
+  const [benchmarkConfig, setBenchmarkConfig] = useState<BenchmarkConfig>(DEFAULT_BENCHMARKS)
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/settings/benchmarks')
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => { if (!cancelled && data?.config) setBenchmarkConfig(mergeBenchmarkConfig(data.config)) })
+      .catch(() => { /* keep the seed */ })
+    return () => { cancelled = true }
+  }, [])
   const [recentSearches, setRecentSearches] = useState<RecentAnalysis[]>([])
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
@@ -441,7 +451,7 @@ export default function AnalyzePage() {
     followers: profile.followers || 0,
     format: normalizeFormat(normalizePlatform(profile.platform), undefined),
   } : null
-  const cpmResult = cpmInput ? calculateCPM(cpmInput, locale as 'en' | 'es') : null
+  const cpmResult = cpmInput ? calculateCPM(cpmInput, locale as 'en' | 'es', benchmarkConfig) : null
 
   const trafficColors: Record<string, string> = {
     green: 'bg-green-100 text-green-800 border-green-300',

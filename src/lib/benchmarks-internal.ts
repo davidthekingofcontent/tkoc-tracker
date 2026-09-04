@@ -20,8 +20,14 @@
  *     so blendFeeRange leaves the seed untouched. One brand paying 100 € to
  *     105 micros is a price list, not the Spanish market.
  *   - Tier comes ONLY from influencer.followers (detectTier).
- *   - Format: ci.negotiatedFormat when the column exists → majority of the
- *     creator's delivered media in that campaign → platform default.
+ *   - Only INFLUENCER_TRACKING campaigns: UGC payments buy content production,
+ *     not a post, and social listening has no deals.
+ *   - Format: ci.negotiatedFormat when set. Otherwise the delivered media
+ *     decide ONLY when they are unambiguous: exactly one format and exactly one
+ *     piece. A reel + 3 stories (bundle), 2 reels or nothing delivered yet is
+ *     skipped for the fee cells (counted in meta.skipped) — agreedFee is the
+ *     price of the whole deal and we would otherwise write a bundle price into
+ *     a single-piece cell.
  *   - Fees are Spain-normalized: agreedFee ÷ marketMultiplier(campaign country,
  *     falling back to the creator's country). Spain = 1.0.
  *   - Percentiles p25/p50/p75/p90 after trimming trimPct from each tail
@@ -78,10 +84,12 @@ export interface InternalBenchmarkMeta {
   trimPct: number
   minBrands: number
   maxAgeMonths: number
-  /** Cells allowed to move the seed (≥ minBrands clients, no flat rate, effective n ≥ 1). */
+  /** Cells allowed to move the seed (≥ minBrands clients, no flat rate, effective n ≥ minSample). */
   eligibleCells: number
   /** Distinct clients across all counted deals. */
   clients: number
+  /** Closed deals left out of the fee cells because their unit format is not unambiguous. */
+  skipped: { unknownFormat: number; mixedFormat: number; bundle: number }
 }
 
 export interface RecomputeInternalBenchmarksResult {
@@ -125,15 +133,23 @@ function round(v: number, decimals = 2): number {
   return Math.round(v * f) / f
 }
 
+interface DeliveredSummary {
+  /** The single delivered format, or null when several formats were delivered. */
+  format: FeeFormat | null
+  pieces: number
+  distinctFormats: number
+}
+
 /**
- * Majority delivered format per (campaignId, influencerId), from the media
- * the creator actually published in that campaign. Used only when the deal
- * has no explicit negotiatedFormat.
+ * Delivered media per (campaignId, influencerId): how many pieces and which
+ * formats the creator actually published in that campaign. Used only when the
+ * deal has no explicit negotiatedFormat; the caller keeps the deal for the fee
+ * cells only when exactly one piece of exactly one format was delivered.
  */
 async function deliveredFormats(
   pairs: Array<{ campaignId: string; influencerId: string; platform: Platform }>
-): Promise<Map<string, FeeFormat>> {
-  const out = new Map<string, FeeFormat>()
+): Promise<Map<string, DeliveredSummary>> {
+  const out = new Map<string, DeliveredSummary>()
   if (pairs.length === 0) return out
   const campaignIds = Array.from(new Set(pairs.map(p => p.campaignId)))
   const influencerIds = Array.from(new Set(pairs.map(p => p.influencerId)))
@@ -157,12 +173,10 @@ async function deliveredFormats(
     counts.set(key, byFmt)
   }
   for (const [key, byFmt] of counts) {
-    let best: FeeFormat | null = null
-    let bestN = 0
-    for (const [fmt, n] of byFmt) {
-      if (n > bestN) { best = fmt; bestN = n }
-    }
-    if (best) out.set(key, best)
+    const pieces = Array.from(byFmt.values()).reduce((a, b) => a + b, 0)
+    const distinctFormats = byFmt.size
+    const format = distinctFormats === 1 ? Array.from(byFmt.keys())[0] : null
+    out.set(key, { format, pieces, distinctFormats })
   }
   return out
 }
@@ -196,6 +210,7 @@ export function computeInternalCells(deals: DealRow[], rules: InternalBlendRules
   for (const rows of byCell.values()) {
     const fees = trimmed(rows.map(r => r.fee), trimPct)
     if (fees.length === 0) continue
+    const n = rows.length
     const feeRange: FeeRange = [
       Math.round(percentile(fees, 0.25)),
       Math.round(percentile(fees, 0.5)),
@@ -209,10 +224,11 @@ export function computeInternalCells(deals: DealRow[], rules: InternalBlendRules
     const { platform, tier, format } = rows[0]
     const perClient = new Map<string, number>()
     for (const r of rows) perClient.set(r.clientKey, (perClient.get(r.clientKey) || 0) + 1)
-    const guard = assessInternalCell(fees.length, feeRange, Array.from(perClient.values()), rules)
+    const guard = assessInternalCell(n, feeRange, Array.from(perClient.values()), rules)
     cells.push({
       platform, tier, format,
-      n: fees.length,
+      n,
+      nTrimmed: fees.length,
       fees: feeRange,
       cpm,
       updatedAt: computedAt,
@@ -255,7 +271,8 @@ export async function recomputeInternalBenchmarks(): Promise<RecomputeInternalBe
 
   const [rawRows, brandSettings] = await Promise.all([
     prisma.campaignInfluencer.findMany({
-      where: { agreedFee: { gt: 0 }, status: { in: [...CLOSED_DEAL_STATUSES] } },
+      // Posting deals only: UGC pays for content production (no post), social listening has no deals.
+      where: { agreedFee: { gt: 0 }, status: { in: [...CLOSED_DEAL_STATUSES] }, campaign: { type: 'INFLUENCER_TRACKING' } },
       include: {
         influencer: { select: { platform: true, followers: true, avgViews: true, country: true } },
         campaign: { select: { id: true, country: true, targetAccounts: true } },
@@ -285,12 +302,22 @@ export async function recomputeInternalBenchmarks(): Promise<RecomputeInternalBe
   const delivered = await deliveredFormats(needsMedia)
 
   const deals: DealRow[] = []
+  const discountDeals: Array<{ askingFee: number | null; agreedFee: number }> = []
+  const skipped = { unknownFormat: 0, mixedFormat: 0, bundle: 0 }
   for (const ci of rows) {
     if (!ci.influencer || !ci.agreedFee || ci.agreedFee <= 0) continue
+    discountDeals.push({ askingFee: optionalNumber(ci, 'askingFee'), agreedFee: ci.agreedFee })
     const platform = normalizePlatform(ci.influencer.platform)
     const tier = detectTier(ci.influencer.followers || 0)
     const key = `${ci.campaignId}|${ci.influencerId}`
-    const format = explicitFormat.get(key) || delivered.get(key) || normalizeFormat(platform, undefined)
+    let format: FeeFormat | null = explicitFormat.get(key) ?? null
+    if (!format) {
+      const d = delivered.get(key)
+      if (!d || d.pieces === 0) { skipped.unknownFormat++; continue }
+      if (d.distinctFormats > 1 || !d.format) { skipped.mixedFormat++; continue }
+      if (d.pieces > 1) { skipped.bundle++; continue }
+      format = d.format
+    }
 
     const country = ci.campaign?.country || ci.influencer.country || null
     const multiplier = marketMultiplier(config, country)
@@ -304,7 +331,7 @@ export async function recomputeInternalBenchmarks(): Promise<RecomputeInternalBe
   }
 
   const cells = computeInternalCells(deals, rules, computedAt)
-  const discount = computeNegotiationDiscount(deals)
+  const discount = computeNegotiationDiscount(discountDeals)
 
   const meta: InternalBenchmarkMeta = {
     computedAt,
@@ -318,6 +345,7 @@ export async function recomputeInternalBenchmarks(): Promise<RecomputeInternalBe
     maxAgeMonths: rules.maxAgeMonths,
     eligibleCells: cells.filter(c => c.eligible).length,
     clients: new Set(deals.map(d => d.clientKey)).size,
+    skipped,
   }
 
   await prisma.$transaction([
@@ -334,7 +362,7 @@ export async function recomputeInternalBenchmarks(): Promise<RecomputeInternalBe
   ])
   invalidateBenchmarkCaches()
 
-  console.log(`[benchmarks-internal] recomputed ${cells.length} cell(s) from ${deals.length} deal(s), ${meta.clients} client(s), ${meta.eligibleCells} eligible to move the seed` +
+  console.log(`[benchmarks-internal] recomputed ${cells.length} cell(s) from ${deals.length} deal(s), ${meta.clients} client(s), ${meta.eligibleCells} eligible to move the seed, skipped ${skipped.unknownFormat} unknown / ${skipped.mixedFormat} mixed / ${skipped.bundle} bundle` +
     (discount.value !== null ? `, negotiation discount ${Math.round(discount.value * 100)} % (n=${discount.sample})` : ''))
 
   return { cells, deals: deals.length, computedAt, negotiationDiscount: discount.value, meta }
@@ -359,6 +387,11 @@ export async function loadInternalBenchmarkMeta(): Promise<InternalBenchmarkMeta
       maxAgeMonths: typeof parsed.maxAgeMonths === 'number' ? parsed.maxAgeMonths : 0,
       eligibleCells: typeof parsed.eligibleCells === 'number' ? parsed.eligibleCells : 0,
       clients: typeof parsed.clients === 'number' ? parsed.clients : 0,
+      skipped: {
+        unknownFormat: typeof parsed.skipped?.unknownFormat === 'number' ? parsed.skipped.unknownFormat : 0,
+        mixedFormat: typeof parsed.skipped?.mixedFormat === 'number' ? parsed.skipped.mixedFormat : 0,
+        bundle: typeof parsed.skipped?.bundle === 'number' ? parsed.skipped.bundle : 0,
+      },
     }
   } catch {
     return null

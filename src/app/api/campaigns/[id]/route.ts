@@ -227,10 +227,11 @@ export async function GET(
       { rates: emvRates, storyViewRates }
     )
 
-    // Brand info for the report cover: { name, logo } | null
-    const brand = await resolveCampaignBrand(id)
+    // Brand info for the report cover ({ name, logo } | null) and the brandId so the client
+    // can load that brand's benchmark overrides (Deal Advisor, CPM row, fee badge).
+    const [brand, brandId] = await Promise.all([resolveCampaignBrand(id), campaignBrandId(id)])
 
-    return NextResponse.json({ campaign: { ...campaign, brand }, overview: { ...overview, emvBasic: emv.basic, emvExtended: emv.extended, emvEstimatedStories: emv.estimatedStories, emvEstimatedAudience: emv.estimatedAudience, emvRealStories: emv.realStories }, timeline })
+    return NextResponse.json({ campaign: { ...campaign, brand, brandId }, overview: { ...overview, emvBasic: emv.basic, emvExtended: emv.extended, emvEstimatedStories: emv.estimatedStories, emvEstimatedAudience: emv.estimatedAudience, emvRealStories: emv.realStories }, timeline })
   } catch (error) {
     console.error('Get campaign error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

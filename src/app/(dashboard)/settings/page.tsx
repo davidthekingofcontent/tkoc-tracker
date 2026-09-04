@@ -528,7 +528,8 @@ export default function SettingsPage() {
   function saveFeeSection() {
     if (!benchmarkFeeRanges) return
     const entries: Array<[string, unknown]> = [['benchmark_fee_ranges', benchmarkFeeRanges]]
-    if (benchmarkMeta) entries.push(['benchmark_meta', benchmarkMeta])
+    // benchmark_meta (version, story pack, blend rules) is GLOBAL: never rewrite it from a brand scope.
+    if (benchmarkMeta && !selectedBenchmarkBrand) entries.push(['benchmark_meta', benchmarkMeta])
     return saveBenchmarks(entries)
   }
 
@@ -542,7 +543,10 @@ export default function SettingsPage() {
     const d = cloneDefaults()
     if (section === 'fees') {
       setBenchmarkFeeRanges(d.feeRanges)
-      setBenchmarkMeta(prev => ({ version: d.version, storyPackMultiplier: d.storyPackMultiplier, internalBlend: prev?.internalBlend ?? d.internalBlend }))
+      // Version / story pack are global settings: only reset them in the global scope.
+      if (!selectedBenchmarkBrand) {
+        setBenchmarkMeta(prev => ({ version: d.version, storyPackMultiplier: d.storyPackMultiplier, internalBlend: prev?.internalBlend ?? d.internalBlend }))
+      }
     } else if (section === 'cpm') {
       setBenchmarkCpmRates(d.cpmThresholds)
     } else if (section === 'modifiers') {
@@ -1978,6 +1982,7 @@ export default function SettingsPage() {
                       single_client: L('Un solo cliente: se muestra pero no mueve el seed', 'Single client: shown but does not move the seed'),
                       few_clients: L(`Menos de ${minBrands} clientes distintos: no mueve el seed`, `Fewer than ${minBrands} distinct clients: does not move the seed`),
                       flat_rate: L('Tarifa fija (p25 = p90): no mueve el seed', 'Flat rate (p25 = p90): does not move the seed'),
+                      small_sample: L(`Menos de ${minSample} negociaciones efectivas: no mueve el seed`, `Fewer than ${minSample} effective negotiations: does not move the seed`),
                       no_effective_sample: L('Muestra efectiva insuficiente: no mueve el seed', 'Effective sample too small: does not move the seed'),
                     }
                     const title = excluded

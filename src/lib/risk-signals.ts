@@ -43,6 +43,14 @@ export interface RiskAssessmentInput {
 
   // Campaign context (optional)
   agreedFee?: number | null
+  /** Negotiated format (REEL, POST, STORY, VIDEO…) — lets the caller pick the CPM ceiling. */
+  format?: string | null
+  /**
+   * Max acceptable CPM for this format × tier from the shared benchmarks
+   * (getCpmThreshold(...).cpmMax). When missing, a coarse per-platform
+   * fallback is used — callers should always pass it.
+   */
+  cpmMax?: number | null
   campaignPaymentType?: string | null  // 'PAID', 'GIFTED'
   mediaHasDisclosure?: boolean | null  // Has #ad or equivalent
   deletedPostsCount?: number
@@ -240,14 +248,12 @@ function checkPricingRisk(input: RiskAssessmentInput, signals: RiskSignal[]): vo
 
   const cpm = (input.agreedFee / input.avgViews) * 1000
 
-  // Platform-specific CPM ceilings
-  const ceilings: Record<string, number> = {
-    INSTAGRAM: 35,
-    TIKTOK: 25,
-    YOUTUBE: 40,
-  }
-
-  const ceiling = ceilings[input.platform] || 30
+  // Ceiling = the shared benchmark's cpmMax for this format × tier (same number the CPM row
+  // and the Deal Advisor use). Coarse per-platform fallback only when the caller gave none.
+  const fallbackCeilings: Record<string, number> = { INSTAGRAM: 35, TIKTOK: 25, YOUTUBE: 40 }
+  const ceiling = typeof input.cpmMax === 'number' && input.cpmMax > 0
+    ? input.cpmMax
+    : (fallbackCeilings[input.platform] || 30)
 
   if (cpm > ceiling * 1.5) {
     signals.push({

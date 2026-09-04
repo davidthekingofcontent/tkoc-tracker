@@ -15,6 +15,7 @@ import { analyzeRepeatBatch, type RepeatRadarInput } from '@/lib/repeat-radar'
 import { generatePlaybook, type PlaybookInput } from '@/lib/campaign-playbook'
 import { getMarketBenchmark, evaluateFeeBlended, type BenchmarkQuery } from '@/lib/market-benchmark'
 import { loadBenchmarkConfig, loadInternalStats } from '@/lib/benchmarks-server'
+import { detectTier, getCpmThreshold, normalizeFormat, normalizePlatform } from '@/lib/benchmarks'
 import { prisma } from '@/lib/db'
 import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import { calculateCampaignEMV } from '@/lib/emv'
@@ -81,7 +82,15 @@ async function handleDealAdvisor(data: DealAdvisorRequest) {
   return NextResponse.json(result)
 }
 
-function handleRiskSignals(input: RiskAssessmentInput) {
+/** Risk signals with the CPM ceiling taken from the shared benchmarks (format × tier, brand override). */
+async function handleRiskSignals(data: RiskAssessmentInput & { brandId?: string | null }) {
+  const { brandId, ...input } = data
+  if (!(typeof input.cpmMax === 'number' && input.cpmMax > 0)) {
+    const config = await loadBenchmarkConfig(brandId)
+    const platform = normalizePlatform(input.platform)
+    const threshold = getCpmThreshold(config, platform, detectTier(input.followers || 0), normalizeFormat(platform, input.format))
+    input.cpmMax = threshold?.cpmMax ?? null
+  }
   const result = assessRisks(input)
   return NextResponse.json(result)
 }

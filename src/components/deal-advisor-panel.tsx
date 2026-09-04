@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { TrendingUp, TrendingDown, DollarSign, Target, ChevronDown, ChevronUp, MessageSquare } from 'lucide-react'
 import { useI18n } from '@/i18n/context'
 import type { AppliedModifier, DealTerms } from '@/lib/benchmarks'
@@ -70,6 +70,14 @@ export function DealAdvisorPanel({ username, platform, followers, avgViews, avgL
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [fetched, setFetched] = useState(false)
+
+  // Whitelisting/exclusivity toggles, format, country, brand or fee changes invalidate the cached verdict.
+  const termsKey = JSON.stringify(terms ?? null)
+  useEffect(() => {
+    setResult(null)
+    setFetched(false)
+    setExpanded(false)
+  }, [fee, format, country, brandId, termsKey, platform, followers, avgViews])
 
   async function fetchAdvice() {
     if (fetched && result) {

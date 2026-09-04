@@ -62,6 +62,20 @@ function validateValue(key: BenchmarkKey, value: unknown): string | null {
   switch (key) {
     case 'benchmark_fee_ranges': {
       if (!isPlainObject(value)) return 'benchmark_fee_ranges must be an object { PLATFORM: { TIER: { FORMAT: [p25,p50,p75,p90] } } }'
+      // Every cell: four positive numbers, monotonic p25 ≤ p50 ≤ p75 ≤ p90 (otherwise the bands collapse).
+      for (const [plat, tiers] of Object.entries(value)) {
+        if (!isPlainObject(tiers)) return `${plat}: expected { TIER: { FORMAT: [p25,p50,p75,p90] } }`
+        for (const [tier, formats] of Object.entries(tiers)) {
+          if (!isPlainObject(formats)) return `${plat} ${tier}: expected { FORMAT: [p25,p50,p75,p90] }`
+          for (const [fmt, range] of Object.entries(formats)) {
+            const cell = `${plat} ${tier} ${fmt}`
+            if (!Array.isArray(range) || range.length !== 4) return `${cell}: expected 4 values [p25,p50,p75,p90]`
+            const nums = range.map(Number)
+            if (nums.some(n => !Number.isFinite(n) || n <= 0)) return `${cell}: every percentile must be a number greater than 0`
+            if (!(nums[0] <= nums[1] && nums[1] <= nums[2] && nums[2] <= nums[3])) return `${cell}: percentiles must be increasing (p25 ≤ p50 ≤ p75 ≤ p90)`
+          }
+        }
+      }
       mergeBenchmarkConfig({ feeRanges: value })
       return null
     }
@@ -69,8 +83,11 @@ function validateValue(key: BenchmarkKey, value: unknown): string | null {
       if (!Array.isArray(value)) return 'benchmark_cpm_rates must be a list [{ platform, format, tier, cpmTarget, cpmMax }]'
       for (const row of value as unknown[]) {
         if (!isPlainObject(row)) return 'benchmark_cpm_rates rows must be objects'
-        if (!Number.isFinite(Number(row.cpmTarget)) || !Number.isFinite(Number(row.cpmMax))) return 'cpmTarget and cpmMax must be numbers'
-        if (Number(row.cpmTarget) < 0 || Number(row.cpmMax) < 0) return 'CPM thresholds cannot be negative'
+        if (typeof row.format !== 'string' || !row.format) return `CPM row ${String(row.platform)} ${String(row.tier)}: format is required (POST, REEL, STORY, VIDEO, INTEGRATION, DEDICATED, SHORT)`
+        const target = Number(row.cpmTarget), max = Number(row.cpmMax)
+        if (!Number.isFinite(target) || !Number.isFinite(max)) return 'cpmTarget and cpmMax must be numbers'
+        if (target <= 0 || max <= 0) return `CPM row ${String(row.platform)} ${row.format} ${String(row.tier)}: thresholds must be greater than 0`
+        if (max < target) return `CPM row ${String(row.platform)} ${row.format} ${String(row.tier)}: cpmMax must be ≥ cpmTarget`
       }
       mergeBenchmarkConfig({ cpmThresholds: value })
       return null
@@ -99,7 +116,16 @@ function validateValue(key: BenchmarkKey, value: unknown): string | null {
       if (!isPlainObject(value)) return 'benchmark_meta must be an object { version, storyPackMultiplier, internalBlend }'
       if (value.version !== undefined && typeof value.version !== 'string') return 'version must be a string'
       if (value.storyPackMultiplier !== undefined && (typeof value.storyPackMultiplier !== 'number' || !(value.storyPackMultiplier > 0))) return 'storyPackMultiplier must be a positive number'
-      if (value.internalBlend !== undefined && !isPlainObject(value.internalBlend)) return 'internalBlend must be an object { minSample, shrinkageK, trimPct }'
+      if (value.internalBlend !== undefined) {
+        if (!isPlainObject(value.internalBlend)) return 'internalBlend must be an object { minSample, shrinkageK, trimPct, minBrands, maxAgeMonths }'
+        const ib = value.internalBlend
+        const isNum = (v: unknown) => typeof v === 'number' && Number.isFinite(v)
+        if (ib.minSample !== undefined && !(isNum(ib.minSample) && (ib.minSample as number) >= 1)) return 'internalBlend.minSample must be a number ≥ 1'
+        if (ib.shrinkageK !== undefined && !(isNum(ib.shrinkageK) && (ib.shrinkageK as number) > 0)) return 'internalBlend.shrinkageK must be a number > 0'
+        if (ib.trimPct !== undefined && !(isNum(ib.trimPct) && (ib.trimPct as number) >= 0 && (ib.trimPct as number) <= 0.45)) return 'internalBlend.trimPct must be between 0 and 0.45'
+        if (ib.minBrands !== undefined && !(isNum(ib.minBrands) && (ib.minBrands as number) >= 1)) return 'internalBlend.minBrands must be a number ≥ 1'
+        if (ib.maxAgeMonths !== undefined && !(isNum(ib.maxAgeMonths) && (ib.maxAgeMonths as number) >= 1)) return 'internalBlend.maxAgeMonths must be a number ≥ 1'
+      }
       mergeBenchmarkConfig({ version: value.version, storyPackMultiplier: value.storyPackMultiplier, internalBlend: value.internalBlend })
       return null
     }

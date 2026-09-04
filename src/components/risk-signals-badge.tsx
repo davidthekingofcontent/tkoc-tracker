@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AlertTriangle, ShieldAlert, ShieldCheck, ChevronDown, ChevronUp, AlertCircle, Info, XCircle } from 'lucide-react'
 import { useI18n } from '@/i18n/context'
 
@@ -21,6 +21,10 @@ interface RiskSignalsBadgeProps {
     previousFollowers?: number | null
     previousEngagementRate?: number | null
     agreedFee?: number | null
+    /** Negotiated format → CPM ceiling of that format × tier. */
+    format?: string | null
+    /** Brand whose benchmark overrides apply. */
+    brandId?: string | null
     campaignPaymentType?: string | null
     mediaHasDisclosure?: boolean | null
     deletedPostsCount?: number
@@ -66,6 +70,14 @@ export function RiskSignalsBadge({ influencerData, size = 'sm' }: RiskSignalsBad
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [fetched, setFetched] = useState(false)
+
+  // A changed fee/format/terms invalidates the cached verdict.
+  const inputKey = JSON.stringify(influencerData ?? null)
+  useEffect(() => {
+    setResult(null)
+    setFetched(false)
+    setExpanded(false)
+  }, [inputKey])
 
   async function fetchRisks() {
     if (fetched && result) {
