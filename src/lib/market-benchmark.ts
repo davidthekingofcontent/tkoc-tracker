@@ -19,6 +19,7 @@
 import {
   DEFAULT_BENCHMARKS,
   blendFeeRange,
+  type InternalCellExclusion,
   detectTier,
   getCpmThreshold,
   getFeeRange,
@@ -88,8 +89,12 @@ export interface BenchmarkResult {
   country: string | null
   /** Seed range (Spain, before blend and market multiplier). */
   seedRange: FeeRange
-  /** Weight of the own data in the blend (n / (n + k)). */
+  /** Weight of the own data in the blend (effective n / (effective n + k)). */
   blendWeight: number
+  /** Own negotiations in the cell, counted even when they were not allowed to move the seed. */
+  ownDeals: number
+  /** Why an existing own cell did not move the seed (single client, flat rate…); null otherwise. */
+  blendExcluded: InternalCellExclusion | null
   /** Story pack of 3 = one story × this. */
   storyPackMultiplier: number
 }
@@ -151,6 +156,8 @@ export async function getMarketBenchmark(query: BenchmarkQuery): Promise<Benchma
     country,
     seedRange: seed.range,
     blendWeight: blended.weight,
+    ownDeals: cell?.n ?? 0,
+    blendExcluded: blended.excluded,
     storyPackMultiplier: config.storyPackMultiplier,
   }
 }
@@ -193,6 +200,8 @@ export function getQuickBenchmark(
     country: q.country,
     seedRange: seed.range,
     blendWeight: 0,
+    ownDeals: 0,
+    blendExcluded: null,
     storyPackMultiplier: config.storyPackMultiplier,
   }
 }

@@ -9,6 +9,16 @@
  * '@/lib/benchmarks', k = 10, min sample 20, trim 5 %).
  *
  * Rules (David + audit, 2026-09-04):
+ *   - Only deals in status AGREED or later (CONTRACTED, SHIPPING, POSTED,
+ *     COMPLETED) and closed within internalBlend.maxAgeMonths count. A fee on
+ *     a PROSPECT/NEGOTIATING row is a draft, not a negotiation.
+ *   - Anti-bias guard (assessInternalCell): every deal carries a client key
+ *     (campaign brand handle → campaign brand id → campaign id); per cell we
+ *     store the distinct clients, n × (1 − HHI) as the effective sample and
+ *     whether the fees are a flat rate (p25 = p90). A cell with < minBrands
+ *     clients or a flat rate is written and shown but marked eligible=false,
+ *     so blendFeeRange leaves the seed untouched. One brand paying 100 € to
+ *     105 micros is a price list, not the Spanish market.
  *   - Tier comes ONLY from influencer.followers (detectTier).
  *   - Format: ci.negotiatedFormat when the column exists → majority of the
  *     creator's delivered media in that campaign → platform default.
@@ -29,6 +39,7 @@
 import { prisma } from '@/lib/db'
 import { loadBenchmarkConfig, loadInternalStats, invalidateBenchmarkCaches } from '@/lib/benchmarks-server'
 import {
+  assessInternalCell,
   detectTier,
   normalizePlatform,
   normalizeFormat,
@@ -38,15 +49,19 @@ import {
   trimmed,
   type FeeFormat,
   type FeeRange,
+  type InternalBlendRules,
   type InternalCellStats,
   type Platform,
   type Tier,
 } from '@/lib/benchmarks'
 
+/** Pipeline states that mean "this fee was actually agreed". */
+export const CLOSED_DEAL_STATUSES = ['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'] as const
+
 export const INTERNAL_STATS_SETTING_KEY = 'benchmark_internal_stats'
 export const INTERNAL_META_SETTING_KEY = 'benchmark_internal_meta'
 /** Bump when the shape or the method of the stored cells changes. */
-export const INTERNAL_STATS_VERSION = 1
+export const INTERNAL_STATS_VERSION = 2
 
 export interface InternalBenchmarkMeta {
   computedAt: string
@@ -61,6 +76,12 @@ export interface InternalBenchmarkMeta {
   version: number
   /** Blend rules in force when the cells were computed. */
   trimPct: number
+  minBrands: number
+  maxAgeMonths: number
+  /** Cells allowed to move the seed (≥ minBrands clients, no flat rate, effective n ≥ 1). */
+  eligibleCells: number
+  /** Distinct clients across all counted deals. */
+  clients: number
 }
 
 export interface RecomputeInternalBenchmarksResult {
@@ -81,6 +102,8 @@ interface DealRow {
   cpm: number | null
   askingFee: number | null
   agreedFee: number
+  /** Client identity for the concentration guard. */
+  clientKey: string
 }
 
 /** Read an optional column that may not exist yet in the generated client. */
@@ -144,8 +167,23 @@ async function deliveredFormats(
   return out
 }
 
-/** Own p25/p50/p75/p90 (and CPM percentiles) per cell from a list of deals. */
-export function computeInternalCells(deals: DealRow[], trimPct: number, computedAt: string): InternalCellStats[] {
+/** Client key of a campaign: brand handle (what the creators tag) → brand id → campaign id. */
+export function campaignClientKey(campaign: { id: string; targetAccounts?: unknown } | null | undefined, brandId: string | null | undefined): string {
+  let accounts: unknown = campaign?.targetAccounts
+  if (typeof accounts === 'string') {
+    try { accounts = JSON.parse(accounts) } catch { accounts = [accounts] }
+  }
+  if (Array.isArray(accounts)) {
+    const first = accounts.find(a => typeof a === 'string' && a.trim())
+    if (typeof first === 'string') return `handle:${first.trim().replace(/^@/, '').toLowerCase()}`
+  }
+  if (brandId) return `brand:${brandId}`
+  return `campaign:${campaign?.id ?? 'unknown'}`
+}
+
+/** Own p25/p50/p75/p90 (and CPM percentiles) per cell from a list of deals, with the anti-bias assessment. */
+export function computeInternalCells(deals: DealRow[], rules: InternalBlendRules, computedAt: string): InternalCellStats[] {
+  const trimPct = rules.trimPct
   const byCell = new Map<string, DealRow[]>()
   for (const d of deals) {
     const key = cellKey(d.platform, d.tier, d.format)
@@ -169,7 +207,21 @@ export function computeInternalCells(deals: DealRow[], trimPct: number, computed
       ? { p25: round(percentile(cpms, 0.25)), p50: round(percentile(cpms, 0.5)), p75: round(percentile(cpms, 0.75)) }
       : null
     const { platform, tier, format } = rows[0]
-    cells.push({ platform, tier, format, n: fees.length, fees: feeRange, cpm, updatedAt: computedAt })
+    const perClient = new Map<string, number>()
+    for (const r of rows) perClient.set(r.clientKey, (perClient.get(r.clientKey) || 0) + 1)
+    const guard = assessInternalCell(fees.length, feeRange, Array.from(perClient.values()), rules)
+    cells.push({
+      platform, tier, format,
+      n: fees.length,
+      fees: feeRange,
+      cpm,
+      updatedAt: computedAt,
+      brands: guard.brands,
+      nEffective: guard.nEffective,
+      flatRate: guard.flatRate,
+      eligible: guard.eligible,
+      reason: guard.reason,
+    })
   }
 
   // Stable order: platform, tier, format.
@@ -196,14 +248,27 @@ export function computeNegotiationDiscount(deals: Array<{ askingFee: number | nu
 export async function recomputeInternalBenchmarks(): Promise<RecomputeInternalBenchmarksResult> {
   const computedAt = new Date().toISOString()
   const config = await loadBenchmarkConfig()
-  const trimPct = config.internalBlend.trimPct
+  const rules = config.internalBlend
+  const trimPct = rules.trimPct
+  const cutoff = new Date()
+  cutoff.setMonth(cutoff.getMonth() - Math.max(1, rules.maxAgeMonths || 24))
 
-  const rows = await prisma.campaignInfluencer.findMany({
-    where: { agreedFee: { gt: 0 } },
-    include: {
-      influencer: { select: { platform: true, followers: true, avgViews: true, country: true } },
-      campaign: { select: { id: true, country: true } },
-    },
+  const [rawRows, brandSettings] = await Promise.all([
+    prisma.campaignInfluencer.findMany({
+      where: { agreedFee: { gt: 0 }, status: { in: [...CLOSED_DEAL_STATUSES] } },
+      include: {
+        influencer: { select: { platform: true, followers: true, avgViews: true, country: true } },
+        campaign: { select: { id: true, country: true, targetAccounts: true } },
+      },
+    }),
+    prisma.setting.findMany({ where: { key: { startsWith: 'campaign_brand_' } }, select: { key: true, value: true } }),
+  ])
+  const brandOfCampaign = new Map(brandSettings.map(s => [s.key.slice('campaign_brand_'.length), s.value]))
+  // Recency: the deal date is dealClosedAt when stamped, else the row's last update.
+  const rows = rawRows.filter(ci => {
+    const closedAt = (ci as { dealClosedAt?: Date | null }).dealClosedAt ?? null
+    const when = closedAt instanceof Date ? closedAt : ci.updatedAt
+    return !(when instanceof Date) || when >= cutoff
   })
 
   // Resolve the format of every deal: explicit column → delivered media → platform default.
@@ -233,10 +298,12 @@ export async function recomputeInternalBenchmarks(): Promise<RecomputeInternalBe
     const avgViews = ci.influencer.avgViews || 0
     const cpm = avgViews > 0 ? (fee / avgViews) * 1000 : null
 
-    deals.push({ platform, tier, format, fee, cpm, askingFee: optionalNumber(ci, 'askingFee'), agreedFee: ci.agreedFee })
+    const clientKey = campaignClientKey(ci.campaign, brandOfCampaign.get(ci.campaignId) ?? null)
+
+    deals.push({ platform, tier, format, fee, cpm, askingFee: optionalNumber(ci, 'askingFee'), agreedFee: ci.agreedFee, clientKey })
   }
 
-  const cells = computeInternalCells(deals, trimPct, computedAt)
+  const cells = computeInternalCells(deals, rules, computedAt)
   const discount = computeNegotiationDiscount(deals)
 
   const meta: InternalBenchmarkMeta = {
@@ -247,6 +314,10 @@ export async function recomputeInternalBenchmarks(): Promise<RecomputeInternalBe
     negotiationDiscountSample: discount.sample,
     version: INTERNAL_STATS_VERSION,
     trimPct,
+    minBrands: rules.minBrands,
+    maxAgeMonths: rules.maxAgeMonths,
+    eligibleCells: cells.filter(c => c.eligible).length,
+    clients: new Set(deals.map(d => d.clientKey)).size,
   }
 
   await prisma.$transaction([
@@ -263,7 +334,7 @@ export async function recomputeInternalBenchmarks(): Promise<RecomputeInternalBe
   ])
   invalidateBenchmarkCaches()
 
-  console.log(`[benchmarks-internal] recomputed ${cells.length} cell(s) from ${deals.length} deal(s)` +
+  console.log(`[benchmarks-internal] recomputed ${cells.length} cell(s) from ${deals.length} deal(s), ${meta.clients} client(s), ${meta.eligibleCells} eligible to move the seed` +
     (discount.value !== null ? `, negotiation discount ${Math.round(discount.value * 100)} % (n=${discount.sample})` : ''))
 
   return { cells, deals: deals.length, computedAt, negotiationDiscount: discount.value, meta }
@@ -284,6 +355,10 @@ export async function loadInternalBenchmarkMeta(): Promise<InternalBenchmarkMeta
       negotiationDiscountSample: typeof parsed.negotiationDiscountSample === 'number' ? parsed.negotiationDiscountSample : 0,
       version: typeof parsed.version === 'number' ? parsed.version : 0,
       trimPct: typeof parsed.trimPct === 'number' ? parsed.trimPct : 0,
+      minBrands: typeof parsed.minBrands === 'number' ? parsed.minBrands : 0,
+      maxAgeMonths: typeof parsed.maxAgeMonths === 'number' ? parsed.maxAgeMonths : 0,
+      eligibleCells: typeof parsed.eligibleCells === 'number' ? parsed.eligibleCells : 0,
+      clients: typeof parsed.clients === 'number' ? parsed.clients : 0,
     }
   } catch {
     return null

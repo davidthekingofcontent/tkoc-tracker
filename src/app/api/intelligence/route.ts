@@ -13,8 +13,8 @@ import { analyzeDeal, type DealAdvisorInput } from '@/lib/deal-advisor'
 import { assessRisks, type RiskAssessmentInput } from '@/lib/risk-signals'
 import { analyzeRepeatBatch, type RepeatRadarInput } from '@/lib/repeat-radar'
 import { generatePlaybook, type PlaybookInput } from '@/lib/campaign-playbook'
-import { getMarketBenchmark, evaluateFee, type BenchmarkQuery } from '@/lib/market-benchmark'
-import { loadBenchmarkConfig } from '@/lib/benchmarks-server'
+import { getMarketBenchmark, evaluateFeeBlended, type BenchmarkQuery } from '@/lib/market-benchmark'
+import { loadBenchmarkConfig, loadInternalStats } from '@/lib/benchmarks-server'
 import { prisma } from '@/lib/db'
 import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import { calculateCampaignEMV } from '@/lib/emv'
@@ -76,8 +76,8 @@ type DealAdvisorRequest = DealAdvisorInput & { brandId?: string | null; locale?:
 
 async function handleDealAdvisor(data: DealAdvisorRequest) {
   const { brandId, locale, ...input } = data
-  const config = await loadBenchmarkConfig(brandId)
-  const result = analyzeDeal(input, { config, locale: locale === 'en' ? 'en' : 'es' })
+  const [config, internalStats] = await Promise.all([loadBenchmarkConfig(brandId), loadInternalStats()])
+  const result = analyzeDeal(input, { config, locale: locale === 'en' ? 'en' : 'es', internalStats })
   return NextResponse.json(result)
 }
 
@@ -290,16 +290,15 @@ interface EvaluateFeeRequest {
   locale?: 'es' | 'en'
 }
 
+/** Same blended, market-scaled range as the benchmark and the deal advisor. */
 async function handleEvaluateFee(data: EvaluateFeeRequest) {
-  const config = await loadBenchmarkConfig(data.brandId)
-  const result = evaluateFee(
-    data.fee,
-    data.platform,
-    data.followers,
-    data.format,
-    config,
-    data.locale === 'en' ? 'en' : 'es',
-    data.country
-  )
+  const result = await evaluateFeeBlended(data.fee, {
+    platform: data.platform,
+    followers: data.followers,
+    format: data.format,
+    country: data.country,
+    brandId: data.brandId,
+    locale: data.locale === 'en' ? 'en' : 'es',
+  })
   return NextResponse.json(result)
 }

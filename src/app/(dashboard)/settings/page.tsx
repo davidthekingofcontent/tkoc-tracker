@@ -121,7 +121,10 @@ function writeModifier(m: CommercialModifiers, path: string, value: number): Com
 
 type MarketRow = { code: string; multiplier: number }
 type BenchmarkMeta = { version: string; storyPackMultiplier: number; internalBlend: InternalBlendRules }
-type InternalStatSummary = { platform: Platform; tier: Tier; format: FeeFormat; n: number; updatedAt: string }
+type InternalStatSummary = {
+  platform: Platform; tier: Tier; format: FeeFormat; n: number; updatedAt: string
+  brands?: number | null; nEffective?: number | null; eligible?: boolean; reason?: string | null
+}
 
 function marketsToRows(markets: Record<string, number>): MarketRow[] {
   return Object.entries(markets)
@@ -1954,8 +1957,8 @@ export default function SettingsPage() {
                 <h4 className="text-sm font-semibold text-gray-900 dark:text-white">{L('Negociaciones propias', 'Own negotiations')}</h4>
                 <span className="text-xs text-gray-500 dark:text-gray-400">
                   {L(
-                    `Se mezclan con el seed por shrinkage (k = ${benchmarkMeta?.internalBlend.shrinkageK ?? DEFAULT_BENCHMARKS.internalBlend.shrinkageK}); a partir de ${benchmarkMeta?.internalBlend.minSample ?? DEFAULT_BENCHMARKS.internalBlend.minSample} negociaciones en una celda mandan los datos propios.`,
-                    `Blended with the seed by shrinkage (k = ${benchmarkMeta?.internalBlend.shrinkageK ?? DEFAULT_BENCHMARKS.internalBlend.shrinkageK}); from ${benchmarkMeta?.internalBlend.minSample ?? DEFAULT_BENCHMARKS.internalBlend.minSample} negotiations in a cell the own data dominates.`
+                    `Se mezclan con el seed por shrinkage (k = ${benchmarkMeta?.internalBlend.shrinkageK ?? DEFAULT_BENCHMARKS.internalBlend.shrinkageK}). Solo mueven el seed las celdas con al menos ${benchmarkMeta?.internalBlend.minBrands ?? DEFAULT_BENCHMARKS.internalBlend.minBrands} clientes distintos y dispersión real de precios; a partir de ${benchmarkMeta?.internalBlend.minSample ?? DEFAULT_BENCHMARKS.internalBlend.minSample} negociaciones efectivas mandan los datos propios.`,
+                    `Blended with the seed by shrinkage (k = ${benchmarkMeta?.internalBlend.shrinkageK ?? DEFAULT_BENCHMARKS.internalBlend.shrinkageK}). Only cells with at least ${benchmarkMeta?.internalBlend.minBrands ?? DEFAULT_BENCHMARKS.internalBlend.minBrands} distinct clients and real price dispersion move the seed; from ${benchmarkMeta?.internalBlend.minSample ?? DEFAULT_BENCHMARKS.internalBlend.minSample} effective negotiations the own data dominates.`
                   )}
                 </span>
               </div>
@@ -1967,23 +1970,42 @@ export default function SettingsPage() {
                 <div className="flex flex-wrap gap-2">
                   {benchmarkInternalStats.filter(s => s.n > 0).map(s => {
                     const minSample = benchmarkMeta?.internalBlend.minSample ?? DEFAULT_BENCHMARKS.internalBlend.minSample
+                    const minBrands = benchmarkMeta?.internalBlend.minBrands ?? DEFAULT_BENCHMARKS.internalBlend.minBrands
                     const fmtLabels = BENCHMARK_FORMAT_LABELS[locale === 'es' ? 'es' : 'en']
-                    const dominant = s.n >= minSample
+                    const excluded = s.eligible === false
+                    const dominant = !excluded && (s.nEffective ?? s.n) >= minSample
+                    const reasonText: Record<string, string> = {
+                      single_client: L('Un solo cliente: se muestra pero no mueve el seed', 'Single client: shown but does not move the seed'),
+                      few_clients: L(`Menos de ${minBrands} clientes distintos: no mueve el seed`, `Fewer than ${minBrands} distinct clients: does not move the seed`),
+                      flat_rate: L('Tarifa fija (p25 = p90): no mueve el seed', 'Flat rate (p25 = p90): does not move the seed'),
+                      no_effective_sample: L('Muestra efectiva insuficiente: no mueve el seed', 'Effective sample too small: does not move the seed'),
+                    }
+                    const title = excluded
+                      ? (reasonText[s.reason ?? ''] ?? reasonText.no_effective_sample)
+                      : dominant
+                        ? L('Los datos propios dominan sobre el seed', 'Own data dominates the seed')
+                        : L('Aún pesa más el seed', 'The seed still weighs more')
                     return (
                       <span
                         key={`${s.platform}-${s.tier}-${s.format}`}
-                        title={dominant ? L('Los datos propios dominan sobre el seed', 'Own data dominates the seed') : L('Aún pesa más el seed', 'The seed still weighs more')}
+                        title={title}
                         className={cn(
                           'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs',
-                          dominant
-                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400'
-                            : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300'
+                          excluded
+                            ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-400'
+                            : dominant
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400'
+                              : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300'
                         )}
                       >
                         <span className="font-medium">
                           {BENCHMARK_PLATFORM_LABELS[s.platform] ?? s.platform} · {(s.tier || '').charAt(0) + (s.tier || '').slice(1).toLowerCase()} · {fmtLabels[s.format] ?? s.format}
                         </span>
-                        <span>{s.n} {L(s.n === 1 ? 'negociación' : 'negociaciones', s.n === 1 ? 'negotiation' : 'negotiations')}</span>
+                        <span>
+                          {s.n} {L(s.n === 1 ? 'negociación' : 'negociaciones', s.n === 1 ? 'negotiation' : 'negotiations')}
+                          {typeof s.brands === 'number' ? ` · ${s.brands} ${L(s.brands === 1 ? 'cliente' : 'clientes', s.brands === 1 ? 'client' : 'clients')}` : ''}
+                          {excluded ? ` · ${L('no mueve el seed', 'does not move the seed')}` : ''}
+                        </span>
                       </span>
                     )
                   })}

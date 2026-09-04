@@ -158,7 +158,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       config,
       emvRates,
-      internalStats: stats.map(s => ({ platform: s.platform, tier: s.tier, format: s.format, n: s.n, updatedAt: s.updatedAt })),
+      internalStats: stats.map(s => ({
+        platform: s.platform, tier: s.tier, format: s.format, n: s.n, updatedAt: s.updatedAt,
+        brands: typeof s.brands === 'number' ? s.brands : null,
+        nEffective: typeof s.nEffective === 'number' ? s.nEffective : null,
+        eligible: s.eligible === true,
+        reason: s.reason ?? null,
+      })),
       hasBrandOverrides,
       brandId: brandId ?? null,
       // Legacy top-level keys for old client code

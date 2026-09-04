@@ -19,7 +19,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { analyzeDeal, type DealAdvisorResult } from '@/lib/deal-advisor'
 import { calculateCPM, detectTier, formatLabel } from '@/lib/cpm-calculator'
-import { loadBenchmarkConfig } from '@/lib/benchmarks-server'
+import { loadBenchmarkConfig, loadInternalStats } from '@/lib/benchmarks-server'
 import { normalizeFormat, normalizePlatform, type AppliedModifier, type DealTerms, type FeeFormat, type PercentileLabels } from '@/lib/benchmarks'
 import { prisma } from '@/lib/db'
 
@@ -92,6 +92,8 @@ export interface PricingAnalysisResult {
   /** p50 after market and modifiers — the reference price to negotiate around. */
   referenceFee: number
   benchmarkVersion: string
+  /** Own negotiations behind this cell and whether they were allowed to move the seed. */
+  ownNegotiations: { n: number; source: 'seed' | 'blended' | 'internal'; weight: number; excluded: string | null }
   locale: 'es' | 'en'
 }
 
@@ -139,7 +141,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Followers and avgViews are required (or provide a valid username)' }, { status: 400 })
     }
 
-    const config = await loadBenchmarkConfig(brandId)
+    const [config, internalStats] = await Promise.all([loadBenchmarkConfig(brandId), loadInternalStats()])
     const plat = normalizePlatform(platform)
     const format = normalizeFormat(plat, body.format)
     const tier = detectTier(followers)
@@ -157,7 +159,7 @@ export async function POST(request: NextRequest) {
       format,
       country,
       terms: terms || null,
-    }, { config, locale })
+    }, { config, locale, internalStats })
 
     // 2. CPM analysis (fee ÷ median views of the format × 1000 vs format × tier thresholds)
     const cpmResult = calculateCPM({
@@ -267,6 +269,7 @@ export async function POST(request: NextRequest) {
       appliedModifiers: deal.appliedModifiers,
       referenceFee: deal.referenceFee,
       benchmarkVersion: config.version,
+      ownNegotiations: { n: deal.ownDeals, source: deal.blendSource, weight: deal.blendWeight, excluded: deal.blendExcluded },
       locale,
     }
 

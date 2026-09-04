@@ -17,6 +17,7 @@ import {
   DEFAULT_BENCHMARKS,
   mergeBenchmarkConfig,
   type BenchmarkConfig,
+  findInternalCell,
   type InternalCellStats,
   type Platform,
   type Tier,
@@ -79,7 +80,7 @@ export async function loadInternalStats(): Promise<InternalCellStats[]> {
 }
 
 export function findCell(stats: InternalCellStats[], platform: Platform, tier: Tier, format: FeeFormat): InternalCellStats | null {
-  return stats.find(s => s.platform === platform && s.tier === tier && s.format === format) || null
+  return findInternalCell(stats, platform, tier, format)
 }
 
 /** Drop caches (call after saving benchmarks or recomputing stats). */

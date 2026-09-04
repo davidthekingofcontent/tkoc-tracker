@@ -60,12 +60,20 @@ export interface PercentileLabels {
 }
 
 export interface InternalBlendRules {
-  /** Negotiations needed in a cell before its own percentiles are trusted at all. */
+  /** Effective negotiations needed in a cell before its own percentiles are trusted at all. */
   minSample: number
   /** Shrinkage: blended = (n·own + k·seed) / (n + k). k = 10 → 10 deals weigh as much as the seed. */
   shrinkageK: number
   /** Trim this share from each tail before computing percentiles. */
   trimPct: number
+  /**
+   * Distinct clients (brand handle of the campaign) a cell needs before its own
+   * data may move the seed. One client's fixed-fee programme is a price list,
+   * not a market observation.
+   */
+  minBrands: number
+  /** Deals older than this (dealClosedAt, else updatedAt) are ignored by the recompute. */
+  maxAgeMonths: number
 }
 
 export interface BenchmarkConfig {
@@ -141,7 +149,7 @@ export const DEFAULT_BENCHMARKS: BenchmarkConfig = {
     es: { p25: 'Buen precio', p50: 'Precio de mercado', p75: 'Máximo justificable', p90: 'Excepcional (solo con justificación)' },
     en: { p25: 'Good price', p50: 'Market price', p75: 'Max justifiable', p90: 'Exceptional (needs justification)' },
   },
-  internalBlend: { minSample: 20, shrinkageK: 10, trimPct: 0.05 },
+  internalBlend: { minSample: 20, shrinkageK: 10, trimPct: 0.05, minBrands: 3, maxAgeMonths: 24 },
 }
 
 function cpmRow(platform: Platform, format: FeeFormat, pairs: Array<[number, number]>): CpmThreshold[] {
@@ -286,6 +294,9 @@ export function applyModifiers(
 
 // ============ INTERNAL NEGOTIATIONS → OWN PERCENTILES ============
 
+/** Why a cell is shown but not allowed to move the seed. */
+export type InternalCellExclusion = 'single_client' | 'few_clients' | 'flat_rate' | 'no_effective_sample'
+
 export interface InternalCellStats {
   platform: Platform
   tier: Tier
@@ -294,6 +305,51 @@ export interface InternalCellStats {
   fees: FeeRange            // own p25/p50/p75/p90 after trimming
   cpm?: { p25: number; p50: number; p75: number } | null
   updatedAt: string
+  /** Distinct clients behind the deals (campaign brand handle → brand id → campaign). */
+  brands?: number
+  /** n discounted by client concentration: round(n × (1 − HHI)). One client → 0. */
+  nEffective?: number
+  /** p25 = p90 after trimming: a fixed-fee programme, not a market. */
+  flatRate?: boolean
+  /** True only when the recompute assessed the cell and allowed it to move the seed. Missing (legacy v1 cell) = not eligible. */
+  eligible?: boolean
+  reason?: InternalCellExclusion | null
+}
+
+/**
+ * Anti-bias assessment of an own-negotiation cell. `clientCounts` = deals per
+ * distinct client. Herfindahl index HHI = Σ share²; effective n = n × (1 − HHI),
+ * so 50 deals from one client count as 0 and 50 deals split evenly across 5
+ * clients count as 40.
+ */
+export function assessInternalCell(
+  n: number,
+  fees: FeeRange,
+  clientCounts: number[],
+  rules: InternalBlendRules
+): { brands: number; nEffective: number; flatRate: boolean; eligible: boolean; reason: InternalCellExclusion | null } {
+  const total = clientCounts.reduce((a, b) => a + b, 0)
+  const hhi = total > 0 ? clientCounts.reduce((acc, c) => acc + (c / total) ** 2, 0) : 1
+  const brands = clientCounts.filter(c => c > 0).length
+  const nEffective = Math.max(0, Math.round(n * (1 - hhi)))
+  const flatRate = n > 0 && fees[0] === fees[3]
+  let reason: InternalCellExclusion | null = null
+  if (brands <= 1) reason = 'single_client'
+  else if (brands < rules.minBrands) reason = 'few_clients'
+  else if (flatRate) reason = 'flat_rate'
+  else if (nEffective < 1) reason = 'no_effective_sample'
+  return { brands, nEffective, flatRate, eligible: reason === null, reason }
+}
+
+/** Pure lookup of a cell (server code wraps it; the deal advisor uses it directly). */
+export function findInternalCell(
+  stats: InternalCellStats[] | null | undefined,
+  platform: Platform,
+  tier: Tier,
+  format: FeeFormat
+): InternalCellStats | null {
+  if (!stats || stats.length === 0) return null
+  return stats.find(s => s.platform === platform && s.tier === tier && s.format === format) || null
 }
 
 /** Percentile with linear interpolation on a sorted array. */
@@ -319,14 +375,24 @@ export function trimmed(values: number[], trimPct: number): number[] {
  */
 export function blendFeeRange(seed: FeeRange, own: InternalCellStats | null | undefined, rules: InternalBlendRules): {
   range: FeeRange
+  /** Own negotiations in the cell (informative even when excluded). */
   n: number
   weight: number
   source: 'seed' | 'blended' | 'internal'
+  /** Set when the cell exists but was not allowed to move the seed. */
+  excluded: InternalCellExclusion | null
 } {
-  if (!own || own.n <= 0) return { range: seed, n: 0, weight: 0, source: 'seed' }
-  const weight = own.n / (own.n + rules.shrinkageK)
+  if (!own || own.n <= 0) return { range: seed, n: 0, weight: 0, source: 'seed', excluded: null }
+  // Only cells the recompute explicitly cleared may move the seed; legacy cells without the
+  // guard fields are shown but ignored until the next recompute assesses them.
+  if (own.eligible !== true) {
+    return { range: seed, n: own.n, weight: 0, source: 'seed', excluded: own.reason ?? 'no_effective_sample' }
+  }
+  const nEff = typeof own.nEffective === 'number' && Number.isFinite(own.nEffective) ? Math.max(0, own.nEffective) : own.n
+  if (nEff < 1) return { range: seed, n: own.n, weight: 0, source: 'seed', excluded: 'no_effective_sample' }
+  const weight = nEff / (nEff + rules.shrinkageK)
   const range = seed.map((s, i) => Math.round(own.fees[i] * weight + s * (1 - weight))) as FeeRange
-  return { range, n: own.n, weight, source: own.n >= rules.minSample && weight > 0.8 ? 'internal' : 'blended' }
+  return { range, n: own.n, weight, source: nEff >= rules.minSample && weight > 0.8 ? 'internal' : 'blended', excluded: null }
 }
 
 // ============ CONFIG MERGE (tolerant of old stored shapes) ============

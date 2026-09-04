@@ -19,7 +19,9 @@ import { calculateCPM, formatLabel, tierLabel, type CPMResult } from './cpm-calc
 import {
   DEFAULT_BENCHMARKS,
   applyModifiers,
+  blendFeeRange,
   detectTier,
+  findInternalCell,
   getFeeRange,
   normalizeFormat,
   normalizePlatform,
@@ -28,6 +30,8 @@ import {
   type DealTerms,
   type FeeFormat,
   type FeeRange,
+  type InternalCellExclusion,
+  type InternalCellStats,
   type PercentileLabels,
   type Platform,
   type Tier,
@@ -55,6 +59,12 @@ export interface DealAdvisorInput {
 export interface DealAdvisorOptions {
   config?: BenchmarkConfig
   locale?: 'es' | 'en'
+  /**
+   * Own-negotiation cells (Setting benchmark_internal_stats). When given, the
+   * Spain seed is blended with the matching cell (guarded by eligibility) before
+   * the market multiplier — the same path getMarketBenchmark uses.
+   */
+  internalStats?: InternalCellStats[] | null
 }
 
 export type DealVerdict = 'excellent_deal' | 'fair_deal' | 'slightly_above' | 'overpriced' | 'way_overpriced'
@@ -121,6 +131,14 @@ export interface DealAdvisorResult {
   /** avgViews ÷ expected views for the format, clamped 0.7–1.5. */
   performanceMultiplier: number
   benchmarkVersion: string
+  /** Own negotiations in this platform × tier × format cell (0 when none). */
+  ownDeals: number
+  /** Where the base range came from: seed only, blended with own deals, or own deals dominating. */
+  blendSource: 'seed' | 'blended' | 'internal'
+  /** Weight of the own data in the base range (0–1). */
+  blendWeight: number
+  /** Why an existing own cell was NOT allowed to move the seed (single client, flat rate…). */
+  blendExcluded: InternalCellExclusion | null
 }
 
 // ============ MAIN FUNCTION ============
@@ -143,18 +161,22 @@ export function analyzeDeal(input: DealAdvisorInput, options: DealAdvisorOptions
     format,
   }, locale, config)
 
-  // 2. Market range for platform × tier × format, scaled by country
+  // 2. Market range for platform × tier × format: Spain seed → guarded blend with the
+  //    agency's own cell (own data is Spain-normalized, so blend first) → country multiplier
   const seed = getFeeRange(config, platform, tier, format, country)
   const seedRange = toRange(seed.range)
+  const cell = findInternalCell(options.internalStats, platform, tier, format)
+  const blend = blendFeeRange(getFeeRange(config, platform, tier, format).range, cell, config.internalBlend)
+  const baseArr = blend.range.map(v => Math.round(v * seed.multiplier)) as FeeRange
 
   // 3. Commercial modifiers on p50 (and the whole range scaled by the same share)
-  const mods = applyModifiers(seed.range[1], input.terms, config, locale)
+  const mods = applyModifiers(baseArr[1], input.terms, config, locale)
   const scale = 1 + mods.totalPct
   const marketArr: FeeRange = [
-    Math.round(seed.range[0] * scale),
+    Math.round(baseArr[0] * scale),
     mods.fee,
-    Math.round(seed.range[2] * scale),
-    Math.round(seed.range[3] * scale),
+    Math.round(baseArr[2] * scale),
+    Math.round(baseArr[3] * scale),
   ]
   const marketRange = toRange(marketArr)
   const referenceFee = mods.fee
@@ -218,6 +240,10 @@ export function analyzeDeal(input: DealAdvisorInput, options: DealAdvisorOptions
     percentileLabels: labels,
     performanceMultiplier,
     benchmarkVersion: config.version,
+    ownDeals: cell?.n ?? 0,
+    blendSource: blend.source,
+    blendWeight: blend.weight,
+    blendExcluded: blend.excluded,
   }
 }
 
