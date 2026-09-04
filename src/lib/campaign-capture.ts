@@ -367,6 +367,35 @@ export async function upsertCampaignPost(
   }
 }
 
+/** Tolerance for matching the same story across sources by publish time. */
+export const STORY_TWIN_TOLERANCE_MS = 5 * 60 * 1000
+
+/**
+ * An existing STORY row of the same creator in this campaign (or unattached)
+ * published within ±5 minutes: the Meta story_mention webhook and the Apify
+ * stories scraper give the same story different ids, so time is the only key.
+ */
+export async function findStoryTwin(
+  campaignId: string,
+  influencerId: string,
+  postedAt: Date | null,
+  excludeExternalId?: string | null
+): Promise<{ id: string; externalId: string | null; views: number; mentions: string[]; campaignId: string | null } | null> {
+  if (!postedAt) return null
+  return prisma.media.findFirst({
+    where: {
+      influencerId,
+      platform: 'INSTAGRAM',
+      mediaType: 'STORY',
+      postedAt: { gte: new Date(postedAt.getTime() - STORY_TWIN_TOLERANCE_MS), lte: new Date(postedAt.getTime() + STORY_TWIN_TOLERANCE_MS) },
+      OR: [{ campaignId }, { campaignId: null }],
+      ...(excludeExternalId ? { NOT: { externalId: excludeExternalId } } : {}),
+    },
+    orderBy: { campaignId: { sort: 'desc', nulls: 'last' } },
+    select: { id: true, externalId: true, views: true, mentions: true, campaignId: true },
+  })
+}
+
 export async function upsertCampaignStory(
   campaignId: string,
   influencerId: string,
@@ -390,7 +419,28 @@ export async function upsertCampaignStory(
           },
         })
         return true
-      case 'create':
+      case 'create': {
+        // The same story may already be here as a Meta story_mention row
+        // (webhook): different id space (message id vs IG pk), no shortcode to
+        // match on, but the publish time is the same → upgrade that row in
+        // place instead of creating a twin.
+        const twin = await findStoryTwin(campaignId, influencerId, toDate(story.postedAt))
+        if (twin) {
+          await prisma.media.update({
+            where: { id: twin.id },
+            data: {
+              externalId: story.externalId,
+              permalink: story.permalink ?? undefined,
+              ...(story.thumbnailUrl ? { thumbnailUrl: story.thumbnailUrl } : {}),
+              ...(story.mediaUrl ? { mediaUrl: story.mediaUrl } : {}),
+              views: Math.max(twin.views, story.views),
+              mentions: Array.from(new Set([...(twin.mentions || []), ...(story.mentions || [])])),
+              ...(story.hashtags?.length ? { hashtags: story.hashtags } : {}),
+              campaignId,
+            },
+          })
+          return true
+        }
         await prisma.media.create({
           data: {
             externalId: story.externalId,
@@ -409,6 +459,7 @@ export async function upsertCampaignStory(
           },
         })
         return true
+      }
     }
   } catch (err) {
     if (!isUniqueViolation(err)) {

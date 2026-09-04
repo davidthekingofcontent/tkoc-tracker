@@ -111,9 +111,30 @@ async function handleStoryMention(ev: StoryMentionEvent): Promise<void> {
   if (!token) { console.warn(`[Meta/Webhook] story mention for unknown brand IG id ${ev.brandIgId}`); return }
   const pageToken = decrypt(token.accessToken)
 
-  const profile = await getIgsidProfile(ev.senderIgsid, pageToken)
+  // Resolving the sender needs instagram_manage_messages. Connections made
+  // before that scope existed cannot do it: keep the raw event as a PENDING
+  // mention (resolved by meta-sync once the brand reconnects) and flag the
+  // connection so Integrations shows "reconnect required" instead of silently
+  // dropping the story.
+  const hasMessagesScope = token.scopes.includes('instagram_manage_messages')
+  const profile = hasMessagesScope ? await getIgsidProfile(ev.senderIgsid, pageToken) : null
   const creator = (profile?.username || '').toLowerCase().replace(/^@/, '')
-  if (!creator) { console.warn(`[Meta/Webhook] could not resolve username for IGSID ${ev.senderIgsid}`); return }
+  if (!creator) {
+    const reason = hasMessagesScope ? 'sender profile not readable (private account?)' : 'connection lacks instagram_manage_messages — reconnect the brand account'
+    console.warn(`[Meta/Webhook] could not resolve username for IGSID ${ev.senderIgsid}: ${reason}`)
+    await prisma.metaStoryMention.upsert({
+      where: { socialTokenId_mentionMediaId: { socialTokenId: token.id, mentionMediaId: `story_mention_${ev.messageId}` } },
+      create: { socialTokenId: token.id, mentionMediaId: `story_mention_${ev.messageId}`, mentionUsername: `igsid:${ev.senderIgsid}`, mentionedAt: ev.timestamp },
+      update: { mentionedAt: ev.timestamp },
+    }).catch(() => {})
+    if (!hasMessagesScope) {
+      await prisma.socialToken.update({
+        where: { id: token.id },
+        data: { lastError: 'Story mentions received but instagram_manage_messages is missing — reconnect this account (Ajustes → Integraciones → Volver a conectar)' },
+      }).catch(() => {})
+    }
+    return
+  }
 
   // Only creators we know (members of some campaign) are worth a row; the
   // attribution below re-checks membership per campaign anyway.

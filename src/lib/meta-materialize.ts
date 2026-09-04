@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
 import { Platform, MediaType } from '@/generated/prisma/client'
-import { isWithinCampaignDates, itemReferencesBrand, normalizeBrandToken } from '@/lib/campaign-capture'
+import { isWithinCampaignDates, itemReferencesBrand, normalizeBrandToken, findStoryTwin } from '@/lib/campaign-capture'
 
 /**
  * Materialize Meta Graph API content (MetaMedia + MetaStoryMention) into the
@@ -163,6 +163,24 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
         dataSource: 'api',
       }
 
+      // A STORY that Apify already captured for this member (different id,
+      // same publish time) → enrich that row instead of creating a twin.
+      const storyTwin = !existing && mm.mediaType === 'STORY'
+        ? await findStoryTwin(campaignId, member.id, mm.postedAt, mm.igMediaId)
+        : null
+      if (storyTwin) {
+        await prisma.media.update({
+          where: { id: storyTwin.id },
+          data: {
+            mentions: Array.from(new Set([...(storyTwin.mentions || []), ...mentions])),
+            ...(mm.mediaUrl && !storyTwin.externalId ? { mediaUrl: mm.mediaUrl } : {}),
+            campaignId,
+          },
+        })
+        stats.updated++
+        continue
+      }
+
       if (existing) {
         await prisma.media.update({
           where: { id: existing.id },
@@ -224,6 +242,14 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
       if (existing) {
         if (!existing.campaignId) await prisma.media.update({ where: { id: existing.id }, data: { campaignId } })
         continue // stories carry no new metrics — nothing else to upgrade
+      }
+      const twin = await findStoryTwin(campaignId, member.id, sm.mentionedAt, sm.mentionMediaId)
+      if (twin) {
+        await prisma.media.update({
+          where: { id: twin.id },
+          data: { mentions: Array.from(new Set([...(twin.mentions || []), ...storyMentions])), campaignId },
+        })
+        continue
       }
 
       await prisma.media.create({

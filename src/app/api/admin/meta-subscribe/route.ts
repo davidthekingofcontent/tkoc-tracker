@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
   for (const t of await listBrandPages()) {
     try {
       const apps = await getPageSubscribedApps(t.platformPageId!, decrypt(t.accessToken))
-      out.push({ tokenId: t.id, pageId: t.platformPageId, igId: t.platformUserId, hasMetadataScope: t.scopes.includes('pages_manage_metadata'), subscribedApps: apps })
+      out.push({ tokenId: t.id, pageId: t.platformPageId, igId: t.platformUserId, hasMetadataScope: t.scopes.includes('pages_manage_metadata'), hasMessagesScope: t.scopes.includes('instagram_manage_messages'), subscribedApps: apps })
     } catch (err) {
       out.push({ tokenId: t.id, pageId: t.platformPageId, igId: t.platformUserId, hasMetadataScope: t.scopes.includes('pages_manage_metadata'), error: err instanceof MetaApiError ? err.responseBody.slice(0, 200) : String(err) })
     }
