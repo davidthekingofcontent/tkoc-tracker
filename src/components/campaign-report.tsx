@@ -749,7 +749,7 @@ function TkocLogo({ className = '' }: { className?: string }) {
     <img
       src="/images/tkoc-logo-full.png"
       alt="The King of Content"
-      className={`block h-8 w-72 max-w-full object-cover object-center ${className}`}
+      className={`block h-8 w-72 max-w-full object-contain object-left ${className}`}
     />
   )
 }
