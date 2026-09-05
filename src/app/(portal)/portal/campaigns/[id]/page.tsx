@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
-import { formatNumber, cn } from '@/lib/utils'
+import { formatNumber, formatEur, formatPercent, cn } from '@/lib/utils'
 import { proxyImg } from '@/lib/proxy-image'
 import {
   Loader2,
@@ -25,6 +25,7 @@ import {
   Music2,
   Globe,
   CheckCircle2,
+  Sparkles,
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,10 @@ import {
 // Data: GET /api/portal/campaigns/[id]?mediaLimit&mediaOffset (parallel task;
 // parsed defensively). NO economic data exists in this response by design —
 // never render fee/budget UI here.
+//
+// The ONE value figure a client sees is the extended EMV (decision 8A), labelled
+// "Valor mediático equivalente (estimado)" with its definition. No basic EMV,
+// no ratio against cost, no "ROI": the EMV is an equivalence estimate, not sales.
 // ---------------------------------------------------------------------------
 
 interface PortalInfluencer {
@@ -77,6 +82,14 @@ interface PortalCampaignDetail {
   platforms?: string[]
   influencers?: PortalMember[]
   media?: PortalMedia[]
+}
+
+/** The brand-safe overview the API attaches (only the keys this page reads). */
+interface PortalOverview {
+  /** Extended EMV in euros — the only EMV the client sees. */
+  emvExtended?: number | null
+  /** Stories whose audience had to be estimated (no public views). */
+  emvEstimatedStories?: number | null
 }
 
 const MEDIA_PAGE = 100
@@ -190,13 +203,16 @@ export default function PortalCampaignPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
 
-  const fetchPage = useCallback(async (offset: number): Promise<{ campaign: PortalCampaignDetail | null; media: PortalMedia[] }> => {
+  const [overview, setOverview] = useState<PortalOverview | null>(null)
+
+  const fetchPage = useCallback(async (offset: number): Promise<{ campaign: PortalCampaignDetail | null; media: PortalMedia[]; overview: PortalOverview | null }> => {
     const res = await fetch(`/api/portal/campaigns/${campaignId}?mediaLimit=${MEDIA_PAGE}&mediaOffset=${offset}`)
-    if (!res.ok) return { campaign: null, media: [] }
+    if (!res.ok) return { campaign: null, media: [], overview: null }
     const data = await res.json()
     return {
       campaign: data?.campaign || null,
       media: data?.campaign?.media || [],
+      overview: data?.overview || null,
     }
   }, [campaignId])
 
@@ -208,6 +224,7 @@ export default function PortalCampaignPage() {
         if (cancelled) return
         setCampaign(page.campaign)
         setMedia(page.media)
+        setOverview(page.overview)
         setHasMoreMedia(page.media.length >= MEDIA_PAGE)
       } catch (err) {
         console.error('Error fetching portal campaign:', err)
@@ -257,6 +274,9 @@ export default function PortalCampaignPage() {
     .filter(Boolean)
     .join(' — ')
   const team = (campaign.influencers || []).filter(m => m?.influencer)
+  // Shown only when there is a value: an EMV of 0 (nothing published yet) is not a datum
+  const emvExtended = typeof overview?.emvExtended === 'number' && overview.emvExtended > 0 ? overview.emvExtended : null
+  const emvEstimatedStories = overview?.emvEstimatedStories || 0
 
   return (
     <div className="space-y-8">
@@ -304,6 +324,29 @@ export default function PortalCampaignPage() {
           </Button>
         </Link>
       </div>
+
+      {/* a2. Valor mediático equivalente — the single client-facing EMV (decision 8A) */}
+      {emvExtended !== null && (
+        <section>
+          <div className="rounded-xl border border-purple-200 bg-gradient-to-br from-purple-50 to-indigo-50 p-5 shadow-sm dark:border-purple-800 dark:from-purple-900/20 dark:to-indigo-900/20">
+            <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-purple-700 dark:text-purple-300">
+              <Sparkles className="h-4 w-4" />
+              Valor mediático equivalente (estimado)
+            </p>
+            <p className="mt-1 text-3xl font-bold tabular-nums text-purple-800 dark:text-purple-200">
+              {formatEur(emvExtended, { locale: 'es' })}
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-purple-700/80 dark:text-purple-300/80">
+              Estimación del coste de una exposición e interacción equivalentes en medios pagados; no representa ventas ni retorno.
+            </p>
+            {emvEstimatedStories > 0 && (
+              <p className="mt-1 text-[11px] text-purple-600/70 dark:text-purple-300/60">
+                Incluye {emvEstimatedStories} {emvEstimatedStories === 1 ? 'story' : 'stories'} con audiencia estimada.
+              </p>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* b. Equipo de creadores */}
       <section>
@@ -374,7 +417,7 @@ export default function PortalCampaignPage() {
                         </td>
                         <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
                           {typeof inf.engagementRate === 'number' && inf.engagementRate > 0
-                            ? `${inf.engagementRate.toFixed(2)}%`
+                            ? formatPercent(inf.engagementRate, { locale: 'es' })
                             : '—'}
                         </td>
                         <td className="px-4 py-3">

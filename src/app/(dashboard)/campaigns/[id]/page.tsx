@@ -18,7 +18,16 @@ import {
   TableCell,
 } from '@/components/ui/table'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
-import { formatNumber } from '@/lib/utils'
+import { formatNumber, formatEur, formatRatio, formatPercent, formatDate } from '@/lib/utils'
+import type {
+  AudienceBasis,
+  CampaignOverview,
+  PerInfluencerMetrics,
+  TargetComparison,
+  TargetKey as OverviewTargetKey,
+  TimelinePoint,
+} from '@/lib/metrics'
+import { manualBaseline, parseBaseline, type BaselineSnapshot } from '@/lib/creator-baseline'
 import { useI18n } from '@/i18n/context'
 import { calculateCPM, type CPMInput, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
@@ -27,10 +36,10 @@ import { InfluencerHistoryButton } from '@/components/influencer-history'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
 import { StoriesTracker } from '@/components/stories-tracker'
 import { CampaignIntelligencePanel } from '@/components/campaign-intelligence-panel'
+import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
 import { CampaignPlaybookPanel } from '@/components/campaign-playbook-panel'
 import { CreatorScoreBadge } from '@/components/creator-score-badge'
 import { DealAdvisorPanel } from '@/components/deal-advisor-panel'
-import { ReportPreviewModal } from '@/components/report-preview-modal'
 import { RiskSignalsBadge } from '@/components/risk-signals-badge'
 import { SpainFitLink } from '@/components/spain-fit-badge'
 import { calculateCreatorScore } from '@/lib/creator-score'
@@ -65,7 +74,7 @@ import {
   Settings2,
   Save,
   Kanban,
-  DollarSign,
+  Euro,
   Gift,
   Video,
   Link2,
@@ -92,6 +101,10 @@ import {
   Search,
   Send,
   RefreshCw,
+  Lock,
+  Receipt,
+  Tag,
+  MousePointerClick,
 } from 'lucide-react'
 import { parseCreatorHandle } from '@/lib/handles'
 
@@ -112,6 +125,13 @@ interface CampaignInfluencer {
   urgent?: boolean
   crossposting?: boolean
   dealClosedAt?: string | null
+  // Commitments + tracked link (decision 14A). null = not filled in → not shown.
+  deliverablesPlanned?: number | null
+  trackedLink?: string | null
+  trackedClicks?: number | null
+  // Creator baseline ("su habitual", decision 2): BaselineSnapshot stored as Json, parsed with parseBaseline().
+  baselineSnapshot?: unknown
+  baselineAt?: string | null
   shippingName: string | null
   shippingAddress1: string | null
   shippingAddress2: string | null
@@ -152,6 +172,10 @@ const FORMAT_LABELS: Record<FeeFormat, { es: string; en: string }> = {
 /** Fields of a CampaignInfluencer that describe the commercial terms of the deal (PATCH payload). */
 type DealTermsPatch = Partial<Pick<CampaignInfluencer, 'askingFee' | 'negotiatedFormat' | 'rightsDays' | 'exclusivityDays' | 'whitelisting' | 'urgent' | 'crossposting'>>
 
+/** Fields of a CampaignInfluencer that record what the creator committed to and the tracked link (decision 14A). */
+type CommitmentKey = 'deliverablesPlanned' | 'trackedLink' | 'trackedClicks'
+type CreatorCommitmentPatch = Partial<Pick<CampaignInfluencer, CommitmentKey>>
+
 interface CampaignMedia {
   id: string
   mediaType: string
@@ -164,8 +188,26 @@ interface CampaignMedia {
   saves: number | null
   views: number | null
   reach: number | null
+  impressions?: number | null
   platform: string | null
   postedAt: string | null
+  /** Where the row came from (Meta API, Apify, manual…). */
+  source?: string | null
+  /** Soft delete: the post disappeared from the network; the report marks it instead of hiding it. */
+  isDeleted?: boolean | null
+  deletedAt?: string | null
+  /** Per-publication figures from the single overview (matched by id by the API); null only for rows newer than the overview. */
+  metrics?: {
+    audience: number
+    audienceBasis: AudienceBasis
+    audienceEstimated: boolean
+    engagements: number
+    emvExtended: number
+  } | null
+  // Content tags the PM puts on the piece (decision 15A). null = not filled in → not shown.
+  contentAngle?: string | null
+  hook?: string | null
+  productBenefit?: string | null
   influencer: {
     id: string
     username: string
@@ -173,6 +215,16 @@ interface CampaignMedia {
     avatarUrl: string | null
     platform: string
   }
+}
+
+/** One entry of Campaign.targetsChangeLog (written by PUT /api/campaigns/[id] once targets are frozen). */
+interface TargetChangeEntry {
+  at: string
+  by: string
+  field: string
+  from: number | null
+  to: number | null
+  reason: string | null
 }
 
 interface CampaignData {
@@ -193,70 +245,201 @@ interface CampaignData {
   briefFiles: string[]
   briefAttachments?: { id: string; fileName: string; fileType: string; fileSize: number; createdAt: string }[]
   objective: string | null
+  // Numeric targets (decision 1B). null = not filled in → not shown anywhere.
+  targetViews?: number | null
+  targetReach?: number | null
+  targetEngagement?: number | null
+  targetER?: number | null
+  targetCpmMax?: number | null
+  targetsFrozenAt?: string | null
+  targetsChangeLog?: TargetChangeEntry[] | null
+  // Business results reported by the client (decision 14A). Only shown when filled in.
+  promoCode?: string | null
+  codeRedemptions?: number | null
+  clientReportedSales?: number | null
+  /** Real ROI typed by the PM from client data (×, e.g. 2.5) — the only figure allowed to be called ROI. */
+  manualROI?: number | null
+  manualROINotes?: string | null
+  clientReportedLeads?: number | null
+  clientReportedRevenue?: number | null
+  businessResultsSource?: string | null
+  businessResultsReportedAt?: string | null
+  businessResultsNotes?: string | null
   influencers: CampaignInfluencer[]
   media: CampaignMedia[]
 }
 
-interface Overview {
+// ============ NUMERIC TARGETS (decision 1B) ============
+
+type TargetKey = 'targetViews' | 'targetReach' | 'targetEngagement' | 'targetER' | 'targetCpmMax'
+
+/** The five numeric targets a campaign can commit to. `recommendedFor` drives the hints per objective. */
+const TARGET_FIELD_DEFS: {
+  key: TargetKey
+  labelEs: string
+  labelEn: string
+  unit: '' | '%' | '€'
+  kind: 'int' | 'float'
+  /** CPM: a result BELOW the target is the good outcome. */
+  lowerIsBetter: boolean
+  recommendedFor: string[]
+}[] = [
+  { key: 'targetViews', labelEs: 'Vistas', labelEn: 'Views', unit: '', kind: 'int', lowerIsBetter: false, recommendedFor: ['awareness', 'traffic', 'content'] },
+  { key: 'targetReach', labelEs: 'Alcance', labelEn: 'Reach', unit: '', kind: 'int', lowerIsBetter: false, recommendedFor: ['awareness', 'conversion'] },
+  { key: 'targetEngagement', labelEs: 'Interacciones', labelEn: 'Engagements', unit: '', kind: 'int', lowerIsBetter: false, recommendedFor: ['engagement'] },
+  { key: 'targetER', labelEs: 'ER', labelEn: 'ER', unit: '%', kind: 'float', lowerIsBetter: false, recommendedFor: ['engagement'] },
+  { key: 'targetCpmMax', labelEs: 'CPM máx.', labelEn: 'Max CPM', unit: '€', kind: 'float', lowerIsBetter: true, recommendedFor: ['awareness', 'traffic', 'conversion', 'content'] },
+]
+
+/** Helper text per objective, shown next to the target inputs. */
+const OBJECTIVE_TARGET_HINTS: Record<string, { es: string; en: string }> = {
+  awareness: { es: 'Notoriedad: lo habitual es fijar vistas y/o alcance, más un CPM máximo.', en: 'Awareness: usually views and/or reach, plus a max CPM.' },
+  engagement: { es: 'Engagement: fija interacciones y/o ER (%).', en: 'Engagement: set engagements and/or ER (%).' },
+  traffic: { es: 'Tráfico: los clics van por creador (enlaces trackeados); aquí vistas y CPM máximo.', en: 'Traffic: clicks are tracked per creator; here set views and a max CPM.' },
+  conversion: { es: 'Conversión: las ventas las aporta el cliente; aquí alcance y CPM máximo.', en: 'Conversion: sales are reported by the client; here set reach and a max CPM.' },
+  content: { es: 'Contenido: los entregables se fijan por creador; aquí vistas mínimas o CPM máximo.', en: 'Content: deliverables are set per creator; here minimum views or a max CPM.' },
+}
+
+/** "500000" → 500000; empty / NaN / ≤ 0 → null (an unfilled datum is not stored as 0). */
+function parseTargetInput(kind: 'int' | 'float', value: string): number | null {
+  const n = kind === 'int' ? parseInt(value, 10) : parseFloat(value)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** Formats a target or a result with its unit; null → em dash. Money via formatEur, percentages via formatPercent. */
+function formatTargetValue(def: (typeof TARGET_FIELD_DEFS)[number], value: number | null | undefined, locale: 'es' | 'en'): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—'
+  if (def.kind === 'int') return Math.round(value).toLocaleString(locale === 'es' ? 'es-ES' : 'en-GB')
+  return def.unit === '€' ? formatEur(value, { locale, maxFractionDigits: 2 }) : formatPercent(value, { locale, digits: 2 })
+}
+
+/** overview.targets[].key → the field definition (label, unit, kind) used to render the row. */
+const TARGET_KEY_BY_OVERVIEW_KEY: Record<OverviewTargetKey, TargetKey> = {
+  views: 'targetViews',
+  reach: 'targetReach',
+  engagement: 'targetEngagement',
+  er: 'targetER',
+  cpm: 'targetCpmMax',
+}
+
+type TargetTone = 'good' | 'neutral' | 'bad' | 'muted'
+
+/**
+ * Tone of a server-computed verdict. compareTargets already expresses the verdict
+ * in "goodness" space (for CPM the sign is inverted so "above" = beats the cap),
+ * so the mapping is direct. No colour-only encoding: the label always travels with it.
+ */
+const TARGET_VERDICT_TONE: Record<TargetComparison['verdict'], TargetTone> = {
+  above: 'good',
+  on_target: 'neutral',
+  below: 'bad',
+  no_data: 'muted',
+}
+
+/** Muted tones — the text label carries the meaning, the colour only supports it. */
+const TARGET_TONE_CLASSES: Record<TargetTone, string> = {
+  good: 'border-green-200 bg-green-50 text-green-700',
+  neutral: 'border-gray-200 bg-gray-50 text-gray-700',
+  bad: 'border-amber-200 bg-amber-50 text-amber-700',
+  muted: 'border-gray-200 bg-gray-50 text-gray-400',
+}
+
+// ============ BUSINESS RESULTS (decision 14A) ============
+
+/** What the PM types from the client's report. All optional: only filled-in values are ever shown. */
+type BusinessResultsKey =
+  | 'promoCode' | 'codeRedemptions' | 'clientReportedSales' | 'clientReportedLeads'
+  | 'clientReportedRevenue' | 'businessResultsSource' | 'businessResultsReportedAt' | 'businessResultsNotes'
+
+type BusinessResultsForm = Record<BusinessResultsKey, string>
+
+const EMPTY_BUSINESS_FORM: BusinessResultsForm = {
+  promoCode: '', codeRedemptions: '', clientReportedSales: '', clientReportedLeads: '',
+  clientReportedRevenue: '', businessResultsSource: '', businessResultsReportedAt: '', businessResultsNotes: '',
+}
+
+/** Loads the persisted values into the editable form (numbers → strings, date → YYYY-MM-DD). */
+function businessFormFrom(c: CampaignData): BusinessResultsForm {
+  return {
+    promoCode: c.promoCode ?? '',
+    codeRedemptions: c.codeRedemptions != null ? String(c.codeRedemptions) : '',
+    clientReportedSales: c.clientReportedSales != null ? String(c.clientReportedSales) : '',
+    clientReportedLeads: c.clientReportedLeads != null ? String(c.clientReportedLeads) : '',
+    clientReportedRevenue: c.clientReportedRevenue != null ? String(c.clientReportedRevenue) : '',
+    businessResultsSource: c.businessResultsSource ?? '',
+    businessResultsReportedAt: c.businessResultsReportedAt ? c.businessResultsReportedAt.slice(0, 10) : '',
+    businessResultsNotes: c.businessResultsNotes ?? '',
+  }
+}
+
+/** True when the client reported at least one business datum (the card has something to show). */
+function hasBusinessResults(c: CampaignData): boolean {
+  return (
+    !!c.promoCode || c.codeRedemptions != null || c.clientReportedSales != null || c.clientReportedLeads != null || c.manualROI != null ||
+    c.clientReportedRevenue != null || !!c.businessResultsSource || !!c.businessResultsReportedAt || !!c.businessResultsNotes
+  )
+}
+
+// ============ CONTENT TAGS (decision 15A) ============
+
+/** Suggested content angles. Must stay in sync with CONTENT_ANGLES in /api/campaigns/[id]/media/[mediaId]. */
+const CONTENT_ANGLES: { value: string; es: string; en: string }[] = [
+  { value: 'problema_solucion', es: 'Problema / solución', en: 'Problem / solution' },
+  { value: 'tutorial', es: 'Tutorial', en: 'Tutorial' },
+  { value: 'unboxing', es: 'Unboxing', en: 'Unboxing' },
+  { value: 'testimonio', es: 'Testimonio', en: 'Testimonial' },
+  { value: 'humor', es: 'Humor', en: 'Humor' },
+  { value: 'comparativa', es: 'Comparativa', en: 'Comparison' },
+  { value: 'dia_a_dia', es: 'Día a día', en: 'Day in the life' },
+  { value: 'otro', es: 'Otro', en: 'Other' },
+]
+
+/** Label of a stored angle; an unknown value falls back to the raw value. */
+function contentAngleLabel(value: string, locale: string): string {
+  const def = CONTENT_ANGLES.find(a => a.value === value)
+  return def ? (locale === 'es' ? def.es : def.en) : value
+}
+
+/** Hook and product benefit are short: same cap as the API. */
+const TAG_TEXT_MAX = 120
+
+type MediaTagsForm = { contentAngle: string; hook: string; productBenefit: string }
+const EMPTY_TAGS_FORM: MediaTagsForm = { contentAngle: '', hook: '', productBenefit: '' }
+
+/**
+ * GET /api/campaigns/[id] → `overview`: the single server-side computation
+ * (src/lib/campaign-overview.ts) plus legacy top-level aliases of `totals` kept
+ * for older consumers. Every figure on this page reads `totals` / `perInfluencer`
+ * / `targets` / `business`; nothing is recomputed from the paginated media slice.
+ */
+interface Overview extends CampaignOverview {
   totalReach: number
+  totalReachReal: number
   totalImpressions: number | null
   totalEngagements: number
   engagementRate: number
-  mediaValue: number
+  engagementRateEstimatedShare: number
   totalViews: number
   profilesPosted: number
   totalMedia: number
+  totalCost: number
+  membersWithCost: number
+  mediaCounts: Record<string, number>
   emvBasic: number
   emvExtended: number
-  emvEstimatedStories?: number
-  emvEstimatedAudience?: number
-  emvRealStories?: number
-  totalCost: number
+  emvEstimatedStories: number
+  emvEstimatedAudience: number
+  emvRealStories: number
+  emvRatio: number | null
+  cpm: number | null
 }
 
-interface TimelinePoint {
-  date: string
-  posts: number
-  likes: number
-  comments: number
-  views: number
-  reach: number
-  engagements: number
-}
+/** Manual baseline form (decision 2): what the PM types from the creator's own statistics. */
+type BaselineDraft = { format: string; medianViews: string; medianEngagement: string; n: string }
+const EMPTY_BASELINE_DRAFT: BaselineDraft = { format: '', medianViews: '', medianEngagement: '', n: '' }
+/** Mirrors BASELINE_MANUAL_MAX_N in PATCH /api/campaigns/[id]/influencers. */
+const BASELINE_MANUAL_MAX_N = 50
 
-interface DiagnosticData {
-  campaign: {
-    name: string
-    targetHashtags: string[]
-    targetAccounts: string[]
-    platforms: string[]
-    startDate: string | null
-    endDate: string | null
-    membersCount: number
-  }
-  apify: { configured: boolean; apiKeySet: boolean }
-  scrapeJobs: {
-    total: number
-    completed: number
-    failed: number
-    totalItemsFound: number
-    lastJob: { type: string; platform: string; target: string | null; status: string; itemsFound: number; error: string | null; startedAt: string | null; completedAt: string | null } | null
-    lastSuccessfulJob: { type: string; target: string | null; itemsFound: number; completedAt: string | null } | null
-    recent: Array<{ type: string; platform: string; target: string | null; status: string; itemsFound: number; error: string | null; createdAt: string; completedAt: string | null }>
-  }
-  members: Array<{
-    username: string
-    displayName: string | null
-    platform: string
-    followers: number
-    status: string
-    source: string
-    lastScraped: string | null
-    mediaInCampaign: number
-    lastPost: { postedAt: string | null; mediaType: string; permalink: string | null; likes: number; comments: number; views: number } | null
-  }>
-  summary: { membersWithMedia: number; membersWithoutMedia: number; totalMediaInCampaign: number; membersNeverScraped: number }
-}
 
 // ===== Bulk add helpers (client-side parsing; the server re-parses with the same rules) =====
 type BulkAddStatus = 'added' | 'created_and_added' | 'already_member' | 'not_found' | 'apify_unavailable' | 'error'
@@ -330,11 +513,17 @@ function parseCsvHandles(text: string): string[] {
 const RechartsArea = dynamic(
   () => import('recharts').then(mod => {
     const { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend } = mod
-    return function ChartWrapper({ data, title, dataKeys }: {
+    return function ChartWrapper({ data, title, dataKeys, locale = 'es' }: {
       data: TimelinePoint[]
       title: string
-      dataKeys: { key: string; color: string; name: string }[]
+      dataKeys: { key: keyof TimelinePoint; color: string; name: string }[]
+      locale?: 'es' | 'en'
     }) {
+      // Timeline days are 'YYYY-MM-DD' in Europe/Madrid: read the parts, never re-parse in the browser's zone
+      const dayLabel = (v: string) => {
+        const [, m, d] = String(v).split('-')
+        return m && d ? `${Number(d)}/${Number(m)}` : String(v)
+      }
       return (
         <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
           <h3 className="mb-4 text-sm font-semibold text-gray-700">{title}</h3>
@@ -352,16 +541,9 @@ const RechartsArea = dynamic(
               <XAxis
                 dataKey="date"
                 tick={{ fontSize: 10, fill: '#9ca3af' }}
-                tickFormatter={(v: string) => {
-                  const d = new Date(v)
-                  return `${d.getDate()}/${d.getMonth() + 1}`
-                }}
+                tickFormatter={dayLabel}
               />
-              <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={(v: number) => {
-                if (v >= 1000000) return `${(v/1000000).toFixed(1)}M`
-                if (v >= 1000) return `${(v/1000).toFixed(1)}K`
-                return v.toString()
-              }} />
+              <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={(v: number) => formatNumber(v, { locale })} />
               <Tooltip
                 contentStyle={{
                   borderRadius: '8px',
@@ -369,13 +551,8 @@ const RechartsArea = dynamic(
                   boxShadow: '0 4px 6px -1px rgba(0,0,0,.1)',
                   fontSize: '12px',
                 }}
-                labelFormatter={(v) => new Date(String(v)).toLocaleDateString()}
-                formatter={(value) => {
-                  const num = Number(value)
-                  if (num >= 1000000) return [`${(num/1000000).toFixed(1)}M`, '']
-                  if (num >= 1000) return [`${(num/1000).toFixed(1)}K`, '']
-                  return [num.toString(), '']
-                }}
+                labelFormatter={(v) => formatDate(String(v), { locale })}
+                formatter={(value, name) => [formatNumber(Number(value), { locale }), String(name)]}
               />
               <Legend wrapperStyle={{ fontSize: '11px' }} />
               {dataKeys.map(dk => (
@@ -504,11 +681,6 @@ export default function CampaignDetailPage() {
       .catch(() => { /* treat as connected — never nag on API failure */ })
   }, [])
 
-  // Diagnostic modal state
-  const [showDiagnostic, setShowDiagnostic] = useState(false)
-  const [diagnosticData, setDiagnosticData] = useState<DiagnosticData | null>(null)
-  const [diagnosticLoading, setDiagnosticLoading] = useState(false)
-
   // Sort state
   const [reportSortField, setReportSortField] = useState<SortField | null>(null)
   const [reportSortDirection, setReportSortDirection] = useState<SortDirection>('desc')
@@ -599,6 +771,19 @@ export default function CampaignDetailPage() {
   const [editingAskingFee, setEditingAskingFee] = useState<Record<string, string>>({})
   const [savingFee, setSavingFee] = useState<string | null>(null)
 
+  // Commitments + tracked link per creator (decision 14A): drafts keyed by ci.id → field → text
+  const [editingCommitments, setEditingCommitments] = useState<Record<string, Partial<Record<CommitmentKey, string>>>>({})
+
+  // Business results reported by the client (decision 14A): inline editor in Planificar
+  const [isEditingBusiness, setIsEditingBusiness] = useState(false)
+  const [businessForm, setBusinessForm] = useState<BusinessResultsForm>(EMPTY_BUSINESS_FORM)
+  const [isSavingBusiness, setIsSavingBusiness] = useState(false)
+
+  // Content tags per media (decision 15A): which card has its editor open, its draft, and the row being saved
+  const [openTagsFor, setOpenTagsFor] = useState<string | null>(null)
+  const [tagsDraft, setTagsDraft] = useState<MediaTagsForm>(EMPTY_TAGS_FORM)
+  const [savingTagsFor, setSavingTagsFor] = useState<string | null>(null)
+
   // Edit campaign modal
   const [showEditModal, setShowEditModal] = useState(false)
   const [editForm, setEditForm] = useState({
@@ -609,8 +794,19 @@ export default function CampaignDetailPage() {
     targetHashtags: '',
     targetAccounts: '',
     status: '',
+    // Objective + numeric targets (decision 1B: objective and ≥1 target are mandatory)
+    objective: '',
+    targetViews: '',
+    targetReach: '',
+    targetEngagement: '',
+    targetER: '',
+    targetCpmMax: '',
+    /** Only sent when the targets are frozen and the PM wrote something (goes to targetsChangeLog). */
+    targetsChangeReason: '',
   })
   const [isSaving, setIsSaving] = useState(false)
+  // Aprender header / empty state: one-click objective change
+  const [isSettingObjective, setIsSettingObjective] = useState(false)
 
   // Brief state
   const [showBriefEditor, setShowBriefEditor] = useState(false)
@@ -624,9 +820,13 @@ export default function CampaignDetailPage() {
   const [shippingForm, setShippingForm] = useState<Record<string, string>>({})
   const [isSavingShipping, setIsSavingShipping] = useState(false)
 
-  // Export dropdown state
-  const [showExportDropdown, setShowExportDropdown] = useState(false)
-  const [showReportModal, setShowReportModal] = useState(false)
+  // "Exportar" menu in the header (CSV / JSON built on the same overview as this page)
+  const [showExportMenu, setShowExportMenu] = useState(false)
+
+  // Creator baseline (decision 2): which Elegir card has the manual form open, its draft, and the row being saved
+  const [baselineFormFor, setBaselineFormFor] = useState<string | null>(null) // ci.id
+  const [baselineDraft, setBaselineDraft] = useState<BaselineDraft>(EMPTY_BASELINE_DRAFT)
+  const [savingBaselineFor, setSavingBaselineFor] = useState<string | null>(null) // ci.id
 
   // Save as Template state
   const [showTemplateModal, setShowTemplateModal] = useState(false)
@@ -1046,19 +1246,164 @@ export default function CampaignDetailPage() {
     setSavingFee(null)
   }
 
-  /** Persist commercial terms of a deal. Optimistic update so the calculators re-evaluate at once; the refetch confirms. */
-  async function handleSaveDealTerms(ci: CampaignInfluencer, patch: DealTermsPatch) {
+  /**
+   * PATCH one campaign member. Optimistic update so the card re-renders at once; the refetch
+   * confirms (or restores the stored values when the API refused the change, with a toast).
+   */
+  async function patchMember(ci: CampaignInfluencer, patch: Partial<CampaignInfluencer>) {
     setCampaign(prev => prev
       ? { ...prev, influencers: prev.influencers.map(x => (x.id === ci.id ? { ...x, ...patch } : x)) }
       : prev)
     try {
-      await fetch(`/api/campaigns/${campaignId}/influencers`, {
+      const res = await fetch(`/api/campaigns/${campaignId}/influencers`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ influencerId: ci.influencer.id, ...patch }),
       })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setToast({ type: 'error', message: data.error || (locale === 'es' ? 'No se pudo guardar el cambio' : 'The change could not be saved') })
+      }
       await fetchCampaign()
     } catch { /* ignore */ }
+  }
+
+  /** Persist commercial terms of a deal (the calculators re-evaluate at once). */
+  function handleSaveDealTerms(ci: CampaignInfluencer, patch: DealTermsPatch) {
+    return patchMember(ci, patch)
+  }
+
+  /**
+   * Persist one commitment field of a creator (decision 14A). Empty → null (never 0). Whole numbers
+   * are checked here; the URL is validated by the API (http(s), ≤ 500 chars), which answers 400.
+   */
+  async function handleSaveCommitment(ci: CampaignInfluencer, key: CommitmentKey, raw: string) {
+    const value = raw.trim()
+    let patch: CreatorCommitmentPatch
+    if (key === 'trackedLink') {
+      patch = { trackedLink: value || null }
+    } else {
+      const n = value === '' ? null : Number(value)
+      if (n !== null && (!Number.isInteger(n) || n < 0)) {
+        setToast({ type: 'error', message: locale === 'es' ? 'Introduce un número entero mayor o igual que 0' : 'Enter a whole number of 0 or more' })
+        return
+      }
+      patch = key === 'deliverablesPlanned' ? { deliverablesPlanned: n } : { trackedClicks: n }
+    }
+    await patchMember(ci, patch)
+    // Drop the draft so the input shows the persisted value again (the previous one if the API refused it)
+    setEditingCommitments(prev => {
+      const draft = { ...(prev[ci.id] || {}) }
+      delete draft[key]
+      return { ...prev, [ci.id]: draft }
+    })
+  }
+
+  /** Opens the inline editor of "Resultados de negocio" preloaded with what is stored. */
+  function openBusinessEditor() {
+    if (!campaign || !canEdit) return
+    setBusinessForm(businessFormFrom(campaign))
+    setIsEditingBusiness(true)
+  }
+
+  /** Saves the client-reported results. Empty fields travel as null so the API clears them (never 0). */
+  async function handleSaveBusinessResults() {
+    if (!canEdit) return
+    const es = locale === 'es'
+    const f = businessForm
+    // Whole numbers for counts, any non-negative decimal for revenue
+    const numericFields: { key: BusinessResultsKey; integer: boolean }[] = [
+      { key: 'codeRedemptions', integer: true },
+      { key: 'clientReportedSales', integer: true },
+      { key: 'clientReportedLeads', integer: true },
+      { key: 'clientReportedRevenue', integer: false },
+    ]
+    for (const { key, integer } of numericFields) {
+      const s = f[key].trim()
+      if (s === '') continue
+      const n = Number(s)
+      if (!Number.isFinite(n) || n < 0 || (integer && !Number.isInteger(n))) {
+        setToast({ type: 'error', message: es ? 'Los resultados deben ser números mayores o iguales que 0 (ventas, leads y canjes sin decimales)' : 'Results must be numbers of 0 or more (sales, leads and redemptions without decimals)' })
+        return
+      }
+    }
+    const num = (s: string) => (s.trim() === '' ? null : Number(s))
+    const text = (s: string) => (s.trim() === '' ? null : s.trim())
+    setIsSavingBusiness(true)
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          promoCode: text(f.promoCode),
+          codeRedemptions: num(f.codeRedemptions),
+          clientReportedSales: num(f.clientReportedSales),
+          clientReportedLeads: num(f.clientReportedLeads),
+          clientReportedRevenue: num(f.clientReportedRevenue),
+          businessResultsSource: text(f.businessResultsSource),
+          businessResultsReportedAt: text(f.businessResultsReportedAt),
+          businessResultsNotes: text(f.businessResultsNotes),
+        }),
+      })
+      if (res.ok) {
+        setIsEditingBusiness(false)
+        await fetchCampaign()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setToast({ type: 'error', message: data.error || (es ? 'No se pudieron guardar los resultados' : 'Results could not be saved') })
+      }
+    } catch {
+      setToast({ type: 'error', message: es ? 'No se pudieron guardar los resultados' : 'Results could not be saved' })
+    } finally {
+      setIsSavingBusiness(false)
+    }
+  }
+
+  /** Opens the "Etiquetas" editor of one media card preloaded with what is stored (one open at a time). */
+  function toggleTagsEditor(m: CampaignMedia) {
+    if (openTagsFor === m.id) {
+      setOpenTagsFor(null)
+      return
+    }
+    setTagsDraft({ contentAngle: m.contentAngle ?? '', hook: m.hook ?? '', productBenefit: m.productBenefit ?? '' })
+    setOpenTagsFor(m.id)
+  }
+
+  /** Saves the tags of one media row (decision 15A). Optimistic; on failure the stored values come back with a toast. */
+  async function handleSaveMediaTags(m: CampaignMedia) {
+    if (!canEdit) return
+    const patch = {
+      contentAngle: tagsDraft.contentAngle || null,
+      hook: tagsDraft.hook.trim() || null,
+      productBenefit: tagsDraft.productBenefit.trim() || null,
+    }
+    const previous = { contentAngle: m.contentAngle ?? null, hook: m.hook ?? null, productBenefit: m.productBenefit ?? null }
+    const apply = (values: typeof patch) =>
+      setCampaign(prev => prev
+        ? { ...prev, media: prev.media.map(x => (x.id === m.id ? { ...x, ...values } : x)) }
+        : prev)
+    const failMessage = locale === 'es' ? 'No se pudieron guardar las etiquetas' : 'Tags could not be saved'
+    setSavingTagsFor(m.id)
+    apply(patch)
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/media/${m.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+      if (res.ok) {
+        setOpenTagsFor(null)
+      } else {
+        const data = await res.json().catch(() => ({}))
+        apply(previous)
+        setToast({ type: 'error', message: data.error || failMessage })
+      }
+    } catch {
+      apply(previous)
+      setToast({ type: 'error', message: failMessage })
+    } finally {
+      setSavingTagsFor(null)
+    }
   }
 
   /** Negotiated format of the deal; default by platform: REEL / VIDEO / INTEGRATION. */
@@ -1108,13 +1453,28 @@ export default function CampaignDetailPage() {
       targetHashtags: targetHashtags.join(', '),
       targetAccounts: targetAccounts.join(', '),
       status: campaign.status,
+      objective: campaign.objective || '',
+      targetViews: campaign.targetViews != null ? String(campaign.targetViews) : '',
+      targetReach: campaign.targetReach != null ? String(campaign.targetReach) : '',
+      targetEngagement: campaign.targetEngagement != null ? String(campaign.targetEngagement) : '',
+      targetER: campaign.targetER != null ? String(campaign.targetER) : '',
+      targetCpmMax: campaign.targetCpmMax != null ? String(campaign.targetCpmMax) : '',
+      targetsChangeReason: '',
     })
     setShowEditModal(true)
   }
 
+  // Edit modal validation (decision 1B): name, objective and at least one numeric target.
+  // Social Listening campaigns are exempt from the objective/target rule, exactly as in the create flow.
+  const goalsRequired = campaign?.type !== 'SOCIAL_LISTENING'
+  const editFormHasTarget = TARGET_FIELD_DEFS.some(def => parseTargetInput(def.kind, editForm[def.key]) !== null)
+  const editFormValid = !!editForm.name.trim() && (!goalsRequired || (!!editForm.objective && editFormHasTarget))
+
   async function handleSaveCampaign() {
+    if (!editFormValid) return
     setIsSaving(true)
     try {
+      const reason = editForm.targetsChangeReason.trim()
       const res = await fetch(`/api/campaigns/${campaignId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1126,14 +1486,46 @@ export default function CampaignDetailPage() {
           country: editForm.country || null,
           targetHashtags: editForm.targetHashtags ? editForm.targetHashtags.split(',').map(s => s.trim()).filter(Boolean) : [],
           targetAccounts: editForm.targetAccounts ? editForm.targetAccounts.split(',').map(s => s.trim()).filter(Boolean) : [],
+          objective: editForm.objective || null,
+          // Numeric targets: null when cleared (never 0)
+          targetViews: parseTargetInput('int', editForm.targetViews),
+          targetReach: parseTargetInput('int', editForm.targetReach),
+          targetEngagement: parseTargetInput('int', editForm.targetEngagement),
+          targetER: parseTargetInput('float', editForm.targetER),
+          targetCpmMax: parseTargetInput('float', editForm.targetCpmMax),
+          ...(targetsFrozen && reason && { targetsChangeReason: reason }),
         }),
       })
       if (res.ok) {
         setShowEditModal(false)
         await fetchCampaign()
+      } else {
+        setToast({ type: 'error', message: locale === 'es' ? 'No se pudieron guardar los cambios' : 'Changes could not be saved' })
       }
     } catch { /* ignore */ }
     setIsSaving(false)
+  }
+
+  /** Aprender: persist the objective in one click (header select or empty-state chips) and refetch. */
+  async function handleSetObjective(value: string) {
+    if (!canEdit || !value) return
+    setIsSettingObjective(true)
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ objective: value }),
+      })
+      if (res.ok) {
+        await fetchCampaign()
+      } else {
+        setToast({ type: 'error', message: locale === 'es' ? 'No se pudo guardar el objetivo' : 'Could not save the objective' })
+      }
+    } catch {
+      setToast({ type: 'error', message: locale === 'es' ? 'No se pudo guardar el objetivo' : 'Could not save the objective' })
+    } finally {
+      setIsSettingObjective(false)
+    }
   }
 
   async function handleSaveBrief() {
@@ -1331,17 +1723,32 @@ export default function CampaignDetailPage() {
     return true
   })
 
-  const totalReach = overview?.totalReach || influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0)
-  const totalEngagements = overview?.totalEngagements || 0
-  const totalMedia = overview?.totalMedia || media.length
+  // Every campaign figure comes from the single overview (never from the paginated media slice,
+  // never from a followers sum: potential audience is not reach).
+  const totals = overview?.totals ?? null
+  const totalMedia = totals?.media ?? media.length
+  const storiesTotal = totals?.stories ?? stories.length
+  const postsTotal = totals?.posts ?? nonStoryMedia.length
   const isActive = campaign?.status === 'ACTIVE'
+
+  /** Per-creator figures over ALL the campaign's media (overview.perInfluencer), keyed by influencer id. */
+  const perInfluencerById = useMemo(() => {
+    const map = new Map<string, PerInfluencerMetrics>()
+    for (const p of overview?.perInfluencer ?? []) map.set(p.influencerId, p)
+    return map
+  }, [overview])
+
+  // Numeric targets the PM actually filled in (only these are ever shown) and their frozen state.
+  const definedTargets = TARGET_FIELD_DEFS.filter(def => (campaign?.[def.key] ?? null) !== null)
+  const targetsFrozen = !!campaign?.targetsFrozenAt
+  const currentObjective = CAMPAIGN_OBJECTIVES.find(o => o.value === campaign?.objective) || null
 
   const showMetaBanner =
     !hasMetaConnection &&
     !metaBannerDismissed &&
     !!campaign &&
     ((campaign.targetAccounts?.length || 0) > 0 || (campaign.targetHashtags?.length || 0) > 0)
-  const isEmpty = media.length === 0 && influencers.length === 0
+  const isEmpty = totalMedia === 0 && influencers.length === 0
 
   const sortedReportInfluencers = useMemo(
     () => sortInfluencers(influencers, reportSortField, reportSortDirection),
@@ -1416,6 +1823,783 @@ export default function CampaignDetailPage() {
     })
   }, [nonStoryMedia, mediaSortBy, mediaFilterPlatform, mediaFilterInfluencer])
 
+  /**
+   * Resumen → "Objetivos de campaña": KPI | Objetivo | Resultado | Variación for every
+   * target the PM filled in. No targets → a discreet prompt (editors can jump to the modal).
+   */
+  function renderTargetsCard() {
+    if (!campaign) return null
+    const es = locale === 'es'
+    // Server-computed comparison (compareTargets, ±10 % tolerance); brands never get the CPM row.
+    const targetRows = overview?.targets ?? []
+
+    if (targetRows.length === 0) {
+      // Nothing filled in → nothing to show a brand; editors get a discreet nudge.
+      if (!canEdit) return null
+      return (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-gray-300 bg-white px-5 py-4">
+          <div className="flex items-center gap-3">
+            <Target className="h-5 w-5 shrink-0 text-gray-400" />
+            <p className="text-sm text-gray-500">
+              {es
+                ? 'Esta campaña no tiene objetivos numéricos. Sin ellos no se puede decir si ha funcionado.'
+                : 'This campaign has no numeric targets. Without them there is no way to tell whether it worked.'}
+            </p>
+          </div>
+          {canEdit && (
+            <button
+              type="button"
+              onClick={openEditModal}
+              className="shrink-0 rounded-lg border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-semibold text-purple-700 hover:bg-purple-100 transition-colors"
+            >
+              {es ? 'Definir objetivos' : 'Set targets'}
+            </button>
+          )}
+        </div>
+      )
+    }
+
+    /**
+     * Label of a verdict. For CPM (lower is better) the server inverts the sign so "above"
+     * means "beats the cap"; the label then describes the number truthfully ("Por debajo del
+     * máximo") while the tone carries good / bad.
+     */
+    const verdictLabel = (row: TargetComparison): string => {
+      if (row.verdict === 'no_data') return t.campaignDetail.verdictNoData
+      if (row.verdict === 'on_target') return t.campaignDetail.verdictOnTarget
+      if (row.lowerIsBetter) return row.verdict === 'above' ? t.campaignDetail.verdictBelowMax : t.campaignDetail.verdictAboveMax
+      return row.verdict === 'above' ? t.campaignDetail.verdictAbove : t.campaignDetail.verdictBelow
+    }
+    /** Signed variation as the number moved (for CPM the server's "+ is good" sign is undone). */
+    const shownVariation = (row: TargetComparison): number | null =>
+      row.variationPct === null ? null : row.lowerIsBetter ? -row.variationPct : row.variationPct
+    const changeLog = Array.isArray(campaign.targetsChangeLog) ? campaign.targetsChangeLog : []
+    const frozenLabel = campaign.targetsFrozenAt ? formatDate(campaign.targetsFrozenAt, { locale }) : null
+
+    return (
+      <Card>
+        <CardHeader className="flex-wrap gap-2">
+          <CardTitle className="flex items-center gap-2">
+            <Target className="h-5 w-5 text-purple-600" />
+            {es ? 'Objetivos de campaña' : 'Campaign targets'}
+            {currentObjective && (
+              <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-purple-50 px-2.5 py-0.5 text-xs font-medium text-purple-700">
+                <span>{currentObjective.icon}</span>
+                {es ? currentObjective.labelEs : currentObjective.labelEn}
+              </span>
+            )}
+          </CardTitle>
+          <div className="flex items-center gap-3 text-xs text-gray-500">
+            {frozenLabel && (
+              <span className="inline-flex items-center gap-1" title={es ? 'Los cambios posteriores quedan registrados' : 'Later changes are logged'}>
+                <Lock className="h-3 w-3" />
+                {es ? `Congelados el ${frozenLabel}` : `Frozen on ${frozenLabel}`}
+              </span>
+            )}
+            {canEdit && (
+              <button type="button" onClick={openEditModal} className="font-medium text-purple-600 hover:underline">
+                {es ? 'Editar' : 'Edit'}
+              </button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>KPI</TableHead>
+                  <TableHead className="text-right">{es ? 'Objetivo' : 'Target'}</TableHead>
+                  <TableHead className="text-right">{es ? 'Resultado' : 'Result'}</TableHead>
+                  <TableHead>{es ? 'Variación' : 'Variance'}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {targetRows.map(row => {
+                  const def = TARGET_FIELD_DEFS.find(d => d.key === TARGET_KEY_BY_OVERVIEW_KEY[row.key])
+                  if (!def) return null
+                  const tone = TARGET_VERDICT_TONE[row.verdict]
+                  const variation = shownVariation(row)
+                  return (
+                    <TableRow key={row.key}>
+                      <TableCell className="font-medium text-gray-900">
+                        {es ? def.labelEs : def.labelEn}
+                        {row.lowerIsBetter && (
+                          <span className="ml-1.5 text-xs font-normal text-gray-400">{t.campaignDetail.lowerIsBetter}</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-gray-700">{formatTargetValue(def, row.target, locale)}</TableCell>
+                      <TableCell className="text-right tabular-nums text-gray-900">{formatTargetValue(def, row.actual, locale)}</TableCell>
+                      <TableCell>
+                        <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${TARGET_TONE_CLASSES[tone]}`}>
+                          {variation !== null && (
+                            <span className="tabular-nums">
+                              {variation > 0 ? '+' : ''}{formatPercent(variation, { locale, digits: Math.abs(variation) >= 100 ? 0 : 1 })}
+                            </span>
+                          )}
+                          <span>{verdictLabel(row)}</span>
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+          <p className="mt-3 text-xs text-gray-400">
+            {es
+              ? 'Variación = (resultado − objetivo) / objetivo. ±10 % cuenta como "En objetivo". Resultado según el contenido capturado hasta ahora.'
+              : 'Variance = (result − target) / target. ±10 % counts as "On target". Results reflect the content captured so far.'}
+          </p>
+          {changeLog.length > 0 && (
+            <details className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+              <summary className="cursor-pointer font-medium text-gray-700">
+                {es ? `Historial de cambios (${changeLog.length})` : `Change history (${changeLog.length})`}
+              </summary>
+              <ul className="mt-2 space-y-1">
+                {[...changeLog].reverse().map((entry, i) => {
+                  const def = TARGET_FIELD_DEFS.find(d => d.key === entry.field)
+                  return (
+                    <li key={`${entry.at}-${entry.field}-${i}`} className="flex flex-wrap gap-x-2">
+                      <span className="text-gray-400">{formatDate(entry.at, { locale })}</span>
+                      <span className="font-medium text-gray-700">{def ? (es ? def.labelEs : def.labelEn) : entry.field}</span>
+                      <span className="tabular-nums">{def ? formatTargetValue(def, entry.from, locale) : String(entry.from ?? '—')} → {def ? formatTargetValue(def, entry.to, locale) : String(entry.to ?? '—')}</span>
+                      <span className="text-gray-400">· {entry.by}</span>
+                      {entry.reason && <span className="italic text-gray-500">· {entry.reason}</span>}
+                    </li>
+                  )
+                })}
+              </ul>
+            </details>
+          )}
+        </CardContent>
+      </Card>
+    )
+  }
+
+  /**
+   * Resumen → "Resultados de negocio (aportados por el cliente)" (decision 14A). The PM types what
+   * the client reports; nothing is inferred. Empty → a one-line prompt for editors, nothing for a
+   * brand. CPA and ROAS are derived ONLY when their inputs exist and are labelled client-reported.
+   */
+  function renderBusinessResultsCard() {
+    if (!campaign) return null
+    const es = locale === 'es'
+    const filled = hasBusinessResults(campaign)
+
+    if (!filled && !isEditingBusiness) {
+      if (!canEdit) return null
+      return (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-gray-300 bg-white px-5 py-4">
+          <div className="flex items-center gap-3">
+            <Receipt className="h-5 w-5 shrink-0 text-gray-400" />
+            <p className="text-sm text-gray-500">
+              {es
+                ? 'Sin resultados de negocio del cliente todavía (código, canjes, ventas, leads o ingresos).'
+                : 'No business results from the client yet (code, redemptions, sales, leads or revenue).'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={openBusinessEditor}
+            className="shrink-0 rounded-lg border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-semibold text-purple-700 hover:bg-purple-100 transition-colors"
+          >
+            {es ? 'Añadir resultados' : 'Add results'}
+          </button>
+        </div>
+      )
+    }
+
+    // Derived figures come from the overview (cost = agreed fees; CPA over sales, else leads; ROAS).
+    // Brands get cpa / roas as null (stripEconomics), so nothing cost-based is ever shown to them.
+    const business = overview?.business ?? null
+    const sales = campaign.clientReportedSales ?? null
+    const leads = campaign.clientReportedLeads ?? null
+    const revenue = campaign.clientReportedRevenue ?? null
+    const cpa = business?.cpa ?? null
+    const cpaBasis: 'sale' | 'lead' | null = cpa === null ? null : (sales ?? 0) > 0 ? 'sale' : (leads ?? 0) > 0 ? 'lead' : null
+    const roas = business?.roas ?? null
+    const tag = es ? 'es-ES' : 'en-GB'
+    const money = (n: number) => formatEur(n, { locale, maxFractionDigits: 2 })
+    const count = (n: number) => n.toLocaleString(tag)
+    const reportedAt = campaign.businessResultsReportedAt ? formatDate(campaign.businessResultsReportedAt, { locale }) : null
+    const clientLabel = es ? 'aportado por el cliente' : 'reported by the client'
+
+    const inputClass = 'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500'
+    const labelClass = 'mb-1 block text-xs font-medium text-gray-600'
+    const statLabelClass = 'text-xs font-semibold uppercase tracking-wider text-gray-500'
+    const setField = (key: BusinessResultsKey, value: string) => setBusinessForm(prev => ({ ...prev, [key]: value }))
+
+    return (
+      <Card>
+        <CardHeader className="flex-wrap gap-2">
+          <CardTitle className="flex items-center gap-2">
+            <Receipt className="h-5 w-5 text-purple-600" />
+            {es ? 'Resultados de negocio' : 'Business results'}
+            <span className="ml-1 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600">
+              {es ? 'aportados por el cliente' : 'reported by the client'}
+            </span>
+          </CardTitle>
+          {canEdit && !isEditingBusiness && (
+            <button type="button" onClick={openBusinessEditor} className="text-xs font-medium text-purple-600 hover:underline">
+              {es ? 'Editar' : 'Edit'}
+            </button>
+          )}
+        </CardHeader>
+        <CardContent>
+          {isEditingBusiness && canEdit ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <label className={labelClass}>{es ? 'Código promocional' : 'Promo code'}</label>
+                  <input type="text" maxLength={100} value={businessForm.promoCode} onChange={e => setField('promoCode', e.target.value)} className={inputClass} placeholder="TKOC20" />
+                </div>
+                <div>
+                  <label className={labelClass}>{es ? 'Canjes del código' : 'Code redemptions'}</label>
+                  <input type="number" min={0} step={1} value={businessForm.codeRedemptions} onChange={e => setField('codeRedemptions', e.target.value)} className={inputClass} />
+                </div>
+                <div>
+                  <label className={labelClass}>{es ? 'Ventas' : 'Sales'}</label>
+                  <input type="number" min={0} step={1} value={businessForm.clientReportedSales} onChange={e => setField('clientReportedSales', e.target.value)} className={inputClass} />
+                </div>
+                <div>
+                  <label className={labelClass}>Leads</label>
+                  <input type="number" min={0} step={1} value={businessForm.clientReportedLeads} onChange={e => setField('clientReportedLeads', e.target.value)} className={inputClass} />
+                </div>
+                <div>
+                  <label className={labelClass}>{es ? 'Ingresos (€)' : 'Revenue (€)'}</label>
+                  <input type="number" min={0} step="0.01" value={businessForm.clientReportedRevenue} onChange={e => setField('clientReportedRevenue', e.target.value)} className={inputClass} />
+                </div>
+                <div>
+                  <label className={labelClass}>{es ? 'Fuente del dato' : 'Source'}</label>
+                  <input type="text" maxLength={200} value={businessForm.businessResultsSource} onChange={e => setField('businessResultsSource', e.target.value)} className={inputClass} placeholder={es ? 'Informe Shopify del cliente, GA4…' : 'Client Shopify report, GA4…'} />
+                </div>
+                <div>
+                  <label className={labelClass}>{es ? 'Fecha del dato' : 'Reported on'}</label>
+                  <input type="date" value={businessForm.businessResultsReportedAt} onChange={e => setField('businessResultsReportedAt', e.target.value)} className={inputClass} />
+                </div>
+                <div className="sm:col-span-2 lg:col-span-4">
+                  <label className={labelClass}>{es ? 'Notas' : 'Notes'}</label>
+                  <textarea rows={2} maxLength={2000} value={businessForm.businessResultsNotes} onChange={e => setField('businessResultsNotes', e.target.value)} className={inputClass} />
+                </div>
+              </div>
+              <p className="text-xs text-gray-400">
+                {es
+                  ? 'Deja vacío lo que el cliente no haya aportado: lo vacío no se muestra ni entra en ningún cálculo.'
+                  : 'Leave blank whatever the client did not report: blanks are neither shown nor used in any calculation.'}
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <Button variant="secondary" size="sm" onClick={() => setIsEditingBusiness(false)} disabled={isSavingBusiness}>
+                  {t.common.cancel}
+                </Button>
+                <Button variant="primary" size="sm" onClick={handleSaveBusinessResults} disabled={isSavingBusiness}>
+                  {isSavingBusiness ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  {t.common.save}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Reported values: only the ones the client actually gave */}
+              <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                {campaign.promoCode && (
+                  <div>
+                    <p className={statLabelClass}>{es ? 'Código' : 'Code'}</p>
+                    <p className="mt-1 text-lg font-bold font-mono text-gray-900">{campaign.promoCode}</p>
+                  </div>
+                )}
+                {campaign.codeRedemptions != null && (
+                  <div>
+                    <p className={statLabelClass}>{es ? 'Canjes' : 'Redemptions'}</p>
+                    <p className="mt-1 text-lg font-bold tabular-nums text-gray-900">{count(campaign.codeRedemptions)}</p>
+                  </div>
+                )}
+                {sales !== null && (
+                  <div>
+                    <p className={statLabelClass}>{es ? 'Ventas' : 'Sales'}</p>
+                    <p className="mt-1 text-lg font-bold tabular-nums text-gray-900">{count(sales)}</p>
+                  </div>
+                )}
+                {leads !== null && (
+                  <div>
+                    <p className={statLabelClass}>Leads</p>
+                    <p className="mt-1 text-lg font-bold tabular-nums text-gray-900">{count(leads)}</p>
+                  </div>
+                )}
+                {revenue !== null && (
+                  <div>
+                    <p className={statLabelClass}>{es ? 'Ingresos' : 'Revenue'}</p>
+                    <p className="mt-1 text-lg font-bold tabular-nums text-gray-900">{money(revenue)}</p>
+                  </div>
+                )}
+                {/* The ONLY place the word ROI appears: a real return the client communicated, never derived from EMV */}
+                {campaign.manualROI != null && (
+                  <div>
+                    <p className={`${statLabelClass} flex items-center gap-1`}>
+                      {es ? 'ROI (dato del cliente)' : 'ROI (client data)'}
+                      <InfoTooltip text={es ? 'Retorno real comunicado por el cliente. No se calcula a partir del EMV.' : 'Actual return communicated by the client. Not derived from EMV.'} />
+                    </p>
+                    <p className="mt-1 text-lg font-bold tabular-nums text-gray-900">{formatRatio(campaign.manualROI, { locale, digits: 2 })}</p>
+                    {campaign.manualROINotes && <p className="mt-0.5 text-[11px] text-gray-400">{campaign.manualROINotes}</p>}
+                  </div>
+                )}
+              </div>
+
+              {/* Derived by the overview only when the inputs exist: cost from agreed fees, results from the client */}
+              {(cpaBasis !== null || roas !== null) && (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  {cpa !== null && cpaBasis === 'sale' && (
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                      <p className={`${statLabelClass} flex items-center gap-1`}>
+                        CPA {es ? 'por venta' : 'per sale'}
+                        <InfoTooltip text={es ? 'Coste (fees acordados) ÷ ventas aportadas por el cliente' : 'Cost (agreed fees) ÷ client-reported sales'} />
+                      </p>
+                      <p className="mt-1 text-xl font-bold tabular-nums text-gray-900">{money(cpa)}</p>
+                      <p className="mt-0.5 text-[11px] text-gray-400">{es ? 'Ventas: dato ' : 'Sales: '}{clientLabel}</p>
+                    </div>
+                  )}
+                  {cpa !== null && cpaBasis === 'lead' && (
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                      <p className={`${statLabelClass} flex items-center gap-1`}>
+                        CPA {es ? 'por lead' : 'per lead'}
+                        <InfoTooltip text={es ? 'Coste (fees acordados) ÷ leads aportados por el cliente' : 'Cost (agreed fees) ÷ client-reported leads'} />
+                      </p>
+                      <p className="mt-1 text-xl font-bold tabular-nums text-gray-900">{money(cpa)}</p>
+                      <p className="mt-0.5 text-[11px] text-gray-400">{es ? 'Leads: dato ' : 'Leads: '}{clientLabel}</p>
+                    </div>
+                  )}
+                  {roas !== null && (
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                      <p className={`${statLabelClass} flex items-center gap-1`}>
+                        ROAS
+                        <InfoTooltip text={es ? 'Ingresos aportados por el cliente ÷ coste (fees acordados)' : 'Client-reported revenue ÷ cost (agreed fees)'} />
+                      </p>
+                      <p className="mt-1 text-xl font-bold tabular-nums text-gray-900">{formatRatio(roas, { locale, digits: 2 })}</p>
+                      <p className="mt-0.5 text-[11px] text-gray-400">{es ? 'Ingresos: dato ' : 'Revenue: '}{clientLabel}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(campaign.businessResultsSource || reportedAt) && (
+                <p className="text-xs text-gray-500">
+                  {campaign.businessResultsSource && <>{es ? 'Fuente' : 'Source'}: {campaign.businessResultsSource}</>}
+                  {campaign.businessResultsSource && reportedAt && ' · '}
+                  {reportedAt && (es ? `Dato del ${reportedAt}` : `As of ${reportedAt}`)}
+                </p>
+              )}
+              {campaign.businessResultsNotes && (
+                <p className="whitespace-pre-line text-xs text-gray-500">{campaign.businessResultsNotes}</p>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    )
+  }
+
+  /**
+   * Elegir → one creator's commitments (decision 14A): deliverables promised, UTM link and clicks.
+   * Editors get inline inputs (saved on blur / Enter); everyone else sees only the values that exist.
+   * `delivered` = pieces of this creator captured so far (the campaign's media rows).
+   */
+  function renderCommitmentsRow(ci: CampaignInfluencer, delivered: number) {
+    const es = locale === 'es'
+    const planned = ci.deliverablesPlanned ?? null
+    const clicks = ci.trackedClicks ?? null
+    const deliveredLabel = planned !== null
+      ? (es ? `Entregados ${delivered} / ${planned}` : `Delivered ${delivered} / ${planned}`)
+      : null
+
+    if (!canEdit) {
+      if (planned === null && !ci.trackedLink && clicks === null) return null
+      return (
+        <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex flex-wrap items-center gap-4 text-xs text-gray-600 dark:text-gray-400">
+          {deliveredLabel && (
+            <span className={`inline-flex items-center gap-1 ${planned !== null && delivered >= planned ? 'text-green-600' : ''}`}>
+              <Package className="h-3 w-3" /> {deliveredLabel}
+            </span>
+          )}
+          {ci.trackedLink && (
+            <a href={ci.trackedLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-purple-600 hover:underline">
+              <Link2 className="h-3 w-3" /> {es ? 'Enlace con UTM' : 'UTM link'} <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+          {clicks !== null && (
+            <span className="inline-flex items-center gap-1">
+              <MousePointerClick className="h-3 w-3" /> {formatNumber(clicks, { locale })} {es ? 'clics' : 'clicks'}
+            </span>
+          )}
+        </div>
+      )
+    }
+
+    const draft = editingCommitments[ci.id] || {}
+    const labelClass = 'text-[10px] uppercase tracking-wider text-gray-400 block mb-1'
+    const inputClass = 'w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500'
+    const setDraft = (key: CommitmentKey, value: string) =>
+      setEditingCommitments(prev => ({ ...prev, [ci.id]: { ...prev[ci.id], [key]: value } }))
+    /** Save on blur only when the draft exists and differs from what is stored. */
+    const saveIfChanged = (key: CommitmentKey, stored: string) => {
+      const value = draft[key]
+      if (value !== undefined && value !== stored) handleSaveCommitment(ci, key, value)
+    }
+    const blurOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }
+
+    return (
+      <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+        {/* Deliverables committed vs captured */}
+        <div>
+          <label className={labelClass}>
+            <Package className="inline h-3 w-3" /> {es ? 'Entregables comprometidos' : 'Committed deliverables'}
+          </label>
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={draft.deliverablesPlanned ?? (planned ?? '')}
+            onChange={(e) => setDraft('deliverablesPlanned', e.target.value)}
+            onBlur={() => saveIfChanged('deliverablesPlanned', planned !== null ? String(planned) : '')}
+            onKeyDown={blurOnEnter}
+            placeholder="—"
+            title={es ? 'Piezas comprometidas con este creador' : 'Pieces this creator committed to'}
+            className={inputClass}
+          />
+          {deliveredLabel && (
+            <p className={`mt-0.5 text-[10px] ${planned !== null && delivered >= planned ? 'text-green-600' : 'text-gray-400'}`}>
+              {deliveredLabel}
+            </p>
+          )}
+        </div>
+
+        {/* Tracked (UTM) link */}
+        <div>
+          <label className={labelClass}>
+            <Link2 className="inline h-3 w-3" /> {es ? 'Enlace con UTM' : 'UTM link'}
+          </label>
+          <div className="flex items-center gap-1">
+            <input
+              type="url"
+              maxLength={500}
+              value={draft.trackedLink ?? (ci.trackedLink ?? '')}
+              onChange={(e) => setDraft('trackedLink', e.target.value)}
+              onBlur={() => saveIfChanged('trackedLink', ci.trackedLink ?? '')}
+              onKeyDown={blurOnEnter}
+              placeholder="https://…?utm_source=…"
+              className={inputClass}
+            />
+            {ci.trackedLink && (
+              <a href={ci.trackedLink} target="_blank" rel="noopener noreferrer" className="shrink-0 text-purple-500 hover:text-purple-700" title={es ? 'Abrir enlace' : 'Open link'}>
+                <ExternalLink className="h-4 w-4" />
+              </a>
+            )}
+          </div>
+        </div>
+
+        {/* Clicks (typed by the PM, or by an integration later) */}
+        <div>
+          <label className={labelClass}>
+            <MousePointerClick className="inline h-3 w-3" /> {es ? 'Clics' : 'Clicks'}
+          </label>
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={draft.trackedClicks ?? (clicks ?? '')}
+            onChange={(e) => setDraft('trackedClicks', e.target.value)}
+            onBlur={() => saveIfChanged('trackedClicks', clicks !== null ? String(clicks) : '')}
+            onKeyDown={blurOnEnter}
+            placeholder="—"
+            title={es ? 'Clics del enlace con UTM' : 'Clicks on the UTM link'}
+            className={inputClass}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  /**
+   * Persist (or clear, `null`) the manual creator baseline (decision 2). Optimistic: the card shows
+   * the snapshot at once; the refetch confirms, or the stored one comes back with a toast on failure.
+   */
+  async function saveBaseline(ci: CampaignInfluencer, input: { format: string; medianViews: number; medianEngagement: number; n?: number } | null) {
+    const previous = { baselineSnapshot: ci.baselineSnapshot ?? null, baselineAt: ci.baselineAt ?? null }
+    const optimistic = input
+      ? { baselineSnapshot: manualBaseline(input) as unknown, baselineAt: new Date().toISOString() }
+      : { baselineSnapshot: null, baselineAt: null }
+    const apply = (values: { baselineSnapshot: unknown; baselineAt: string | null }) =>
+      setCampaign(prev => prev
+        ? { ...prev, influencers: prev.influencers.map(x => (x.id === ci.id ? { ...x, ...values } : x)) }
+        : prev)
+    setSavingBaselineFor(ci.id)
+    apply(optimistic)
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/influencers`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ influencerId: ci.influencer.id, baselineManual: input }),
+      })
+      if (res.ok) {
+        setBaselineFormFor(null)
+        setBaselineDraft(EMPTY_BASELINE_DRAFT)
+      } else {
+        const data = await res.json().catch(() => ({}))
+        apply(previous)
+        setToast({ type: 'error', message: data.error || t.campaignDetail.baselineSaveError })
+      }
+      await fetchCampaign()
+    } catch {
+      apply(previous)
+      setToast({ type: 'error', message: t.campaignDetail.baselineSaveError })
+    } finally {
+      setSavingBaselineFor(null)
+    }
+  }
+
+  /** Formats a manual baseline can describe: the platform's deal formats minus stories (no public history). */
+  function baselineFormatsFor(ci: CampaignInfluencer): FeeFormat[] {
+    return formatsFor(normalizePlatform(ci.influencer?.platform)).filter(f => f !== 'STORY')
+  }
+
+  function openBaselineForm(ci: CampaignInfluencer) {
+    const formats = baselineFormatsFor(ci)
+    const preferred = negotiatedFormatFor(ci)
+    setBaselineDraft({ ...EMPTY_BASELINE_DRAFT, format: formats.includes(preferred) ? preferred : (formats[0] ?? 'REEL') })
+    setBaselineFormFor(ci.id)
+  }
+
+  /** Client-side check mirroring the API (numbers ≥ 0, n integer 1..50); the API answers 400 otherwise. */
+  function submitBaselineForm(ci: CampaignInfluencer) {
+    const viewsText = baselineDraft.medianViews.trim()
+    const engText = baselineDraft.medianEngagement.trim()
+    const nText = baselineDraft.n.trim()
+    const medianViews = Number(viewsText)
+    const medianEngagement = Number(engText)
+    const n = nText === '' ? undefined : Number(nText)
+    const valid =
+      !!baselineDraft.format &&
+      viewsText !== '' && Number.isFinite(medianViews) && medianViews >= 0 &&
+      engText !== '' && Number.isFinite(medianEngagement) && medianEngagement >= 0 &&
+      (n === undefined || (Number.isInteger(n) && n >= 1 && n <= BASELINE_MANUAL_MAX_N))
+    if (!valid) {
+      setToast({ type: 'error', message: t.campaignDetail.baselineInvalid })
+      return
+    }
+    void saveBaseline(ci, { format: baselineDraft.format, medianViews, medianEngagement, ...(n !== undefined ? { n } : {}) })
+  }
+
+  /**
+   * Elegir → the creator's baseline (decision 2): "Habitual: X vistas · Y interacciones (mediana de n, …)"
+   * and, once the creator has campaign content, "×1,37 sobre su habitual" via compareWithBaseline over
+   * the per-creator figures of the overview. Editors without a snapshot get a compact inline form;
+   * manual snapshots can be deleted by editors. Brands see the line, never the form.
+   */
+  function renderBaselineRow(ci: CampaignInfluencer, perInfluencer: PerInfluencerMetrics | undefined) {
+    const snapshot: BaselineSnapshot | null = parseBaseline(ci.baselineSnapshot)
+    const isSaving = savingBaselineFor === ci.id
+
+    if (!snapshot) {
+      if (!canEdit) return null
+      const isOpen = baselineFormFor === ci.id
+      const inputClass = 'w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500'
+      const labelClass = 'text-[10px] uppercase tracking-wider text-gray-400 block mb-1'
+      const setDraft = (key: keyof BaselineDraft, value: string) => setBaselineDraft(d => ({ ...d, [key]: value }))
+      const submitOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') submitBaselineForm(ci) }
+      return (
+        <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+            <span className="inline-flex items-center gap-1">
+              <TrendingUp className="h-3 w-3" /> {t.campaignDetail.baselineMissing}
+              <InfoTooltip text={t.campaignDetail.baselineHint} />
+            </span>
+            <button
+              type="button"
+              onClick={() => (isOpen ? setBaselineFormFor(null) : openBaselineForm(ci))}
+              className="font-medium text-purple-600 hover:underline"
+            >
+              {isOpen ? t.common.cancel : t.campaignDetail.baselineEnter}
+            </button>
+          </div>
+          {isOpen && (
+            <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5 items-end">
+              <div>
+                <label className={labelClass}>{t.campaignDetail.baselineFormat}</label>
+                <select value={baselineDraft.format} onChange={e => setDraft('format', e.target.value)} className={`${inputClass} bg-white`}>
+                  {baselineFormatsFor(ci).map(f => (
+                    <option key={f} value={f}>{FORMAT_LABELS[f][locale === 'es' ? 'es' : 'en']}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className={labelClass}>{t.campaignDetail.baselineMedianViews}</label>
+                <input type="number" min={0} step={1} inputMode="numeric" value={baselineDraft.medianViews} onChange={e => setDraft('medianViews', e.target.value)} onKeyDown={submitOnEnter} placeholder="—" className={inputClass} />
+              </div>
+              <div>
+                <label className={labelClass}>{t.campaignDetail.baselineMedianEngagement}</label>
+                <input type="number" min={0} step={1} inputMode="numeric" value={baselineDraft.medianEngagement} onChange={e => setDraft('medianEngagement', e.target.value)} onKeyDown={submitOnEnter} placeholder="—" className={inputClass} />
+              </div>
+              <div>
+                <label className={labelClass}>{t.campaignDetail.baselineN}</label>
+                <input type="number" min={1} max={BASELINE_MANUAL_MAX_N} step={1} inputMode="numeric" value={baselineDraft.n} onChange={e => setDraft('n', e.target.value)} onKeyDown={submitOnEnter} placeholder="12" className={inputClass} />
+              </div>
+              <div>
+                <Button variant="primary" size="sm" onClick={() => submitBaselineForm(ci)} disabled={isSaving}>
+                  {isSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                  {t.common.save}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    const hasContent = (perInfluencer?.media ?? 0) > 0
+    // Server-computed: median per piece of the same format family in this campaign ÷ baseline median
+    const comparison = hasContent ? (perInfluencer?.vsBaseline ?? null) : null
+    const sourceLabel = snapshot.source === 'manual' ? t.campaignDetail.baselineManualSource : t.campaignDetail.baselineCapturedSource
+    const comparisonTitle = comparison
+      ? `${comparison.metric === 'views' ? t.campaignDetail.baselineViews : t.campaignDetail.baselineEngagements}: ${formatNumber(comparison.actual, { locale })} vs ${formatNumber(comparison.baseline, { locale })}`
+      : undefined
+
+    return (
+      <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600 dark:text-gray-400">
+        <span className="inline-flex flex-wrap items-center gap-1">
+          <TrendingUp className="h-3 w-3" />
+          <span className="font-medium text-gray-700 dark:text-gray-300">{t.campaignDetail.baselineUsual}:</span>
+          <span className="tabular-nums">
+            {formatNumber(snapshot.medianViews, { locale })} {t.campaignDetail.baselineViews} · {formatNumber(snapshot.medianEngagement, { locale })} {t.campaignDetail.baselineEngagements}
+          </span>
+          <span className="text-gray-400">({t.campaignDetail.baselineMedianOf} {snapshot.n}, {sourceLabel})</span>
+          <InfoTooltip text={t.campaignDetail.baselineHint} />
+        </span>
+        {hasContent && (
+          comparison?.multiplier != null ? (
+            <span
+              title={comparisonTitle}
+              className={`inline-flex items-center rounded-full border px-2 py-0.5 font-semibold tabular-nums ${
+                comparison.multiplier >= 1 ? 'border-green-200 bg-green-50 text-green-700' : 'border-amber-200 bg-amber-50 text-amber-700'
+              }`}
+            >
+              {formatRatio(comparison.multiplier, { locale, digits: 2 })} {t.campaignDetail.baselineOverUsual}
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-gray-400" title={t.campaignDetail.baselineNoComparison}>
+              — {t.campaignDetail.baselineOverUsual}
+            </span>
+          )
+        )}
+        {canEdit && snapshot.source === 'manual' && (
+          <button
+            type="button"
+            onClick={() => saveBaseline(ci, null)}
+            disabled={isSaving}
+            className="ml-auto inline-flex items-center gap-1 text-[11px] text-gray-400 hover:text-red-600 disabled:opacity-50"
+          >
+            {isSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+            {t.campaignDetail.baselineDelete}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  /**
+   * Ejecutar → Media: content tags of one piece (decision 15A). Filled tags show as chips to
+   * everyone; editors also get a collapsible "Etiquetas" editor. Nothing filled and no editor → null.
+   */
+  function renderMediaTags(m: CampaignMedia) {
+    const es = locale === 'es'
+    const hasTags = !!(m.contentAngle || m.hook || m.productBenefit)
+    if (!hasTags && !canEdit) return null
+    const isOpen = canEdit && openTagsFor === m.id
+    const isSaving = savingTagsFor === m.id
+    const inputClass = 'w-full rounded-lg border border-gray-300 px-2 py-1.5 text-xs text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500'
+    const labelClass = 'mb-0.5 block text-[10px] uppercase tracking-wider text-gray-400'
+
+    return (
+      <div className="border-t border-gray-100 dark:border-gray-800 px-4 py-2.5">
+        {hasTags && !isOpen && (
+          <div className="flex flex-wrap gap-1.5 text-[11px]">
+            {m.contentAngle && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-purple-50 dark:bg-purple-900/30 px-2 py-0.5 font-medium text-purple-700 dark:text-purple-300" title={es ? 'Enfoque' : 'Angle'}>
+                <Tag className="h-3 w-3" /> {contentAngleLabel(m.contentAngle, locale)}
+              </span>
+            )}
+            {m.hook && (
+              <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-800 px-2 py-0.5 text-gray-700 dark:text-gray-300">
+                {es ? 'Gancho' : 'Hook'}: {m.hook}
+              </span>
+            )}
+            {m.productBenefit && (
+              <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-800 px-2 py-0.5 text-gray-700 dark:text-gray-300">
+                {es ? 'Beneficio' : 'Benefit'}: {m.productBenefit}
+              </span>
+            )}
+          </div>
+        )}
+        {canEdit && (
+          <button
+            type="button"
+            onClick={() => toggleTagsEditor(m)}
+            className={`inline-flex items-center gap-1 text-[11px] font-medium text-purple-600 hover:underline ${hasTags && !isOpen ? 'mt-1.5' : ''}`}
+          >
+            {isOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            {isOpen
+              ? (es ? 'Cerrar etiquetas' : 'Close tags')
+              : hasTags ? (es ? 'Editar etiquetas' : 'Edit tags') : (es ? 'Etiquetas' : 'Tags')}
+          </button>
+        )}
+        {isOpen && (
+          <div className="mt-2 space-y-2">
+            <div>
+              <label className={labelClass}>{es ? 'Enfoque' : 'Angle'}</label>
+              <select
+                value={tagsDraft.contentAngle}
+                onChange={e => setTagsDraft(prev => ({ ...prev, contentAngle: e.target.value }))}
+                className={`${inputClass} bg-white`}
+              >
+                <option value="">—</option>
+                {CONTENT_ANGLES.map(a => (
+                  <option key={a.value} value={a.value}>{es ? a.es : a.en}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={labelClass}>{es ? 'Gancho (3 primeros segundos)' : 'Hook (first 3 seconds)'}</label>
+              <input
+                type="text"
+                maxLength={TAG_TEXT_MAX}
+                value={tagsDraft.hook}
+                onChange={e => setTagsDraft(prev => ({ ...prev, hook: e.target.value }))}
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label className={labelClass}>{es ? 'Beneficio de producto' : 'Product benefit'}</label>
+              <input
+                type="text"
+                maxLength={TAG_TEXT_MAX}
+                value={tagsDraft.productBenefit}
+                onChange={e => setTagsDraft(prev => ({ ...prev, productBenefit: e.target.value }))}
+                className={inputClass}
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button type="button" onClick={() => setOpenTagsFor(null)} className="text-[11px] text-gray-500 hover:text-gray-700">
+                {t.common.cancel}
+              </button>
+              <Button variant="primary" size="sm" onClick={() => handleSaveMediaTags(m)} disabled={isSaving}>
+                {isSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                {t.common.save}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -1460,7 +2644,7 @@ export default function CampaignDetailPage() {
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 rounded-full border border-green-200 bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-700">
-                  <DollarSign className="h-3 w-3" />
+                  <Euro className="h-3 w-3" />
                   {locale === 'es' ? 'Pago' : 'Paid'}
                 </span>
               )}
@@ -1498,9 +2682,9 @@ export default function CampaignDetailPage() {
                 <>
                   <span>&middot;</span>
                   <span>
-                    {campaign.startDate && new Date(campaign.startDate).toLocaleDateString()}
+                    {campaign.startDate && formatDate(campaign.startDate, { locale })}
                     {campaign.startDate && campaign.endDate && ' - '}
-                    {campaign.endDate && new Date(campaign.endDate).toLocaleDateString()}
+                    {campaign.endDate && formatDate(campaign.endDate, { locale })}
                   </span>
                 </>
               )}
@@ -1524,85 +2708,74 @@ export default function CampaignDetailPage() {
         </div>
         <div className="flex items-center gap-3">
           {isActive && (
-            <>
-              <button
-                type="button"
-                onClick={async () => {
-                  setShowDiagnostic(true)
-                  setDiagnosticLoading(true)
-                  try {
-                    const res = await fetch(`/api/admin/diagnostic?campaignId=${campaignId}`)
-                    if (res.ok) setDiagnosticData(await res.json())
-                  } finally {
-                    setDiagnosticLoading(false)
-                  }
-                }}
-                className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-                title={locale === 'es' ? 'Ver diagnóstico de captura de datos' : 'View data capture diagnostic'}
-              >
-                <AlertTriangle className="h-4 w-4 text-amber-500" />
-                {locale === 'es' ? 'Diagnóstico' : 'Diagnostic'}
-              </button>
-              <Button
-                variant="primary"
-                size="lg"
-                onClick={handleTrackNow}
-                disabled={isTracking}
-              >
-                {isTracking ? (
-                  <>
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                    {t.campaignDetail.tracking}
-                  </>
-                ) : (
-                  <>
-                    <Radar className="h-5 w-5" />
-                    {t.campaignDetail.trackNow}
-                  </>
-                )}
-              </Button>
-            </>
-          )}
-          {/* The standard report with cover is the single approved format (replaces "Ver informe" + "Exportar informe") */}
-          <div className="relative">
-            <Link
-              href={`/campaigns/${campaignId}/report`}
-              className="inline-flex h-10 items-center gap-2 rounded-lg bg-purple-600 px-4 text-sm font-semibold text-white hover:bg-purple-700 transition-colors"
-              title={locale === 'es' ? 'Abrir el informe estándar de campaña (PDF con portada)' : 'Open the standard campaign report (PDF with cover)'}
+            <Button
+              variant="primary"
+              size="lg"
+              onClick={handleTrackNow}
+              disabled={isTracking}
             >
-              <FileText className="h-4 w-4" />
-              {locale === 'es' ? 'Informe (PDF)' : 'Report (PDF)'}
-            </Link>
-            {showExportDropdown && (
+              {isTracking ? (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  {t.campaignDetail.tracking}
+                </>
+              ) : (
+                <>
+                  <Radar className="h-5 w-5" />
+                  {t.campaignDetail.trackNow}
+                </>
+              )}
+            </Button>
+          )}
+          {/* The standard report with cover is the single approved PDF (decision 10) */}
+          <Link
+            href={`/campaigns/${campaignId}/report`}
+            className="inline-flex h-10 items-center gap-2 rounded-lg bg-purple-600 px-4 text-sm font-semibold text-white hover:bg-purple-700 transition-colors"
+            title={locale === 'es' ? 'Abrir el informe estándar de campaña (PDF con portada)' : 'Open the standard campaign report (PDF with cover)'}
+          >
+            <FileText className="h-4 w-4" />
+            {locale === 'es' ? 'Informe (PDF)' : 'Report (PDF)'}
+          </Link>
+          {/* CSV / JSON exports are built on the same overview as this page; they open in a new tab */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowExportMenu(v => !v)}
+              aria-haspopup="menu"
+              aria-expanded={showExportMenu}
+              className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              <Download className="h-4 w-4" />
+              {t.campaignDetail.exportMenu}
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showExportMenu ? 'rotate-180' : ''}`} />
+            </button>
+            {showExportMenu && (
               <>
-                <div className="fixed inset-0 z-40" onClick={() => setShowExportDropdown(false)} />
-                <div className="absolute right-0 top-full mt-1 z-50 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
-                  <a
-                    href={`/api/campaigns/${campaign.id}/export?format=pdf`}
-                    download
-                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                    onClick={() => setShowExportDropdown(false)}
-                  >
-                    <FileText className="h-4 w-4 text-red-500" />
-                    {t.campaignDetail.exportPDF || 'Export PDF'}
-                  </a>
+                <div className="fixed inset-0 z-40" onClick={() => setShowExportMenu(false)} />
+                <div role="menu" className="absolute right-0 top-full mt-1 z-50 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                   <a
                     href={`/api/campaigns/${campaign.id}/export?format=csv`}
-                    download
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    role="menuitem"
+                    title={t.campaignDetail.exportOpensNewTab}
                     className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                    onClick={() => setShowExportDropdown(false)}
+                    onClick={() => setShowExportMenu(false)}
                   >
                     <FileText className="h-4 w-4 text-green-500" />
-                    {t.campaignDetail.exportCSV || 'Export CSV'}
+                    {t.campaignDetail.exportCSV}
                   </a>
                   <a
                     href={`/api/campaigns/${campaign.id}/export?format=json`}
-                    download
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    role="menuitem"
+                    title={t.campaignDetail.exportOpensNewTab}
                     className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                    onClick={() => setShowExportDropdown(false)}
+                    onClick={() => setShowExportMenu(false)}
                   >
                     <FileText className="h-4 w-4 text-blue-500" />
-                    {t.campaignDetail.exportJSON || 'Export JSON'}
+                    {t.campaignDetail.exportJSON}
                   </a>
                 </div>
               </>
@@ -1860,34 +3033,40 @@ export default function CampaignDetailPage() {
         {/* ========== PHASE 1: PLANIFICAR (Plan) ========== */}
         <TabsContent value="planificar">
           {isEmpty ? (
-            <div className="rounded-xl border border-gray-200 bg-white py-16 text-center shadow-sm">
-              <BarChart3 className="mx-auto h-12 w-12 text-gray-300" />
-              <h3 className="mt-4 text-lg font-semibold text-gray-700">{t.common.noResults}</h3>
-              <p className="mx-auto mt-2 max-w-md text-sm text-gray-400">
-                {t.campaignDetail.mediaEmptyDesc}
-              </p>
-              <div className="mt-6 flex items-center justify-center gap-3">
-                {isActive && (
-                  <Button
-                    variant="primary"
-                    size="md"
-                    onClick={handleTrackNow}
-                    disabled={isTracking}
-                  >
-                    {isTracking ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        {t.campaignDetail.tracking}
-                      </>
-                    ) : (
-                      <>
-                        <Radar className="h-4 w-4" />
-                        {t.campaignDetail.trackNow}
-                      </>
-                    )}
-                  </Button>
-                )}
+            <div className="space-y-6">
+              <div className="rounded-xl border border-gray-200 bg-white py-16 text-center shadow-sm">
+                <BarChart3 className="mx-auto h-12 w-12 text-gray-300" />
+                <h3 className="mt-4 text-lg font-semibold text-gray-700">{t.common.noResults}</h3>
+                <p className="mx-auto mt-2 max-w-md text-sm text-gray-400">
+                  {t.campaignDetail.mediaEmptyDesc}
+                </p>
+                <div className="mt-6 flex items-center justify-center gap-3">
+                  {isActive && (
+                    <Button
+                      variant="primary"
+                      size="md"
+                      onClick={handleTrackNow}
+                      disabled={isTracking}
+                    >
+                      {isTracking ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          {t.campaignDetail.tracking}
+                        </>
+                      ) : (
+                        <>
+                          <Radar className="h-4 w-4" />
+                          {t.campaignDetail.trackNow}
+                        </>
+                      )}
+                    </Button>
+                  )}
+                </div>
               </div>
+              {/* Targets are shown even before any content arrives: the PM filled them in */}
+              {renderTargetsCard()}
+              {/* Business results the client reported (decision 14A) */}
+              {renderBusinessResultsCard()}
             </div>
           ) : (
             <div className="space-y-6">
@@ -1903,74 +3082,117 @@ export default function CampaignDetailPage() {
                   />
                   <StatCard
                     icon={<Image className="h-5 w-5" />}
-                    label={t.dashboard.media}
+                    label={totals && totals.mediaDeleted > 0 ? (
+                      <span className="flex flex-col">
+                        <span>{t.dashboard.media}</span>
+                        {/* Deleted posts stay in the totals, marked and counted apart (decision 7B) */}
+                        <span className="text-xs text-gray-400">{totals.mediaDeleted} {t.campaignDetail.deletedPosts}</span>
+                      </span>
+                    ) : t.dashboard.media}
                     value={totalMedia}
                   />
+                  {/* Alcance = audience (real → impressions → real views → labelled estimate); never a followers sum */}
                   <StatCard
                     icon={<Eye className="h-5 w-5" />}
-                    label={t.dashboard.totalReach}
-                    value={formatNumber(totalReach)}
+                    label={(
+                      <span className="flex flex-col">
+                        <span className="flex items-center gap-1">{t.campaignDetail.audience} <InfoTooltip text={t.campaignDetail.audienceHint} /></span>
+                        {totals && totals.audience.total > 0 && (
+                          <span className="text-xs text-gray-400 tabular-nums">
+                            {formatNumber(totals.audience.real, { locale })} {t.campaignDetail.audienceReal}
+                            {' · '}
+                            {formatNumber(totals.audience.estimated, { locale })} {t.campaignDetail.audienceEstimated} ({formatPercent(totals.audience.estimatedShare * 100, { locale, digits: 0 })})
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    value={totals && totals.audience.total > 0 ? formatNumber(totals.audience.total, { locale }) : '—'}
                   />
+                  {/* Interacciones = likes + comentarios + shares + saves (decision 3A) */}
                   <StatCard
                     icon={<Heart className="h-5 w-5" />}
-                    label={t.campaigns.engagement}
-                    value={formatNumber(totalEngagements)}
+                    label={<span className="flex items-center gap-1">{t.campaigns.engagement} <InfoTooltip text={t.campaignDetail.engagementsHint} /></span>}
+                    value={formatNumber(totals?.engagements ?? 0, { locale })}
                   />
                 </div>
               </div>
 
-              {/* Additional metrics row */}
-              {overview && (overview.totalViews > 0 || overview.engagementRate > 0 || overview.mediaValue > 0) && (
+              {/* Views · ER (with its estimated base) · real impressions · creators who posted — same overview */}
+              {totals && (
                 <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                   <StatCard
                     icon={<Eye className="h-5 w-5" />}
-                    label={t.campaignDetail.totalViews}
-                    value={formatNumber(overview.totalViews)}
+                    label={t.campaignDetail.views}
+                    value={totals.views > 0 ? formatNumber(totals.views, { locale }) : '—'}
                   />
                   <StatCard
                     icon={<BarChart3 className="h-5 w-5" />}
-                    label={<span className="flex items-center gap-1">{t.campaignDetail.engagementRate} <InfoTooltip text={locale === 'es' ? 'Calculado como (likes + comentarios) / alcance (o vistas) × 100' : 'Calculated as (likes + comments) / reach (or views) × 100'} /></span>}
-                    value={`${overview.engagementRate}%`}
+                    label={(
+                      <span className="flex flex-col">
+                        <span className="flex items-center gap-1">
+                          {t.campaignDetail.engagementRate}
+                          <InfoTooltip text={`${t.campaignDetail.erHint} · ${formatPercent(totals.er.estimatedShare * 100, { locale, digits: 0 })} ${t.campaignDetail.erEstimatedBase}`} />
+                        </span>
+                        {totals.er.value !== null && (
+                          <span className="text-xs text-gray-400 tabular-nums">
+                            {formatPercent(totals.er.estimatedShare * 100, { locale, digits: 0 })} {t.campaignDetail.erEstimatedBase}
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    value={formatPercent(totals.er.value, { locale, digits: 2 })}
                   />
                   <StatCard
                     icon={<TrendingUp className="h-5 w-5" />}
                     label={t.campaignDetail.impressions}
-                    value={overview.totalImpressions != null ? formatNumber(overview.totalImpressions) : 'N/A'}
+                    value={totals.impressionsReal !== null ? formatNumber(totals.impressionsReal, { locale }) : '—'}
                   />
                   <StatCard
                     icon={<Users className="h-5 w-5" />}
                     label={t.campaignDetail.profilesPosted}
-                    value={overview.profilesPosted}
+                    value={totals.creatorsActive}
                   />
                 </div>
               )}
 
-              {/* EMV Section */}
-              {overview && (overview.emvBasic > 0 || overview.emvExtended > 0) && (
+              {/* Campaign targets vs results (decision 1B) */}
+              {renderTargetsCard()}
+
+              {/* Business results the client reported (decision 14A) */}
+              {renderBusinessResultsCard()}
+
+              {/* EMV Section — the client sees ONE EMV (extended) as "Valor mediático equivalente (estimado)" (decision 8A) */}
+              {totals && (totals.emvBasic > 0 || totals.emvExtended > 0) && (
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-                  <div className="rounded-xl border-2 border-green-200 bg-gradient-to-br from-green-50 to-emerald-50 p-5 shadow-sm">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-green-600 flex items-center gap-1">EMV {locale === 'es' ? 'Basico' : 'Basic'} <InfoTooltip text={locale === 'es' ? 'Valor estimado basado únicamente en el alcance (impresiones / 1.000 × CPM del sector).' : 'Estimated value based on reach only (impressions / 1,000 × industry CPM).'} /></p>
-                    <p className="mt-1 text-2xl font-bold text-green-700">${formatNumber(Math.round(overview.emvBasic || 0))}</p>
-                    <p className="mt-1 text-xs text-green-500">{locale === 'es' ? 'Solo alcance' : 'Reach only'}</p>
-                  </div>
+                  {!isBrand && (
+                    <div className="rounded-xl border-2 border-green-200 bg-gradient-to-br from-green-50 to-emerald-50 p-5 shadow-sm">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-green-600 flex items-center gap-1">EMV {locale === 'es' ? 'Básico' : 'Basic'} <InfoTooltip text={locale === 'es' ? 'Valor estimado basado únicamente en el alcance (impresiones / 1.000 × CPM del sector). Cifra interna: el cliente no la ve.' : 'Estimated value based on reach only (impressions / 1,000 × industry CPM). Internal figure: the client never sees it.'} /></p>
+                      <p className="mt-1 text-2xl font-bold text-green-700">{formatEur(totals.emvBasic, { compact: true, locale })}</p>
+                      <p className="mt-1 text-xs text-green-500">{locale === 'es' ? 'Solo alcance · uso interno' : 'Reach only · internal'}</p>
+                    </div>
+                  )}
                   <div className="rounded-xl border-2 border-purple-200 bg-gradient-to-br from-purple-50 to-indigo-50 p-5 shadow-sm">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-purple-600 flex items-center gap-1">EMV {locale === 'es' ? 'Ampliado' : 'Extended'} <InfoTooltip text={locale === 'es' ? 'Incluye alcance + clics + engagement (likes, comentarios, shares, saves). Fórmula TKOC personalizada.' : 'Includes reach + clicks + engagement (likes, comments, shares, saves). Custom TKOC formula.'} /></p>
-                    <p className="mt-1 text-2xl font-bold text-purple-700">${formatNumber(Math.round(overview.emvExtended || 0))}</p>
-                    <p className="mt-1 text-xs text-purple-500">{locale === 'es' ? 'Alcance + engagement' : 'Reach + engagement'}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-purple-600 flex items-center gap-1">
+                      {isBrand ? t.campaignDetail.emvClientLabel : (
+                        <>EMV {locale === 'es' ? 'Ampliado' : 'Extended'} <InfoTooltip text={locale === 'es' ? 'Incluye alcance + clics + engagement (likes, comentarios, shares, saves). Fórmula TKOC personalizada. Es el único EMV que ve el cliente, como "Valor mediático equivalente (estimado)".' : 'Includes reach + clicks + engagement (likes, comments, shares, saves). Custom TKOC formula. The only EMV the client sees, as "Equivalent media value (estimated)".'} /></>
+                      )}
+                    </p>
+                    <p className="mt-1 text-2xl font-bold text-purple-700">{formatEur(totals.emvExtended, { compact: true, locale })}</p>
+                    <p className="mt-1 text-xs text-purple-500">{isBrand ? t.campaignDetail.emvClientDefinition : t.campaignDetail.emvClientSees}</p>
                   </div>
-                  <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm flex items-center">
+                  <div className={`rounded-xl border border-gray-200 bg-white p-5 shadow-sm flex items-center ${isBrand ? 'lg:col-span-2' : ''}`}>
                     <p className="text-xs text-gray-500 leading-relaxed">
                       {locale === 'es'
-                        ? 'El EMV es una estimacion del coste equivalente que habria supuesto obtener un alcance, interaccion e intencion similares mediante medios pagados. No representa ventas ni ROI directo.'
-                        : 'EMV is an estimate of the equivalent cost of achieving similar reach, interaction, and intent through paid media. It does not represent sales or direct ROI.'}
+                        ? 'El EMV es una estimación del coste equivalente que habría supuesto obtener un alcance, interacción e intención similares mediante medios pagados. No representa ventas ni retorno: por eso se compara con el coste como "Ratio EMV", nunca como ROI.'
+                        : 'EMV is an estimate of the equivalent cost of achieving similar reach, interaction and intent through paid media. It does not represent sales or return, which is why it is compared with cost as an "EMV ratio", never as ROI.'}
                       {locale === 'es'
                         ? ' CPM EMV: post 10 €, reel 14 €, story 8 € (referencia de medios de pago 8 / 7 / 5 € × prima de contenido de creador).'
                         : ' EMV CPM: post €10, reel €14, story €8 (paid-media reference €8 / €7 / €5 × creator-content premium).'}
-                      {(overview.emvEstimatedStories || 0) > 0 && (
+                      {totals.emvEstimatedStories > 0 && (
                         <span className="mt-1 block text-amber-700 dark:text-amber-400">
                           {locale === 'es'
-                            ? `* Incluye ${overview.emvEstimatedStories} ${overview.emvEstimatedStories === 1 ? 'story' : 'stories'} con audiencia estimada (≈ ${formatNumber(overview.emvEstimatedAudience || 0)} vistas: seguidores × % por tier). Si registras las vistas reales de la creadora, sustituyen la estimación.`
-                            : `* Includes ${overview.emvEstimatedStories} ${overview.emvEstimatedStories === 1 ? 'story' : 'stories'} with an estimated audience (≈ ${formatNumber(overview.emvEstimatedAudience || 0)} views: followers × tier rate). Real views entered for the creator replace the estimate.`}
+                            ? `* Incluye ${totals.emvEstimatedStories} ${totals.emvEstimatedStories === 1 ? 'story' : 'stories'} con audiencia estimada (≈ ${formatNumber(totals.emvEstimatedAudience, { locale })} vistas: seguidores × % por tier). Si registras las vistas reales de la creadora, sustituyen la estimación.`
+                            : `* Includes ${totals.emvEstimatedStories} ${totals.emvEstimatedStories === 1 ? 'story' : 'stories'} with an estimated audience (≈ ${formatNumber(totals.emvEstimatedAudience, { locale })} views: followers × tier rate). Real views entered for the creator replace the estimate.`}
                         </span>
                       )}
                     </p>
@@ -1978,87 +3200,99 @@ export default function CampaignDetailPage() {
                 </div>
               )}
 
-              {/* Cost Summary (only for PAID campaigns) */}
-              {campaign.paymentType === 'PAID' && influencers.length > 0 && (() => {
-                const totalCost = overview?.totalCost || influencers.reduce((sum, ci) => sum + (ci.agreedFee || 0), 0)
-                const emvValue = overview?.emvExtended || overview?.emvBasic || 0
-                const roi = totalCost > 0 ? ((emvValue - totalCost) / totalCost) * 100 : 0
-                const isPositiveROI = emvValue > totalCost
+              {/* Cost Summary (PAID campaigns; agency only — brands never see fees, cost, CPM or the ratio) */}
+              {!isBrand && campaign.paymentType === 'PAID' && influencers.length > 0 && totals && (() => {
+                // Coste = fee acordado, si no coste (decision 6); Ratio EMV = EMV ampliado ÷ coste (9B); CPM sobre la audiencia
+                const totalCost = totals.cost
+                const emvRatio = totals.emvRatio
+                const emvCoversCost = emvRatio !== null && emvRatio >= 1
+                const creatorsWithCost = (overview?.perInfluencer ?? []).filter(p => p.cost > 0)
 
                 return (
                   <div className="space-y-4">
                     <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                      <DollarSign className="h-5 w-5 text-green-600" />
+                      <Euro className="h-5 w-5 text-green-600" />
                       {locale === 'es' ? 'Resumen de Costes' : 'Cost Summary'}
                     </h2>
-                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                       <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
                         <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
                           {locale === 'es' ? 'Coste Total Campaña' : 'Total Campaign Cost'}
                         </p>
                         <p className="mt-1 text-2xl font-bold text-gray-900">
-                          {totalCost > 0 ? `€${formatNumber(Math.round(totalCost))}` : '—'}
+                          {totalCost > 0 ? formatEur(totalCost, { compact: true, locale }) : '—'}
                         </p>
                         <p className="mt-1 text-xs text-gray-400">
-                          {locale === 'es' ? `${influencers.filter(ci => ci.agreedFee).length} de ${influencers.length} con fee acordado` : `${influencers.filter(ci => ci.agreedFee).length} of ${influencers.length} with agreed fee`}
+                          {totals.membersWithCost} {t.campaignDetail.of} {totals.members} {t.campaignDetail.withCost}
                         </p>
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
                         <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-                          {locale === 'es' ? 'Coste Medio por Influencer' : 'Avg Cost per Influencer'}
+                          {t.campaignDetail.avgCostPerCreator}
                         </p>
                         <p className="mt-1 text-2xl font-bold text-gray-900">
-                          {totalCost > 0 && influencers.filter(ci => ci.agreedFee).length > 0
-                            ? `€${formatNumber(Math.round(totalCost / influencers.filter(ci => ci.agreedFee).length))}`
+                          {totalCost > 0 && totals.membersWithCost > 0
+                            ? formatEur(totalCost / totals.membersWithCost, { compact: true, locale })
                             : '—'}
                         </p>
                       </div>
                       <div className={`rounded-xl border-2 p-5 shadow-sm ${
-                        totalCost > 0
-                          ? isPositiveROI
+                        emvRatio !== null
+                          ? emvCoversCost
                             ? 'border-green-200 bg-gradient-to-br from-green-50 to-emerald-50'
                             : 'border-red-200 bg-gradient-to-br from-red-50 to-orange-50'
                           : 'border-gray-200 bg-white'
                       }`}>
-                        <p className={`text-xs font-semibold uppercase tracking-wider ${
-                          totalCost > 0
-                            ? isPositiveROI ? 'text-green-600' : 'text-red-600'
+                        <p className={`text-xs font-semibold uppercase tracking-wider flex items-center gap-1 ${
+                          emvRatio !== null
+                            ? emvCoversCost ? 'text-green-600' : 'text-red-600'
                             : 'text-gray-500'
                         }`}>
-                          ROI {locale === 'es' ? 'Indicador' : 'Indicator'}
+                          {t.campaignDetail.emvRatio}
+                          <InfoTooltip text={t.campaignDetail.emvRatioHint} />
                         </p>
-                        <p className={`mt-1 text-2xl font-bold ${
-                          totalCost > 0
-                            ? isPositiveROI ? 'text-green-700' : 'text-red-700'
+                        <p className={`mt-1 text-2xl font-bold tabular-nums ${
+                          emvRatio !== null
+                            ? emvCoversCost ? 'text-green-700' : 'text-red-700'
                             : 'text-gray-900'
                         }`}>
-                          {totalCost > 0 ? `${roi > 0 ? '+' : ''}${roi.toFixed(0)}%` : '—'}
+                          {emvRatio !== null ? formatRatio(emvRatio, { locale }) : '—'}
                         </p>
                         <p className={`mt-1 text-xs ${
-                          totalCost > 0
-                            ? isPositiveROI ? 'text-green-500' : 'text-red-500'
+                          emvRatio !== null
+                            ? emvCoversCost ? 'text-green-500' : 'text-red-500'
                             : 'text-gray-400'
                         }`}>
-                          {totalCost > 0
-                            ? isPositiveROI
-                              ? (locale === 'es' ? 'EMV supera el coste' : 'EMV exceeds cost')
-                              : (locale === 'es' ? 'Coste supera el EMV' : 'Cost exceeds EMV')
+                          {emvRatio !== null
+                            ? emvCoversCost
+                              ? (locale === 'es' ? 'El EMV cubre el coste' : 'EMV covers the cost')
+                              : (locale === 'es' ? 'El coste supera el EMV' : 'Cost exceeds EMV')
                             : (locale === 'es' ? 'Añade fees para calcular' : 'Add fees to calculate')}
                         </p>
                       </div>
+                      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-gray-500 flex items-center gap-1">
+                          {t.campaignDetail.cpm}
+                          <InfoTooltip text={t.campaignDetail.cpmHint} />
+                        </p>
+                        <p className="mt-1 text-2xl font-bold tabular-nums text-gray-900">
+                          {totals.cpm !== null ? formatEur(totals.cpm, { locale, maxFractionDigits: 2 }) : '—'}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-400">{t.campaignDetail.lowerIsBetter}</p>
+                      </div>
                     </div>
 
-                    {/* Per-influencer cost breakdown */}
-                    {influencers.some(ci => ci.agreedFee) && (
+                    {/* Per-creator cost (fee acordado, si no coste) from the overview */}
+                    {creatorsWithCost.length > 0 && (
                       <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                         <h3 className="text-sm font-semibold text-gray-700 mb-3">
-                          {locale === 'es' ? 'Desglose por Influencer' : 'Cost per Influencer'}
+                          {locale === 'es' ? 'Desglose por creador' : 'Cost per creator'}
                         </h3>
                         <div className="space-y-2">
-                          {influencers.filter(ci => ci.influencer && ci.agreedFee).map(ci => (
-                            <div key={ci.id} className="flex items-center justify-between text-sm">
-                              <span className="text-gray-700">@{ci.influencer.username}</span>
-                              <span className="font-medium text-gray-900">€{formatNumber(ci.agreedFee || 0)}</span>
+                          {creatorsWithCost.map(p => (
+                            <div key={p.influencerId} className="flex items-center justify-between text-sm">
+                              <span className="text-gray-700">@{p.username}</span>
+                              <span className="font-medium text-gray-900 tabular-nums">{formatEur(p.cost, { locale })}</span>
                             </div>
                           ))}
                         </div>
@@ -2068,11 +3302,18 @@ export default function CampaignDetailPage() {
                 )
               })()}
 
-              {/* Creator Mix Suggestion */}
-              {(() => {
-                const totalBudget = overview?.totalCost || influencers.reduce((sum, ci) => sum + (ci.agreedFee || 0), 0)
+              {/* Creator Mix Suggestion (budget = campaign cost from the overview; agency only) */}
+              {!isBrand && (() => {
+                const totalBudget = totals?.cost ?? 0
                 if (totalBudget <= 0 && influencers.length === 0) return null
 
+                const es = locale === 'es'
+                const RANGE = {
+                  macroHigh: es ? '3-5 K €' : '€3-5K',
+                  macroLow: es ? '3-4 K €' : '€3-4K',
+                  mid: es ? '1-1,5 K €' : '€1-1.5K',
+                  micro: es ? '200-400 €' : '€200-400',
+                }
                 const budgetK = totalBudget / 1000
                 let suggestion = ''
                 let macroCount = 0, midCount = 0, microCount = 0
@@ -2082,36 +3323,36 @@ export default function CampaignDetailPage() {
                   macroCount = Math.floor(budgetK / 10)
                   midCount = Math.floor((budgetK - macroCount * 4) / 1.5)
                   microCount = Math.floor((budgetK - macroCount * 4 - midCount * 1.5) / 0.3)
-                  macroRange = '€3-5K'
-                  midRange = '€1-1.5K'
-                  microRange = '€200-400'
+                  macroRange = RANGE.macroHigh
+                  midRange = RANGE.mid
+                  microRange = RANGE.micro
                   suggestion = locale === 'es'
-                    ? `Presupuesto €${budgetK.toFixed(0)}K → Sugerido: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
-                    : `Budget €${budgetK.toFixed(0)}K → Suggested: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                    ? `Presupuesto ${formatEur(totalBudget, { compact: true, locale })} → Sugerido: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                    : `Budget ${formatEur(totalBudget, { compact: true, locale })} → Suggested: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
                 } else if (totalBudget >= 10000) {
                   macroCount = 1
                   midCount = Math.max(2, Math.floor((budgetK - 4) / 1.25))
                   microCount = Math.max(3, Math.floor((budgetK - 4 - midCount * 1.25) / 0.3))
-                  macroRange = '€3-4K'
-                  midRange = '€1-1.5K'
-                  microRange = '€200-400'
+                  macroRange = RANGE.macroLow
+                  midRange = RANGE.mid
+                  microRange = RANGE.micro
                   suggestion = locale === 'es'
-                    ? `Presupuesto €${budgetK.toFixed(0)}K → Sugerido: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
-                    : `Budget €${budgetK.toFixed(0)}K → Suggested: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                    ? `Presupuesto ${formatEur(totalBudget, { compact: true, locale })} → Sugerido: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                    : `Budget ${formatEur(totalBudget, { compact: true, locale })} → Suggested: ${macroCount} Macro (${macroRange}) + ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
                 } else if (totalBudget >= 3000) {
                   midCount = Math.max(1, Math.floor(budgetK / 1.5))
                   microCount = Math.max(2, Math.floor((budgetK - midCount * 1.25) / 0.3))
-                  midRange = '€1-1.5K'
-                  microRange = '€200-400'
+                  midRange = RANGE.mid
+                  microRange = RANGE.micro
                   suggestion = locale === 'es'
-                    ? `Presupuesto €${budgetK.toFixed(0)}K → Sugerido: ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
-                    : `Budget €${budgetK.toFixed(0)}K → Suggested: ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                    ? `Presupuesto ${formatEur(totalBudget, { compact: true, locale })} → Sugerido: ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
+                    : `Budget ${formatEur(totalBudget, { compact: true, locale })} → Suggested: ${midCount} Mid (${midRange}) + ${microCount} Micro (${microRange})`
                 } else if (totalBudget > 0) {
                   microCount = Math.max(1, Math.floor(budgetK / 0.3))
-                  microRange = '€200-400'
+                  microRange = RANGE.micro
                   suggestion = locale === 'es'
-                    ? `Presupuesto €${budgetK.toFixed(1)}K → Sugerido: ${microCount} Micro (${microRange})`
-                    : `Budget €${budgetK.toFixed(1)}K → Suggested: ${microCount} Micro (${microRange})`
+                    ? `Presupuesto ${formatEur(totalBudget, { compact: true, locale })} → Sugerido: ${microCount} Micro (${microRange})`
+                    : `Budget ${formatEur(totalBudget, { compact: true, locale })} → Suggested: ${microCount} Micro (${microRange})`
                 } else {
                   suggestion = locale === 'es'
                     ? 'Añade fees acordados para ver la sugerencia de mix de creadores.'
@@ -2261,7 +3502,7 @@ export default function CampaignDetailPage() {
                           <div className="flex items-center justify-between">
                             <span className="text-xs text-gray-500">{t.campaignDetail.combinedAudience || 'Combined Audience'}</span>
                             <span className="text-sm font-bold text-purple-600">
-                              {formatNumber(influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0))}
+                              {formatNumber(influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0), { locale })}
                             </span>
                           </div>
                         </div>
@@ -2299,7 +3540,7 @@ export default function CampaignDetailPage() {
                           <div className="flex items-center justify-between">
                             <span className="text-xs text-gray-500">{t.campaignDetail.avgFollowers || 'Avg. Followers/Influencer'}</span>
                             <span className="text-sm font-bold text-gray-900">
-                              {formatNumber(Math.round(influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0) / (influencers.length || 1)))}
+                              {formatNumber(Math.round(influencers.reduce((s, ci) => s + (ci.influencer?.followers || 0), 0) / (influencers.length || 1)), { locale })}
                             </span>
                           </div>
                         </div>
@@ -2316,32 +3557,36 @@ export default function CampaignDetailPage() {
                   <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                     <RechartsArea
                       data={timeline}
-                      title={t.campaignDetail.engagementOverTime || 'Engagement Over Time'}
+                      locale={locale}
+                      title={t.campaignDetail.engagementOverTime}
                       dataKeys={[
-                        { key: 'likes', color: '#ec4899', name: 'Likes' },
-                        { key: 'comments', color: '#8b5cf6', name: 'Comments' },
+                        { key: 'likes', color: '#ec4899', name: t.campaignDetail.chartLikes },
+                        { key: 'comments', color: '#8b5cf6', name: t.campaignDetail.chartComments },
                       ]}
                     />
                     <RechartsArea
                       data={timeline}
-                      title={t.campaignDetail.viewsOverTime || 'Views Over Time'}
+                      locale={locale}
+                      title={t.campaignDetail.viewsOverTime}
                       dataKeys={[
-                        { key: 'views', color: '#06b6d4', name: 'Views' },
+                        { key: 'views', color: '#06b6d4', name: t.campaignDetail.chartViews },
                       ]}
                     />
                     <RechartsArea
                       data={timeline}
-                      title={t.campaignDetail.postsOverTime || 'Posts Over Time'}
+                      locale={locale}
+                      title={t.campaignDetail.postsOverTime}
                       dataKeys={[
-                        { key: 'posts', color: '#7c3aed', name: 'Posts' },
+                        { key: 'posts', color: '#7c3aed', name: t.campaignDetail.chartPosts },
                       ]}
                     />
                     <RechartsArea
                       data={timeline}
-                      title={t.campaignDetail.reachOverTime || 'Reach Over Time'}
+                      locale={locale}
+                      title={t.campaignDetail.reachOverTime}
                       dataKeys={[
-                        { key: 'reach', color: '#10b981', name: 'Reach' },
-                        { key: 'engagements', color: '#f59e0b', name: 'Engagements' },
+                        { key: 'audience', color: '#10b981', name: t.campaignDetail.chartAudience },
+                        { key: 'engagements', color: '#f59e0b', name: t.campaignDetail.chartEngagements },
                       ]}
                     />
                   </div>
@@ -2411,14 +3656,14 @@ export default function CampaignDetailPage() {
                                 {ci.influencer.platform.charAt(0) + ci.influencer.platform.slice(1).toLowerCase()}
                               </Badge>
                             </TableCell>
-                            <TableCell>{formatNumber(ci.influencer.followers)}</TableCell>
+                            <TableCell>{formatNumber(ci.influencer.followers, { locale })}</TableCell>
                             <TableCell>
                               <span className="text-purple-600">
                                 {ci.influencer.engagementRate || 0}%
                               </span>
                             </TableCell>
-                            <TableCell>{formatNumber(ci.influencer.avgLikes || 0)}</TableCell>
-                            <TableCell>{formatNumber(ci.influencer.avgComments || 0)}</TableCell>
+                            <TableCell>{formatNumber(ci.influencer.avgLikes || 0, { locale })}</TableCell>
+                            <TableCell>{formatNumber(ci.influencer.avgComments || 0, { locale })}</TableCell>
                           </TableRow>
                         ))
                       )}
@@ -2456,11 +3701,11 @@ export default function CampaignDetailPage() {
             <TabsList>
               <TabsTrigger value="sub-media">
                 <Image className="h-3.5 w-3.5" />
-                {t.campaignDetail.subTabMedia} ({nonStoryMedia.length})
+                {t.campaignDetail.subTabMedia} ({postsTotal})
               </TabsTrigger>
               <TabsTrigger value="sub-stories">
                 <Film className="h-3.5 w-3.5" />
-                {t.campaignDetail.subTabStories} ({stories.length})
+                {t.campaignDetail.subTabStories} ({storiesTotal})
               </TabsTrigger>
               <TabsTrigger value="sub-pipeline">
                 <Kanban className="h-3.5 w-3.5" />
@@ -2715,7 +3960,7 @@ export default function CampaignDetailPage() {
                 {/* Results count */}
                 <div className="mt-3 flex items-center justify-between border-t border-gray-100 dark:border-gray-800 pt-3">
                   <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {t.campaignDetail.showing} <span className="font-semibold text-gray-700 dark:text-gray-200">{sortedMedia.length}</span> {t.campaignDetail.of} {nonStoryMedia.length} {t.dashboard.media}
+                    {t.campaignDetail.showing} <span className="font-semibold text-gray-700 dark:text-gray-200">{sortedMedia.length}</span> {t.campaignDetail.of} {postsTotal} {t.dashboard.media}
                   </p>
                   {(mediaFilterPlatform !== 'all' || mediaFilterInfluencer !== 'all') && (
                     <button
@@ -2730,12 +3975,16 @@ export default function CampaignDetailPage() {
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {sortedMedia.map((m) => (
-                  <a
+                  <div
                     key={m.id}
+                    className="flex flex-col overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-sm transition-all hover:shadow-md hover:border-purple-300 dark:hover:border-purple-700"
+                  >
+                  {/* The post opens in a new tab; the tags block below stays inside the card */}
+                  <a
                     href={m.permalink || '#'}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="group overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-sm transition-all hover:shadow-md hover:border-purple-300 dark:hover:border-purple-700"
+                    className="group block"
                   >
                     <div className="relative flex h-48 items-center justify-center bg-gray-100 dark:bg-gray-800">
                       {m.thumbnailUrl ? (
@@ -2766,16 +4015,16 @@ export default function CampaignDetailPage() {
                       <div className="absolute inset-0 flex items-center justify-center gap-4 bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
                         <span className="flex items-center gap-1 text-sm font-semibold text-white">
                           <Heart className="h-4 w-4" />
-                          {formatNumber(m.likes || 0)}
+                          {formatNumber(m.likes || 0, { locale })}
                         </span>
                         <span className="flex items-center gap-1 text-sm font-semibold text-white">
                           <BarChart3 className="h-4 w-4" />
-                          {formatNumber(m.comments || 0)}
+                          {formatNumber(m.comments || 0, { locale })}
                         </span>
                         {(m.views || 0) > 0 && (
                           <span className="flex items-center gap-1 text-sm font-semibold text-white">
                             <Eye className="h-4 w-4" />
-                            {formatNumber(m.views || 0)}
+                            {formatNumber(m.views || 0, { locale })}
                           </span>
                         )}
                       </div>
@@ -2789,7 +4038,7 @@ export default function CampaignDetailPage() {
                           </p>
                           <p className="truncate text-xs text-gray-500 dark:text-gray-400">
                             @{m.influencer?.username || 'unknown'}
-                            {m.postedAt && ` · ${new Date(m.postedAt).toLocaleDateString()}`}
+                            {m.postedAt && ` · ${formatDate(m.postedAt, { locale })}`}
                           </p>
                         </div>
                       </div>
@@ -2799,23 +4048,26 @@ export default function CampaignDetailPage() {
                       <div className="mt-3 flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
                         <span className="flex items-center gap-1">
                           <Heart className="h-3 w-3" />
-                          {formatNumber(m.likes || 0)}
+                          {formatNumber(m.likes || 0, { locale })}
                         </span>
                         <span className="flex items-center gap-1">
                           <BarChart3 className="h-3 w-3" />
-                          {formatNumber(m.comments || 0)}
+                          {formatNumber(m.comments || 0, { locale })}
                         </span>
                         <span className="flex items-center gap-1">
                           <Eye className="h-3 w-3" />
-                          {formatNumber(m.views || 0)}
+                          {formatNumber(m.views || 0, { locale })}
                         </span>
                         <span className="flex items-center gap-1">
                           <TrendingUp className="h-3 w-3" />
-                          {formatNumber(m.shares || 0)}
+                          {formatNumber(m.shares || 0, { locale })}
                         </span>
                       </div>
                     </div>
                   </a>
+                  {/* Content tags (decision 15A): chips when filled, collapsible editor for the PM */}
+                  {renderMediaTags(m)}
+                  </div>
                 ))}
               </div>
 
@@ -2853,8 +4105,8 @@ export default function CampaignDetailPage() {
             influencers={influencers.map(ci => ({ id: ci.influencer.id, username: ci.influencer.username }))}
           />
 
-          {/* Existing discovered stories */}
-          {stories.length === 0 ? (
+          {/* Existing discovered stories: the count comes from the overview (all media), the cards from the loaded page */}
+          {storiesTotal === 0 ? (
             <div className="rounded-xl border border-gray-200 bg-white py-16 text-center shadow-sm">
               <Film className="mx-auto h-12 w-12 text-gray-300" />
               <h3 className="mt-4 text-lg font-semibold text-gray-700">{t.campaignDetail.stories || 'Stories'}</h3>
@@ -2887,10 +4139,15 @@ export default function CampaignDetailPage() {
           ) : (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
-                <p className="text-sm text-gray-500">{stories.length} {t.campaignDetail.stories || 'Stories'}</p>
+                <p className="text-sm text-gray-500">
+                  {storiesTotal} {t.campaignDetail.stories}
+                  {stories.length < storiesTotal && (
+                    <span className="text-gray-400"> · {t.campaignDetail.showing} {stories.length}</span>
+                  )}
+                </p>
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
                   <Clock className="h-3 w-3" />
-                  {t.campaignDetail.storiesEmpty ? 'Stories expire after 24h' : 'Las stories expiran tras 24h'}
+                  {t.campaignDetail.storiesExpireNote}
                 </span>
               </div>
 
@@ -2929,7 +4186,7 @@ export default function CampaignDetailPage() {
                           {(story.views || 0) > 0 && (
                             <div className="absolute bottom-2 left-2 flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5 text-xs font-medium text-white">
                               <Eye className="h-3 w-3" />
-                              {formatNumber(story.views || 0)}
+                              {formatNumber(story.views || 0, { locale })}
                             </div>
                           )}
 
@@ -2951,7 +4208,7 @@ export default function CampaignDetailPage() {
                               </p>
                               {postedDate && (
                                 <p className="text-[10px] text-gray-400">
-                                  {postedDate.toLocaleDateString()} {postedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  {formatDate(postedDate, { locale })} {postedDate.toLocaleTimeString(locale === 'es' ? 'es-ES' : 'en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' })}
                                 </p>
                               )}
                             </div>
@@ -2962,6 +4219,22 @@ export default function CampaignDetailPage() {
                   )
                 })}
               </div>
+
+              {/* More stories exist beyond the loaded page of media */}
+              {stories.length < storiesTotal && hasMoreMedia && (
+                <div className="flex justify-center">
+                  <Button variant="secondary" size="md" onClick={handleLoadMoreMedia} disabled={isLoadingMore}>
+                    {isLoadingMore ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {t.common.loading}
+                      </>
+                    ) : (
+                      t.campaignDetail.loadMore
+                    )}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </TabsContent>
@@ -3083,7 +4356,7 @@ export default function CampaignDetailPage() {
                                   <Badge variant={ci.influencer.platform === 'INSTAGRAM' ? 'instagram' : ci.influencer.platform === 'YOUTUBE' ? 'youtube' : ci.influencer.platform === 'TIKTOK' ? 'tiktok' : 'default'} className="text-[10px] px-1.5 py-0">
                                     {ci.influencer.platform === 'INSTAGRAM' ? 'IG' : ci.influencer.platform === 'YOUTUBE' ? 'YT' : ci.influencer.platform === 'TIKTOK' ? 'TT' : ci.influencer.platform}
                                   </Badge>
-                                  <span>{formatNumber(ci.influencer.followers)}</span>
+                                  <span>{formatNumber(ci.influencer.followers, { locale })}</span>
                                 </div>
                               </div>
                             </div>
@@ -3635,8 +4908,11 @@ export default function CampaignDetailPage() {
                       const cpm = getCPMForInfluencer(ci)
                       const feeValue = editingFee[ci.id] !== undefined ? editingFee[ci.id] : (ci.agreedFee || ci.cost || '')
 
+                      // Per-creator figures over ALL the campaign's media (overview.perInfluencer), never the paginated slice
+                      const perInfluencer = perInfluencerById.get(ci.influencer.id)
+                      const delivered = perInfluencer?.media ?? 0
+
                       // Creator Score calculation
-                      const infMedia = media.filter(m => m.influencer?.id === ci.influencer.id)
                       const creatorScoreResult = calculateCreatorScore({
                         followers: ci.influencer.followers || 0,
                         engagementRate: ci.influencer.engagementRate || 0,
@@ -3648,8 +4924,8 @@ export default function CampaignDetailPage() {
                         avgAgreedFee: ci.agreedFee,
                         totalCampaigns: 1,
                         completedCampaigns: ci.status === 'COMPLETED' || ci.status === 'POSTED' ? 1 : 0,
-                        contentDelivered: infMedia.length,
-                        contentExpected: 1,
+                        contentDelivered: delivered,
+                        contentExpected: ci.deliverablesPlanned || 1,
                       })
 
                       // Market benchmark for fee
@@ -3695,6 +4971,8 @@ export default function CampaignDetailPage() {
                                   grade={creatorScoreResult.grade}
                                   signal={creatorScoreResult.signal}
                                   summary={creatorScoreResult.summary}
+                                  summaryKey={creatorScoreResult.summaryKey}
+                                  summaryParams={creatorScoreResult.summaryParams}
                                   components={creatorScoreResult.components}
                                   size="sm"
                                 />
@@ -3705,11 +4983,11 @@ export default function CampaignDetailPage() {
                             <div className="flex-1 grid grid-cols-4 gap-3 text-center">
                               <div>
                                 <p className="text-[10px] uppercase tracking-wider text-gray-400">{t.campaigns.followers}</p>
-                                <p className="text-sm font-bold text-gray-900">{formatNumber(ci.influencer.followers)}</p>
+                                <p className="text-sm font-bold text-gray-900">{formatNumber(ci.influencer.followers, { locale })}</p>
                               </div>
                               <div>
                                 <p className="text-[10px] uppercase tracking-wider text-gray-400">{t.campaignDetail.avgViews}</p>
-                                <p className="text-sm font-bold text-gray-900">{formatNumber(ci.influencer.avgViews || 0)}</p>
+                                <p className="text-sm font-bold text-gray-900">{formatNumber(ci.influencer.avgViews || 0, { locale })}</p>
                               </div>
                               <div>
                                 <p className="text-[10px] uppercase tracking-wider text-gray-400">{t.campaigns.engagement}</p>
@@ -3717,7 +4995,7 @@ export default function CampaignDetailPage() {
                               </div>
                               <div>
                                 <p className="text-[10px] uppercase tracking-wider text-gray-400">{t.campaignDetail.avgLikes}</p>
-                                <p className="text-sm font-bold text-gray-900">{formatNumber(ci.influencer.avgLikes || 0)}</p>
+                                <p className="text-sm font-bold text-gray-900">{formatNumber(ci.influencer.avgLikes || 0, { locale })}</p>
                               </div>
                             </div>
 
@@ -3773,18 +5051,21 @@ export default function CampaignDetailPage() {
                                   }}
                                   onKeyDown={(e) => {
                                     if (canEdit && e.key === 'Enter') {
-                                      handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0')
+                                      // Untouched input → nothing to save: blur instead of sending '0', which would wipe the stored fee
+                                      const val = editingFee[ci.id]
+                                      if (val !== undefined) handleSaveFee(ci.id, ci.influencer.id, val)
+                                      else e.currentTarget.blur()
                                     }
                                   }}
                                   readOnly={!canEdit}
-                                  placeholder={ci.influencer.standardFee ? `Std: €${ci.influencer.standardFee}` : '0'}
+                                  placeholder={ci.influencer.standardFee ? `Std: ${formatEur(ci.influencer.standardFee, { locale })}` : '0'}
                                   className={`w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-medium text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 ${!canEdit ? 'bg-gray-100 cursor-not-allowed' : ''}`}
                                 />
                                 {savingFee === ci.id && <Loader2 className="h-3 w-3 animate-spin text-purple-500 shrink-0" />}
                               </div>
                               {ci.influencer.standardFee && (
                                 <p className="mt-0.5 text-[10px] text-gray-400">
-                                  {locale === 'es' ? 'Tarifa estándar' : 'Standard rate'}: €{ci.influencer.standardFee.toLocaleString()}
+                                  {locale === 'es' ? 'Tarifa estándar' : 'Standard rate'}: {formatEur(ci.influencer.standardFee, { locale })}
                                 </p>
                               )}
                             </div>
@@ -3835,7 +5116,7 @@ export default function CampaignDetailPage() {
                             <div>
                               <p className="text-[10px] uppercase tracking-wider text-gray-400 flex items-center gap-1">CPM Real <InfoTooltip text={locale === 'es' ? 'Coste por mil visualizaciones = (Fee / Avg Views) × 1.000' : 'Cost per thousand views = (Fee / Avg Views) × 1,000'} /></p>
                               <p className="text-sm font-bold text-gray-900">
-                                {cpm.cpmReal !== null ? `€${cpm.cpmReal.toFixed(2)}` : '—'}
+                                {cpm.cpmReal !== null ? formatEur(cpm.cpmReal, { locale, maxFractionDigits: 2 }) : '—'}
                               </p>
                             </div>
 
@@ -3843,7 +5124,7 @@ export default function CampaignDetailPage() {
                             <div>
                               <p className="text-[10px] uppercase tracking-wider text-gray-400">CPM {locale === 'es' ? 'Objetivo' : 'Target'}</p>
                               <p className="text-sm font-medium text-gray-600">
-                                {cpm.cpmTarget !== null ? `€${cpm.cpmTarget}` : '—'}
+                                {cpm.cpmTarget !== null ? formatEur(cpm.cpmTarget, { locale, maxFractionDigits: 2 }) : '—'}
                               </p>
                             </div>
 
@@ -3851,7 +5132,7 @@ export default function CampaignDetailPage() {
                             <div>
                               <p className="text-[10px] uppercase tracking-wider text-gray-400">Fee {locale === 'es' ? 'Recomendado' : 'Recommended'}</p>
                               <p className="text-sm font-bold text-green-600">
-                                {cpm.feeRecommended !== null ? `€${cpm.feeRecommended.toLocaleString()}` : '—'}
+                                {cpm.feeRecommended !== null ? formatEur(cpm.feeRecommended, { locale }) : '—'}
                               </p>
                             </div>
 
@@ -3859,7 +5140,7 @@ export default function CampaignDetailPage() {
                             <div>
                               <p className="text-[10px] uppercase tracking-wider text-gray-400">Fee {locale === 'es' ? 'Maximo' : 'Max'}</p>
                               <p className="text-sm font-medium text-amber-600">
-                                {cpm.feeMax !== null ? `€${cpm.feeMax.toLocaleString()}` : '—'}
+                                {cpm.feeMax !== null ? formatEur(cpm.feeMax, { locale }) : '—'}
                               </p>
                             </div>
 
@@ -3868,7 +5149,7 @@ export default function CampaignDetailPage() {
                               <p className="text-[10px] uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Diferencia' : 'Diff'}</p>
                               {cpm.savingsOrOvercost !== null ? (
                                 <p className={`text-sm font-bold ${cpm.savingsOrOvercost > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                  {cpm.savingsOrOvercost > 0 ? '+' : ''}{cpm.savingsOrOvercost > 0 ? `€${cpm.savingsOrOvercost.toLocaleString()}` : `-€${Math.abs(cpm.savingsOrOvercost).toLocaleString()}`}
+                                  {cpm.savingsOrOvercost > 0 ? '+' : cpm.savingsOrOvercost < 0 ? '-' : ''}{formatEur(Math.abs(cpm.savingsOrOvercost), { locale })}
                                 </p>
                               ) : <p className="text-sm text-gray-400">—</p>}
                             </div>
@@ -3996,6 +5277,12 @@ export default function CampaignDetailPage() {
                               )}
                             </div>
                           </div>
+
+                          {/* Commitments + tracked link (decision 14A): deliverables · UTM link · clicks */}
+                          {renderCommitmentsRow(ci, delivered)}
+
+                          {/* Creator baseline (decision 2): "Habitual: …" and "×1,37 sobre su habitual" */}
+                          {renderBaselineRow(ci, perInfluencer)}
 
                           {/* Notes & History & Remove */}
                           <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center gap-2">
@@ -4179,26 +5466,32 @@ export default function CampaignDetailPage() {
                   <p className="text-xs uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Total Creadores' : 'Total Creators'}</p>
                   <p className="mt-1 text-2xl font-bold text-gray-900">{influencers.length}</p>
                 </div>
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                  <p className="text-xs uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Coste Total' : 'Total Cost'}</p>
-                  <p className="mt-1 text-2xl font-bold text-gray-900">
-                    €{influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0).toLocaleString()}
-                  </p>
-                </div>
+                {/* Cost totals from the overview (fee acordado, si no coste); brands never see them */}
+                {!isBrand && (
+                  <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                    <p className="text-xs uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Coste Total' : 'Total Cost'}</p>
+                    <p className="mt-1 text-2xl font-bold text-gray-900">
+                      {(totals?.cost ?? 0) > 0 ? formatEur(totals?.cost ?? 0, { locale }) : '—'}
+                    </p>
+                    {totals && (
+                      <p className="mt-1 text-xs text-gray-400">{totals.membersWithCost} {t.campaignDetail.of} {totals.members} {t.campaignDetail.withCost}</p>
+                    )}
+                  </div>
+                )}
                 <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <p className="text-xs uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Contenido Entregado' : 'Content Delivered'}</p>
                   <p className="mt-1 text-2xl font-bold text-green-600">
                     {influencers.filter(ci => ci.contentDelivered).length}/{influencers.length}
                   </p>
                 </div>
-                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                  <p className="text-xs uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Coste Medio' : 'Avg Cost'}</p>
-                  <p className="mt-1 text-2xl font-bold text-gray-900">
-                    €{influencers.length > 0
-                      ? Math.round(influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0) / influencers.length).toLocaleString()
-                      : 0}
-                  </p>
-                </div>
+                {!isBrand && (
+                  <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                    <p className="text-xs uppercase tracking-wider text-gray-400">{t.campaignDetail.avgCostPerCreator}</p>
+                    <p className="mt-1 text-2xl font-bold text-gray-900">
+                      {totals && totals.membersWithCost > 0 ? formatEur(totals.cost / totals.membersWithCost, { locale }) : '—'}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
@@ -4231,7 +5524,7 @@ export default function CampaignDetailPage() {
                                 <p className="font-semibold text-gray-900">{ci.influencer.displayName || ci.influencer.username}</p>
                                 <p className="text-xs text-gray-500">@{ci.influencer.username}</p>
                                 <div className="mt-1 flex items-center gap-2">
-                                  <span className="text-xs text-gray-400">{formatNumber(ci.influencer.followers)} {t.campaigns.followers}</span>
+                                  <span className="text-xs text-gray-400">{formatNumber(ci.influencer.followers, { locale })} {t.campaigns.followers}</span>
                                 </div>
                               </div>
                             </div>
@@ -4257,7 +5550,10 @@ export default function CampaignDetailPage() {
                                     }}
                                     onKeyDown={(e) => {
                                       if (canEdit && e.key === 'Enter') {
-                                        handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0')
+                                        // Untouched input → nothing to save: blur instead of sending '0', which would wipe the stored fee
+                                        const val = editingFee[ci.id]
+                                        if (val !== undefined) handleSaveFee(ci.id, ci.influencer.id, val)
+                                        else e.currentTarget.blur()
                                       }
                                     }}
                                     readOnly={!canEdit}
@@ -4339,6 +5635,9 @@ export default function CampaignDetailPage() {
                             </div>
                           </div>
 
+                          {/* Commitments + tracked link (decision 14A): deliverables · UTM link · clicks (delivered = overview.perInfluencer.media) */}
+                          {renderCommitmentsRow(ci, perInfluencerById.get(ci.influencer.id)?.media ?? 0)}
+
                           {/* Pipeline Status */}
                           <div className="mt-3 pt-3 border-t border-gray-100 flex items-center gap-3">
                             <span className="text-[10px] uppercase tracking-wider text-gray-400">
@@ -4400,7 +5699,7 @@ export default function CampaignDetailPage() {
           <div className="space-y-6">
             <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-6 shadow-sm">
               <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2 mb-4">
-                <DollarSign className="h-5 w-5 text-purple-600" />
+                <Euro className="h-5 w-5 text-purple-600" />
                 {locale === 'es' ? 'Análisis de Pricing por Influencer' : 'Influencer Pricing Analysis'}
               </h3>
               <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
@@ -4411,7 +5710,7 @@ export default function CampaignDetailPage() {
 
               {influencers.filter(ci => ci.influencer).length === 0 ? (
                 <div className="text-center py-12">
-                  <DollarSign className="mx-auto h-10 w-10 text-gray-300" />
+                  <Euro className="mx-auto h-10 w-10 text-gray-300" />
                   <p className="mt-3 text-sm text-gray-400">{locale === 'es' ? 'Añade influencers en la pestaña "Elegir" primero' : 'Add influencers in the "Choose" tab first'}</p>
                 </div>
               ) : (
@@ -4430,9 +5729,9 @@ export default function CampaignDetailPage() {
                             <div className="flex items-center gap-2 text-xs text-gray-500">
                               <span>{ci.influencer.platform}</span>
                               <span>·</span>
-                              <span>{formatNumber(ci.influencer.followers)} followers</span>
+                              <span>{formatNumber(ci.influencer.followers, { locale })} followers</span>
                               <span>·</span>
-                              <span>{formatNumber(ci.influencer.avgViews || 0)} avg views</span>
+                              <span>{formatNumber(ci.influencer.avgViews || 0, { locale })} avg views</span>
                             </div>
                           </div>
 
@@ -4450,7 +5749,14 @@ export default function CampaignDetailPage() {
                                   handleSaveFee(ci.id, ci.influencer.id, val)
                                 }
                               }}
-                              onKeyDown={(e) => { if (canEdit && e.key === 'Enter') handleSaveFee(ci.id, ci.influencer.id, editingFee[ci.id] || '0') }}
+                              onKeyDown={(e) => {
+                                if (canEdit && e.key === 'Enter') {
+                                  // Untouched input → nothing to save: blur instead of sending '0', which would wipe the stored fee
+                                  const val = editingFee[ci.id]
+                                  if (val !== undefined) handleSaveFee(ci.id, ci.influencer.id, val)
+                                  else e.currentTarget.blur()
+                                }
+                              }}
                               readOnly={!canEdit}
                               placeholder="0"
                               className={`w-28 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm font-bold text-gray-900 dark:text-white outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 ${!canEdit ? 'bg-gray-100 dark:bg-gray-800 cursor-not-allowed' : ''}`}
@@ -4478,21 +5784,21 @@ export default function CampaignDetailPage() {
                         <div className="mt-3 grid grid-cols-4 gap-3 text-center text-xs">
                           <div>
                             <p className="text-gray-400">CPM Real</p>
-                            <p className="font-bold text-gray-700 dark:text-gray-200">{cpm.cpmReal !== null ? `€${cpm.cpmReal.toFixed(2)}` : '—'}</p>
+                            <p className="font-bold text-gray-700 dark:text-gray-200">{cpm.cpmReal !== null ? formatEur(cpm.cpmReal, { locale, maxFractionDigits: 2 }) : '—'}</p>
                           </div>
                           <div>
                             <p className="text-gray-400">CPM Target</p>
-                            <p className="font-medium text-gray-600 dark:text-gray-300">{cpm.cpmTarget !== null ? `€${cpm.cpmTarget}` : '—'}</p>
+                            <p className="font-medium text-gray-600 dark:text-gray-300">{cpm.cpmTarget !== null ? formatEur(cpm.cpmTarget, { locale, maxFractionDigits: 2 }) : '—'}</p>
                           </div>
                           <div>
                             <p className="text-gray-400">Fee Rec.</p>
-                            <p className="font-bold text-green-600">{cpm.feeRecommended !== null ? `€${cpm.feeRecommended.toLocaleString()}` : '—'}</p>
+                            <p className="font-bold text-green-600">{cpm.feeRecommended !== null ? formatEur(cpm.feeRecommended, { locale }) : '—'}</p>
                           </div>
                           <div>
                             <p className="text-gray-400">{locale === 'es' ? 'Diferencia' : 'Diff'}</p>
                             {cpm.savingsOrOvercost !== null ? (
                               <p className={`font-bold ${cpm.savingsOrOvercost > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                {cpm.savingsOrOvercost > 0 ? '+' : '-'}€{Math.abs(cpm.savingsOrOvercost).toLocaleString()}
+                                {cpm.savingsOrOvercost > 0 ? '+' : cpm.savingsOrOvercost < 0 ? '-' : ''}{formatEur(Math.abs(cpm.savingsOrOvercost), { locale })}
                               </p>
                             ) : <p className="text-gray-400">—</p>}
                           </div>
@@ -4540,8 +5846,8 @@ export default function CampaignDetailPage() {
                       <span className="text-sm font-semibold text-purple-700 dark:text-purple-300">
                         {locale === 'es' ? 'Inversión Total' : 'Total Investment'}
                       </span>
-                      <span className="text-xl font-black text-purple-700 dark:text-purple-300">
-                        €{influencers.reduce((sum, ci) => sum + (ci.agreedFee || ci.cost || 0), 0).toLocaleString()}
+                      <span className="text-xl font-black text-purple-700 dark:text-purple-300 tabular-nums">
+                        {formatEur(totals?.cost ?? 0, { locale })}
                       </span>
                     </div>
                   </div>
@@ -4556,16 +5862,58 @@ export default function CampaignDetailPage() {
           <div className="space-y-8">
             {/* Intelligence Section */}
             <div>
-              <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2 mb-4">
-                <BarChart3 className="h-5 w-5 text-purple-600" />
-                {locale === 'es' ? 'Inteligencia de Campaña' : 'Campaign Intelligence'}
-              </h3>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                  <BarChart3 className="h-5 w-5 text-purple-600" />
+                  {locale === 'es' ? 'Inteligencia de Campaña' : 'Campaign Intelligence'}
+                </h3>
+                {/* Objective is editable everywhere: compact select (editors) or read-only label (brands, only when set) */}
+                {(canEdit || currentObjective || definedTargets.length > 0) && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm">
+                  <label className="flex items-center gap-2">
+                    <span className="text-gray-500">{locale === 'es' ? 'Objetivo:' : 'Objective:'}</span>
+                    {canEdit ? (
+                      <select
+                        value={campaign.objective || ''}
+                        disabled={isSettingObjective}
+                        onChange={(e) => { if (e.target.value) handleSetObjective(e.target.value) }}
+                        className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 disabled:opacity-60"
+                      >
+                        <option value="" disabled>{locale === 'es' ? 'Sin definir' : 'Not set'}</option>
+                        {CAMPAIGN_OBJECTIVES.map(o => (
+                          <option key={o.value} value={o.value}>{o.icon} {locale === 'es' ? o.labelEs : o.labelEn}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="font-medium text-gray-900">
+                        {currentObjective ? `${currentObjective.icon} ${locale === 'es' ? currentObjective.labelEs : currentObjective.labelEn}` : '—'}
+                      </span>
+                    )}
+                  </label>
+                  <span className="hidden sm:inline text-gray-300">|</span>
+                  {definedTargets.length > 0 ? (
+                    <span className="text-gray-600">
+                      {definedTargets.map(def => `${locale === 'es' ? def.labelEs : def.labelEn} ${formatTargetValue(def, campaign[def.key], locale)}`).join(' · ')}
+                    </span>
+                  ) : canEdit ? (
+                    <span className="text-gray-400">{locale === 'es' ? 'Sin objetivos numéricos' : 'No numeric targets'}</span>
+                  ) : null}
+                  {canEdit && (
+                    <button type="button" onClick={openEditModal} className="font-medium text-purple-600 hover:underline">
+                      {locale === 'es' ? 'Editar' : 'Edit'}
+                    </button>
+                  )}
+                </div>
+                )}
+              </div>
               <CampaignIntelligencePanel
                 campaign={{ id: campaign.id, objective: campaign.objective, type: campaign.type }}
                 influencers={influencers}
                 media={campaign.media}
-                overview={overview || { emvExtended: 0, totalCost: 0 }}
+                overview={{ emvExtended: totals?.emvExtended ?? 0, totalCost: totals?.cost ?? 0 }}
+                perInfluencer={overview?.perInfluencer ?? null}
                 locale={locale}
+                onSetObjective={canEdit ? handleSetObjective : undefined}
               />
             </div>
 
@@ -4584,7 +5932,7 @@ export default function CampaignDetailPage() {
       {/* Edit Campaign Modal */}
       {showEditModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="mx-4 w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+          <div className="mx-4 w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-bold text-gray-900">
                 {locale === 'es' ? 'Editar Campaña' : 'Edit Campaign'}
@@ -4606,6 +5954,110 @@ export default function CampaignDetailPage() {
                   onChange={(e) => setEditForm(prev => ({ ...prev, name: e.target.value }))}
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                 />
+              </div>
+
+              {/* Objective (mandatory unless Social Listening — drives how Aprender evaluates the campaign) */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                  {locale === 'es' ? 'Objetivo' : 'Objective'}{goalsRequired && <span className="ml-1 text-red-500">*</span>}
+                </label>
+                <select
+                  value={editForm.objective}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, objective: e.target.value }))}
+                  className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white ${editForm.objective || !goalsRequired ? 'border-gray-300' : 'border-amber-300'}`}
+                >
+                  <option value="">{locale === 'es' ? 'Selecciona un objetivo…' : 'Select an objective…'}</option>
+                  {CAMPAIGN_OBJECTIVES.map(o => (
+                    <option key={o.value} value={o.value}>{o.icon} {locale === 'es' ? o.labelEs : o.labelEn}</option>
+                  ))}
+                </select>
+                <p className={`mt-1 text-xs ${editForm.objective || !goalsRequired ? 'text-gray-400' : 'text-amber-700'}`}>
+                  {editForm.objective
+                    ? (locale === 'es' ? 'Determina qué KPIs pesan más en la pestaña Aprender.' : 'Determines which KPIs weigh more in the Learn tab.')
+                    : goalsRequired
+                      ? (locale === 'es' ? 'Obligatorio: sin objetivo no hay análisis inteligente.' : 'Required: no objective, no intelligent analysis.')
+                      : t.campaigns.objectiveOptionalListening}
+                </p>
+              </div>
+
+              {/* Numeric targets (at least one is mandatory, except for Social Listening) */}
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium text-gray-700">
+                      {locale === 'es' ? 'Objetivos numéricos' : 'Numeric targets'}{goalsRequired && <span className="ml-1 text-red-500">*</span>}
+                    </p>
+                    <p className="mt-0.5 text-xs text-gray-500">
+                      {editForm.objective && OBJECTIVE_TARGET_HINTS[editForm.objective]
+                        ? (locale === 'es' ? OBJECTIVE_TARGET_HINTS[editForm.objective].es : OBJECTIVE_TARGET_HINTS[editForm.objective].en)
+                        : goalsRequired
+                          ? (locale === 'es' ? 'Rellena al menos uno. Elige antes el objetivo para ver cuáles se recomiendan.' : 'Fill in at least one. Pick the objective first to see which are recommended.')
+                          : (locale === 'es' ? 'Opcionales en Social Listening: no hay entregables con los que comparar.' : 'Optional for Social Listening: there are no deliverables to measure against.')}
+                    </p>
+                  </div>
+                  {targetsFrozen && campaign?.targetsFrozenAt && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-500">
+                      <Lock className="h-3 w-3" />
+                      {locale === 'es' ? 'Congelados el ' : 'Frozen on '}
+                      {formatDate(campaign.targetsFrozenAt, { locale })}
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  {TARGET_FIELD_DEFS.map(def => {
+                    const recommended = !!editForm.objective && def.recommendedFor.includes(editForm.objective)
+                    return (
+                      <div key={def.key}>
+                        <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-500">
+                          {locale === 'es' ? def.labelEs : def.labelEn}{def.unit ? ` (${def.unit})` : ''}
+                          {recommended && (
+                            <span className="rounded-full bg-purple-100 px-1.5 py-px text-[10px] font-semibold text-purple-700">
+                              {locale === 'es' ? 'recomendado' : 'recommended'}
+                            </span>
+                          )}
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={def.kind === 'int' ? 1 : 0.1}
+                          inputMode="decimal"
+                          value={editForm[def.key]}
+                          onChange={(e) => setEditForm(prev => ({ ...prev, [def.key]: e.target.value }))}
+                          placeholder={def.kind === 'int' ? '—' : def.unit === '%' ? '3.5' : '12'}
+                          className={`w-full rounded-lg border bg-white px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 ${recommended ? 'border-purple-300' : 'border-gray-300'}`}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {goalsRequired && !editFormHasTarget && (
+                  <p className="text-xs text-amber-700">
+                    {locale === 'es' ? 'Rellena al menos un objetivo numérico para poder guardar.' : 'Fill in at least one numeric target to be able to save.'}
+                  </p>
+                )}
+
+                {/* Once frozen, changes are logged: give the PM a place to say why */}
+                {targetsFrozen && (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-500">
+                      {locale === 'es' ? 'Motivo del cambio' : 'Reason for change'}
+                    </label>
+                    <input
+                      type="text"
+                      value={editForm.targetsChangeReason}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, targetsChangeReason: e.target.value }))}
+                      placeholder={locale === 'es' ? 'Opcional · p. ej. "El cliente amplió el presupuesto"' : 'Optional · e.g. "Client increased the budget"'}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-400">
+                      {locale === 'es'
+                        ? 'Cualquier cambio en los objetivos queda en el historial con tu usuario, la fecha y este motivo.'
+                        : 'Any change to the targets is logged with your user, the date and this reason.'}
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Status */}
@@ -4713,7 +6165,16 @@ export default function CampaignDetailPage() {
               <Button variant="ghost" onClick={() => setShowEditModal(false)}>
                 {t.common.cancel}
               </Button>
-              <Button variant="primary" onClick={handleSaveCampaign} disabled={isSaving || !editForm.name.trim()}>
+              <Button
+                variant="primary"
+                onClick={handleSaveCampaign}
+                disabled={isSaving || !editFormValid}
+                title={!editFormValid
+                  ? goalsRequired
+                    ? (locale === 'es' ? 'Nombre, objetivo y al menos un objetivo numérico son obligatorios' : 'Name, objective and at least one numeric target are required')
+                    : (locale === 'es' ? 'El nombre es obligatorio' : 'Name is required')
+                  : undefined}
+              >
                 {isSaving ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -4859,170 +6320,6 @@ export default function CampaignDetailPage() {
         </ModalFooter>
       </Modal>
 
-      {/* Diagnostic Modal */}
-      {showDiagnostic && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowDiagnostic(false)}>
-          <div
-            className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white dark:bg-gray-800 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="sticky top-0 flex items-center justify-between border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-6 py-4">
-              <div>
-                <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100">
-                  {locale === 'es' ? 'Diagnóstico de captura' : 'Capture Diagnostic'}
-                </h2>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {locale === 'es' ? 'Qué está pasando con el rastreo de esta campaña' : 'What\'s going on with this campaign\'s tracking'}
-                </p>
-              </div>
-              <button onClick={() => setShowDiagnostic(false)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="space-y-5 p-6">
-              {diagnosticLoading && (
-                <div className="flex items-center justify-center py-12">
-                  <Loader2 className="h-8 w-8 animate-spin text-purple-500" />
-                </div>
-              )}
-
-              {!diagnosticLoading && diagnosticData && (
-                <>
-                  {/* Apify status */}
-                  <div className={`rounded-xl border p-4 ${diagnosticData.apify.configured ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20' : 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20'}`}>
-                    <p className={`text-sm font-semibold ${diagnosticData.apify.configured ? 'text-green-800 dark:text-green-300' : 'text-red-800 dark:text-red-300'}`}>
-                      {diagnosticData.apify.configured
-                        ? (locale === 'es' ? '✓ Apify configurado correctamente' : '✓ Apify configured')
-                        : (locale === 'es' ? '✗ Apify NO está configurado — esto bloquea toda la captura' : '✗ Apify NOT configured — blocks all capture')}
-                    </p>
-                  </div>
-
-                  {/* Summary cards */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
-                      <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-medium">{locale === 'es' ? 'Miembros' : 'Members'}</p>
-                      <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{diagnosticData.campaign.membersCount}</p>
-                    </div>
-                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
-                      <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-medium">{locale === 'es' ? 'Con posts' : 'With posts'}</p>
-                      <p className="text-2xl font-bold text-green-600 dark:text-green-400">{diagnosticData.summary.membersWithMedia}</p>
-                    </div>
-                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
-                      <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-medium">{locale === 'es' ? 'Sin posts' : 'No posts'}</p>
-                      <p className="text-2xl font-bold text-amber-600 dark:text-amber-400">{diagnosticData.summary.membersWithoutMedia}</p>
-                    </div>
-                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
-                      <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-medium">{locale === 'es' ? 'Total posts capturados' : 'Total captured'}</p>
-                      <p className="text-2xl font-bold text-purple-600 dark:text-purple-400">{diagnosticData.summary.totalMediaInCampaign}</p>
-                    </div>
-                  </div>
-
-                  {/* Per-member table */}
-                  <div>
-                    <h3 className="mb-2 text-sm font-bold text-gray-900 dark:text-gray-100">
-                      {locale === 'es' ? 'Cobertura por influencer' : 'Coverage by influencer'}
-                    </h3>
-                    <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700">
-                      <table className="w-full text-xs">
-                        <thead className="bg-gray-50 dark:bg-gray-900">
-                          <tr>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Usuario</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">{locale === 'es' ? 'Origen' : 'Source'}</th>
-                            <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300">Posts</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">{locale === 'es' ? 'Último scrape' : 'Last scrape'}</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">{locale === 'es' ? 'Último post' : 'Latest post'}</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                          {diagnosticData.members.map(m => (
-                            <tr key={m.username} className="bg-white dark:bg-gray-800">
-                              <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">@{m.username}</td>
-                              <td className="px-3 py-2">
-                                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${m.source === 'manual' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'}`}>
-                                  {m.source}
-                                </span>
-                              </td>
-                              <td className={`px-3 py-2 text-right font-bold ${m.mediaInCampaign > 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'}`}>
-                                {m.mediaInCampaign}
-                              </td>
-                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
-                                {m.lastScraped ? new Date(m.lastScraped).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' }) : (locale === 'es' ? 'Nunca' : 'Never')}
-                              </td>
-                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
-                                {m.lastPost?.permalink ? (
-                                  <a href={m.lastPost.permalink} target="_blank" rel="noopener noreferrer" className="text-purple-600 hover:underline">
-                                    {m.lastPost.postedAt ? new Date(m.lastPost.postedAt).toLocaleDateString('es-ES') : 'Ver'} ({m.lastPost.mediaType})
-                                  </a>
-                                ) : '—'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  {/* Recent scrape jobs */}
-                  <div>
-                    <h3 className="mb-2 text-sm font-bold text-gray-900 dark:text-gray-100">
-                      {locale === 'es' ? 'Últimos trabajos de scrape (Apify)' : 'Recent scrape jobs (Apify)'}
-                    </h3>
-                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
-                      {locale === 'es'
-                        ? `${diagnosticData.scrapeJobs.completed}/${diagnosticData.scrapeJobs.total} completados, ${diagnosticData.scrapeJobs.failed} fallidos`
-                        : `${diagnosticData.scrapeJobs.completed}/${diagnosticData.scrapeJobs.total} completed, ${diagnosticData.scrapeJobs.failed} failed`}
-                    </p>
-                    <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700">
-                      <table className="w-full text-xs">
-                        <thead className="bg-gray-50 dark:bg-gray-900">
-                          <tr>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Tipo</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Target</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Status</th>
-                            <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300">Items</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Cuándo</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Error</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                          {diagnosticData.scrapeJobs.recent.map((j, i) => (
-                            <tr key={i} className="bg-white dark:bg-gray-800">
-                              <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{j.type}</td>
-                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400 font-mono">{j.target || '—'}</td>
-                              <td className="px-3 py-2">
-                                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                                  j.status === 'COMPLETED' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
-                                  j.status === 'FAILED' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' :
-                                  'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
-                                }`}>
-                                  {j.status}
-                                </span>
-                              </td>
-                              <td className="px-3 py-2 text-right font-medium text-gray-700 dark:text-gray-300">{j.itemsFound}</td>
-                              <td className="px-3 py-2 text-gray-500 dark:text-gray-400">
-                                {new Date(j.createdAt).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' })}
-                              </td>
-                              <td className="px-3 py-2 text-red-600 dark:text-red-400 max-w-[200px] truncate" title={j.error || ''}>
-                                {j.error ? j.error.slice(0, 60) + '…' : ''}
-                              </td>
-                            </tr>
-                          ))}
-                          {diagnosticData.scrapeJobs.recent.length === 0 && (
-                            <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-500 dark:text-gray-400">
-                              {locale === 'es' ? 'Aún no se ha ejecutado ningún rastreo. Dale a "Rastrear Ahora" primero.' : 'No tracking runs yet. Click "Track Now" first.'}
-                            </td></tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Toast (revalidation result and other one-off notices) */}
       {toast && (
@@ -5044,24 +6341,6 @@ export default function CampaignDetailPage() {
             <X className="h-4 w-4" />
           </button>
         </div>
-      )}
-
-      {/* Report Preview Modal */}
-      {campaign && (
-        <ReportPreviewModal
-          open={showReportModal}
-          onClose={() => setShowReportModal(false)}
-          campaign={{
-            ...campaign,
-            influencers: campaign.influencers.map(ci => ({
-              influencer: ci.influencer,
-              status: ci.status,
-              cost: ci.cost,
-              agreedFee: ci.agreedFee,
-            })),
-          }}
-          overview={overview}
-        />
       )}
     </div>
   )

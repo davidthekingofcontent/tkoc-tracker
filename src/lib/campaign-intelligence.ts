@@ -7,7 +7,23 @@
  *
  * Philosophy: A tracker should help decide quickly if a campaign worked,
  * if it was efficient, and if we'd work with that influencer again.
+ *
+ * Figures: whenever the caller has the campaign overview
+ * (src/lib/campaign-overview.ts → PerInfluencerMetrics) it hands the engine
+ * each creator's precomputed totals — views, audience (alcance → impresiones →
+ * vistas → estimaciones etiquetadas, decision 5), the four-term interacciones
+ * (3A), ER (4C), CPM, cost (6) and EMV — and the engine scores those as they
+ * are, so the Aprender tab can never disagree with Resumen or Elegir. Media
+ * rows are only a fallback when no overview is available.
+ *
+ * Wording: EMV ÷ fee is the "Ratio EMV" (×2,4) and is never called ROI; the
+ * word ROI is reserved for real client data (decision 9B). Every text carries a
+ * stable key (recommendationKey / overallRecommendationKey) that the UI resolves
+ * in translations.*.intelligence; the Spanish string here is the fallback.
  */
+
+import { audienceOf, cpmOf } from '@/lib/metrics'
+import { formatEur, formatNumber, formatPercent, formatRatio } from '@/lib/utils'
 
 // ============ TYPES ============
 
@@ -24,12 +40,17 @@ export interface InfluencerKPIs {
   // Raw data
   fee: number
   totalViews: number
+  /** Audience base of the CPM and the ER: reach → impressions → views → labelled estimates (decision 5). */
+  totalAudience: number
+  /** Split figures below are 0 when the creator was scored from precomputed totals (the overview carries only their sums). */
   totalReach: number
   totalImpressions: number
   totalLikes: number
   totalComments: number
   totalShares: number
   totalSaves: number
+  /** Interacciones (decision 3A): likes + comments + shares + saves. */
+  totalEngagements: number
   totalClicks: number
   totalLeads: number
   totalRevenue: number
@@ -37,21 +58,21 @@ export interface InfluencerKPIs {
   contentPieces: number
 
   // Calculated KPIs
-  cpm: number | null        // Cost per mille (1000 views)
+  cpm: number | null        // Cost per mille of audience
   cpv: number | null        // Cost per view
   cpe: number | null        // Cost per engagement
   cpc: number | null        // Cost per click
   cpa: number | null        // Cost per acquisition
   emv: number               // Earned media value
-  emvCostRatio: number | null  // EMV / fee — above 1 = good value
-  engagementRate: number | null // Total engagements / total views
+  emvCostRatio: number | null  // EMV / fee — the "Ratio EMV", above 1 = good value
+  engagementRate: number | null // Total engagements / audience, in %
   costPerContent: number | null // Fee / content pieces
 
   // Intelligence
   signal: Signal
   score: number              // 0-100
-  recommendation: string     // Strategic recommendation text
-  recommendationKey: string  // Machine-readable key
+  recommendation: string     // Strategic recommendation text (Spanish fallback)
+  recommendationKey: string  // Machine-readable key, resolved in translations.*.intelligence
   highlights: string[]       // Key insights
 }
 
@@ -59,7 +80,8 @@ export interface CampaignIntelligence {
   objective: CampaignObjective
   overallSignal: Signal
   overallScore: number
-  overallRecommendation: string
+  overallRecommendation: string     // Spanish fallback
+  overallRecommendationKey: string  // Resolved in translations.*.intelligence
   totalInvestment: number
   totalEMV: number
   emvRatio: number | null
@@ -72,7 +94,7 @@ export interface CampaignIntelligence {
 // Edit these to tune the intelligence engine
 
 interface ObjectiveThresholds {
-  // CPM thresholds (€ per 1000 views)
+  // CPM thresholds (€ per 1000 of audience)
   cpmGreen: number
   cpmRed: number
   // CPE thresholds (€ per engagement)
@@ -98,7 +120,7 @@ interface ObjectiveThresholds {
     cpa: number
     emvRatio: number
     engRate: number
-    volume: number     // views/reach volume
+    volume: number     // audience volume
     content: number    // content pieces delivered
   }
 }
@@ -187,25 +209,59 @@ function scoreToSignal(score: number): Signal {
 
 // ============ KPI CALCULATIONS ============
 
-interface RawInfluencerData {
+/**
+ * Per-creator figures already computed by the campaign overview
+ * (PerInfluencerMetrics, src/lib/campaign-overview.ts). When present the engine
+ * uses them verbatim and ignores `media`, so the Aprender table shows the same
+ * numbers as the Resumen and Elegir cards.
+ */
+export interface PrecomputedInfluencerTotals {
+  /** Real views of the creator's publications (perInfluencer.views). */
+  views: number
+  /** Audience base — reach → impressions → views → labelled estimates (perInfluencer.audience.total). */
+  audience: number
+  /** Interacciones: likes + comments + shares + saves (perInfluencer.engagements). */
+  engagements: number
+  /** Publications delivered in the campaign (perInfluencer.media). */
+  pieces: number
+  /** Cost of the creator: fee acordado, si no coste (perInfluencer.cost). */
+  fee: number
+  /** EMV extended with the brand's rates (perInfluencer.emvExtended). */
+  emv: number
+  /** Engagement rate in %, null without an audience base (perInfluencer.er.value). */
+  er: number | null
+  /** € per 1000 of audience, null without cost or base (perInfluencer.cpm). */
+  cpm: number | null
+}
+
+/** One media row of the fallback path (no overview available). */
+export interface RawInfluencerMediaRow {
+  likes: number
+  comments: number
+  shares: number
+  saves: number
+  views: number
+  reach: number
+  impressions: number
+  /** Media type as stored (REEL, POST, STORY…) — informational, the engine does not score by type. */
+  mediaType?: string | null
+}
+
+export interface RawInfluencerData {
   username: string
   platform: string
   influencerId: string
+  /** Cost of the creator (fee acordado, si no coste). Superseded by totals.fee when totals are given. */
   fee: number
-  media: Array<{
-    likes: number
-    comments: number
-    shares: number
-    saves: number
-    views: number
-    reach: number
-    impressions: number
-    mediaType: string
-  }>
+  /** EMV of the creator. Superseded by totals.emv when totals are given. */
+  emv: number
+  /** Authoritative figures from the campaign overview — preferred whenever available. */
+  totals?: PrecomputedInfluencerTotals | null
+  /** Fallback only: the creator's media rows when no overview is available. */
+  media?: RawInfluencerMediaRow[]
   clicks?: number
   leads?: number
   revenue?: number
-  emv: number
   contentPieces?: number
 }
 
@@ -214,37 +270,53 @@ function calculateInfluencerKPIs(
   objective: CampaignObjective,
   thresholds: ObjectiveThresholds
 ): InfluencerKPIs {
-  const { fee, media } = data
+  const totals = data.totals ?? null
+  const media = data.media ?? []
 
-  // Aggregate raw metrics
-  let totalViews = 0, totalReach = 0, totalImpressions = 0
+  // Raw metrics: taken from the overview when it is there, aggregated from rows otherwise
+  let totalViews = 0, totalAudience = 0, totalReach = 0, totalImpressions = 0
   let totalLikes = 0, totalComments = 0, totalShares = 0, totalSaves = 0
+  let totalEngagements = 0
 
-  for (const m of media) {
-    totalViews += m.views || 0
-    totalReach += m.reach || 0
-    totalImpressions += m.impressions || 0
-    totalLikes += m.likes || 0
-    totalComments += m.comments || 0
-    totalShares += m.shares || 0
-    totalSaves += m.saves || 0
+  if (totals) {
+    totalViews = totals.views
+    totalAudience = totals.audience
+    totalEngagements = totals.engagements
+  } else {
+    for (const m of media) {
+      totalViews += m.views || 0
+      totalReach += m.reach || 0
+      totalImpressions += m.impressions || 0
+      totalLikes += m.likes || 0
+      totalComments += m.comments || 0
+      totalShares += m.shares || 0
+      totalSaves += m.saves || 0
+      // Audience per publication (decision 5) — real bases only: the fallback has
+      // no follower / EMV context to label estimates, so a row without data adds 0.
+      totalAudience += audienceOf({ id: '', ...m }, {}).value
+    }
+    // Interacciones (decision 3A)
+    totalEngagements = totalLikes + totalComments + totalShares + totalSaves
   }
 
-  const totalEngagements = totalLikes + totalComments + totalShares + totalSaves
+  const fee = totals ? totals.fee : data.fee
+  const emv = totals ? totals.emv : data.emv
   const totalClicks = data.clicks || 0
   const totalLeads = data.leads || 0
   const totalRevenue = data.revenue || 0
-  const contentPieces = data.contentPieces || media.length
-  const bestViewMetric = totalImpressions || totalReach || totalViews
+  const postsCount = totals ? totals.pieces : media.length
+  const contentPieces = totals ? totals.pieces : (data.contentPieces || media.length)
 
-  // Calculate KPIs (null if data insufficient)
-  const cpm = (fee > 0 && bestViewMetric > 0) ? (fee / bestViewMetric) * 1000 : null
+  // Calculate KPIs (null if data insufficient). CPM and ER over the audience (decisions 4C / 5).
+  const cpm = totals ? totals.cpm : cpmOf(fee, totalAudience)
   const cpv = (fee > 0 && totalViews > 0) ? fee / totalViews : null
   const cpe = (fee > 0 && totalEngagements > 0) ? fee / totalEngagements : null
   const cpc = (fee > 0 && totalClicks > 0) ? fee / totalClicks : null
   const cpa = (fee > 0 && totalLeads > 0) ? fee / totalLeads : null
-  const emvCostRatio = (fee > 0 && data.emv > 0) ? data.emv / fee : null
-  const engagementRate = bestViewMetric > 0 ? (totalEngagements / bestViewMetric) * 100 : null
+  const emvCostRatio = (fee > 0 && emv > 0) ? emv / fee : null
+  const engagementRate = totals
+    ? totals.er
+    : (totalAudience > 0 ? Math.round((totalEngagements / totalAudience) * 100 * 100) / 100 : null)
   const costPerContent = (fee > 0 && contentPieces > 0) ? fee / contentPieces : null
 
   // Score each KPI
@@ -257,9 +329,9 @@ function calculateInfluencerKPIs(
     { metric: 'engRate', score: scoreHigherIsBetter(engagementRate, thresholds.engRateGreen, thresholds.engRateRed), weight: thresholds.weights.engRate },
   ]
 
-  // Volume score (views): >500K = 100, <10K = 0
-  const volumeScore = bestViewMetric > 0
-    ? Math.min(100, Math.round((bestViewMetric / 500000) * 100))
+  // Volume score (audience): >500K = 100, <10K = 0
+  const volumeScore = totalAudience > 0
+    ? Math.min(100, Math.round((totalAudience / 500000) * 100))
     : null
   scores.push({ metric: 'volume', score: volumeScore, weight: thresholds.weights.volume })
 
@@ -281,19 +353,19 @@ function calculateInfluencerKPIs(
   const MIN_METRICS_TO_SCORE = 3
   const signal = validScores.length >= MIN_METRICS_TO_SCORE ? scoreToSignal(weightedScore) : 'gray'
 
-  // Generate highlights
+  // Generate highlights (Spanish, internal — not rendered by the panel)
   const highlights: string[] = []
-  if (cpm !== null && cpm <= thresholds.cpmGreen) highlights.push(`CPM excelente: €${cpm.toFixed(2)}`)
-  if (cpm !== null && cpm >= thresholds.cpmRed) highlights.push(`CPM alto: €${cpm.toFixed(2)}`)
-  if (engagementRate !== null && engagementRate >= thresholds.engRateGreen) highlights.push(`Gran engagement: ${engagementRate.toFixed(2)}%`)
-  if (emvCostRatio !== null && emvCostRatio >= thresholds.emvRatioGreen) highlights.push(`EMV/Coste: ${emvCostRatio.toFixed(1)}x`)
-  if (bestViewMetric >= 100000) highlights.push(`Alto alcance: ${formatCompact(bestViewMetric)} views`)
+  if (cpm !== null && cpm <= thresholds.cpmGreen) highlights.push(`CPM excelente: ${formatEur(cpm, { maxFractionDigits: 2 })}`)
+  if (cpm !== null && cpm >= thresholds.cpmRed) highlights.push(`CPM alto: ${formatEur(cpm, { maxFractionDigits: 2 })}`)
+  if (engagementRate !== null && engagementRate >= thresholds.engRateGreen) highlights.push(`Gran engagement: ${formatPercent(engagementRate)}`)
+  if (emvCostRatio !== null && emvCostRatio >= thresholds.emvRatioGreen) highlights.push(`Ratio EMV: ${formatRatio(emvCostRatio)}`)
+  if (totalAudience >= 100000) highlights.push(`Alto alcance: ${formatNumber(totalAudience)}`)
 
   // Generate recommendation
   const { recommendation, recommendationKey } = generateRecommendation(
     objective, signal, weightedScore, {
       cpm, cpv, cpe, cpc, cpa, emvCostRatio, engagementRate,
-      fee, totalViews: bestViewMetric, totalEngagements, contentPieces,
+      fee, audience: totalAudience, totalEngagements, contentPieces,
     }
   )
 
@@ -303,19 +375,21 @@ function calculateInfluencerKPIs(
     influencerId: data.influencerId,
     fee,
     totalViews,
+    totalAudience,
     totalReach,
     totalImpressions,
     totalLikes,
     totalComments,
     totalShares,
     totalSaves,
+    totalEngagements,
     totalClicks,
     totalLeads,
     totalRevenue,
-    postsCount: media.length,
+    postsCount,
     contentPieces,
     cpm, cpv, cpe, cpc, cpa,
-    emv: data.emv,
+    emv,
     emvCostRatio,
     engagementRate,
     costPerContent,
@@ -338,11 +412,16 @@ interface RecommendationContext {
   emvCostRatio: number | null
   engagementRate: number | null
   fee: number
-  totalViews: number
+  /** Audience base (reach → impressions → views → estimates). */
+  audience: number
   totalEngagements: number
   contentPieces: number
 }
 
+/**
+ * Recommendation text (Spanish fallback) + its key. Every key exists in
+ * translations.es.intelligence and translations.en.intelligence.
+ */
 function generateRecommendation(
   objective: CampaignObjective,
   signal: Signal,
@@ -381,7 +460,7 @@ function generateRecommendation(
       if (signal === 'yellow') {
         return { recommendation: 'Engagement medio. Valorar si el perfil encaja con la marca', recommendationKey: 'medium_engagement' }
       }
-      if (ctx.totalViews > 100000) {
+      if (ctx.audience > 100000) {
         return { recommendation: 'Buen alcance pero bajo engagement. Mejor para awareness que para interacción', recommendationKey: 'good_reach_low_engagement' }
       }
       return { recommendation: 'No recomendable para engagement. Baja interacción con su audiencia', recommendationKey: 'not_recommended_engagement' }
@@ -401,7 +480,7 @@ function generateRecommendation(
     case 'conversion':
       if (signal === 'green') {
         if (ctx.cpa && ctx.cpa < 5) {
-          return { recommendation: 'Contratar de nuevo. CPA excelente. Alto ROI', recommendationKey: 'rehire_conversion' }
+          return { recommendation: 'Contratar de nuevo. CPA excelente', recommendationKey: 'rehire_conversion' }
         }
         return { recommendation: 'Buen perfil para conversión. Resultados rentables', recommendationKey: 'good_conversion' }
       }
@@ -435,7 +514,9 @@ export interface CampaignIntelligenceInput {
 }
 
 export function analyzeCampaign(input: CampaignIntelligenceInput): CampaignIntelligence {
-  const { objective } = input
+  // An objective the engine does not know (a legacy value stored through PUT)
+  // is scored as awareness instead of dereferencing undefined thresholds.
+  const objective: CampaignObjective = THRESHOLDS[input.objective] ? input.objective : 'awareness'
   const thresholds = THRESHOLDS[objective]
 
   const influencerKPIs = input.influencers.map(inf =>
@@ -462,15 +543,20 @@ export function analyzeCampaign(input: CampaignIntelligenceInput): CampaignIntel
   const topPerformer = sorted.length > 0 ? sorted[0].username : null
   const worstPerformer = sorted.length > 1 ? sorted[sorted.length - 1].username : null
 
-  // Overall recommendation
+  // Overall recommendation (Spanish fallback + key for the UI locale)
   let overallRecommendation = ''
+  let overallRecommendationKey = ''
   if (overallSignal === 'green') {
+    overallRecommendationKey = `campaign_success_${objective}`
     overallRecommendation = `Campaña exitosa. ${objective === 'awareness' ? 'Gran visibilidad obtenida' : objective === 'engagement' ? 'Alta interacción lograda' : objective === 'traffic' ? 'Buen tráfico generado' : objective === 'conversion' ? 'Conversiones rentables' : 'Contenido de calidad entregado'}.`
   } else if (overallSignal === 'yellow') {
+    overallRecommendationKey = 'campaign_mixed'
     overallRecommendation = `Resultados mixtos. Revisar qué perfiles funcionaron y optimizar la selección para la próxima campaña.`
   } else if (overallSignal === 'red') {
+    overallRecommendationKey = 'campaign_below'
     overallRecommendation = `Campaña por debajo de expectativas. Revisar la selección de perfiles, el fee negociado y la alineación con el objetivo.`
   } else {
+    overallRecommendationKey = 'campaign_no_data'
     overallRecommendation = `Datos insuficientes para evaluar. Espera a que se recopilen más métricas.`
   }
 
@@ -479,6 +565,7 @@ export function analyzeCampaign(input: CampaignIntelligenceInput): CampaignIntel
     overallSignal,
     overallScore,
     overallRecommendation,
+    overallRecommendationKey,
     totalInvestment,
     totalEMV,
     emvRatio,
@@ -489,12 +576,6 @@ export function analyzeCampaign(input: CampaignIntelligenceInput): CampaignIntel
 }
 
 // ============ HELPERS ============
-
-function formatCompact(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
-  return n.toString()
-}
 
 /**
  * Get the list of valid objectives for UI dropdowns.
@@ -517,21 +598,4 @@ export function getSignalConfig(signal: Signal) {
     case 'red': return { color: 'text-red-700', bg: 'bg-red-100', border: 'border-red-300', dot: 'bg-red-500', label: '🔴' }
     default: return { color: 'text-gray-500', bg: 'bg-gray-100', border: 'border-gray-300', dot: 'bg-gray-400', label: '⏳' }
   }
-}
-
-/**
- * Format currency value.
- */
-export function formatCurrency(value: number | null): string {
-  if (value === null || value === undefined) return '—'
-  return `€${value.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-}
-
-/**
- * Format KPI value with appropriate precision.
- */
-export function formatKPI(value: number | null, suffix = ''): string {
-  if (value === null || value === undefined) return '—'
-  if (value >= 1000) return `${formatCompact(value)}${suffix}`
-  return `${value.toFixed(2)}${suffix}`
 }

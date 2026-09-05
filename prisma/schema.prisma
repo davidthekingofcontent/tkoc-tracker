@@ -118,6 +118,26 @@ model Campaign {
   manualROI      Float?         // Manually entered ROI value (e.g. 2.5 = 2.5x return)
   manualROINotes String?        // Notes explaining the ROI (e.g. "Based on sales data from Q1")
 
+  // Objetivos numéricos (David 2026-09-05, decisión 1B: obligatorios al crear/editar).
+  // Se congelan al arrancar (targetsFrozenAt); los cambios posteriores quedan en targetsChangeLog.
+  targetViews        Int?
+  targetReach        Int?
+  targetEngagement   Int?
+  targetER           Float?      // %
+  targetCpmMax       Float?      // € por 1000 vistas
+  targetsFrozenAt    DateTime?
+  targetsChangeLog   Json?       // [{ at, by, field, from, to, reason }]
+
+  // Resultados de negocio aportados por el cliente (decisión 14A). Solo se muestran si están rellenos.
+  promoCode                 String?
+  codeRedemptions           Int?
+  clientReportedSales       Int?
+  clientReportedLeads       Int?
+  clientReportedRevenue     Float?
+  businessResultsSource     String?   // p. ej. "Informe Shopify del cliente", "GA4"
+  businessResultsReportedAt DateTime?
+  businessResultsNotes      String?
+
   // Brief
   briefText      String?        // Campaign brief text
   briefFiles     String[]       // URLs/paths to brief attachments
@@ -263,6 +283,13 @@ model CampaignInfluencer {
   crossposting     Boolean   @default(false) // Same content on a second platform
   dealClosedAt     DateTime? // Set when agreedFee first becomes > 0
 
+  // Libro de compromisos y línea base (David 2026-09-05)
+  deliverablesPlanned Int?      // entregables comprometidos con este creador
+  trackedLink         String?   // enlace con UTM del creador (decisión 14A)
+  trackedClicks       Int?      // clics: manual o por integración
+  baselineSnapshot    Json?     // { format, n, medianViews, medianEngagement, pctBranded, capturedAt, source }
+  baselineAt          DateTime? // cuándo se congeló la línea base
+
   // Shipping / Fulfillment data
   shippingName     String?   // Recipient name
   shippingAddress1 String?   // Address line 1
@@ -326,6 +353,11 @@ model Media {
   // Compliance / Deletion tracking
   isDeleted         Boolean   @default(false)
   deletedAt         DateTime?
+
+  // Etiquetas de contenido de la PM para aprendizajes por tipo de pieza (decisión 15A, opcionales)
+  contentAngle      String?   // enfoque: problema/solución, tutorial, unboxing, testimonio...
+  hook              String?   // gancho de los 3 primeros segundos
+  productBenefit    String?   // beneficio de producto destacado
   isPaidPartnership Boolean   @default(false)
   isAdDisclosed     Boolean   @default(false)
   dataSource        String?   // "api", "oauth", "marketplace", "apify"

@@ -9,6 +9,11 @@
  * 5. CPM way above market
  * 6. Low delivery rate across campaigns
  * 7. Engagement-to-follower ratio anomaly
+ *
+ * Every signal carries i18n keys (translations.*.intelligence) plus the numeric
+ * `params` its templates interpolate ({pct}, {days}, {cpm}, {ceiling}…). The
+ * English `title` / `description` / `actionable` / `metric` strings are kept as
+ * fallbacks for consumers without translations (API clients, exports).
  */
 
 // ============ TYPES ============
@@ -16,16 +21,24 @@
 export type RiskLevel = 'critical' | 'warning' | 'info'
 export type RiskCategory = 'engagement' | 'followers' | 'compliance' | 'delivery' | 'pricing' | 'quality'
 
+/** Values the i18n templates interpolate. Numbers are formatted per locale by the UI. */
+export type RiskSignalParams = Record<string, number | string>
+
 export interface RiskSignal {
   id: string                 // Unique signal ID
   category: RiskCategory
   level: RiskLevel
+  // English fallbacks
   title: string
   description: string
-  titleKey: string           // i18n key
-  descriptionKey: string     // i18n key
-  metric?: string            // e.g. "-32% engagement"
   actionable: string         // What to do about it
+  metric?: string            // e.g. "-32%"
+  // i18n keys under translations.*.intelligence, rendered with `params`
+  titleKey: string
+  descriptionKey: string
+  actionableKey: string
+  metricKey?: string
+  params: RiskSignalParams
 }
 
 export interface RiskAssessmentInput {
@@ -71,6 +84,12 @@ export interface RiskAssessment {
   warningCount: number
   infoCount: number
 }
+
+/** The comparison window of the historical inputs (previousFollowers / previousEngagementRate). */
+const HISTORY_DAYS = 30
+
+const round1 = (n: number) => Math.round(n * 10) / 10
+const round2 = (n: number) => Math.round(n * 100) / 100
 
 // ============ MAIN FUNCTION ============
 
@@ -128,6 +147,9 @@ function checkEngagementDrop(input: RiskAssessmentInput, signals: RiskSignal[]):
   if (input.previousEngagementRate == null || input.previousEngagementRate <= 0) return
 
   const change = ((input.engagementRate - input.previousEngagementRate) / input.previousEngagementRate) * 100
+  const pct = Math.abs(Math.round(change))
+  const from = round1(input.previousEngagementRate)
+  const to = round1(input.engagementRate)
 
   if (change <= -30) {
     signals.push({
@@ -135,11 +157,14 @@ function checkEngagementDrop(input: RiskAssessmentInput, signals: RiskSignal[]):
       category: 'engagement',
       level: 'critical',
       title: 'Severe engagement drop',
-      description: `Engagement rate dropped ${Math.abs(Math.round(change))}% in the last 30 days (${input.previousEngagementRate.toFixed(1)}% → ${input.engagementRate.toFixed(1)}%).`,
+      description: `Engagement rate dropped ${pct}% in the last ${HISTORY_DAYS} days (${from.toFixed(1)}% → ${to.toFixed(1)}%).`,
+      actionable: 'Pause new agreements. Review if audience interest is declining or if content strategy changed.',
+      metric: `${Math.round(change)}%`,
       titleKey: 'risk_engagement_drop_severe',
       descriptionKey: 'risk_engagement_drop_severe_desc',
-      metric: `${Math.round(change)}%`,
-      actionable: 'Pause new agreements. Review if audience interest is declining or if content strategy changed.',
+      actionableKey: 'risk_engagement_drop_severe_action',
+      metricKey: 'risk_metric_pct_change',
+      params: { pct, days: HISTORY_DAYS, from, to, change: Math.round(change) },
     })
   } else if (change <= -20) {
     signals.push({
@@ -147,11 +172,14 @@ function checkEngagementDrop(input: RiskAssessmentInput, signals: RiskSignal[]):
       category: 'engagement',
       level: 'warning',
       title: 'Engagement declining',
-      description: `Engagement rate dropped ${Math.abs(Math.round(change))}% recently.`,
+      description: `Engagement rate dropped ${pct}% in the last ${HISTORY_DAYS} days.`,
+      actionable: 'Monitor for another period before committing to new campaigns.',
+      metric: `${Math.round(change)}%`,
       titleKey: 'risk_engagement_drop',
       descriptionKey: 'risk_engagement_drop_desc',
-      metric: `${Math.round(change)}%`,
-      actionable: 'Monitor for another period before committing to new campaigns.',
+      actionableKey: 'risk_engagement_drop_action',
+      metricKey: 'risk_metric_pct_change',
+      params: { pct, days: HISTORY_DAYS, from, to, change: Math.round(change) },
     })
   }
 }
@@ -160,34 +188,43 @@ function checkFollowerAnomaly(input: RiskAssessmentInput, signals: RiskSignal[])
   if (input.previousFollowers == null || input.previousFollowers <= 0) return
 
   const growth = ((input.followers - input.previousFollowers) / input.previousFollowers) * 100
+  const delta = input.followers - input.previousFollowers
 
   // Suspicious: >30% growth in 30 days for accounts >10K
   if (growth > 30 && input.followers > 10_000) {
+    const pct = Math.round(growth)
     signals.push({
       id: 'follower_spike',
       category: 'followers',
       level: 'warning',
       title: 'Unusual follower spike',
-      description: `Followers grew ${Math.round(growth)}% in 30 days (+${(input.followers - input.previousFollowers).toLocaleString()}). Could indicate purchased followers.`,
+      description: `Followers grew ${pct}% in ${HISTORY_DAYS} days (+${delta.toLocaleString()}). Could indicate purchased followers.`,
+      actionable: 'Check if engagement grew proportionally. If engagement stayed flat while followers spiked, this is a red flag.',
+      metric: `+${pct}%`,
       titleKey: 'risk_follower_spike',
       descriptionKey: 'risk_follower_spike_desc',
-      metric: `+${Math.round(growth)}%`,
-      actionable: 'Check if engagement grew proportionally. If engagement stayed flat while followers spiked, this is a red flag.',
+      actionableKey: 'risk_follower_spike_action',
+      metricKey: 'risk_metric_pct_gain',
+      params: { pct, days: HISTORY_DAYS, delta },
     })
   }
 
   // Follower loss
   if (growth < -10) {
+    const pct = Math.abs(Math.round(growth))
     signals.push({
       id: 'follower_loss',
       category: 'followers',
       level: 'info',
       title: 'Followers declining',
-      description: `Lost ${Math.abs(Math.round(growth))}% of followers recently.`,
+      description: `Lost ${pct}% of followers in the last ${HISTORY_DAYS} days.`,
+      actionable: 'May indicate reduced content quality or platform algorithm changes. Review recent content.',
+      metric: `${Math.round(growth)}%`,
       titleKey: 'risk_follower_loss',
       descriptionKey: 'risk_follower_loss_desc',
-      metric: `${Math.round(growth)}%`,
-      actionable: 'May indicate reduced content quality or platform algorithm changes. Review recent content.',
+      actionableKey: 'risk_follower_loss_action',
+      metricKey: 'risk_metric_pct_change',
+      params: { pct, days: HISTORY_DAYS, delta, change: Math.round(growth) },
     })
   }
 }
@@ -196,7 +233,10 @@ function checkContentDeletion(input: RiskAssessmentInput, signals: RiskSignal[])
   if (input.deletedPostsCount == null || input.deletedPostsCount <= 0) return
   if (input.totalPostsTracked == null || input.totalPostsTracked <= 0) return
 
-  const deletionRate = input.deletedPostsCount / input.totalPostsTracked
+  const deleted = input.deletedPostsCount
+  const total = input.totalPostsTracked
+  const deletionRate = deleted / total
+  const pct = Math.round(deletionRate * 100)
 
   if (deletionRate >= 0.3) {
     signals.push({
@@ -204,23 +244,29 @@ function checkContentDeletion(input: RiskAssessmentInput, signals: RiskSignal[])
       category: 'compliance',
       level: 'critical',
       title: 'Campaign content being deleted',
-      description: `${input.deletedPostsCount} of ${input.totalPostsTracked} campaign posts have been deleted (${Math.round(deletionRate * 100)}%).`,
+      description: `${deleted} of ${total} campaign posts have been deleted (${pct}%).`,
+      actionable: 'Contact the creator immediately. Review contract terms about content permanence.',
+      metric: `${deleted} deleted`,
       titleKey: 'risk_deletion_high',
       descriptionKey: 'risk_deletion_high_desc',
-      metric: `${input.deletedPostsCount} deleted`,
-      actionable: 'Contact the creator immediately. Review contract terms about content permanence.',
+      actionableKey: 'risk_deletion_high_action',
+      metricKey: 'risk_metric_deleted',
+      params: { deleted, total, pct },
     })
-  } else if (input.deletedPostsCount >= 1) {
+  } else if (deleted >= 1) {
     signals.push({
       id: 'content_deletion',
       category: 'compliance',
       level: 'warning',
       title: 'Post deleted after campaign',
-      description: `${input.deletedPostsCount} campaign post(s) have been removed.`,
+      description: `${deleted} campaign post(s) have been removed.`,
+      actionable: 'Check if deletion was intentional. Consider adding content permanence clauses to future contracts.',
+      metric: `${deleted} deleted`,
       titleKey: 'risk_deletion',
       descriptionKey: 'risk_deletion_desc',
-      metric: `${input.deletedPostsCount} deleted`,
-      actionable: 'Check if deletion was intentional. Consider adding content permanence clauses to future contracts.',
+      actionableKey: 'risk_deletion_action',
+      metricKey: 'risk_metric_deleted',
+      params: { deleted, total, pct },
     })
   }
 }
@@ -236,9 +282,11 @@ function checkDisclosureCompliance(input: RiskAssessmentInput, signals: RiskSign
       level: 'critical',
       title: 'Missing ad disclosure',
       description: 'Paid content is missing required disclosure (#ad, #sponsored, etc.). This violates advertising regulations.',
+      actionable: 'Ask the creator to add disclosure immediately. This is a legal requirement in most jurisdictions.',
       titleKey: 'risk_no_disclosure',
       descriptionKey: 'risk_no_disclosure_desc',
-      actionable: 'Ask the creator to add disclosure immediately. This is a legal requirement in most jurisdictions.',
+      actionableKey: 'risk_no_disclosure_action',
+      params: {},
     })
   }
 }
@@ -246,7 +294,9 @@ function checkDisclosureCompliance(input: RiskAssessmentInput, signals: RiskSign
 function checkPricingRisk(input: RiskAssessmentInput, signals: RiskSignal[]): void {
   if (!input.agreedFee || input.agreedFee <= 0 || input.avgViews <= 0) return
 
-  const cpm = (input.agreedFee / input.avgViews) * 1000
+  // Pre-campaign estimate on the creator's profile (fee ÷ average views of the
+  // profile) — not a campaign figure; campaign CPMs come from the overview.
+  const cpmRaw = (input.agreedFee / input.avgViews) * 1000
 
   // Ceiling = the shared benchmark's cpmMax for this format × tier (same number the CPM row
   // and the Deal Advisor use). Coarse per-platform fallback only when the caller gave none.
@@ -255,29 +305,40 @@ function checkPricingRisk(input: RiskAssessmentInput, signals: RiskSignal[]): vo
     ? input.cpmMax
     : (fallbackCeilings[input.platform] || 30)
 
-  if (cpm > ceiling * 1.5) {
+  const cpm = Math.round(cpmRaw)
+  const ceilingRounded = round2(ceiling)
+
+  if (cpmRaw > ceiling * 1.5) {
+    const pct = Math.round(cpmRaw / ceiling * 100 - 100)
     signals.push({
       id: 'cpm_extreme',
       category: 'pricing',
       level: 'critical',
       title: 'CPM extremely above market',
-      description: `CPM of €${cpm.toFixed(0)} is ${Math.round(cpm / ceiling * 100 - 100)}% above the market ceiling.`,
+      description: `CPM of €${cpm} is ${pct}% above the market ceiling (€${ceilingRounded}).`,
+      actionable: 'Renegotiate immediately or find alternative creators.',
+      metric: `€${cpm} CPM`,
       titleKey: 'risk_cpm_extreme',
       descriptionKey: 'risk_cpm_extreme_desc',
-      metric: `€${cpm.toFixed(0)} CPM`,
-      actionable: 'Renegotiate immediately or find alternative creators.',
+      actionableKey: 'risk_cpm_extreme_action',
+      metricKey: 'risk_metric_cpm',
+      params: { cpm, ceiling: ceilingRounded, pct },
     })
-  } else if (cpm > ceiling) {
+  } else if (cpmRaw > ceiling) {
+    const pct = Math.round(cpmRaw / ceiling * 100 - 100)
     signals.push({
       id: 'cpm_high',
       category: 'pricing',
       level: 'warning',
       title: 'CPM above market',
-      description: `CPM of €${cpm.toFixed(0)} exceeds the typical ceiling of €${ceiling}.`,
+      description: `CPM of €${cpm} exceeds the typical ceiling of €${ceilingRounded}.`,
+      actionable: 'Consider negotiating a lower fee for future collaborations.',
+      metric: `€${cpm} CPM`,
       titleKey: 'risk_cpm_high',
       descriptionKey: 'risk_cpm_high_desc',
-      metric: `€${cpm.toFixed(0)} CPM`,
-      actionable: 'Consider negotiating a lower fee for future collaborations.',
+      actionableKey: 'risk_cpm_high_action',
+      metricKey: 'risk_metric_cpm',
+      params: { cpm, ceiling: ceilingRounded, pct },
     })
   }
 }
@@ -285,7 +346,10 @@ function checkPricingRisk(input: RiskAssessmentInput, signals: RiskSignal[]): vo
 function checkDeliveryRisk(input: RiskAssessmentInput, signals: RiskSignal[]): void {
   if (!input.totalCampaigns || input.totalCampaigns < 2) return
 
-  const completionRate = (input.completedCampaigns || 0) / input.totalCampaigns
+  const total = input.totalCampaigns
+  const completed = input.completedCampaigns || 0
+  const completionRate = completed / total
+  const pct = Math.round(completionRate * 100)
 
   if (completionRate < 0.5) {
     signals.push({
@@ -293,11 +357,14 @@ function checkDeliveryRisk(input: RiskAssessmentInput, signals: RiskSignal[]): v
       category: 'delivery',
       level: 'critical',
       title: 'Poor delivery track record',
-      description: `Only ${Math.round(completionRate * 100)}% of campaigns completed (${input.completedCampaigns || 0}/${input.totalCampaigns}).`,
+      description: `Only ${pct}% of campaigns completed (${completed}/${total}).`,
+      actionable: 'Reconsider future collaborations. Require upfront content delivery or milestone payments.',
+      metric: `${pct}% delivery`,
       titleKey: 'risk_low_delivery',
       descriptionKey: 'risk_low_delivery_desc',
-      metric: `${Math.round(completionRate * 100)}% delivery`,
-      actionable: 'Reconsider future collaborations. Require upfront content delivery or milestone payments.',
+      actionableKey: 'risk_low_delivery_action',
+      metricKey: 'risk_metric_delivery',
+      params: { pct, completed, total },
     })
   } else if (completionRate < 0.8) {
     signals.push({
@@ -305,11 +372,14 @@ function checkDeliveryRisk(input: RiskAssessmentInput, signals: RiskSignal[]): v
       category: 'delivery',
       level: 'warning',
       title: 'Inconsistent delivery',
-      description: `${Math.round(completionRate * 100)}% campaign completion rate.`,
+      description: `${pct}% campaign completion rate (${completed}/${total}).`,
+      actionable: 'Set clearer expectations and deadlines for upcoming campaigns.',
+      metric: `${pct}%`,
       titleKey: 'risk_inconsistent_delivery',
       descriptionKey: 'risk_inconsistent_delivery_desc',
-      metric: `${Math.round(completionRate * 100)}%`,
-      actionable: 'Set clearer expectations and deadlines for upcoming campaigns.',
+      actionableKey: 'risk_inconsistent_delivery_action',
+      metricKey: 'risk_metric_pct',
+      params: { pct, completed, total },
     })
   }
 }
@@ -321,31 +391,39 @@ function checkEngagementQuality(input: RiskAssessmentInput, signals: RiskSignal[
 
   // Suspiciously high engagement (bot activity)
   if (likeRate > 20 && input.followers > 5_000) {
+    const pct = round1(likeRate)
     signals.push({
       id: 'suspicious_engagement',
       category: 'quality',
       level: 'warning',
       title: 'Suspiciously high engagement',
-      description: `Like rate of ${likeRate.toFixed(1)}% is unusually high for ${input.followers.toLocaleString()} followers.`,
+      description: `Like rate of ${pct.toFixed(1)}% is unusually high for ${input.followers.toLocaleString()} followers.`,
+      actionable: 'May indicate bot activity or engagement pods. Verify comment quality manually.',
+      metric: `${pct.toFixed(1)}% like rate`,
       titleKey: 'risk_suspicious_engagement',
       descriptionKey: 'risk_suspicious_engagement_desc',
-      metric: `${likeRate.toFixed(1)}% like rate`,
-      actionable: 'May indicate bot activity or engagement pods. Verify comment quality manually.',
+      actionableKey: 'risk_suspicious_engagement_action',
+      metricKey: 'risk_metric_like_rate',
+      params: { pct, followers: input.followers },
     })
   }
 
   // Very low engagement (dead audience)
   if (likeRate < 0.2 && input.followers > 50_000) {
+    const pct = round2(likeRate)
     signals.push({
       id: 'dead_audience',
       category: 'quality',
       level: 'warning',
       title: 'Very low audience engagement',
-      description: `Like rate of ${likeRate.toFixed(2)}% suggests many followers are inactive.`,
+      description: `Like rate of ${pct.toFixed(2)}% suggests many followers are inactive.`,
+      actionable: 'Actual reach may be much lower than follower count suggests. Factor this into fee negotiations.',
+      metric: `${pct.toFixed(2)}%`,
       titleKey: 'risk_dead_audience',
       descriptionKey: 'risk_dead_audience_desc',
-      metric: `${likeRate.toFixed(2)}%`,
-      actionable: 'Actual reach may be much lower than follower count suggests. Factor this into fee negotiations.',
+      actionableKey: 'risk_dead_audience_action',
+      metricKey: 'risk_metric_pct',
+      params: { pct, followers: input.followers },
     })
   }
 }

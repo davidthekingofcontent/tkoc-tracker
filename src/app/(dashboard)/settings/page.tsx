@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { DEFAULT_EMV_RATES } from '@/lib/emv'
 import { useI18n } from '@/i18n/context'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
@@ -303,8 +304,10 @@ export default function SettingsPage() {
     cpc: number
     engagementValues: Record<string, Record<string, number>>
     storyReachRates?: Record<string, number>
-  storySequenceDecay?: number
-}
+    storySequenceDecay?: number
+    /** Alcance estimado de publicaciones sin datos reales (% de seguidores por tier). */
+    postReachRates?: Record<string, number>
+  }
   const [benchmarkFeeRanges, setBenchmarkFeeRanges] = useState<FeeRangesData | null>(null)
   const [benchmarkCpmRates, setBenchmarkCpmRates] = useState<CpmThreshold[] | null>(null)
   const [benchmarkEmvRates, setBenchmarkEmvRates] = useState<EmvRatesData | null>(null)
@@ -667,6 +670,9 @@ export default function SettingsPage() {
   }
   function updateEmvStoryDecay(value: number) {
     setBenchmarkEmvRates(prev => prev ? { ...prev, storySequenceDecay: value / 100 } : prev)
+  }
+  function updateEmvPostRate(tier: string, value: number) {
+    setBenchmarkEmvRates(prev => prev ? { ...prev, postReachRates: { ...(prev.postReachRates || {}), [tier]: value / 100 } } : prev)
   }
   function updateEmvCpc(value: number) {
     setBenchmarkEmvRates(prev => prev ? { ...prev, cpc: value } : prev)
@@ -2404,6 +2410,49 @@ export default function SettingsPage() {
                                   <span className="text-xs text-gray-500">% de la anterior</span>
                                 </div>
                               </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Post audience estimate (decision 5, 2026-09-05): % of followers by tier for feed posts without real data */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                        {locale === 'es' ? 'Publicaciones: alcance estimado (% de seguidores)' : 'Posts: estimated reach (% of followers)'}
+                      </h4>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                        {locale === 'es'
+                          ? 'Solo para publicaciones sin alcance, impresiones ni vistas reales (típicamente fotos capturadas de datos públicos). Se usa en la audiencia y la tasa de engagement, siempre etiquetado como estimado; nunca en el EMV. Los reels usan sus vistas reales.'
+                          : 'Only for posts with no real reach, impressions or views (typically image posts from public data). Used for audience and engagement rate, always labelled as estimated; never for EMV. Reels use their real views.'}
+                      </p>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-gray-200 dark:border-gray-700">
+                              {[['NANO', 'Nano (< 10K)'], ['MICRO', 'Micro (10K-50K)'], ['MID', 'Mid (50K-250K)'], ['MACRO', 'Macro (250K-1M)'], ['MEGA', 'Mega (> 1M)']].map(([k, label]) => (
+                                <th key={k} className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{label}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              {['NANO', 'MICRO', 'MID', 'MACRO', 'MEGA'].map(tier => (
+                                <td key={tier} className="px-3 py-1.5">
+                                  <div className="flex items-center gap-1">
+                                    <Input
+                                      type="number"
+                                      step="1"
+                                      min="0"
+                                      max="100"
+                                      value={Math.round(((benchmarkEmvRates.postReachRates || {})[tier] ?? DEFAULT_EMV_RATES.postReachRates[tier as keyof typeof DEFAULT_EMV_RATES.postReachRates]) * 100)}
+                                      onChange={e => updateEmvPostRate(tier, Number(e.target.value))}
+                                      className="w-20 h-8 text-sm"
+                                    />
+                                    <span className="text-xs text-gray-500">%</span>
+                                  </div>
+                                </td>
+                              ))}
                             </tr>
                           </tbody>
                         </table>

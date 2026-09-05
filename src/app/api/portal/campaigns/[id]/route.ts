@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { resolveBrandScope, sanitizeCampaignForBrand } from '@/lib/brand-scope'
+import { computeCampaignOverview, stripEconomics } from '@/lib/campaign-overview'
+import { loadReportConfig, reportConfigForBrand } from '@/lib/report-config'
+import type { CampaignOverview } from '@/lib/metrics'
 
 // Brands are not a Prisma model: Setting 'campaign_brand_{campaignId}' holds
 // the brandId, and Setting key=brandId holds JSON { name, logo?, ... } (see
@@ -27,13 +30,140 @@ async function resolveCampaignBrand(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Brand-facing projection of the ONE campaign computation.
+//
+// The numbers come from computeCampaignOverview (src/lib/campaign-overview.ts)
+// — never recomputed here. stripEconomics() zeroes fees/ratio/CPM; on top of
+// that we drop the keys themselves so a brand never even sees the field names:
+// cost, membersWithCost, emvBasic, emvRatio, cpm and the CPM target row.
+// The only EMV a client sees is the extended one (David, decision 9B).
+// Field names match what GET /api/campaigns/[id] exposes so the shared
+// report component can read both responses with the same code.
+// ---------------------------------------------------------------------------
+
+type PortalTotals = Omit<CampaignOverview['totals'], 'cost' | 'membersWithCost' | 'emvBasic' | 'emvRatio' | 'cpm'>
+type PortalInfluencer = Omit<CampaignOverview['perInfluencer'][number], 'cost' | 'emvBasic' | 'emvRatio' | 'cpm'>
+type PortalMedia = Omit<CampaignOverview['perMedia'][number], 'emvBasic'>
+
+interface PortalOverview {
+  definitionsVersion: CampaignOverview['definitionsVersion']
+  totals: PortalTotals
+  perInfluencer: PortalInfluencer[]
+  perMedia: PortalMedia[]
+  timeline: CampaignOverview['timeline']
+  targets: CampaignOverview['targets']
+  business: CampaignOverview['business']
+  // Legacy keys kept for old portal clients (same values as the totals above).
+  totalMedia: number
+  totalLikes: number
+  totalComments: number
+  totalViews: number
+  /** Audiencia total (real + estimada) — what the old client called "reach". */
+  totalReach: number
+  totalImpressions: number | null
+  totalEngagements: number
+  engagementRate: number
+  profilesPosted: number
+  mediaCounts: Record<string, number>
+  emvExtended: number
+  emvEstimatedStories: number
+  emvRealStories: number
+  emvEstimatedAudience: number
+}
+
+function toPortalOverview(full: CampaignOverview): PortalOverview {
+  const ov = stripEconomics(full)
+  const t = ov.totals
+  const totals: PortalTotals = {
+    media: t.media,
+    mediaDeleted: t.mediaDeleted,
+    stories: t.stories,
+    posts: t.posts,
+    creatorsActive: t.creatorsActive,
+    views: t.views,
+    likes: t.likes,
+    comments: t.comments,
+    shares: t.shares,
+    saves: t.saves,
+    engagements: t.engagements,
+    audience: t.audience,
+    reachReal: t.reachReal,
+    impressionsReal: t.impressionsReal,
+    er: t.er,
+    members: t.members,
+    emvExtended: t.emvExtended,
+    emvEstimatedStories: t.emvEstimatedStories,
+    emvRealStories: t.emvRealStories,
+    emvEstimatedAudience: t.emvEstimatedAudience,
+    mediaCounts: t.mediaCounts,
+  }
+
+  const perInfluencer: PortalInfluencer[] = ov.perInfluencer.map(p => ({
+    influencerId: p.influencerId,
+    username: p.username,
+    platform: p.platform,
+    displayName: p.displayName,
+    followers: p.followers,
+    media: p.media,
+    stories: p.stories,
+    posts: p.posts,
+    deleted: p.deleted,
+    views: p.views,
+    engagements: p.engagements,
+    audience: p.audience,
+    er: p.er,
+    emvExtended: p.emvExtended,
+    deliverablesPlanned: p.deliverablesPlanned,
+    status: p.status,
+    vsBaseline: p.vsBaseline,
+  }))
+  const perMedia: PortalMedia[] = ov.perMedia.map(m => ({
+    id: m.id,
+    views: m.views,
+    mediaType: m.mediaType,
+    audience: m.audience,
+    audienceBasis: m.audienceBasis,
+    audienceEstimated: m.audienceEstimated,
+    engagements: m.engagements,
+    emvExtended: m.emvExtended,
+    isDeleted: m.isDeleted,
+  }))
+
+  return {
+    definitionsVersion: ov.definitionsVersion,
+    totals,
+    perInfluencer,
+    perMedia,
+    timeline: ov.timeline,
+    // The CPM target compares against cost: not for brands.
+    targets: ov.targets.filter(t => t.key !== 'cpm'),
+    business: ov.business,
+    totalMedia: totals.media,
+    totalLikes: totals.likes,
+    totalComments: totals.comments,
+    totalViews: totals.views,
+    totalReach: totals.audience.total,
+    totalImpressions: totals.impressionsReal,
+    totalEngagements: totals.engagements,
+    engagementRate: totals.er.value ?? 0,
+    profilesPosted: totals.creatorsActive,
+    mediaCounts: totals.mediaCounts,
+    emvExtended: totals.emvExtended,
+    emvEstimatedStories: totals.emvEstimatedStories,
+    emvRealStories: totals.emvRealStories,
+    emvEstimatedAudience: totals.emvEstimatedAudience,
+  }
+}
+
 // GET /api/portal/campaigns/[id]
 // Brand-facing, read-only campaign detail. Response shape is compatible with
 // what the campaign report page expects from GET /api/campaigns/[id]:
 //   { campaign: { ..., influencers: [{ influencer, status }], media: [...] }, overview }
 // but with ALL confidential fields stripped (agreedFee, cost, commission,
-// notes, budget, ROI, shipping*). Media keeps the `source` field so the
-// report can badge Meta vs public data.
+// notes, budget, ratio EMV, CPM, shipping*). Media keeps the `source` field so
+// the report can badge Meta vs public data, and `isDeleted` so deleted posts
+// are marked (decision 7B: they stay in the totals).
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -70,142 +200,129 @@ export async function GET(
       100
     )
 
-    const campaign = await prisma.campaign.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        name: true,
-        status: true,
-        startDate: true,
-        endDate: true,
-        platforms: true,
-        paymentType: true,
-        objective: true,
-        createdAt: true,
-        influencers: {
-          select: {
-            id: true,
-            status: true,
-            contentDelivered: true,
-            influencer: {
-              select: {
-                id: true,
-                username: true,
-                displayName: true,
-                avatarUrl: true,
-                platform: true,
-                followers: true,
-                engagementRate: true,
-              },
-            },
-          },
-        },
-        media: {
-          orderBy: { postedAt: 'desc' },
-          skip: mediaOffset,
-          take: mediaLimit,
-          select: {
-            id: true,
-            platform: true,
-            mediaType: true,
-            caption: true,
-            thumbnailUrl: true,
-            permalink: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-            views: true,
-            reach: true,
-            impressions: true,
-            engagementRate: true,
-            source: true,
-            postedAt: true,
-            influencer: {
-              select: {
-                id: true,
-                username: true,
-                displayName: true,
-                avatarUrl: true,
-                platform: true,
-              },
-            },
-          },
-        },
-      },
-    })
+    // The campaign row (with ONE page of media) and the full overview (over
+    // ALL media, never a page) are independent: load them together.
+    // What the agency hid from the client (ReportConfig) never leaves the server:
+    // hidden publications/creators are excluded from the lists AND from every figure.
+    const reportConfig = await loadReportConfig(id)
+    const hiddenMediaIds = reportConfig.hiddenMediaIds
+    const hiddenInfluencerIds = reportConfig.hiddenInfluencerIds
 
-    if (!campaign) {
+    const [campaign, fullOverview, brand] = await Promise.all([
+      prisma.campaign.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          startDate: true,
+          endDate: true,
+          platforms: true,
+          paymentType: true,
+          objective: true,
+          createdAt: true,
+          // Objetivos numéricos (decisión 1B): the client may see what was
+          // agreed, except the CPM cap, which is a cost figure.
+          targetViews: true,
+          targetReach: true,
+          targetEngagement: true,
+          targetER: true,
+          targetsFrozenAt: true,
+          // Resultados de negocio aportados por el propio cliente (decisión 14A).
+          promoCode: true,
+          codeRedemptions: true,
+          clientReportedSales: true,
+          clientReportedLeads: true,
+          clientReportedRevenue: true,
+          businessResultsSource: true,
+          businessResultsReportedAt: true,
+          businessResultsNotes: true,
+          influencers: {
+            where: hiddenInfluencerIds.length > 0 ? { influencerId: { notIn: hiddenInfluencerIds } } : undefined,
+            select: {
+              id: true,
+              status: true,
+              contentDelivered: true,
+              deliverablesPlanned: true,
+              // "Vs su habitual" in the report: the creator's frozen baseline
+              // (public medians, no economics) and the format it refers to.
+              baselineSnapshot: true,
+              negotiatedFormat: true,
+              influencer: {
+                select: {
+                  id: true,
+                  username: true,
+                  displayName: true,
+                  avatarUrl: true,
+                  platform: true,
+                  followers: true,
+                  engagementRate: true,
+                },
+              },
+            },
+          },
+          media: {
+            where: (hiddenMediaIds.length > 0 || hiddenInfluencerIds.length > 0)
+              ? {
+                  ...(hiddenMediaIds.length > 0 ? { id: { notIn: hiddenMediaIds } } : {}),
+                  ...(hiddenInfluencerIds.length > 0 ? { influencerId: { notIn: hiddenInfluencerIds } } : {}),
+                }
+              : undefined,
+            orderBy: { postedAt: 'desc' },
+            skip: mediaOffset,
+            take: mediaLimit,
+            select: {
+              id: true,
+              platform: true,
+              mediaType: true,
+              caption: true,
+              thumbnailUrl: true,
+              permalink: true,
+              likes: true,
+              comments: true,
+              shares: true,
+              saves: true,
+              views: true,
+              reach: true,
+              impressions: true,
+              engagementRate: true,
+              source: true,
+              postedAt: true,
+              isDeleted: true,
+              deletedAt: true,
+              influencer: {
+                select: {
+                  id: true,
+                  username: true,
+                  displayName: true,
+                  avatarUrl: true,
+                  platform: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+      computeCampaignOverview(id, { exclude: { mediaIds: hiddenMediaIds, influencerIds: hiddenInfluencerIds } }),
+      // Brand info for the report cover: { name, logo } | null
+      resolveCampaignBrand(id),
+    ])
+
+    if (!campaign || !fullOverview) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
     }
 
-    // Overview aggregates — public metrics only (no cost, no mediaValue).
-    const [metrics, profilesPosted, mediaCounts] = await Promise.all([
-      prisma.media.aggregate({
-        where: { campaignId: id },
-        _sum: {
-          reach: true,
-          impressions: true,
-          likes: true,
-          comments: true,
-          shares: true,
-          saves: true,
-          views: true,
-        },
-        _count: true,
-      }),
-      prisma.media.findMany({
-        where: { campaignId: id },
-        select: { influencerId: true },
-        distinct: ['influencerId'],
-      }),
-      prisma.media.groupBy({
-        by: ['mediaType'],
-        where: { campaignId: id },
-        _count: true,
-      }),
-    ])
+    const overview = toPortalOverview(fullOverview)
 
-    const totalLikes = metrics._sum.likes || 0
-    const totalComments = metrics._sum.comments || 0
-    const totalReach = metrics._sum.reach || 0
-    const totalViews = metrics._sum.views || 0
-    const totalImpressions = metrics._sum.impressions || 0
-    const totalEngagements =
-      totalLikes +
-      totalComments +
-      (metrics._sum.shares || 0) +
-      (metrics._sum.saves || 0)
-
-    const engagementDenominator =
-      totalReach > 0 ? totalReach : totalViews > 0 ? totalViews : 0
-    const engagementRate =
-      engagementDenominator > 0
-        ? ((totalLikes + totalComments) / engagementDenominator) * 100
-        : 0
-
-    const overview = {
-      totalMedia: metrics._count,
-      totalLikes,
-      totalComments,
-      totalViews,
-      totalReach: totalReach > 0 ? totalReach : totalViews,
-      totalImpressions: totalImpressions > 0 ? totalImpressions : null,
-      totalEngagements,
-      engagementRate: Math.round(engagementRate * 100) / 100,
-      profilesPosted: profilesPosted.length,
-      mediaCounts: mediaCounts.reduce(
-        (acc, item) => ({ ...acc, [item.mediaType]: item._count }),
-        {} as Record<string, number>
-      ),
-    }
-
-    // Brand info for the report cover: { name, logo } | null
-    const brand = await resolveCampaignBrand(id)
-
-    // Defense in depth: the selects above are already narrow, but strip any
-    // confidential key that might sneak in if a select widens later.
-    return NextResponse.json(sanitizeCampaignForBrand({ campaign: { ...campaign, brand }, overview }))
+    // Defense in depth: the selects above are already narrow and the overview
+    // projection drops every economic key, but strip any confidential key that
+    // might sneak in if a select widens later.
+    return NextResponse.json(sanitizeCampaignForBrand({
+      campaign: { ...campaign, brand },
+      overview,
+      // Client-safe projection of the agency's report configuration (texts, hidden sections/columns)
+      reportConfig: reportConfigForBrand(reportConfig),
+    }))
   } catch (error) {
     console.error('Portal campaign error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

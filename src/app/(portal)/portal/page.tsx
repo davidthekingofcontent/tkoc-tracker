@@ -17,8 +17,12 @@ import {
 
 // ---------------------------------------------------------------------------
 // Brand portal home — read-only dashboard for a client (BRAND) user.
-// Data: GET /api/portal/overview (built by a parallel task; parsed defensively).
-// NO economic data exists in this response by design.
+// Data: GET /api/portal/overview, whose figures come from the SAME server
+// computation as the portal campaign page and the report
+// (computeCampaignOverview, with the media/creators the agency hid from this
+// client already excluded). Nothing is re-derived here: "Interacciones" is
+// metrics.engagements (likes + comentarios + shares + saves), never a local
+// sum. NO economic data exists in this response by design (no cost, no ratio).
 // ---------------------------------------------------------------------------
 
 interface PortalCampaign {
@@ -30,14 +34,28 @@ interface PortalCampaign {
   platforms?: string[]
   counts?: {
     influencers?: number
+    creatorsActive?: number
     media?: number
-  }
+    mediaDeleted?: number
+  } | null
   metrics?: {
     likes?: number
     comments?: number
+    shares?: number
+    saves?: number
     views?: number
+    /** Interacciones = likes + comentarios + shares + saves (from the overview). */
+    engagements?: number
+    /** @deprecated alias of engagements kept by the API */
     interactions?: number
-  }
+    audience?: {
+      total?: number
+      real?: number
+      estimated?: number
+      estimatedShare?: number
+    }
+    engagementRate?: number | null
+  } | null
 }
 
 interface PortalOverview {
@@ -142,11 +160,10 @@ export default function PortalHomePage() {
             const dateRange = [formatDate(campaign.startDate), formatDate(campaign.endDate)]
               .filter(Boolean)
               .join(' — ')
-            // Interactions shown to the brand = likes + comments (views has
-            // its own tile, so we don't reuse metrics.interactions which
-            // also includes views).
-            const interactions =
-              (campaign.metrics?.likes || 0) + (campaign.metrics?.comments || 0)
+            // Interacciones come straight from the overview (decision 3A); the
+            // legacy `interactions` alias carries the same value.
+            const engagements =
+              campaign.metrics?.engagements ?? campaign.metrics?.interactions ?? 0
             return (
               <Link
                 key={campaign.id}
@@ -179,7 +196,7 @@ export default function PortalHomePage() {
                 <div className="mt-4 grid grid-cols-2 gap-2">
                   <MiniStat icon={Users} label="Creadores" value={formatNumber(campaign.counts?.influencers || 0)} />
                   <MiniStat icon={ImageIcon} label="Contenidos" value={formatNumber(campaign.counts?.media || 0)} />
-                  <MiniStat icon={Heart} label="Interacciones" value={formatNumber(interactions)} />
+                  <MiniStat icon={Heart} label="Interacciones" value={formatNumber(engagements)} />
                   <MiniStat icon={Eye} label="Vistas" value={formatNumber(campaign.metrics?.views || 0)} />
                 </div>
 

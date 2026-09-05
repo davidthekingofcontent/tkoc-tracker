@@ -2,11 +2,12 @@
 
 import { useState, useEffect } from "react"
 import Link from "next/link"
-import { cn, formatNumber } from "@/lib/utils"
+import { cn, formatNumber, formatEur, formatRatio, formatPercent } from "@/lib/utils"
+import type { AudienceTotals, EngagementRateResult } from '@/lib/metrics'
 import { useI18n } from '@/i18n/context'
 import { Avatar } from '@/components/ui/avatar'
 import { useRole } from '@/hooks/use-role'
-import { CreatorScoreBadge } from '@/components/creator-score-badge'
+import { CreatorScoreBadge, useIntelligenceText } from '@/components/creator-score-badge'
 import { getQuickBenchmark } from '@/lib/market-benchmark-client'
 import { calculateCreatorScore } from '@/lib/creator-score'
 import {
@@ -19,7 +20,7 @@ import {
   BarChart3,
   Activity,
   ArrowUpRight,
-  DollarSign,
+  Euro,
   Heart,
   MessageCircle,
   Play,
@@ -40,6 +41,7 @@ import {
   Link2,
   ExternalLink,
   User,
+  Globe,
 } from "lucide-react"
 import { RepeatRadarWidget } from '@/components/dashboard/repeat-radar-widget'
 import { CampaignWizard } from '@/components/campaign-wizard'
@@ -50,14 +52,22 @@ interface DashboardStats {
   activeCampaigns: number
   totalCampaigns: number
   totalInfluencers: number
+  /** @deprecated legacy alias of `audience.total`. */
   totalReach: number
   avgEngagementRate: number
+  /** Σ fees acordados (decision 6); the API returns 0 for BRAND users. */
   totalInvestment: number
   totalEMV: { basic: number; extended: number }
   totalMediaPosts: number
   totalViews: number
   totalLikes: number
   totalComments: number
+  /** Audiencia real + estimada with the split (decision 5) — summed by the API from the overviews. */
+  audience?: AudienceTotals
+  /** Tasa de engagement with the share of its base that is estimated (4C). */
+  er?: EngagementRateResult
+  /** Ratio EMV = EMV ÷ coste (9B), computed by the API; null without cost and always null for BRAND users. Never ROI. */
+  emvRatio?: number | null
 }
 
 interface RecentCampaign {
@@ -75,6 +85,8 @@ interface TopInfluencer {
   followers: number
   engagementRate: number | null
   avatarUrl: string | null
+  /** Interacciones = likes + comentarios + shares + saves (3A), summed by the API. */
+  totalEngagements?: number
   totalLikes: number
   totalComments: number
   totalViews: number
@@ -167,18 +179,8 @@ interface CreatorDashboardData {
 }
 
 // ============ SHARED HELPERS ============
-
-function formatCompact(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
-  return n.toString()
-}
-
-function formatCurrency(n: number): string {
-  if (n >= 1_000_000) return `€${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `€${(n / 1_000).toFixed(1)}K`
-  return `€${n.toFixed(0)}`
-}
+// Numbers, amounts, percentages and dates go through src/lib/utils (formatNumber,
+// formatEur, formatRatio, formatPercent) driven by the UI locale — no local formatters.
 
 function PlatformIcon({ platform, className }: { platform: string; className?: string }) {
   const p = platform.toUpperCase()
@@ -198,20 +200,23 @@ function platformColor(platform: string): string {
 // ============ MAIN EXPORT ============
 
 export default function DashboardPage() {
-  const { role } = useRole()
+  const { role, isBrand, loading } = useRole()
   const isCreator = role === 'CREATOR'
 
   if (isCreator) {
     return <CreatorDashboard />
   }
 
-  return <AdminDashboard />
+  // Fees, cost and the Ratio EMV are internal figures: never shown to BRAND users,
+  // and not before the role is known so a brand never sees them flash by.
+  return <AdminDashboard showEconomics={!loading && !isBrand} />
 }
 
 // ============ CREATOR DASHBOARD ============
 
 function CreatorDashboard() {
   const { t, locale } = useI18n()
+  const intelligenceText = useIntelligenceText()
   const [isLoading, setIsLoading] = useState(true)
   const [data, setData] = useState<CreatorDashboardData | null>(null)
 
@@ -349,7 +354,7 @@ function CreatorDashboard() {
             <span>@{profile.username}</span>
             {profile.followers > 0 && (
               <span className="text-xs bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-full">
-                {formatCompact(profile.followers)} followers
+                {formatNumber(profile.followers, { locale })} followers
               </span>
             )}
           </div>
@@ -372,12 +377,14 @@ function CreatorDashboard() {
                 grade={scoreResult.grade}
                 signal={scoreResult.signal}
                 summary={scoreResult.summary}
+                summaryKey={scoreResult.summaryKey}
+                summaryParams={scoreResult.summaryParams}
                 components={scoreResult.components}
                 size="lg"
                 expandable={false}
               />
               <p className="text-sm text-gray-600 dark:text-gray-400 text-center max-w-md">
-                {scoreResult.summary}
+                {intelligenceText(scoreResult.summaryKey, scoreResult.summaryParams, scoreResult.summary)}
               </p>
 
               {/* Component breakdown */}
@@ -389,10 +396,10 @@ function CreatorDashboard() {
                   { label: locale === 'es' ? 'Historial' : 'Track Record', data: scoreResult.components.trackRecord, weight: 15 },
                   { label: locale === 'es' ? 'Calidad de Audiencia' : 'Audience Quality', data: scoreResult.components.audienceQuality, weight: 10 },
                 ].map((comp) => (
-                  <div key={comp.label} title={comp.data.detail}>
+                  <div key={comp.label} title={intelligenceText(comp.data.detailKey, comp.data.detailParams, comp.data.detail)}>
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs text-gray-600 dark:text-gray-400">
-                        {comp.label} <span className="text-gray-300 dark:text-gray-600">({comp.weight}%)</span>
+                        {comp.label} <span className="text-gray-300 dark:text-gray-600">({formatPercent(comp.weight, { digits: 0, locale })})</span>
                       </span>
                       <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{comp.data.score}</span>
                     </div>
@@ -435,7 +442,7 @@ function CreatorDashboard() {
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-sm overflow-hidden">
         <div className="border-b border-gray-200 dark:border-gray-700 px-6 py-4">
           <h2 className="text-base font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-            <DollarSign className="h-5 w-5 text-purple-600" />
+            <Euro className="h-5 w-5 text-purple-600" />
             {locale === 'es' ? 'Mi Valor de Mercado' : 'My Market Value'}
           </h2>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
@@ -452,7 +459,7 @@ function CreatorDashboard() {
                   {tierLabels[benchmark.tier] || benchmark.tier}
                 </span>
                 <span className="text-sm text-gray-500 dark:text-gray-400">
-                  {formatCompact(profile?.followers || 0)} followers
+                  {formatNumber(profile?.followers || 0, { locale })} followers
                 </span>
               </div>
 
@@ -463,21 +470,21 @@ function CreatorDashboard() {
                 </p>
                 <div className="flex items-end justify-between gap-2">
                   <div className="text-center flex-1">
-                    <p className="text-lg font-bold text-gray-600 dark:text-gray-400">{formatCurrency(benchmark.feeMin)}</p>
+                    <p className="text-lg font-bold text-gray-600 dark:text-gray-400">{formatEur(benchmark.feeMin, { compact: true, locale })}</p>
                     <p className="text-[10px] text-gray-400 uppercase">Min</p>
                   </div>
                   <div className="text-center flex-1">
-                    <p className="text-2xl font-bold text-purple-600">{formatCurrency(benchmark.feeTarget)}</p>
+                    <p className="text-2xl font-bold text-purple-600">{formatEur(benchmark.feeTarget, { compact: true, locale })}</p>
                     <p className="text-[10px] text-purple-500 uppercase font-medium">
                       {locale === 'es' ? 'Objetivo' : 'Target'}
                     </p>
                   </div>
                   <div className="text-center flex-1">
-                    <p className="text-lg font-bold text-gray-600 dark:text-gray-400">{formatCurrency(benchmark.feeMax)}</p>
+                    <p className="text-lg font-bold text-gray-600 dark:text-gray-400">{formatEur(benchmark.feeMax, { compact: true, locale })}</p>
                     <p className="text-[10px] text-gray-400 uppercase">Max</p>
                   </div>
                   <div className="text-center flex-1">
-                    <p className="text-lg font-bold text-gray-400 dark:text-gray-500">{formatCurrency(benchmark.feeCeiling)}</p>
+                    <p className="text-lg font-bold text-gray-400 dark:text-gray-500">{formatEur(benchmark.feeCeiling, { compact: true, locale })}</p>
                     <p className="text-[10px] text-gray-400 uppercase">
                       {locale === 'es' ? 'Techo' : 'Ceiling'}
                     </p>
@@ -498,7 +505,7 @@ function CreatorDashboard() {
           ) : (
             <div className="text-center py-8">
               <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-green-50 dark:bg-green-900/20">
-                <DollarSign className="h-8 w-8 text-green-400" />
+                <Euro className="h-8 w-8 text-green-400" />
               </div>
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 {locale === 'es'
@@ -550,7 +557,7 @@ function CreatorDashboard() {
                     )}
                     {campaign.agreedFee != null && campaign.agreedFee > 0 && (
                       <span className="font-medium text-green-600 dark:text-green-400">
-                        {formatCurrency(campaign.agreedFee)}
+                        {formatEur(campaign.agreedFee, { locale })}
                       </span>
                     )}
                   </div>
@@ -727,7 +734,7 @@ function Building2Icon({ className }: { className?: string }) {
 
 // ============ ADMIN DASHBOARD (original) ============
 
-function AdminDashboard() {
+function AdminDashboard({ showEconomics }: { showEconomics: boolean }) {
   const { t, locale } = useI18n()
   const [greeting, setGreeting] = useState("")
   const [userName, setUserName] = useState("there")
@@ -794,9 +801,22 @@ function AdminDashboard() {
     UGC: 'UGC',
   }
 
-  const emvRatio = stats && stats.totalInvestment > 0 && stats.totalEMV?.extended > 0
-    ? (stats.totalEMV.extended / stats.totalInvestment)
-    : null
+  // Ratio EMV (decision 9B): computed ONCE by the API from the campaign overviews
+  // (extended EMV ÷ fees acordados), shown as a multiple ("×2,4"), never as ROI.
+  // Null without cost and for BRAND users; never recomputed here.
+  const emvRatio = showEconomics ? (stats?.emvRatio ?? null) : null
+
+  // Audiencia (decision 5): alcance real → impresiones → vistas → estimación etiquetada.
+  // The split "real · estimado" always travels with the figure.
+  const audience = stats?.audience
+  const audienceSubtitle = audience && audience.total > 0
+    ? audience.estimated > 0
+      ? t.campaignReport.audienceMixSub
+          .replace('{real}', formatNumber(audience.real, { locale }))
+          .replace('{estimated}', formatNumber(audience.estimated, { locale }))
+          .replace('{pct} %', formatPercent(audience.estimatedShare * 100, { digits: 0, locale }))
+      : t.campaignReport.audienceRealSub
+    : undefined
 
   if (isLoading) {
     return (
@@ -834,8 +854,8 @@ function AdminDashboard() {
         </div>
       </div>
 
-      {/* KPI Cards Row 1 — Main metrics */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* KPI Cards Row 1 — Main metrics (the investment card is internal: hidden for BRAND users) */}
+      <div className={cn("grid grid-cols-2 gap-4", showEconomics ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
         <KPICard
           label={t.dashboard.activeCampaigns}
           value={stats?.activeCampaigns || 0}
@@ -852,26 +872,38 @@ function AdminDashboard() {
           iconBg="bg-blue-100 text-blue-600 dark:bg-blue-900/30"
           href="/contacts"
         />
+        {showEconomics && (
+          <KPICard
+            label={locale === 'es' ? 'Inversion total' : 'Total Investment'}
+            value={stats?.totalInvestment || 0}
+            format="currency"
+            icon={<Euro className="h-5 w-5" />}
+            iconBg="bg-green-100 text-green-600 dark:bg-green-900/30"
+          />
+        )}
         <KPICard
-          label={locale === 'es' ? 'Inversion total' : 'Total Investment'}
-          value={stats?.totalInvestment || 0}
-          format="currency"
-          icon={<DollarSign className="h-5 w-5" />}
-          iconBg="bg-green-100 text-green-600 dark:bg-green-900/30"
-        />
-        <KPICard
-          label="EMV"
+          label={showEconomics ? 'EMV' : t.campaignReport.emvTitle}
           value={stats?.totalEMV?.extended || 0}
           format="currency"
           icon={<Zap className="h-5 w-5" />}
           iconBg="bg-yellow-100 text-yellow-600 dark:bg-yellow-900/30"
-          subtitle={emvRatio ? `${emvRatio.toFixed(1)}x EMV Ratio` : undefined}
+          subtitle={emvRatio ? `${formatRatio(emvRatio, { locale })} ${t.campaignDetail.emvRatio}` : undefined}
           subtitleColor={emvRatio && emvRatio >= 2 ? 'text-green-600' : emvRatio && emvRatio >= 1 ? 'text-yellow-600' : 'text-red-500'}
         />
       </div>
 
       {/* KPI Cards Row 2 — Performance metrics */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <KPICard
+          label={locale === 'es' ? 'Alcance' : 'Reach'}
+          value={audience?.total ?? stats?.totalReach ?? 0}
+          format="compact"
+          icon={<Globe className="h-5 w-5" />}
+          iconBg="bg-teal-100 text-teal-600 dark:bg-teal-900/30"
+          subtitle={audienceSubtitle}
+          subtitleColor="text-gray-500"
+          small
+        />
         <KPICard
           label={locale === 'es' ? 'Publicaciones' : 'Posts'}
           value={stats?.totalMediaPosts || 0}
@@ -1005,13 +1037,13 @@ function AdminDashboard() {
                     </p>
                     <div className="flex items-center gap-2 text-xs text-gray-400">
                       <PlatformIcon platform={inf.platform} className={cn("h-3 w-3", platformColor(inf.platform))} />
-                      <span>{formatCompact(inf.followers)}</span>
-                      {inf.engagementRate && <span>· {inf.engagementRate.toFixed(1)}%</span>}
+                      <span>{formatNumber(inf.followers, { locale })}</span>
+                      {inf.engagementRate ? <span>· {formatPercent(inf.engagementRate, { digits: 1, locale })}</span> : null}
                     </div>
                   </div>
                   <div className="text-right shrink-0">
                     <p className="text-xs font-semibold text-gray-900 dark:text-white">
-                      {formatCompact(inf.totalLikes + inf.totalComments)}
+                      {formatNumber(inf.totalEngagements ?? (inf.totalLikes + inf.totalComments), { locale })}
                     </p>
                     <p className="text-[10px] text-gray-400">eng.</p>
                   </div>
@@ -1051,14 +1083,14 @@ function AdminDashboard() {
                   <div className="flex items-center gap-3 text-xs text-gray-500 shrink-0">
                     {item.views > 0 && (
                       <span className="flex items-center gap-1">
-                        <Eye className="h-3 w-3" />{formatCompact(item.views)}
+                        <Eye className="h-3 w-3" />{formatNumber(item.views, { locale })}
                       </span>
                     )}
                     <span className="flex items-center gap-1">
-                      <Heart className="h-3 w-3" />{formatCompact(item.likes)}
+                      <Heart className="h-3 w-3" />{formatNumber(item.likes, { locale })}
                     </span>
                     <span className="flex items-center gap-1">
-                      <MessageCircle className="h-3 w-3" />{formatCompact(item.comments)}
+                      <MessageCircle className="h-3 w-3" />{formatNumber(item.comments, { locale })}
                     </span>
                   </div>
                   {item.permalink && (
@@ -1186,10 +1218,11 @@ function KPICard({
   subtitle?: string
   subtitleColor?: string
 }) {
-  const formatted = format === 'percent' ? `${value}%`
-    : format === 'currency' ? formatCurrency(value)
-    : format === 'compact' ? formatCompact(value)
-    : formatNumber(value)
+  const { locale } = useI18n()
+  // 'number' and 'compact' both use the shared compact formatter (K / M / B), es: "1,5K" · en: "1.5K".
+  const formatted = format === 'percent' ? formatPercent(value, { locale })
+    : format === 'currency' ? formatEur(value, { compact: true, locale })
+    : formatNumber(value, { locale })
 
   const card = (
     <div className={cn(

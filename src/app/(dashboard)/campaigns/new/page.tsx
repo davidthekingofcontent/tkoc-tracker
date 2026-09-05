@@ -44,6 +44,54 @@ interface Template {
 type TrackingType = 'social_listening' | 'influencer_tracking' | 'ugc' | null
 type PaymentType = 'PAID' | 'GIFTED'
 
+// ---- Objective + numeric targets (decision 1B, David 2026-09-05) ----
+// Same rule as the wizard: objective AND at least one numeric target > 0 are
+// required, except for Social Listening (no deliverables to measure against).
+type NumericTargetKey = 'targetViews' | 'targetReach' | 'targetEngagement' | 'targetER' | 'targetCpmMax'
+type NumericTargets = Record<NumericTargetKey, string>
+type TargetLabelKey = 'targetViewsLabel' | 'targetReachLabel' | 'targetEngagementLabel' | 'targetERLabel' | 'targetCpmMaxLabel'
+type TargetHintKey = 'targetHintAwareness' | 'targetHintEngagement' | 'targetHintTraffic' | 'targetHintConversion' | 'targetHintContent'
+
+const EMPTY_TARGETS: NumericTargets = { targetViews: '', targetReach: '', targetEngagement: '', targetER: '', targetCpmMax: '' }
+
+const TARGET_FIELDS: { key: NumericTargetKey; labelKey: TargetLabelKey; unit: string; step: number; placeholder: string; recommendedFor: string[] }[] = [
+  { key: 'targetViews', labelKey: 'targetViewsLabel', unit: '', step: 1, placeholder: '500000', recommendedFor: ['awareness', 'traffic', 'content'] },
+  { key: 'targetReach', labelKey: 'targetReachLabel', unit: '', step: 1, placeholder: '300000', recommendedFor: ['awareness', 'conversion'] },
+  { key: 'targetEngagement', labelKey: 'targetEngagementLabel', unit: '', step: 1, placeholder: '15000', recommendedFor: ['engagement'] },
+  { key: 'targetER', labelKey: 'targetERLabel', unit: '%', step: 0.1, placeholder: '3.5', recommendedFor: ['engagement'] },
+  { key: 'targetCpmMax', labelKey: 'targetCpmMaxLabel', unit: '€', step: 0.5, placeholder: '12', recommendedFor: ['awareness', 'traffic', 'conversion', 'content'] },
+]
+
+const TARGET_HINT_KEY: Record<string, TargetHintKey> = {
+  awareness: 'targetHintAwareness',
+  engagement: 'targetHintEngagement',
+  traffic: 'targetHintTraffic',
+  conversion: 'targetHintConversion',
+  content: 'targetHintContent',
+}
+
+function toPositiveInt(value: string): number | null {
+  if (value.trim() === '') return null
+  const n = parseInt(value, 10)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function toPositiveFloat(value: string): number | null {
+  if (value.trim() === '') return null
+  const n = parseFloat(value.replace(',', '.'))
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function parseTargets(raw: NumericTargets): Record<NumericTargetKey, number | null> {
+  return {
+    targetViews: toPositiveInt(raw.targetViews),
+    targetReach: toPositiveInt(raw.targetReach),
+    targetEngagement: toPositiveInt(raw.targetEngagement),
+    targetER: toPositiveFloat(raw.targetER),
+    targetCpmMax: toPositiveFloat(raw.targetCpmMax),
+  }
+}
+
 export default function NewCampaignPage() {
   const router = useRouter()
   const { t, locale } = useI18n()
@@ -71,6 +119,7 @@ export default function NewCampaignPage() {
   const [endDate, setEndDate] = useState('')
   const [country, setCountry] = useState('')
   const [objective, setObjective] = useState('')
+  const [numericTargets, setNumericTargets] = useState<NumericTargets>(EMPTY_TARGETS)
 
   // Brand state
   const [brands, setBrands] = useState<Array<{ id: string; name: string }>>([])
@@ -166,6 +215,7 @@ export default function NewCampaignPage() {
     setFormats({ reel: false, story: false, post: false, video: false, short: false, carousel: false })
     setCountry('')
     setObjective('')
+    setNumericTargets(EMPTY_TARGETS)
     setInfluencers([])
     setStartDate('')
     setEndDate('')
@@ -206,8 +256,20 @@ export default function NewCampaignPage() {
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState('')
 
+  const parsedTargets = parseTargets(numericTargets)
+  const hasAnyTarget = Object.values(parsedTargets).some((v) => v !== null)
+  const goalsRequired = trackingType !== 'social_listening'
+  const goalsComplete = !goalsRequired || (!!objective && hasAnyTarget)
+  const canCreate = !!campaignName.trim() && !!trackingType && goalsComplete && !isCreating
+  const selectedObjective = CAMPAIGN_OBJECTIVES.find((o) => o.value === objective)
+  const targetHint = objective ? t.campaigns[TARGET_HINT_KEY[objective]] : null
+
   const handleCreate = async () => {
     if (!campaignName.trim() || !trackingType) return
+    if (goalsRequired && (!objective || !hasAnyTarget)) {
+      setError(t.campaigns.objectiveAndTargetRequired)
+      return
+    }
 
     setIsCreating(true)
     setError('')
@@ -239,6 +301,7 @@ export default function NewCampaignPage() {
           ...(trackingType === 'influencer_tracking' && endDate && { endDate }),
           ...(country && { country }),
           ...(objective && { objective }),
+          ...parsedTargets,
           ...(selectedBrandId && { brandId: selectedBrandId }),
         }),
       })
@@ -624,28 +687,106 @@ export default function NewCampaignPage() {
             </Card>
           )}
 
-          {/* Campaign Objective */}
+          {/* Campaign Objective (decision 1B: required, except Social Listening) */}
           <Card variant="elevated">
-            <h3 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">
-              {locale === 'es' ? 'Objetivo de la Campaña' : 'Campaign Objective'}
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                  {t.campaigns.objectiveTitle}
+                </h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  {t.campaigns.objectiveDesc}
+                </p>
+              </div>
+              {goalsRequired && (
+                <span className="shrink-0 rounded-full bg-purple-100 dark:bg-purple-900/40 px-2.5 py-0.5 text-xs font-semibold text-purple-700 dark:text-purple-300">
+                  {t.campaigns.objectiveRequired}
+                </span>
+              )}
+            </div>
+            {!goalsRequired && (
+              <p className="mb-4 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-xs text-blue-700 dark:text-blue-300">
+                {t.campaigns.objectiveOptionalListening}
+              </p>
+            )}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {CAMPAIGN_OBJECTIVES.map((obj) => {
+                const active = objective === obj.value
+                return (
+                  <button
+                    key={obj.value}
+                    type="button"
+                    onClick={() => setObjective(active && !goalsRequired ? '' : obj.value)}
+                    aria-pressed={active}
+                    className={`flex items-center gap-3 rounded-lg border px-4 py-3 text-left transition-all ${
+                      active
+                        ? 'border-purple-500/60 bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
+                        : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                    }`}
+                  >
+                    <span className="text-xl">{obj.icon}</span>
+                    <span className="text-sm font-medium">{locale === 'es' ? obj.labelEs : obj.labelEn}</span>
+                    {active && <div className="ml-auto h-2 w-2 shrink-0 rounded-full bg-purple-500" />}
+                  </button>
+                )
+              })}
+            </div>
+          </Card>
+
+          {/* Numeric targets (decision 1B: at least one > 0, frozen at launch) */}
+          <Card variant="elevated">
+            <h3 className="mb-1 text-base font-semibold text-gray-900 dark:text-gray-100">
+              {t.campaigns.numericTargetsTitle}
             </h3>
             <p className="mb-4 text-sm text-gray-500">
-              {locale === 'es'
-                ? 'Selecciona el objetivo principal de esta campaña.'
-                : 'Select the main objective for this campaign.'}
+              {t.campaigns.numericTargetsDesc}
             </p>
-            <select
-              value={objective}
-              onChange={(e) => setObjective(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white dark:bg-gray-800"
-            >
-              <option value="">{locale === 'es' ? 'Sin objetivo específico' : 'No specific objective'}</option>
-              {CAMPAIGN_OBJECTIVES.map((obj) => (
-                <option key={obj.value} value={obj.value}>
-                  {obj.icon} {locale === 'es' ? obj.labelEs : obj.labelEn}
-                </option>
-              ))}
-            </select>
+            {selectedObjective && targetHint && (
+              <div className="mb-4 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 px-3 py-2 text-xs text-purple-800 dark:text-purple-200">
+                <span className="mr-1">{selectedObjective.icon}</span>
+                <span className="font-semibold">{locale === 'es' ? selectedObjective.labelEs : selectedObjective.labelEn}:</span>{' '}
+                {targetHint}
+              </div>
+            )}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {TARGET_FIELDS.map((f) => {
+                const recommended = !!objective && f.recommendedFor.includes(objective)
+                const inputId = `new-campaign-${f.key}`
+                return (
+                  <div key={f.key}>
+                    <label htmlFor={inputId} className="mb-1 flex items-center gap-2 text-xs font-medium uppercase text-gray-500">
+                      {t.campaigns[f.labelKey]}{f.unit ? ` (${f.unit})` : ''}
+                      {recommended && (
+                        <span className="rounded-full bg-purple-100 dark:bg-purple-900/40 px-2 py-0.5 text-[10px] font-semibold normal-case text-purple-700 dark:text-purple-300">
+                          {t.campaigns.targetRecommended}
+                        </span>
+                      )}
+                    </label>
+                    <input
+                      id={inputId}
+                      type="number"
+                      min={0}
+                      step={f.step}
+                      inputMode="decimal"
+                      value={numericTargets[f.key]}
+                      onChange={(e) => {
+                        const value = e.target.value
+                        setNumericTargets((prev) => ({ ...prev, [f.key]: value }))
+                      }}
+                      placeholder={f.placeholder}
+                      className={`w-full rounded-lg border bg-white dark:bg-gray-800 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 ${
+                        recommended ? 'border-purple-300 dark:border-purple-700' : 'border-gray-300 dark:border-gray-600'
+                      }`}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+            {goalsRequired && !hasAnyTarget && (
+              <p className="mt-3 text-xs text-amber-700 dark:text-amber-400">
+                {t.campaigns.atLeastOneTarget}
+              </p>
+            )}
           </Card>
 
           {/* Brand Account Targets (not for UGC) */}
@@ -952,13 +1093,18 @@ export default function NewCampaignPage() {
           )}
 
           {/* Action Buttons */}
-          <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-6">
+          <div className="flex flex-col items-end gap-2 border-t border-gray-200 dark:border-gray-700 pt-6 sm:flex-row sm:items-center sm:justify-end sm:gap-3">
+            {!goalsComplete && (
+              <p className="text-xs text-amber-700 dark:text-amber-400 sm:mr-auto">
+                {t.campaigns.objectiveAndTargetRequired}
+              </p>
+            )}
             <Link href="/campaigns">
               <Button variant="ghost">{t.common.cancel}</Button>
             </Link>
             <Button
               onClick={handleCreate}
-              disabled={!campaignName.trim() || isCreating}
+              disabled={!canCreate}
             >
               {isCreating ? t.campaigns.creating : t.campaigns.createCampaign}
             </Button>

@@ -7,9 +7,19 @@
  * - Which format worked best
  * - Where to shift budget
  * - What to scale and what to cut
+ *
+ * i18n: every generated string exists in Spanish (default) and English.
+ * The headline metric is the EMV ratio (EMV / spend) — it is never
+ * presented as "ROI" (product decision 9B) and it is written the way the rest
+ * of the product writes it: formatRatio → "×2,3" (es) / "2.3×" (en).
+ * Interacciones = likes + comentarios + shares + saves (decision 3A).
  */
 
+import { formatRatio } from '@/lib/utils'
+
 // ============ TYPES ============
+
+export type PlaybookLocale = 'es' | 'en'
 
 export interface PlaybookInput {
   campaignName: string
@@ -31,11 +41,17 @@ export interface PlaybookInput {
   }>
 }
 
+export interface PlaybookFormatVerdict {
+  format: string            // raw media type code (REEL, POST, STORY…)
+  formatLabel: string       // localized, plural, lowercase ("reels", "publicaciones")
+  reason: string            // localized explanation
+}
+
 export interface PlaybookResult {
   // Campaign summary
   campaignGrade: string     // A+, A, B, C, D, F
-  roiRatio: number
-  roiVerdict: string        // "Strong ROI", "Break even", "Below target"
+  roiRatio: number          // EMV ratio (EMV / spend) — wire name kept for compatibility
+  roiVerdict: string        // localized EMV-ratio verdict ("Ratio EMV sólido", "Strong EMV ratio")
 
   // Key insights (3-5 bullet points)
   insights: PlaybookInsight[]
@@ -47,8 +63,8 @@ export interface PlaybookResult {
   skipList: string[]        // usernames to skip next time
 
   // Format analysis
-  bestFormat: { format: string; reason: string } | null
-  worstFormat: { format: string; reason: string } | null
+  bestFormat: PlaybookFormatVerdict | null
+  worstFormat: PlaybookFormatVerdict | null
 
   // Budget recommendation
   budgetAdvice: string
@@ -60,31 +76,70 @@ export interface PlaybookResult {
 export interface PlaybookInsight {
   type: 'success' | 'warning' | 'action' | 'insight' | 'info'
   icon: string              // emoji
-  text: string
-  textKey: string           // i18n key
+  text: string              // localized
+  textKey: string           // stable i18n key (locale-independent)
+}
+
+// ============ LOCALE HELPERS ============
+
+/** Intl tag for the locale ('es-ES' | 'en-US'). */
+function intlTag(locale: PlaybookLocale): string {
+  return locale === 'es' ? 'es-ES' : 'en-US'
+}
+
+/** Integer with thousands separators in the locale's convention (1.234 / 1,234). */
+function fmtInt(value: number, locale: PlaybookLocale): string {
+  return Math.round(value).toLocaleString(intlTag(locale), { maximumFractionDigits: 0 })
+}
+
+/** Euro amount — Spanish puts the symbol after the number, English before. */
+function fmtEur(value: number, locale: PlaybookLocale): string {
+  const n = fmtInt(value, locale)
+  return locale === 'es' ? `${n} €` : `€${n}`
+}
+
+/** Localized, plural, lowercase label for a media type code (REEL → "reels" / POST → "publicaciones"). */
+export function playbookFormatLabel(format: string, locale: PlaybookLocale): string {
+  const key = (format || '').toUpperCase()
+  const labels: Record<string, { es: string; en: string }> = {
+    REEL: { es: 'reels', en: 'reels' },
+    POST: { es: 'publicaciones', en: 'posts' },
+    STORY: { es: 'stories', en: 'stories' },
+    VIDEO: { es: 'vídeos', en: 'videos' },
+    SHORT: { es: 'shorts', en: 'shorts' },
+    CAROUSEL: { es: 'carruseles', en: 'carousels' },
+    LIVE: { es: 'directos', en: 'lives' },
+  }
+  const entry = labels[key]
+  if (entry) return entry[locale]
+  // Unknown code: show it lowercased rather than shouting the enum value.
+  return (format || '').toLowerCase()
+}
+
+/** "3 creadores" / "3 creators" — with singular handling. */
+function creatorsCount(n: number, locale: PlaybookLocale): string {
+  if (locale === 'es') return n === 1 ? '1 creador' : `${n} creadores`
+  return n === 1 ? '1 creator' : `${n} creators`
 }
 
 // ============ MAIN FUNCTION ============
 
-export function generatePlaybook(input: PlaybookInput): PlaybookResult {
-  const { influencers, totalSpent, totalEMV, objective } = input
+export function generatePlaybook(input: PlaybookInput, locale: PlaybookLocale = 'es'): PlaybookResult {
+  const { influencers, totalSpent, totalEMV } = input
 
   if (influencers.length === 0) {
-    return createEmptyPlaybook(input)
+    return createEmptyPlaybook(locale)
   }
 
-  // Calculate EMV Ratio (informative, NOT used for grading decisions)
+  // EMV ratio (EMV / spend). Drives the grade; never described as ROI.
   const roiRatio = totalSpent > 0 ? Math.round((totalEMV / totalSpent) * 100) / 100 : 0
-  const campaignGrade = gradeROI(roiRatio)
-  const roiVerdict = roiRatio >= 2.5 ? 'Excellent EMV Ratio' :
-                     roiRatio >= 1.5 ? 'Strong EMV Ratio' :
-                     roiRatio >= 1.0 ? 'Positive EMV Ratio' :
-                     roiRatio >= 0.5 ? 'Below target' :
-                     'Low EMV Ratio'
+  const campaignGrade = gradeEmvRatio(roiRatio)
+  const roiVerdict = emvVerdict(roiRatio, locale)
 
   // Analyze each influencer
   const influencerAnalysis = influencers.map(inf => {
-    const totalEngagement = inf.totalLikes + inf.totalComments + inf.totalShares
+    // Interacciones (decision 3A): likes + comentarios + shares + saves
+    const totalEngagement = inf.totalLikes + inf.totalComments + inf.totalShares + inf.totalSaves
     const emvShare = totalEMV > 0 ? ((inf.agreedFee > 0 ? inf.agreedFee : 1) / totalSpent) : 0
     const cpm = inf.totalViews > 0 ? (inf.agreedFee / inf.totalViews) * 1000 : Infinity
     const engagementPerEuro = inf.agreedFee > 0 ? totalEngagement / inf.agreedFee : 0
@@ -104,12 +159,12 @@ export function generatePlaybook(input: PlaybookInput): PlaybookResult {
   // Top/worst performers
   const topPerformer = sorted[0] ? {
     username: sorted[0].username,
-    reason: `Generated ${sorted[0].totalEngagement.toLocaleString()} engagements at €${sorted[0].cpm.toFixed(0)} CPM — best efficiency in campaign.`,
+    reason: topPerformerReason(sorted[0], locale),
   } : null
 
   const worstPerformer = sorted.length > 1 ? {
     username: sorted[sorted.length - 1].username,
-    reason: `Lowest engagement-per-euro ratio. CPM of €${sorted[sorted.length - 1].cpm.toFixed(0)} with only ${sorted[sorted.length - 1].totalEngagement.toLocaleString()} engagements.`,
+    reason: worstPerformerReason(sorted[sorted.length - 1], locale),
   } : null
 
   // Repeat / skip lists
@@ -139,24 +194,38 @@ export function generatePlaybook(input: PlaybookInput): PlaybookResult {
       .map(([format, data]) => ({ format, engPerPost: data.posts > 0 ? data.engagement / data.posts : 0 }))
       .sort((a, b) => b.engPerPost - a.engPerPost)
 
+    const best = formats[0]
+    const worst = formats[formats.length - 1]
+    const bestLabel = playbookFormatLabel(best.format, locale)
+    const worstLabel = playbookFormatLabel(worst.format, locale)
+    const multiplier = Math.round(best.engPerPost / (worst.engPerPost || 1))
+    const bestEng = fmtInt(best.engPerPost, locale)
+    const worstEng = fmtInt(worst.engPerPost, locale)
+
     bestFormat = {
-      format: formats[0].format,
-      reason: `${Math.round(formats[0].engPerPost).toLocaleString()} avg engagements per post — ${Math.round(formats[0].engPerPost / (formats[formats.length - 1].engPerPost || 1))}x better than ${formats[formats.length - 1].format}.`,
+      format: best.format,
+      formatLabel: bestLabel,
+      reason: locale === 'es'
+        ? `${bestEng} interacciones de media por publicación — ${multiplier}x más que ${worstLabel}.`
+        : `${bestEng} avg engagements per post — ${multiplier}x better than ${worstLabel}.`,
     }
     worstFormat = {
-      format: formats[formats.length - 1].format,
-      reason: `Only ${Math.round(formats[formats.length - 1].engPerPost).toLocaleString()} avg engagements per post.`,
+      format: worst.format,
+      formatLabel: worstLabel,
+      reason: locale === 'es'
+        ? `Solo ${worstEng} interacciones de media por publicación.`
+        : `Only ${worstEng} avg engagements per post.`,
     }
   }
 
   // Generate insights
-  const insights = generateInsights(input, influencerAnalysis, sorted, roiRatio, bestFormat, worstFormat)
+  const insights = generateInsights(input, influencerAnalysis, sorted, roiRatio, bestFormat, locale)
 
   // Budget advice
-  const budgetAdvice = generateBudgetAdvice(roiRatio, sorted, totalSpent)
+  const budgetAdvice = generateBudgetAdvice(roiRatio, locale)
 
   // Next campaign recommendation
-  const nextCampaignRec = generateNextCampaignRec(input, roiRatio, sorted, bestFormat)
+  const nextCampaignRec = generateNextCampaignRec(roiRatio, sorted, bestFormat, locale)
 
   return {
     campaignGrade,
@@ -176,51 +245,114 @@ export function generatePlaybook(input: PlaybookInput): PlaybookResult {
 
 // ============ HELPERS ============
 
-function gradeROI(roi: number): string {
-  if (roi >= 3.0) return 'A+'
-  if (roi >= 2.5) return 'A'
-  if (roi >= 2.0) return 'B+'
-  if (roi >= 1.5) return 'B'
-  if (roi >= 1.0) return 'C'
-  if (roi >= 0.5) return 'D'
+/** Letter grade from the EMV ratio. Thresholds are the product's, unchanged. */
+function gradeEmvRatio(ratio: number): string {
+  if (ratio >= 3.0) return 'A+'
+  if (ratio >= 2.5) return 'A'
+  if (ratio >= 2.0) return 'B+'
+  if (ratio >= 1.5) return 'B'
+  if (ratio >= 1.0) return 'C'
+  if (ratio >= 0.5) return 'D'
   return 'F'
+}
+
+/** One-line verdict on the EMV ratio, localized. */
+function emvVerdict(ratio: number, locale: PlaybookLocale): string {
+  if (locale === 'es') {
+    return ratio >= 2.5 ? 'Ratio EMV excelente' :
+           ratio >= 1.5 ? 'Ratio EMV sólido' :
+           ratio >= 1.0 ? 'Ratio EMV positivo' :
+           ratio >= 0.5 ? 'Por debajo del objetivo' :
+           'Ratio EMV bajo'
+  }
+  return ratio >= 2.5 ? 'Excellent EMV ratio' :
+         ratio >= 1.5 ? 'Strong EMV ratio' :
+         ratio >= 1.0 ? 'Positive EMV ratio' :
+         ratio >= 0.5 ? 'Below target' :
+         'Low EMV ratio'
+}
+
+type AnalyzedInfluencer = {
+  username: string
+  totalEngagement: number
+  cpm: number
+  engagementPerEuro: number
+  totalViews: number
+  agreedFee: number
+}
+
+/** Why the MVP is the MVP. The CPM clause is omitted when there are no views to compute it from. */
+function topPerformerReason(inf: AnalyzedInfluencer, locale: PlaybookLocale): string {
+  const eng = fmtInt(inf.totalEngagement, locale)
+  const hasCpm = Number.isFinite(inf.cpm)
+  if (locale === 'es') {
+    return hasCpm
+      ? `Generó ${eng} interacciones con un CPM de ${fmtEur(inf.cpm, locale)} — la mejor eficiencia de la campaña.`
+      : `Generó ${eng} interacciones — la mejor eficiencia de la campaña.`
+  }
+  return hasCpm
+    ? `Generated ${eng} engagements at ${fmtEur(inf.cpm, locale)} CPM — best efficiency in the campaign.`
+    : `Generated ${eng} engagements — best efficiency in the campaign.`
+}
+
+/** Why the weakest creator ranks last. */
+function worstPerformerReason(inf: AnalyzedInfluencer, locale: PlaybookLocale): string {
+  const eng = fmtInt(inf.totalEngagement, locale)
+  const hasCpm = Number.isFinite(inf.cpm)
+  if (locale === 'es') {
+    return hasCpm
+      ? `El ratio de interacciones por euro más bajo. CPM de ${fmtEur(inf.cpm, locale)} con solo ${eng} interacciones.`
+      : `El ratio de interacciones por euro más bajo. Solo ${eng} interacciones y sin visualizaciones registradas.`
+  }
+  return hasCpm
+    ? `Lowest engagement-per-euro ratio. CPM of ${fmtEur(inf.cpm, locale)} with only ${eng} engagements.`
+    : `Lowest engagement-per-euro ratio. Only ${eng} engagements and no views tracked.`
 }
 
 function generateInsights(
   input: PlaybookInput,
-  analysis: Array<{ username: string; totalEngagement: number; cpm: number; engagementPerEuro: number; totalViews: number; agreedFee: number }>,
-  sorted: typeof analysis,
-  roi: number,
+  analysis: AnalyzedInfluencer[],
+  sorted: AnalyzedInfluencer[],
+  ratio: number,
   bestFormat: PlaybookResult['bestFormat'],
-  worstFormat: PlaybookResult['worstFormat']
+  locale: PlaybookLocale
 ): PlaybookInsight[] {
   const insights: PlaybookInsight[] = []
+  const es = locale === 'es'
 
-  // ROI insight
-  if (roi >= 2.0) {
+  // EMV-ratio insight
+  if (ratio >= 2.0) {
     insights.push({
       type: 'success',
       icon: '🎯',
-      text: `Campaign generated ${roi.toFixed(1)}x return on investment. Strong performance.`,
+      text: es
+        ? `La campaña generó un ratio EMV de ${formatRatio(ratio, { locale })}. Rendimiento sólido.`
+        : `The campaign generated a ${formatRatio(ratio, { locale })} EMV ratio. Strong performance.`,
       textKey: 'playbook_roi_strong',
     })
-  } else if (roi < 1.0) {
+  } else if (ratio < 1.0) {
     insights.push({
       type: 'warning',
       icon: '⚠️',
-      text: `Campaign EMV (€${input.totalEMV.toLocaleString()}) was below investment (€${input.totalSpent.toLocaleString()}). ROI is ${roi.toFixed(1)}x.`,
+      text: es
+        ? `El EMV de la campaña (${fmtEur(input.totalEMV, locale)}) quedó por debajo de la inversión (${fmtEur(input.totalSpent, locale)}). El ratio EMV es ${formatRatio(ratio, { locale })}.`
+        : `Campaign EMV (${fmtEur(input.totalEMV, locale)}) was below the investment (${fmtEur(input.totalSpent, locale)}). The EMV ratio is ${formatRatio(ratio, { locale })}.`,
       textKey: 'playbook_roi_negative',
     })
   }
 
   // Concentration risk
   if (sorted.length >= 3) {
-    const topShare = sorted[0].totalEngagement / analysis.reduce((sum, a) => sum + a.totalEngagement, 0)
+    const totalEng = analysis.reduce((sum, a) => sum + a.totalEngagement, 0)
+    const topShare = totalEng > 0 ? sorted[0].totalEngagement / totalEng : 0
     if (topShare > 0.5) {
+      const pct = Math.round(topShare * 100)
       insights.push({
         type: 'insight',
         icon: '📊',
-        text: `@${sorted[0].username} generated ${Math.round(topShare * 100)}% of all engagement. High concentration risk — diversify next time.`,
+        text: es
+          ? `@${sorted[0].username} generó el ${pct} % de todas las interacciones. Alto riesgo de concentración — diversifica la próxima vez.`
+          : `@${sorted[0].username} generated ${pct}% of all engagement. High concentration risk — diversify next time.`,
         textKey: 'playbook_concentration_risk',
       })
     }
@@ -231,7 +363,9 @@ function generateInsights(
     insights.push({
       type: 'action',
       icon: '🎬',
-      text: `${bestFormat.format}s performed best. ${bestFormat.reason} Focus budget on this format next time.`,
+      text: es
+        ? `Los ${bestFormat.formatLabel} fueron el formato que mejor funcionó. ${bestFormat.reason} Concentra el presupuesto en este formato la próxima vez.`
+        : `${capitalize(bestFormat.formatLabel)} performed best. ${bestFormat.reason} Focus budget on this format next time.`,
       textKey: 'playbook_best_format',
     })
   }
@@ -239,10 +373,13 @@ function generateInsights(
   // Cost efficiency
   const cheapHighPerformers = sorted.filter(inf => inf.cpm <= 15 && inf.totalEngagement > 100)
   if (cheapHighPerformers.length > 0) {
+    const n = cheapHighPerformers.length
     insights.push({
       type: 'success',
       icon: '💰',
-      text: `${cheapHighPerformers.length} creator(s) delivered strong results at CPM under €15. These are your best value picks.`,
+      text: es
+        ? `${creatorsCount(n, locale)} ${n === 1 ? 'logró' : 'lograron'} buenos resultados con un CPM inferior a ${fmtEur(15, locale)}. Son tus mejores apuestas en relación calidad-precio.`
+        : `${creatorsCount(n, locale)} delivered strong results at a CPM under ${fmtEur(15, locale)}. These are your best value picks.`,
       textKey: 'playbook_value_picks',
     })
   }
@@ -250,10 +387,13 @@ function generateInsights(
   // Underperformers
   const expensive = sorted.filter(inf => inf.cpm > 30 && inf.totalEngagement < 500)
   if (expensive.length > 0) {
+    const n = expensive.length
     insights.push({
       type: 'warning',
       icon: '📉',
-      text: `${expensive.length} creator(s) had high CPM (>€30) with low engagement. Cut or renegotiate for next campaign.`,
+      text: es
+        ? `${creatorsCount(n, locale)} ${n === 1 ? 'tuvo' : 'tuvieron'} un CPM alto (>${fmtEur(30, locale)}) con pocas interacciones. Descarta o renegocia para la próxima campaña.`
+        : `${creatorsCount(n, locale)} had a high CPM (>${fmtEur(30, locale)}) with low engagement. Cut or renegotiate for the next campaign.`,
       textKey: 'playbook_cut_underperformers',
     })
   }
@@ -261,43 +401,62 @@ function generateInsights(
   return insights.slice(0, 5) // Max 5 insights
 }
 
-function generateBudgetAdvice(roi: number, sorted: Array<{ username: string; cpm: number; engagementPerEuro: number }>, totalSpent: number): string {
-  if (roi >= 2.0) {
-    return `Strong ROI at ${roi.toFixed(1)}x. Consider increasing budget by 20-30% and concentrating on top performers.`
+function generateBudgetAdvice(ratio: number, locale: PlaybookLocale): string {
+  const es = locale === 'es'
+  if (ratio >= 2.0) {
+    return es
+      ? `Ratio EMV sólido de ${formatRatio(ratio, { locale })}. Plantéate aumentar el presupuesto un 20-30 % y concentrarlo en los creadores con mejor rendimiento.`
+      : `Strong EMV ratio at ${formatRatio(ratio, { locale })}. Consider increasing budget by 20-30% and concentrating on top performers.`
   }
-  if (roi >= 1.0) {
-    return `Positive but modest ROI. Reallocate budget from bottom performers to top creators. Same spend, better distribution.`
+  if (ratio >= 1.0) {
+    return es
+      ? 'Ratio EMV positivo pero modesto. Reasigna presupuesto de los creadores con peor rendimiento a los mejores. Misma inversión, mejor reparto.'
+      : 'Positive but modest EMV ratio. Reallocate budget from bottom performers to top creators. Same spend, better distribution.'
   }
-  return `Below target ROI. Reduce total budget or dramatically shift to fewer, better-performing creators. Quality over quantity.`
+  return es
+    ? 'Ratio EMV por debajo del objetivo. Reduce el presupuesto total o concéntralo en menos creadores con mejor rendimiento. Calidad antes que cantidad.'
+    : 'EMV ratio below target. Reduce total budget or shift decisively to fewer, better-performing creators. Quality over quantity.'
 }
 
 function generateNextCampaignRec(
-  input: PlaybookInput,
-  roi: number,
-  sorted: Array<{ username: string; cpm: number; engagementPerEuro: number }>,
-  bestFormat: PlaybookResult['bestFormat']
+  ratio: number,
+  sorted: Array<{ username: string }>,
+  bestFormat: PlaybookResult['bestFormat'],
+  locale: PlaybookLocale
 ): string {
+  const es = locale === 'es'
   const topCreators = sorted.slice(0, Math.ceil(sorted.length * 0.4)).map(s => `@${s.username}`).join(', ')
-  const formatRec = bestFormat ? ` Focus on ${bestFormat.format}s.` : ''
+  const formatRec = bestFormat
+    ? (es ? ` Céntrate en ${bestFormat.formatLabel}.` : ` Focus on ${bestFormat.formatLabel}.`)
+    : ''
 
-  if (roi >= 2.0) {
-    return `Scale this campaign. Keep ${topCreators}.${formatRec} Increase budget to amplify what works.`
+  if (ratio >= 2.0) {
+    return es
+      ? `Escala esta campaña. Mantén a ${topCreators}.${formatRec} Aumenta el presupuesto para amplificar lo que funciona.`
+      : `Scale this campaign. Keep ${topCreators}.${formatRec} Increase budget to amplify what works.`
   }
-  if (roi >= 1.0) {
-    return `Repeat with a tighter roster: ${topCreators}.${formatRec} Cut underperformers to improve efficiency.`
+  if (ratio >= 1.0) {
+    return es
+      ? `Repite con un roster más ajustado: ${topCreators}.${formatRec} Descarta a los de menor rendimiento para mejorar la eficiencia.`
+      : `Repeat with a tighter roster: ${topCreators}.${formatRec} Cut underperformers to improve efficiency.`
   }
-  return `Rethink the approach. Test with 2-3 proven creators (${topCreators}) at lower fees.${formatRec} Validate before scaling.`
+  return es
+    ? `Replantea el enfoque. Prueba con 2-3 creadores ya validados (${topCreators}) con tarifas más bajas.${formatRec} Valida antes de escalar.`
+    : `Rethink the approach. Test with 2-3 proven creators (${topCreators}) at lower fees.${formatRec} Validate before scaling.`
 }
 
-function createEmptyPlaybook(input: PlaybookInput): PlaybookResult {
+function createEmptyPlaybook(locale: PlaybookLocale): PlaybookResult {
+  const es = locale === 'es'
   return {
     campaignGrade: 'N/A',
     roiRatio: 0,
-    roiVerdict: 'No data',
+    roiVerdict: es ? 'Sin datos' : 'No data',
     insights: [{
       type: 'info' as const,
       icon: 'ℹ️',
-      text: 'No influencer data available yet. Playbook will be generated once content is tracked.',
+      text: es
+        ? 'Todavía no hay datos de creadores. El playbook se generará cuando haya contenido registrado.'
+        : 'No creator data available yet. The playbook will be generated once content is tracked.',
       textKey: 'playbook_no_data',
     }],
     topPerformer: null,
@@ -306,7 +465,14 @@ function createEmptyPlaybook(input: PlaybookInput): PlaybookResult {
     skipList: [],
     bestFormat: null,
     worstFormat: null,
-    budgetAdvice: 'Insufficient data.',
-    nextCampaignRec: 'Start tracking influencer content to generate actionable recommendations.',
+    budgetAdvice: es ? 'Datos insuficientes.' : 'Insufficient data.',
+    nextCampaignRec: es
+      ? 'Empieza a registrar el contenido de los creadores para generar recomendaciones accionables.'
+      : 'Start tracking creator content to generate actionable recommendations.',
   }
+}
+
+/** Capitalize the first character (for sentence-initial format labels in English). */
+function capitalize(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s
 }

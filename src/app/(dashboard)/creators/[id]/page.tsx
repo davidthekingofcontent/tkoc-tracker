@@ -30,7 +30,7 @@ import {
 } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { useI18n } from '@/i18n/context'
-import { formatNumber } from '@/lib/utils'
+import { formatNumber, formatDate, formatPercent } from '@/lib/utils'
 import { proxyImg } from '@/lib/proxy-image'
 
 // ============ TYPES ============
@@ -233,13 +233,14 @@ function SignalColor({ signal }: { signal: string }) {
 }
 
 function ConfidenceBadge({ confidence, isInferred }: { confidence: number; isInferred: boolean }) {
+  const { locale } = useI18n()
   return (
     <span className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
       isInferred
         ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
         : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
     }`}>
-      {isInferred ? 'Inferred' : 'Observed'} {Math.round(confidence * 100)}%
+      {isInferred ? 'Inferred' : 'Observed'} {formatPercent(confidence * 100, { digits: 0, locale })}
     </span>
   )
 }
@@ -468,34 +469,34 @@ export default function CreatorProfilePage() {
               <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">@{pp.username}</span>
               {pp.lastScraped && (
                 <span className="text-[10px] text-gray-400">
-                  {isEs ? 'Actualizado' : 'Updated'}: {new Date(pp.lastScraped).toLocaleDateString()}
+                  {isEs ? 'Actualizado' : 'Updated'}: {formatDate(pp.lastScraped, { locale })}
                 </span>
               )}
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
               <div className="rounded-xl bg-gray-50 dark:bg-gray-700/50 p-4">
                 <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-1">{isEs ? 'Seguidores' : 'Followers'}</p>
-                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{formatNumber(pp.followers)}</p>
+                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{formatNumber(pp.followers, { locale })}</p>
               </div>
               <div className="rounded-xl bg-gray-50 dark:bg-gray-700/50 p-4">
                 <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-1">ER%</p>
-                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{pp.engagementRate.toFixed(1)}%</p>
+                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{formatPercent(pp.engagementRate, { digits: 1, locale })}</p>
               </div>
               <div className="rounded-xl bg-gray-50 dark:bg-gray-700/50 p-4">
                 <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-1">{isEs ? 'Vistas med.' : 'Avg views'}</p>
-                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{pp.avgViews > 0 ? formatNumber(pp.avgViews) : '--'}</p>
+                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{pp.avgViews > 0 ? formatNumber(pp.avgViews, { locale }) : '--'}</p>
               </div>
               <div className="rounded-xl bg-gray-50 dark:bg-gray-700/50 p-4">
                 <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-1">{isEs ? 'Likes med.' : 'Avg likes'}</p>
-                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{pp.avgLikes > 0 ? formatNumber(pp.avgLikes) : '--'}</p>
+                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{pp.avgLikes > 0 ? formatNumber(pp.avgLikes, { locale }) : '--'}</p>
               </div>
               <div className="rounded-xl bg-gray-50 dark:bg-gray-700/50 p-4">
                 <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-1">{isEs ? 'Posts' : 'Posts'}</p>
-                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{formatNumber(pp.postsCount)}</p>
+                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{formatNumber(pp.postsCount, { locale })}</p>
               </div>
               <div className="rounded-xl bg-gray-50 dark:bg-gray-700/50 p-4">
                 <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-1">{isEs ? 'Siguiendo' : 'Following'}</p>
-                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{formatNumber(pp.following)}</p>
+                <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{formatNumber(pp.following, { locale })}</p>
               </div>
             </div>
           </div>
@@ -532,7 +533,7 @@ export default function CreatorProfilePage() {
                         style={{ width: `${match.confidenceScore * 100}%` }}
                       />
                     </div>
-                    <span className="text-sm font-medium">{Math.round(match.confidenceScore * 100)}%</span>
+                    <span className="text-sm font-medium">{formatPercent(match.confidenceScore * 100, { digits: 0, locale })}</span>
                   </div>
                 </div>
                 <div>
@@ -657,11 +658,11 @@ export default function CreatorProfilePage() {
                   <p className="text-xs text-gray-600 dark:text-gray-400 mb-2 line-clamp-2">{post.caption}</p>
                 )}
                 <div className="flex flex-wrap gap-3 text-xs text-gray-500 dark:text-gray-400">
-                  <span className="inline-flex items-center gap-1"><Heart className="h-3 w-3 text-pink-400" />{formatNumber(post.likes)}</span>
-                  <span className="inline-flex items-center gap-1"><MessageCircle className="h-3 w-3 text-blue-400" />{formatNumber(post.comments)}</span>
-                  {post.views > 0 && <span className="inline-flex items-center gap-1"><Eye className="h-3 w-3 text-green-400" />{formatNumber(post.views)}</span>}
-                  {post.shares > 0 && <span className="inline-flex items-center gap-1"><Share2 className="h-3 w-3" />{formatNumber(post.shares)}</span>}
-                  {post.saves > 0 && <span className="inline-flex items-center gap-1"><Bookmark className="h-3 w-3" />{formatNumber(post.saves)}</span>}
+                  <span className="inline-flex items-center gap-1"><Heart className="h-3 w-3 text-pink-400" />{formatNumber(post.likes, { locale })}</span>
+                  <span className="inline-flex items-center gap-1"><MessageCircle className="h-3 w-3 text-blue-400" />{formatNumber(post.comments, { locale })}</span>
+                  {post.views > 0 && <span className="inline-flex items-center gap-1"><Eye className="h-3 w-3 text-green-400" />{formatNumber(post.views, { locale })}</span>}
+                  {post.shares > 0 && <span className="inline-flex items-center gap-1"><Share2 className="h-3 w-3" />{formatNumber(post.shares, { locale })}</span>}
+                  {post.saves > 0 && <span className="inline-flex items-center gap-1"><Bookmark className="h-3 w-3" />{formatNumber(post.saves, { locale })}</span>}
                 </div>
                 {post.isBrandCollab && post.detectedBrand && (
                   <span className="mt-2 inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
@@ -670,7 +671,7 @@ export default function CreatorProfilePage() {
                 )}
                 <div className="flex items-center justify-between mt-2">
                   <span className="text-[10px] text-gray-400">
-                    {post.mediaType} {post.postedAt ? `- ${new Date(post.postedAt).toLocaleDateString()}` : ''}
+                    {post.mediaType} {post.postedAt ? `- ${formatDate(post.postedAt, { locale })}` : ''}
                   </span>
                   {post.permalink && (
                     <a href={post.permalink} target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:text-purple-500">
@@ -723,7 +724,7 @@ export default function CreatorProfilePage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`inline-block h-2 w-2 rounded-full ${gs.confidence >= 0.8 ? 'bg-green-500' : gs.confidence >= 0.5 ? 'bg-yellow-500' : 'bg-gray-400'}`} />
-                  <span className="text-xs text-gray-400">{Math.round(gs.confidence * 100)}%</span>
+                  <span className="text-xs text-gray-400">{formatPercent(gs.confidence * 100, { digits: 0, locale })}</span>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded ${gs.source === 'profile_data' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'}`}>
                     {gs.source === 'profile_data' ? 'Observed' : 'Inferred'}
                   </span>
@@ -754,11 +755,11 @@ export default function CreatorProfilePage() {
               <tbody>
                 {creator.snapshots.map((s, i) => (
                   <tr key={`${s.capturedAt}-${i}`} className="border-b border-gray-100 dark:border-gray-700/50">
-                    <td className="py-2 px-3 text-gray-700 dark:text-gray-300">{new Date(s.capturedAt).toLocaleDateString()}</td>
+                    <td className="py-2 px-3 text-gray-700 dark:text-gray-300">{formatDate(s.capturedAt, { locale })}</td>
                     <td className="py-2 px-3 text-gray-500 dark:text-gray-400">{s.platform}</td>
-                    <td className="py-2 px-3 text-right font-medium text-gray-900 dark:text-gray-100">{formatNumber(s.followers)}</td>
-                    <td className="py-2 px-3 text-right text-gray-700 dark:text-gray-300">{s.engagementRate != null ? `${s.engagementRate.toFixed(1)}%` : '--'}</td>
-                    <td className="py-2 px-3 text-right text-gray-700 dark:text-gray-300">{s.avgViews != null ? formatNumber(s.avgViews) : '--'}</td>
+                    <td className="py-2 px-3 text-right font-medium text-gray-900 dark:text-gray-100">{formatNumber(s.followers, { locale })}</td>
+                    <td className="py-2 px-3 text-right text-gray-700 dark:text-gray-300">{formatPercent(s.engagementRate, { digits: 1, locale })}</td>
+                    <td className="py-2 px-3 text-right text-gray-700 dark:text-gray-300">{s.avgViews != null ? formatNumber(s.avgViews, { locale }) : '--'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -793,7 +794,7 @@ export default function CreatorProfilePage() {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{Math.round(sr.score)}/100</span>
-                <span className="text-[10px] text-gray-400">{Math.round(sr.confidence * 100)}%</span>
+                <span className="text-[10px] text-gray-400">{formatPercent(sr.confidence * 100, { digits: 0, locale })}</span>
               </div>
             </div>
           ))}
@@ -806,7 +807,7 @@ export default function CreatorProfilePage() {
           {creator.lastEnriched && (
             <div className="flex items-center justify-between rounded-lg bg-gray-50 dark:bg-gray-700/50 px-4 py-3">
               <span className="text-sm text-gray-700 dark:text-gray-300">{isEs ? 'Ultimo enriquecimiento' : 'Last enriched'}</span>
-              <span className="text-xs text-gray-500 dark:text-gray-400">{new Date(creator.lastEnriched).toLocaleDateString()}</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">{formatDate(creator.lastEnriched, { locale })}</span>
             </div>
           )}
         </div>

@@ -43,7 +43,8 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/portal/overview')
+    // meta=1: brand name/logo only — the full overview is expensive and not needed by the layout
+    fetch('/api/portal/overview?meta=1')
       .then(res => (res.ok ? res.json() : null))
       .then(data => {
         if (cancelled || !data) return

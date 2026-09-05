@@ -12,18 +12,26 @@ interface I18nContextType {
 
 const I18nContext = createContext<I18nContextType | null>(null)
 
+/**
+ * Spanish is the product default. English is used only when the persisted
+ * preference is 'en' or the browser language starts with 'en'.
+ */
 function detectBrowserLocale(): Locale {
-  if (typeof window === 'undefined') return 'en'
+  if (typeof window === 'undefined') return 'es'
 
-  const stored = localStorage.getItem('tkoc-locale')
-  if (stored === 'en' || stored === 'es') return stored
+  try {
+    const stored = localStorage.getItem('tkoc-locale')
+    if (stored === 'en' || stored === 'es') return stored
+  } catch {
+    // storage unavailable (private mode, blocked) — fall through to browser language
+  }
 
-  const browserLang = navigator.language || (navigator as unknown as { userLanguage?: string }).userLanguage || 'en'
-  return browserLang.startsWith('es') ? 'es' : 'en'
+  const browserLang = navigator.language || (navigator as unknown as { userLanguage?: string }).userLanguage || 'es'
+  return browserLang.toLowerCase().startsWith('en') ? 'en' : 'es'
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>('en')
+  const [locale, setLocaleState] = useState<Locale>('es')
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -34,7 +42,11 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const setLocale = useCallback((newLocale: Locale) => {
     setLocaleState(newLocale)
-    localStorage.setItem('tkoc-locale', newLocale)
+    try {
+      localStorage.setItem('tkoc-locale', newLocale)
+    } catch {
+      // storage unavailable — the choice still applies for this session
+    }
   }, [])
 
   const toggleLocale = useCallback(() => {
@@ -58,8 +70,8 @@ export function useI18n() {
   const context = useContext(I18nContext)
   if (!context) {
     return {
-      locale: 'en' as Locale,
-      t: translations.en,
+      locale: 'es' as Locale,
+      t: translations.es,
       setLocale: () => {},
       toggleLocale: () => {},
     }

@@ -1,22 +1,62 @@
+/**
+ * GET /api/dashboard/brands — the agency's campaigns grouped by brand (derived
+ * from the first target account, else the first hashtag, else the campaign
+ * name), each brand valued by SUMMING the per-campaign overviews built on
+ * src/lib/metrics.ts (the single source of truth) — nothing is recomputed here.
+ *
+ *  - Posts that live in several campaigns of the same brand (annual + monthly)
+ *    count ONCE: rows are deduplicated by post before summing.
+ *  - Cost is per campaign membership (fee acordado, si no coste — decision 6).
+ *  - Audiencia follows decision 5 (alcance real → impresiones → vistas →
+ *    estimación etiquetada); the estimated share travels with the ER.
+ *  - EMV ÷ cost is the "Ratio EMV" (×2,4). It is never called ROI (decision 9B).
+ *  - Deleted publications stay in the totals and are counted apart (7B).
+ *
+ * BRAND users never receive cost or the EMV ratio.
+ */
+
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { calculateCampaignEMV } from '@/lib/emv'
-import { loadEmvRates, getCreatorStoryViewRates } from '@/lib/emv-server'
-import { instagramShortcode } from '@/lib/campaign-capture'
+import { computeCampaignOverviews } from '@/lib/campaign-overview'
+import { dedupeMediaByPost } from '@/lib/campaign-capture'
+import {
+  emvRatioOf,
+  engagementRateOf,
+  engagementsOf,
+  sumAudience,
+  type AudienceResult,
+  type AudienceTotals,
+  type PerMediaMetrics,
+} from '@/lib/metrics'
 
 interface BrandData {
   brandName: string
   campaignCount: number
   totalInfluencers: number
+  /** Distinct posts across the brand's campaigns. */
   totalMedia: number
+  /** Publications the creators deleted — kept in the totals, counted apart (7B). */
+  mediaDeleted: number
+  /** Audiencia (real + estimada, with the split and the share that is estimated). */
+  audience: AudienceTotals
+  /** @deprecated Legacy alias of `audience.total`. */
   totalReach: number
+  /** Interacciones = likes + comentarios + shares + saves (3A). */
   totalEngagements: number
   totalViews: number
+  /** Σ fees acordados of the brand's campaign memberships; 0 for BRAND users. */
   totalCost: number
+  /** Extended EMV — the one EMV the client sees ("Valor mediático equivalente (estimado)"). */
   totalEMV: number
+  /** Interacciones ÷ audiencia × 100 (4C); null without an audience base. */
+  engagementRate: number | null
+  /** Share of the ER denominator that is estimated, 0–1 — always shown next to the ER. */
+  erEstimatedShare: number
+  /** @deprecated Legacy alias of `engagementRate` (0 when null). */
   avgEngagementRate: number
-  roi: number
+  /** Ratio EMV = EMV ÷ cost, shown as "×2,4"; null without cost and for BRAND users. Never ROI. */
+  emvRatio: number | null
   topPlatforms: string[]
   campaigns: Array<{
     id: string
@@ -61,6 +101,7 @@ export async function GET(request: NextRequest) {
     if (!session) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
+    const isBrand = session.role === 'BRAND'
 
     // Build where clause based on user role
     let campaignWhere: Record<string, unknown> = {}
@@ -71,179 +112,120 @@ export async function GET(request: NextRequest) {
           { assignments: { some: { userId: session.id } } },
         ],
       }
-    } else if (session.role === 'BRAND') {
+    } else if (isBrand) {
       campaignWhere = { userId: session.id }
     }
 
-    // Fetch all campaigns with their related data
+    // Campaign rows: only what the grouping and the post de-duplication need.
+    // Every figure comes from the overviews below.
     const campaigns = await prisma.campaign.findMany({
       where: campaignWhere,
-      include: {
-        influencers: {
-          include: {
-            influencer: {
-              select: {
-                followers: true,
-                engagementRate: true,
-              },
-            },
-          },
-        },
+      select: {
+        id: true, name: true, status: true, type: true, platforms: true,
+        startDate: true, endDate: true, targetAccounts: true, targetHashtags: true,
         media: {
           select: {
-            id: true,
-            externalId: true,
-            permalink: true,
-            platform: true,
-            mediaType: true,
-            postedAt: true,
-            influencerId: true,
-            influencer: { select: { followers: true } },
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-            views: true,
-            reach: true,
-            impressions: true,
-            engagementRate: true,
-            mediaValue: true,
+            id: true, externalId: true, permalink: true, platform: true,
+            views: true, likes: true, comments: true, shares: true, saves: true,
           },
         },
-        _count: {
-          select: { influencers: true, media: true },
-        },
+        _count: { select: { influencers: true, media: true } },
       },
       orderBy: { createdAt: 'desc' },
     })
 
-    // Group campaigns by derived brand name
-    const brandMap = new Map<string, BrandData>()
-    const brandSeenPosts = new Map<string, Set<string>>()
-    const emvRates = await loadEmvRates()
-    const storyViewRates = await getCreatorStoryViewRates(
-      Array.from(new Set(campaigns.flatMap(c => c.media.map(m => m.influencerId))))
-    )
+    // One overview per campaign (bounded concurrency), then sum per brand.
+    const overviews = await computeCampaignOverviews(campaigns.map(c => c.id))
 
+    const groups = new Map<string, typeof campaigns>()
     for (const campaign of campaigns) {
       const brandName = deriveBrandName(campaign)
-
-      if (!brandMap.has(brandName)) {
-        brandMap.set(brandName, {
-          brandName,
-          campaignCount: 0,
-          totalInfluencers: 0,
-          totalMedia: 0,
-          totalReach: 0,
-          totalEngagements: 0,
-          totalViews: 0,
-          totalCost: 0,
-          totalEMV: 0,
-          avgEngagementRate: 0,
-          roi: 0,
-          topPlatforms: [],
-          campaigns: [],
-        })
-      }
-
-      const brand = brandMap.get(brandName)!
-      brand.campaignCount += 1
-
-      // Influencer metrics
-      const uniqueInfluencerIds = new Set<string>()
-      let campaignCost = campaign.budget || 0
-
-      for (const ci of campaign.influencers) {
-        uniqueInfluencerIds.add(ci.influencerId)
-        brand.totalReach += ci.influencer.followers || 0
-        campaignCost += ci.cost || 0
-      }
-
-      brand.totalInfluencers += uniqueInfluencerIds.size
-      brand.totalCost += campaignCost
-
-      // Media metrics — per DISTINCT post across the brand's campaigns (a post
-      // that lives in the annual and the monthly campaign counts once here).
-      const seenPosts = brandSeenPosts.get(brandName) ?? new Set<string>()
-      brandSeenPosts.set(brandName, seenPosts)
-      const distinct = campaign.media.filter(m => {
-        const sc = m.platform === 'INSTAGRAM' ? instagramShortcode(m.permalink) : null
-        const key = sc ? `${m.platform}|sc:${sc}` : m.externalId ? `${m.platform}|${m.externalId}` : `id|${m.id}`
-        if (seenPosts.has(key)) return false
-        seenPosts.add(key)
-        return true
-      })
-      brand.totalMedia += distinct.length
-
-      let campaignEngagements = 0
-      let campaignViews = 0
-      for (const m of distinct) {
-        const engagements = (m.likes || 0) + (m.comments || 0) + (m.shares || 0) + (m.saves || 0)
-        campaignEngagements += engagements
-        campaignViews += m.views || 0
-      }
-      brand.totalEngagements += campaignEngagements
-      brand.totalViews += campaignViews
-
-      // EMV calculation (distinct posts only; stories estimated by followers)
-      const emv = calculateCampaignEMV(
-        distinct.map(m => ({ ...m, followers: m.influencer?.followers ?? null })),
-        { rates: emvRates, storyViewRates }
-      )
-      brand.totalEMV += emv.extended
-
-      // Track platforms
-      for (const p of campaign.platforms) {
-        if (!brand.topPlatforms.includes(p)) {
-          brand.topPlatforms.push(p)
-        }
-      }
-
-      // Add campaign summary
-      brand.campaigns.push({
-        id: campaign.id,
-        name: campaign.name,
-        status: campaign.status,
-        type: campaign.type,
-        influencerCount: campaign._count.influencers,
-        mediaCount: campaign._count.media,
-        platforms: campaign.platforms,
-        startDate: campaign.startDate.toISOString(),
-        endDate: campaign.endDate?.toISOString() || null,
-      })
+      const list = groups.get(brandName) ?? []
+      list.push(campaign)
+      groups.set(brandName, list)
     }
 
-    // Calculate derived metrics for each brand
     const brands: BrandData[] = []
-    for (const brand of brandMap.values()) {
-      // Average engagement rate across all media
-      if (brand.totalMedia > 0 && brand.totalReach > 0) {
-        brand.avgEngagementRate =
-          Math.round(((brand.totalEngagements / brand.totalReach) * 100) * 10) / 10
+    for (const [brandName, list] of groups) {
+      const influencerIds = new Set<string>()
+      const perMediaById = new Map<string, PerMediaMetrics>()
+      const topPlatforms: string[] = []
+      const rows: (typeof campaigns)[number]['media'] = []
+      let cost = 0
+
+      for (const campaign of list) {
+        const overview = overviews.get(campaign.id)
+        if (overview) {
+          cost += overview.totals.cost
+          for (const p of overview.perInfluencer) influencerIds.add(p.influencerId)
+          for (const pm of overview.perMedia) perMediaById.set(pm.id, pm)
+        }
+        rows.push(...campaign.media)
+        for (const p of campaign.platforms) if (!topPlatforms.includes(p)) topPlatforms.push(p)
       }
 
-      // ROI = (EMV - Cost) / Cost * 100
-      if (brand.totalCost > 0) {
-        brand.roi = Math.round(((brand.totalEMV - brand.totalCost) / brand.totalCost) * 100)
+      // The same post in the annual and the monthly campaign counts once for the brand.
+      const distinct = dedupeMediaByPost(rows)
+      let engagements = 0, views = 0, emvExtended = 0, mediaDeleted = 0
+      const audienceResults: AudienceResult[] = []
+      for (const m of distinct) {
+        views += m.views || 0
+        engagements += engagementsOf(m)
+        const pm = perMediaById.get(m.id)
+        if (!pm) continue
+        emvExtended += pm.emvExtended
+        if (pm.isDeleted) mediaDeleted++
+        audienceResults.push({ value: pm.audience, basis: pm.audienceBasis, estimated: pm.audienceEstimated })
       }
 
-      brand.totalEMV = Math.round(brand.totalEMV * 100) / 100
+      const audience = sumAudience(audienceResults)
+      const er = engagementRateOf(engagements, audience)
+      cost = isBrand ? 0 : Math.round(cost * 100) / 100
+      emvExtended = Math.round(emvExtended * 100) / 100
 
-      brands.push(brand)
+      brands.push({
+        brandName,
+        campaignCount: list.length,
+        totalInfluencers: influencerIds.size,
+        totalMedia: distinct.length,
+        mediaDeleted,
+        audience,
+        totalReach: audience.total,
+        totalEngagements: engagements,
+        totalViews: views,
+        totalCost: cost,
+        totalEMV: emvExtended,
+        engagementRate: er.value,
+        erEstimatedShare: er.estimatedShare,
+        avgEngagementRate: er.value ?? 0,
+        emvRatio: isBrand ? null : emvRatioOf(emvExtended, cost),
+        topPlatforms,
+        campaigns: list.map(campaign => ({
+          id: campaign.id,
+          name: campaign.name,
+          status: campaign.status,
+          type: campaign.type,
+          influencerCount: campaign._count.influencers,
+          mediaCount: campaign._count.media,
+          platforms: campaign.platforms,
+          startDate: campaign.startDate.toISOString(),
+          endDate: campaign.endDate?.toISOString() || null,
+        })),
+      })
     }
 
     // Sort brands by total EMV descending
     brands.sort((a, b) => b.totalEMV - a.totalEMV)
 
-    // Aggregate totals
+    // Aggregate totals (spend is withheld from BRAND users)
     const totals = {
       totalBrands: brands.length,
       totalCampaigns: campaigns.length,
-      totalSpend: brands.reduce((sum, b) => sum + b.totalCost, 0),
-      totalEMV: brands.reduce((sum, b) => sum + b.totalEMV, 0),
+      totalSpend: isBrand ? 0 : Math.round(brands.reduce((sum, b) => sum + b.totalCost, 0) * 100) / 100,
+      totalEMV: Math.round(brands.reduce((sum, b) => sum + b.totalEMV, 0) * 100) / 100,
     }
 
-    return NextResponse.json({ brands, totals })
+    return NextResponse.json({ definitionsVersion: 2, brands, totals })
   } catch (error) {
     console.error('Brand dashboard error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

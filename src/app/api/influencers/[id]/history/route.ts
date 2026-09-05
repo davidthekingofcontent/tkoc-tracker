@@ -1,7 +1,21 @@
+/**
+ * GET /api/influencers/[id]/history — price history and creator score.
+ *
+ * Definitions (src/lib/metrics.ts, David 2026-09-05):
+ *  - coste por campaña = memberCost(ci): fee acordado; si no hay, coste (decisión 6).
+ *  - EMV por campaña = the creator's row in computeCampaignOverview(...).perInfluencer
+ *    (extended, the only EMV shown) — never the dead Media.mediaValue column.
+ *  - EMV ÷ coste se llama "Ratio EMV" (×2,4), nunca ROI (decisión 9B). The
+ *    `score.roi` key is kept for the existing widget; `score.ratioEmv` carries
+ *    the same value under its right name.
+ */
+
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { InfluencerStatus } from '@/generated/prisma/client'
+import { computeCampaignOverview } from '@/lib/campaign-overview'
+import { emvRatioOf, memberCost, type CampaignOverview } from '@/lib/metrics'
 
 export async function GET(
   request: NextRequest,
@@ -34,7 +48,10 @@ export async function GET(
     // Fetch all campaign participations with campaign details
     const campaignInfluencers = await prisma.campaignInfluencer.findMany({
       where: { influencerId: id },
-      include: {
+      select: {
+        agreedFee: true,
+        cost: true,
+        status: true,
         campaign: {
           select: {
             id: true,
@@ -48,37 +65,49 @@ export async function GET(
       orderBy: { createdAt: 'desc' },
     })
 
-    // Fetch media value per campaign for this influencer
-    const mediaBycamp = await prisma.media.groupBy({
-      by: ['campaignId'],
-      where: {
-        influencerId: id,
-        campaignId: { not: null },
-      },
-      _sum: {
-        mediaValue: true,
-      },
-    })
-
-    const mediaValueMap = new Map<string, number>()
-    for (const entry of mediaBycamp) {
-      if (entry.campaignId) {
-        mediaValueMap.set(entry.campaignId, entry._sum.mediaValue ?? 0)
+    // ONE overview per campaign (cached within this request), computed in parallel.
+    const overviewCache = new Map<string, Promise<CampaignOverview | null>>()
+    const overviewFor = (campaignId: string) => {
+      let p = overviewCache.get(campaignId)
+      if (!p) {
+        p = computeCampaignOverview(campaignId).catch(err => {
+          console.error(`[influencer history] overview failed for campaign ${campaignId}:`, err instanceof Error ? err.message : err)
+          return null
+        })
+        overviewCache.set(campaignId, p)
       }
+      return p
     }
+    const overviews = await Promise.all(campaignInfluencers.map(ci => overviewFor(ci.campaign.id)))
 
     // Build price history
-    const priceHistory = campaignInfluencers.map((ci) => ({
-      campaignId: ci.campaign.id,
-      campaignName: ci.campaign.name,
-      campaignType: ci.campaign.type,
-      agreedFee: ci.agreedFee,
-      cost: ci.cost,
-      status: ci.status,
-      startDate: ci.campaign.startDate,
-      endDate: ci.campaign.endDate,
-      mediaValue: mediaValueMap.get(ci.campaign.id) ?? 0,
-    }))
+    const priceHistory = campaignInfluencers.map((ci, i) => {
+      const mine = overviews[i]?.perInfluencer.find(p => p.influencerId === id) ?? null
+      const cost = memberCost(ci)
+      const emvExtended = mine?.emvExtended ?? 0
+      return {
+        campaignId: ci.campaign.id,
+        campaignName: ci.campaign.name,
+        campaignType: ci.campaign.type,
+        agreedFee: ci.agreedFee,
+        cost: ci.cost,
+        /** Fee acordado; si no hay, coste (decisión 6). */
+        effectiveCost: cost,
+        status: ci.status,
+        startDate: ci.campaign.startDate,
+        endDate: ci.campaign.endDate,
+        /** EMV extended of this creator in this campaign. */
+        emvExtended,
+        /** Legacy key read by the widget as "EMV" — same value as emvExtended. */
+        mediaValue: emvExtended,
+        /** EMV ÷ coste; null without cost. Displayed as "×2,4". */
+        ratioEmv: emvRatioOf(emvExtended, cost),
+        media: mine?.media ?? 0,
+        engagements: mine?.engagements ?? 0,
+        audience: mine?.audience.total ?? 0,
+        engagementRate: mine?.er.value ?? null,
+      }
+    })
 
     // --- Scoring ---
 
@@ -99,22 +128,16 @@ export async function GET(
     const reliabilityScore =
       totalCampaigns > 0 ? (deliveredCount / totalCampaigns) * 100 : 0
 
-    // ROI: total EMV vs total cost
-    const totalMediaValue = Array.from(mediaValueMap.values()).reduce(
-      (sum, v) => sum + v,
-      0
-    )
-    const totalCost = campaignInfluencers.reduce(
-      (sum, ci) => sum + (ci.cost ?? ci.agreedFee ?? 0),
-      0
-    )
-    // ROI score: 1x return = 50, 2x = 75, 4x+ = 100, 0 cost = 100 if there's media value
-    let roiScore: number
-    if (totalCost === 0) {
-      roiScore = totalMediaValue > 0 ? 100 : 0
+    // Ratio EMV: total EMV (extended) vs total cost (fee acordado o coste)
+    const totalEmvExtended = Math.round(priceHistory.reduce((sum, h) => sum + h.emvExtended, 0) * 100) / 100
+    const totalCost = Math.round(campaignInfluencers.reduce((sum, ci) => sum + memberCost(ci), 0) * 100) / 100
+    const ratioEmv = emvRatioOf(totalEmvExtended, totalCost)
+    // Ratio EMV score: ×1 = 25, ×2 = 50, ×4+ = 100; without cost, 100 if there is EMV
+    let ratioEmvScore: number
+    if (ratioEmv === null) {
+      ratioEmvScore = totalEmvExtended > 0 ? 100 : 0
     } else {
-      const roiRatio = totalMediaValue / totalCost
-      roiScore = Math.min(100, roiRatio * 25) // 4x ROI = 100
+      ratioEmvScore = Math.min(100, ratioEmv * 25)
     }
 
     // Consistency: based on number of campaigns
@@ -125,7 +148,7 @@ export async function GET(
     const totalScore = Math.round(
       engagementScore * 0.3 +
         reliabilityScore * 0.3 +
-        roiScore * 0.2 +
+        ratioEmvScore * 0.2 +
         consistencyScore * 0.2
     )
 
@@ -133,7 +156,9 @@ export async function GET(
       total: Math.min(100, Math.max(0, totalScore)),
       engagement: Math.round(engagementScore),
       reliability: Math.round(reliabilityScore),
-      roi: Math.round(roiScore),
+      /** Ratio EMV score (kept under its old key for the widget). */
+      roi: Math.round(ratioEmvScore),
+      ratioEmv: Math.round(ratioEmvScore),
       consistency: Math.round(consistencyScore),
     }
 
@@ -143,6 +168,12 @@ export async function GET(
       platform: influencer.platform,
       totalCampaigns,
       priceHistory,
+      totals: {
+        cost: totalCost,
+        emvExtended: totalEmvExtended,
+        /** EMV ÷ coste across all campaigns; null without cost. Displayed as "×2,4". */
+        ratioEmv,
+      },
       score,
     })
   } catch (error) {

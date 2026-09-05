@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '@/lib/db'
 import { dedupeMediaByPost } from '@/lib/campaign-capture'
+import { computeCampaignOverviews } from '@/lib/campaign-overview'
+import type { CampaignOverview } from '@/lib/metrics'
 import { getSession } from '@/lib/auth'
 import { PLATFORM_KNOWLEDGE } from '@/lib/ai-knowledge'
 
@@ -54,6 +56,67 @@ function sanitizeMessages(raw: unknown): Anthropic.MessageParam[] {
   return recent
 }
 
+const round2 = (v: number) => Math.round(v * 100) / 100
+
+/**
+ * The campaign figures the assistant is allowed to quote: the totals of the
+ * single computation (computeCampaignOverview), never re-derived here. Kept
+ * compact — one object per campaign — so the system prompt stays small.
+ */
+function summarizeOverview(ov: CampaignOverview) {
+  const t = ov.totals
+  return {
+    source: 'computeCampaignOverview',
+    media: t.media,
+    mediaDeleted: t.mediaDeleted,
+    stories: t.stories,
+    posts: t.posts,
+    creatorsActive: t.creatorsActive,
+    members: t.members,
+    views: t.views,
+    /** Interacciones = likes + comentarios + shares + saves. */
+    engagements: t.engagements,
+    /** Audiencia = alcance real → impresiones → vistas → estimación etiquetada. */
+    audience: {
+      total: t.audience.total,
+      real: t.audience.real,
+      estimated: t.audience.estimated,
+      estimatedSharePct: round2(t.audience.estimatedShare * 100),
+      withoutBase: t.audience.withoutBase,
+    },
+    reachReal: t.reachReal,
+    impressionsReal: t.impressionsReal,
+    /** ER (%) = interacciones ÷ audiencia × 100; null without audience base. */
+    engagementRatePct: t.er.value,
+    /** Coste = Σ (fee acordado, si no coste registrado). */
+    cost: t.cost,
+    membersWithCost: t.membersWithCost,
+    emvExtended: round2(t.emvExtended),
+    emvEstimatedStories: t.emvEstimatedStories,
+    /** Ratio EMV = EMV ampliado ÷ coste, shown as "×2,4". Never ROI. */
+    emvRatio: t.emvRatio,
+    cpm: t.cpm,
+    targets: ov.targets.map(x => ({
+      key: x.key,
+      target: x.target,
+      actual: x.actual,
+      variationPct: x.variationPct,
+      verdict: x.verdict,
+    })),
+    business: ov.business
+      ? {
+          promoCode: ov.business.promoCode,
+          codeRedemptions: ov.business.codeRedemptions,
+          clientReportedSales: ov.business.clientReportedSales,
+          clientReportedLeads: ov.business.clientReportedLeads,
+          clientReportedRevenue: ov.business.clientReportedRevenue,
+          cpa: ov.business.cpa,
+          roas: ov.business.roas,
+        }
+      : null,
+  }
+}
+
 async function gatherPlatformContext() {
   const [activeCampaigns, influencerCount, allAttachedMedia, campaigns, topInfluencers, recentMediaRaw] =
     await Promise.all([
@@ -67,6 +130,7 @@ async function gatherPlatformContext() {
       prisma.campaign.findMany({
         where: { status: { not: 'ARCHIVED' } },
         select: {
+          id: true,
           name: true,
           type: true,
           status: true,
@@ -134,6 +198,13 @@ async function gatherPlatformContext() {
   const mediaCount = dedupeMediaByPost(allAttachedMedia).length
   const recentMedia = dedupeMediaByPost(recentMediaRaw).slice(0, 25)
 
+  // The figures of every ACTIVE campaign listed, from the single source of
+  // truth (a failed computation simply leaves that campaign without metrics).
+  const activeIds = campaigns.filter(c => c.status === 'ACTIVE').map(c => c.id)
+  const overviews = activeIds.length > 0
+    ? await computeCampaignOverviews(activeIds, { concurrency: 5 })
+    : new Map<string, CampaignOverview>()
+
   return {
     overview: { activeCampaigns, totalInfluencers: influencerCount, totalMedia: mediaCount },
     campaigns: campaigns.map(c => ({
@@ -149,11 +220,15 @@ async function gatherPlatformContext() {
       targetHashtags: c.targetHashtags,
       influencerCount: c._count.influencers,
       mediaCount: c._count.media,
+      // Campaign figures (audience, ER, cost, EMV, Ratio EMV, targets) — only
+      // for active campaigns; null means "not computed here, see the Resumen".
+      metrics: overviews.has(c.id) ? summarizeOverview(overviews.get(c.id)!) : null,
       members: c.influencers.map(ci => ({
         username: ci.influencer.username,
         platform: ci.influencer.platform,
         followers: ci.influencer.followers,
-        engagementRate: ci.influencer.engagementRate,
+        /** ER of the creator's PROFILE (public average), not of this campaign. */
+        profileEngagementRate: ci.influencer.engagementRate,
         status: ci.status,
         agreedFee: ci.agreedFee,
       })),
@@ -188,7 +263,7 @@ Cómo respondes:
 - Cuando expliquen cómo hacer algo, da pasos numerados y concretos usando los nombres EXACTOS de páginas, pestañas y botones que aparecen en la guía (por ejemplo: Campañas → "Nueva Campaña"; pestaña "Elegir"; botón "Rastrear Ahora"; Ajustes → Integraciones → "Conectar con Facebook").
 - Sé conciso: lo justo para resolver la duda. Sin introducciones ni despedidas de relleno.
 - Usa Markdown ligero (negritas, listas). Nada de tablas enormes.
-- Cuando el usuario diga que "no funciona" algo o "no aparece contenido", guíale por la lista de comprobación de la sección 13 de la guía antes de suponer un fallo.
+- Cuando el usuario diga que "no funciona" algo o "no aparece contenido", guíale por la lista de comprobación de la sección 20 de la guía (Limitaciones conocidas y problemas frecuentes) antes de suponer un fallo.
 - Para preguntas sobre rendimiento, usa los "Datos actuales" adjuntos; cita cifras reales y no inventes datos. Si faltan datos, dilo y explica cómo conseguirlos en la herramienta. Referencias: engagement > 3 % es bueno, > 5 % excelente.
 - No puedes ejecutar acciones (crear, editar, borrar, rastrear): explica cómo hacerlas el usuario. Nunca afirmes haber hecho un cambio.
 - Si preguntan por algo que la plataforma no tiene, dilo claramente y sugiere la alternativa más cercana que sí existe. No inventes funcionalidades.

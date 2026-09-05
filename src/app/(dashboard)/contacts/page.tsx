@@ -23,7 +23,7 @@ import {
   TableHead,
   TableCell,
 } from '@/components/ui/table'
-import { formatNumber, formatDate } from '@/lib/utils'
+import { formatNumber, formatDate, formatPercent } from '@/lib/utils'
 import { useI18n } from '@/i18n/context'
 
 interface ContactData {
@@ -71,7 +71,7 @@ function getContactValue(obj: ContactData, field: string): number {
 }
 
 export default function ContactsPage() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [contacts, setContacts] = useState<ContactData[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -156,7 +156,7 @@ export default function ContactsPage() {
         <StatCard
           icon={<Users className="h-5 w-5" />}
           label={t.dashboard.totalReach}
-          value={formatNumber(contacts.reduce((s, c) => s + (c.influencer.followers || 0), 0))}
+          value={formatNumber(contacts.reduce((s, c) => s + (c.influencer.followers || 0), 0), { locale })}
         />
       </div>
 
@@ -216,9 +216,9 @@ export default function ContactsPage() {
                         {contact.influencer.platform.charAt(0) + contact.influencer.platform.slice(1).toLowerCase()}
                       </Badge>
                     </TableCell>
-                    <TableCell>{formatNumber(contact.influencer.followers)}</TableCell>
+                    <TableCell>{formatNumber(contact.influencer.followers, { locale })}</TableCell>
                     <TableCell>
-                      <span className="text-purple-600">{contact.influencer.engagementRate || 0}%</span>
+                      <span className="text-purple-600">{formatPercent(contact.influencer.engagementRate, { locale })}</span>
                     </TableCell>
                     <TableCell>
                       <span className="text-xs text-gray-400">{contact.influencer.email || '—'}</span>
@@ -231,7 +231,7 @@ export default function ContactsPage() {
                         {contact.status}
                       </Badge>
                     </TableCell>
-                    <TableCell>{formatDate(contact.createdAt)}</TableCell>
+                    <TableCell>{formatDate(contact.createdAt, { locale })}</TableCell>
                   </TableRow>
                 ))
               )}

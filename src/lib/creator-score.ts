@@ -13,6 +13,10 @@ import { DEFAULT_BENCHMARKS, getCpmThreshold, normalizePlatform, type Tier } fro
  *
  * Output: score (0-100), grade (A+/A/B/C/D/F), signal (green/yellow/red),
  *         component breakdown, and a one-line summary.
+ *
+ * Texts: the summary and each component detail expose an i18n key
+ * (translations.*.intelligence) plus the params its template interpolates;
+ * the English strings stay as fallbacks for consumers without translations.
  */
 
 // ============ TYPES ============
@@ -46,21 +50,42 @@ export interface CreatorScoreInput {
   audienceQuality?: 'high' | 'medium' | 'low' | null
 }
 
+/**
+ * Values the i18n templates interpolate. Numbers are formatted per locale by the
+ * UI; `tier` is the lowercase tier code (nano | micro | mid | macro | mega) that
+ * the UI turns into its localized word — never an English label.
+ */
+export type ScoreParams = Record<string, number | string>
+
+export interface ScoreComponent {
+  score: number
+  weight: number
+  /** English fallback */
+  detail: string
+  /** i18n key under translations.*.intelligence, rendered with detailParams */
+  detailKey: string
+  detailParams: ScoreParams
+}
+
 export interface CreatorScoreResult {
   score: number           // 0-100
   grade: string           // A+, A, B+, B, C, D, F
   signal: 'green' | 'yellow' | 'red'
-  summary: string         // One-line verdict
+  summary: string         // One-line verdict (English fallback)
   summaryKey: string      // i18n key
+  summaryParams: ScoreParams
 
   components: {
-    engagementQuality: { score: number; weight: number; detail: string }
-    valueEfficiency: { score: number; weight: number; detail: string }
-    consistency: { score: number; weight: number; detail: string }
-    trackRecord: { score: number; weight: number; detail: string }
-    audienceQuality: { score: number; weight: number; detail: string }
+    engagementQuality: ScoreComponent
+    valueEfficiency: ScoreComponent
+    consistency: ScoreComponent
+    trackRecord: ScoreComponent
+    audienceQuality: ScoreComponent
   }
 }
+
+/** Internal shape of each component calculation (weight is added by the main function). */
+type ComponentCalc = Omit<ScoreComponent, 'weight'>
 
 // ============ BENCHMARKS ============
 
@@ -84,9 +109,21 @@ function detectTier(followers: number): string {
   return 'MEGA'
 }
 
+/** Tier as it reads inside the English fallback sentences ("nano", "mid-tier"…). */
+function tierLabel(tier: string): string {
+  return tier === 'MID' ? 'mid-tier' : tier.toLowerCase()
+}
+
+/** Tier code the i18n templates receive as {tier} (nano | micro | mid | macro | mega). */
+function tierCode(tier: string): string {
+  return tier.toLowerCase()
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
+
+const round1 = (n: number) => Math.round(n * 10) / 10
 
 function scoreToGrade(score: number): string {
   if (score >= 90) return 'A+'
@@ -110,12 +147,12 @@ function scoreToSignal(score: number): 'green' | 'yellow' | 'red' {
  * Component 1: Engagement Quality (30%)
  * How does this creator's engagement compare to their tier benchmark?
  */
-function calcEngagementQuality(input: CreatorScoreInput): { score: number; detail: string } {
+function calcEngagementQuality(input: CreatorScoreInput): ComponentCalc {
   const tier = detectTier(input.followers)
   const benchmark = ENGAGEMENT_BENCHMARKS[input.platform]?.[tier] || 3.0
 
   if (input.engagementRate <= 0) {
-    return { score: 10, detail: 'No engagement data available' }
+    return { score: 10, detail: 'No engagement data available', detailKey: 'creator_score_engagement_no_data', detailParams: {} }
   }
 
   // Ratio of actual engagement to benchmark
@@ -131,25 +168,40 @@ function calcEngagementQuality(input: CreatorScoreInput): { score: number; detai
 
   score = clamp(Math.round(score), 0, 100)
 
-  const detail = ratio >= 1.0
-    ? `${input.engagementRate.toFixed(1)}% engagement (${Math.round(ratio * 100 - 100)}% above ${tier.toLowerCase()} benchmark)`
-    : `${input.engagementRate.toFixed(1)}% engagement (${Math.round(100 - ratio * 100)}% below ${tier.toLowerCase()} benchmark)`
-
-  return { score, detail }
+  const er = round1(input.engagementRate)
+  const label = tierLabel(tier)
+  const code = tierCode(tier)
+  if (ratio >= 1.0) {
+    const pct = Math.round(ratio * 100 - 100)
+    return {
+      score,
+      detail: `${er.toFixed(1)}% engagement (${pct}% above ${label} benchmark)`,
+      detailKey: 'creator_score_engagement_above',
+      detailParams: { er, pct, tier: code },
+    }
+  }
+  const pct = Math.round(100 - ratio * 100)
+  return {
+    score,
+    detail: `${er.toFixed(1)}% engagement (${pct}% below ${label} benchmark)`,
+    detailKey: 'creator_score_engagement_below',
+    detailParams: { er, pct, tier: code },
+  }
 }
 
 /**
  * Component 2: Value Efficiency (25%)
  * Is this creator's price fair vs. what they deliver?
  */
-function calcValueEfficiency(input: CreatorScoreInput): { score: number; detail: string } {
+function calcValueEfficiency(input: CreatorScoreInput): ComponentCalc {
   const fee = input.avgAgreedFee || input.standardFee
   if (!fee || fee <= 0 || input.avgViews <= 0) {
-    return { score: 50, detail: 'No pricing data — cannot evaluate value' }
+    return { score: 50, detail: 'No pricing data — cannot evaluate value', detailKey: 'creator_score_value_no_pricing', detailParams: {} }
   }
 
   const tier = detectTier(input.followers)
   const cpmBenchmark = getCpmThreshold(DEFAULT_BENCHMARKS, normalizePlatform(input.platform), tier as Tier)?.cpmTarget || 15
+  // Profile-level estimate (fee ÷ average views of the profile), not a campaign figure.
   const actualCPM = (fee / input.avgViews) * 1000
 
   // Ratio: lower CPM = better value. benchmark/actual = efficiency
@@ -165,18 +217,18 @@ function calcValueEfficiency(input: CreatorScoreInput): { score: number; detail:
 
   score = clamp(Math.round(score), 0, 100)
 
-  const detail = efficiency >= 1.0
-    ? `CPM €${actualCPM.toFixed(0)} vs benchmark €${cpmBenchmark} — good value`
-    : `CPM €${actualCPM.toFixed(0)} vs benchmark €${cpmBenchmark} — above market`
-
-  return { score, detail }
+  const cpm = Math.round(actualCPM)
+  const detailParams: ScoreParams = { cpm, benchmark: cpmBenchmark }
+  return efficiency >= 1.0
+    ? { score, detail: `CPM €${cpm} vs benchmark €${cpmBenchmark} — good value`, detailKey: 'creator_score_value_good', detailParams }
+    : { score, detail: `CPM €${cpm} vs benchmark €${cpmBenchmark} — above market`, detailKey: 'creator_score_value_above_market', detailParams }
 }
 
 /**
  * Component 3: Consistency (20%)
  * Does this creator post regularly and maintain engagement?
  */
-function calcConsistency(input: CreatorScoreInput): { score: number; detail: string } {
+function calcConsistency(input: CreatorScoreInput): ComponentCalc {
   let score = 50 // default when no data
 
   // Posting frequency factor (if available)
@@ -197,24 +249,34 @@ function calcConsistency(input: CreatorScoreInput): { score: number; detail: str
 
   score = clamp(score, 0, 100)
 
-  const trendLabel = input.engagementTrend || 'unknown'
-  const detail = input.postsPerWeek != null
-    ? `${input.postsPerWeek.toFixed(1)} posts/week, trend: ${trendLabel}`
-    : `Engagement trend: ${trendLabel}`
-
-  return { score, detail }
+  const trend = input.engagementTrend || 'unknown'
+  if (input.postsPerWeek != null) {
+    const perWeek = round1(input.postsPerWeek)
+    return {
+      score,
+      detail: `${perWeek.toFixed(1)} posts/week, trend: ${trend}`,
+      detailKey: `creator_score_consistency_posts_${trend}`,
+      detailParams: { perWeek },
+    }
+  }
+  return {
+    score,
+    detail: `Engagement trend: ${trend}`,
+    detailKey: `creator_score_consistency_trend_${trend}`,
+    detailParams: {},
+  }
 }
 
 /**
  * Component 4: Collaboration Track Record (15%)
  * How reliably does this creator deliver on campaigns?
  */
-function calcTrackRecord(input: CreatorScoreInput): { score: number; detail: string } {
+function calcTrackRecord(input: CreatorScoreInput): ComponentCalc {
   const total = input.totalCampaigns || 0
   const completed = input.completedCampaigns || 0
 
   if (total === 0) {
-    return { score: 50, detail: 'No campaign history yet' }
+    return { score: 50, detail: 'No campaign history yet', detailKey: 'creator_score_track_no_history', detailParams: {} }
   }
 
   // Completion rate
@@ -232,21 +294,25 @@ function calcTrackRecord(input: CreatorScoreInput): { score: number; detail: str
   let score = (completionRate * 50 + deliveryRate * 35 + experienceBonus)
   score = clamp(Math.round(score), 0, 100)
 
-  const detail = `${completed}/${total} campaigns completed (${Math.round(completionRate * 100)}% completion rate)`
-
-  return { score, detail }
+  const pct = Math.round(completionRate * 100)
+  return {
+    score,
+    detail: `${completed}/${total} campaigns completed (${pct}% completion rate)`,
+    detailKey: 'creator_score_track_completed',
+    detailParams: { completed, total, pct },
+  }
 }
 
 /**
  * Component 5: Audience Quality (10%)
  * Are the followers real and engaged?
  */
-function calcAudienceQuality(input: CreatorScoreInput): { score: number; detail: string } {
+function calcAudienceQuality(input: CreatorScoreInput): ComponentCalc {
   // Use explicit audience quality if available
   if (input.audienceQuality) {
-    if (input.audienceQuality === 'high') return { score: 90, detail: 'High audience quality — strong comment-to-like ratio' }
-    if (input.audienceQuality === 'medium') return { score: 60, detail: 'Medium audience quality' }
-    return { score: 25, detail: 'Low audience quality — potential bot activity' }
+    if (input.audienceQuality === 'high') return { score: 90, detail: 'High audience quality — strong comment-to-like ratio', detailKey: 'creator_score_audience_high', detailParams: {} }
+    if (input.audienceQuality === 'medium') return { score: 60, detail: 'Medium audience quality', detailKey: 'creator_score_audience_medium', detailParams: {} }
+    return { score: 25, detail: 'Low audience quality — potential bot activity', detailKey: 'creator_score_audience_low', detailParams: {} }
   }
 
   // Calculate from comment-to-like ratio
@@ -259,7 +325,8 @@ function calcAudienceQuality(input: CreatorScoreInput): { score: number; detail:
     else if (ratio >= 0.5) score = 45
     else score = 25
 
-    return { score, detail: `Comment-to-like ratio: ${ratio.toFixed(1)}%` }
+    const pct = round1(ratio)
+    return { score, detail: `Comment-to-like ratio: ${pct.toFixed(1)}%`, detailKey: 'creator_score_audience_comment_ratio', detailParams: { pct } }
   }
 
   // Fallback: derive from engagement rate vs. follower count
@@ -267,12 +334,12 @@ function calcAudienceQuality(input: CreatorScoreInput): { score: number; detail:
     const likeRate = (input.avgLikes / input.followers) * 100
     const commentRate = input.avgComments > 0 ? (input.avgComments / input.avgLikes) * 100 : 0
 
-    if (likeRate > 1 && commentRate > 1) return { score: 75, detail: 'Healthy like and comment ratios' }
-    if (likeRate > 0.5) return { score: 55, detail: 'Moderate engagement signals' }
-    return { score: 35, detail: 'Low engagement relative to followers' }
+    if (likeRate > 1 && commentRate > 1) return { score: 75, detail: 'Healthy like and comment ratios', detailKey: 'creator_score_audience_healthy', detailParams: {} }
+    if (likeRate > 0.5) return { score: 55, detail: 'Moderate engagement signals', detailKey: 'creator_score_audience_moderate', detailParams: {} }
+    return { score: 35, detail: 'Low engagement relative to followers', detailKey: 'creator_score_audience_low_relative', detailParams: {} }
   }
 
-  return { score: 50, detail: 'Insufficient data for audience quality assessment' }
+  return { score: 50, detail: 'Insufficient data for audience quality assessment', detailKey: 'creator_score_audience_insufficient', detailParams: {} }
 }
 
 // ============ MAIN FUNCTION ============
@@ -303,7 +370,7 @@ export function calculateCreatorScore(input: CreatorScoreInput): CreatorScoreRes
   const signal = scoreToSignal(score)
 
   // Generate summary
-  const { summary, summaryKey } = generateSummary(score, grade, signal, input, engagement, value)
+  const { summary, summaryKey, summaryParams } = generateSummary(score, input, engagement, value)
 
   return {
     score,
@@ -311,12 +378,13 @@ export function calculateCreatorScore(input: CreatorScoreInput): CreatorScoreRes
     signal,
     summary,
     summaryKey,
+    summaryParams,
     components: {
-      engagementQuality: { score: engagement.score, weight: weights.engagement, detail: engagement.detail },
-      valueEfficiency: { score: value.score, weight: weights.value, detail: value.detail },
-      consistency: { score: consistency.score, weight: weights.consistency, detail: consistency.detail },
-      trackRecord: { score: trackRecord.score, weight: weights.trackRecord, detail: trackRecord.detail },
-      audienceQuality: { score: audience.score, weight: weights.audience, detail: audience.detail },
+      engagementQuality: { ...engagement, weight: weights.engagement },
+      valueEfficiency: { ...value, weight: weights.value },
+      consistency: { ...consistency, weight: weights.consistency },
+      trackRecord: { ...trackRecord, weight: weights.trackRecord },
+      audienceQuality: { ...audience, weight: weights.audience },
     },
   }
 }
@@ -325,18 +393,19 @@ export function calculateCreatorScore(input: CreatorScoreInput): CreatorScoreRes
 
 function generateSummary(
   score: number,
-  grade: string,
-  signal: string,
   input: CreatorScoreInput,
   engagement: { score: number },
   value: { score: number }
-): { summary: string; summaryKey: string } {
-  const tier = detectTier(input.followers).toLowerCase()
+): { summary: string; summaryKey: string; summaryParams: ScoreParams } {
+  const detected = detectTier(input.followers)
+  const tier = tierLabel(detected)
+  const summaryParams: ScoreParams = { tier: tierCode(detected) }
 
   if (score >= 85) {
     return {
       summary: `Top-tier ${tier} creator. Strong engagement, good value, reliable.`,
       summaryKey: 'creator_score_excellent',
+      summaryParams,
     }
   }
   if (score >= 70) {
@@ -344,11 +413,13 @@ function generateSummary(
       return {
         summary: `Good creator but pricing is above market. Negotiate fee down.`,
         summaryKey: 'creator_score_good_overpriced',
+        summaryParams,
       }
     }
     return {
       summary: `Solid ${tier} creator. Good performance-to-cost ratio.`,
       summaryKey: 'creator_score_good',
+      summaryParams,
     }
   }
   if (score >= 55) {
@@ -356,22 +427,26 @@ function generateSummary(
       return {
         summary: `Engaged audience but overpriced. Worth it only at a lower fee.`,
         summaryKey: 'creator_score_engaged_overpriced',
+        summaryParams,
       }
     }
     return {
       summary: `Average performance for a ${tier} creator. Consider alternatives.`,
       summaryKey: 'creator_score_average',
+      summaryParams,
     }
   }
   if (score >= 40) {
     return {
       summary: `Below average. Low engagement or poor value. Explore other options.`,
       summaryKey: 'creator_score_below_average',
+      summaryParams,
     }
   }
   return {
     summary: `Not recommended. Multiple red flags in performance or pricing.`,
     summaryKey: 'creator_score_not_recommended',
+    summaryParams,
   }
 }
 

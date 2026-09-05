@@ -48,7 +48,7 @@ import {
 } from '@/components/ui/table'
 import { StatCard } from '@/components/ui/stat-card'
 import { Avatar } from '@/components/ui/avatar'
-import { formatNumber } from '@/lib/utils'
+import { formatNumber, formatEur, formatPercent } from '@/lib/utils'
 import { AddToModal } from '@/components/add-to-modal'
 import { calculateCPM, type CPMInput, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
 import { DEFAULT_BENCHMARKS, mergeBenchmarkConfig, normalizeFormat, normalizePlatform, type BenchmarkConfig } from '@/lib/benchmarks'
@@ -602,15 +602,15 @@ export default function AnalyzePage() {
                 <div className="grid grid-cols-3 gap-4 mb-4">
                   <div className="text-center">
                     <p className="text-xs text-gray-400 mb-0.5 flex items-center justify-center gap-1">Engagement <InfoTooltip text={locale === 'es' ? 'Calculado como (avg likes + avg comentarios) / seguidores × 100' : 'Calculated as (avg likes + avg comments) / followers × 100'} /></p>
-                    <p className="text-2xl font-bold text-gray-900">{profile.engagementRate}<span className="text-base text-gray-400">%</span></p>
+                    <p className="text-2xl font-bold text-gray-900">{formatPercent(profile.engagementRate, { locale })}</p>
                   </div>
                   <div className="text-center">
                     <p className="text-xs text-gray-400 mb-0.5">{t.campaigns.followers}</p>
-                    <p className="text-2xl font-bold text-gray-900">{formatNumber(profile.followers)}</p>
+                    <p className="text-2xl font-bold text-gray-900">{formatNumber(profile.followers, { locale })}</p>
                   </div>
                   <div className="text-center">
                     <p className="text-xs text-gray-400 mb-0.5">Posts</p>
-                    <p className="text-2xl font-bold text-gray-900">{formatNumber(profile.postsCount)}</p>
+                    <p className="text-2xl font-bold text-gray-900">{formatNumber(profile.postsCount, { locale })}</p>
                   </div>
                 </div>
 
@@ -619,15 +619,15 @@ export default function AnalyzePage() {
                   <div className="flex items-center gap-6">
                     <div className="flex items-center gap-1.5 text-sm text-gray-700">
                       <Heart className="h-4 w-4 text-red-400" />
-                      <span className="font-semibold">{formatNumber(profile.avgLikes)}</span>
+                      <span className="font-semibold">{formatNumber(profile.avgLikes, { locale })}</span>
                     </div>
                     <div className="flex items-center gap-1.5 text-sm text-gray-700">
                       <MessageCircle className="h-4 w-4 text-blue-400" />
-                      <span className="font-semibold">{formatNumber(profile.avgComments)}</span>
+                      <span className="font-semibold">{formatNumber(profile.avgComments, { locale })}</span>
                     </div>
                     <div className="flex items-center gap-1.5 text-sm text-gray-700">
                       <Play className="h-4 w-4 text-purple-400" />
-                      <span className="font-semibold">{formatNumber(profile.avgViews)}</span>
+                      <span className="font-semibold">{formatNumber(profile.avgViews, { locale })}</span>
                     </div>
                   </div>
                 </div>
@@ -772,7 +772,7 @@ export default function AnalyzePage() {
                       </div>
                       {profile?.standardFee && (
                         <p className="mt-1 text-[10px] text-gray-400">
-                          {locale === 'es' ? 'Tarifa estándar guardada' : 'Saved standard rate'}: €{profile.standardFee.toLocaleString()}
+                          {locale === 'es' ? 'Tarifa estándar guardada' : 'Saved standard rate'}: {formatEur(profile.standardFee, { locale })}
                         </p>
                       )}
                     </div>
@@ -788,25 +788,25 @@ export default function AnalyzePage() {
                       <div className="rounded-lg bg-gray-50 p-2.5">
                         <p className="text-[10px] text-gray-400 uppercase font-medium">CPM Real</p>
                         <p className="text-sm font-bold text-gray-900">
-                          {cpmResult.cpmReal !== null ? `€${cpmResult.cpmReal}` : '—'}
+                          {cpmResult.cpmReal !== null ? formatEur(cpmResult.cpmReal, { locale, maxFractionDigits: 2 }) : '—'}
                         </p>
                       </div>
                       <div className="rounded-lg bg-gray-50 p-2.5">
                         <p className="text-[10px] text-gray-400 uppercase font-medium">CPM Target</p>
                         <p className="text-sm font-bold text-gray-900">
-                          {cpmResult.cpmTarget !== null ? `€${cpmResult.cpmTarget}` : '—'}
+                          {cpmResult.cpmTarget !== null ? formatEur(cpmResult.cpmTarget, { locale, maxFractionDigits: 2 }) : '—'}
                         </p>
                       </div>
                       <div className="rounded-lg bg-gray-50 p-2.5">
                         <p className="text-[10px] text-gray-400 uppercase font-medium">Fee Rec.</p>
                         <p className="text-sm font-bold text-gray-900">
-                          {cpmResult.feeRecommended !== null ? `€${cpmResult.feeRecommended.toLocaleString()}` : '—'}
+                          {cpmResult.feeRecommended !== null ? formatEur(cpmResult.feeRecommended, { locale }) : '—'}
                         </p>
                       </div>
                       <div className="rounded-lg bg-gray-50 p-2.5">
                         <p className="text-[10px] text-gray-400 uppercase font-medium">Fee Max</p>
                         <p className="text-sm font-bold text-gray-900">
-                          {cpmResult.feeMax !== null ? `€${cpmResult.feeMax.toLocaleString()}` : '—'}
+                          {cpmResult.feeMax !== null ? formatEur(cpmResult.feeMax, { locale }) : '—'}
                         </p>
                       </div>
                       <div className="rounded-lg bg-gray-50 p-2.5">
@@ -817,7 +817,7 @@ export default function AnalyzePage() {
                         <p className="text-[10px] text-gray-400 uppercase font-medium">Difference</p>
                         <p className={`text-sm font-bold ${cpmResult.savingsOrOvercost !== null ? (cpmResult.savingsOrOvercost > 0 ? 'text-red-600' : 'text-green-600') : 'text-gray-900'}`}>
                           {cpmResult.savingsOrOvercost !== null
-                            ? `${cpmResult.savingsOrOvercost > 0 ? '+' : ''}€${cpmResult.savingsOrOvercost.toLocaleString()}`
+                            ? `${cpmResult.savingsOrOvercost > 0 ? '+' : cpmResult.savingsOrOvercost < 0 ? '−' : ''}${formatEur(Math.abs(cpmResult.savingsOrOvercost), { locale })}`
                             : '—'}
                         </p>
                       </div>
@@ -836,33 +836,33 @@ export default function AnalyzePage() {
                 <StatCard
                   icon={<Users className="h-5 w-5" />}
                   label={t.campaigns.followers}
-                  value={formatNumber(profile.followers)}
+                  value={formatNumber(profile.followers, { locale })}
                   accent
                 />
                 <StatCard
                   icon={<BarChart3 className="h-5 w-5" />}
                   label={t.campaigns.engagement}
-                  value={`${profile.engagementRate}%`}
+                  value={formatPercent(profile.engagementRate, { locale })}
                 />
                 <StatCard
                   icon={<Heart className="h-5 w-5" />}
                   label={t.analyze.medianLikes}
-                  value={formatNumber(profile.avgLikes)}
+                  value={formatNumber(profile.avgLikes, { locale })}
                 />
                 <StatCard
                   icon={<Eye className="h-5 w-5" />}
                   label={t.analyze.medianViews}
-                  value={formatNumber(profile.avgViews)}
+                  value={formatNumber(profile.avgViews, { locale })}
                 />
                 <StatCard
                   icon={<MessageCircle className="h-5 w-5" />}
                   label={t.analyze.medianComments}
-                  value={formatNumber(profile.avgComments)}
+                  value={formatNumber(profile.avgComments, { locale })}
                 />
                 <StatCard
                   icon={<BarChart3 className="h-5 w-5" />}
                   label="Following"
-                  value={formatNumber(profile.following)}
+                  value={formatNumber(profile.following, { locale })}
                 />
               </div>
             </div>
@@ -901,8 +901,8 @@ export default function AnalyzePage() {
                         </div>
                         <span className="text-[10px] font-medium text-gray-400 uppercase">{media.mediaType}</span>
                         <div className="flex items-center gap-2 text-[10px] text-gray-500">
-                          <span>❤ {formatNumber(media.likes)}</span>
-                          <span>💬 {formatNumber(media.comments)}</span>
+                          <span>❤ {formatNumber(media.likes, { locale })}</span>
+                          <span>💬 {formatNumber(media.comments, { locale })}</span>
                         </div>
                       </div>
                       {/* Hover overlay with metrics */}
@@ -910,16 +910,16 @@ export default function AnalyzePage() {
                         <div className="flex items-center gap-3 text-xs text-white">
                           <span className="flex items-center gap-1">
                             <Heart className="h-3 w-3" />
-                            {formatNumber(media.likes)}
+                            {formatNumber(media.likes, { locale })}
                           </span>
                           <span className="flex items-center gap-1">
                             <MessageCircle className="h-3 w-3" />
-                            {formatNumber(media.comments)}
+                            {formatNumber(media.comments, { locale })}
                           </span>
                           {media.views > 0 && (
                             <span className="flex items-center gap-1">
                               <Eye className="h-3 w-3" />
-                              {formatNumber(media.views)}
+                              {formatNumber(media.views, { locale })}
                             </span>
                           )}
                         </div>
@@ -1056,7 +1056,7 @@ export default function AnalyzePage() {
                       <div key={item.type}>
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-sm font-medium text-gray-700">{item.type}</span>
-                          <span className="text-xs text-gray-400">{item.count} posts &middot; {item.avgEngagement}% {t.analyze.avgEng}</span>
+                          <span className="text-xs text-gray-400">{item.count} posts &middot; {formatPercent(item.avgEngagement, { locale })} {t.analyze.avgEng}</span>
                         </div>
                         <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
                           <div
@@ -1065,9 +1065,9 @@ export default function AnalyzePage() {
                           />
                         </div>
                         <div className="flex items-center gap-4 mt-1 text-xs text-gray-400">
-                          <span><Heart className="inline h-3 w-3 mr-0.5" />{formatNumber(item.avgLikes)}</span>
-                          <span><MessageCircle className="inline h-3 w-3 mr-0.5" />{formatNumber(item.avgComments)}</span>
-                          <span><Eye className="inline h-3 w-3 mr-0.5" />{formatNumber(item.avgViews)}</span>
+                          <span><Heart className="inline h-3 w-3 mr-0.5" />{formatNumber(item.avgLikes, { locale })}</span>
+                          <span><MessageCircle className="inline h-3 w-3 mr-0.5" />{formatNumber(item.avgComments, { locale })}</span>
+                          <span><Eye className="inline h-3 w-3 mr-0.5" />{formatNumber(item.avgViews, { locale })}</span>
                         </div>
                       </div>
                     )
@@ -1087,19 +1087,19 @@ export default function AnalyzePage() {
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-gray-600">{t.analyze.likeToFollowerRatio}</span>
-                  <span className="text-sm font-semibold text-gray-900">{(insights.engagementAnalysis.likeToFollowerRatio * 100).toFixed(2)}%</span>
+                  <span className="text-sm font-semibold text-gray-900">{formatPercent(insights.engagementAnalysis.likeToFollowerRatio * 100, { locale })}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-gray-600">{t.analyze.commentToLikeRatio}</span>
-                  <span className="text-sm font-semibold text-gray-900">{(insights.engagementAnalysis.commentToLikeRatio * 100).toFixed(2)}%</span>
+                  <span className="text-sm font-semibold text-gray-900">{formatPercent(insights.engagementAnalysis.commentToLikeRatio * 100, { locale })}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-gray-600">{t.analyze.viewToFollowerRatio}</span>
-                  <span className="text-sm font-semibold text-gray-900">{(insights.engagementAnalysis.viewToFollowerRatio * 100).toFixed(2)}%</span>
+                  <span className="text-sm font-semibold text-gray-900">{formatPercent(insights.engagementAnalysis.viewToFollowerRatio * 100, { locale })}</span>
                 </div>
                 <div className="border-t border-gray-100 pt-3 flex items-center justify-between">
                   <span className="text-sm text-gray-600">{t.analyze.estimatedReach}</span>
-                  <span className="text-sm font-bold text-purple-600">{formatNumber(insights.engagementAnalysis.estimatedReach)}</span>
+                  <span className="text-sm font-bold text-purple-600">{formatNumber(insights.engagementAnalysis.estimatedReach, { locale })}</span>
                 </div>
               </div>
             </div>
@@ -1183,10 +1183,10 @@ export default function AnalyzePage() {
                         </div>
                         <span className="text-xs font-semibold text-purple-400 uppercase tracking-wider">{post.mediaType}</span>
                         <div className="flex items-center gap-3 text-xs font-medium text-gray-600">
-                          <span className="flex items-center gap-1"><Heart className="h-3.5 w-3.5 text-red-400" />{formatNumber(post.likes)}</span>
-                          <span className="flex items-center gap-1"><MessageCircle className="h-3.5 w-3.5 text-blue-400" />{formatNumber(post.comments)}</span>
+                          <span className="flex items-center gap-1"><Heart className="h-3.5 w-3.5 text-red-400" />{formatNumber(post.likes, { locale })}</span>
+                          <span className="flex items-center gap-1"><MessageCircle className="h-3.5 w-3.5 text-blue-400" />{formatNumber(post.comments, { locale })}</span>
                         </div>
-                        <span className="text-lg font-bold text-purple-600">{post.engagementRate}% eng</span>
+                        <span className="text-lg font-bold text-purple-600">{formatPercent(post.engagementRate, { locale })} eng</span>
                       </div>
                       <div className="absolute top-2 left-2 z-10 flex h-7 w-7 items-center justify-center rounded-full bg-amber-400 text-xs font-bold text-white shadow-md">
                         #{idx + 1}
@@ -1200,11 +1200,11 @@ export default function AnalyzePage() {
                     </div>
                     <div className="p-3">
                       <div className="flex items-center gap-3 text-xs text-gray-500 mb-1">
-                        <span className="flex items-center gap-1"><Heart className="h-3 w-3 text-red-400" />{formatNumber(post.likes)}</span>
-                        <span className="flex items-center gap-1"><MessageCircle className="h-3 w-3 text-blue-400" />{formatNumber(post.comments)}</span>
-                        {post.views > 0 && <span className="flex items-center gap-1"><Eye className="h-3 w-3 text-purple-400" />{formatNumber(post.views)}</span>}
+                        <span className="flex items-center gap-1"><Heart className="h-3 w-3 text-red-400" />{formatNumber(post.likes, { locale })}</span>
+                        <span className="flex items-center gap-1"><MessageCircle className="h-3 w-3 text-blue-400" />{formatNumber(post.comments, { locale })}</span>
+                        {post.views > 0 && <span className="flex items-center gap-1"><Eye className="h-3 w-3 text-purple-400" />{formatNumber(post.views, { locale })}</span>}
                       </div>
-                      <p className="text-xs font-semibold text-emerald-600">{post.engagementRate}% eng.</p>
+                      <p className="text-xs font-semibold text-emerald-600">{formatPercent(post.engagementRate, { locale })} eng.</p>
                       {post.caption && (
                         <p className="text-xs text-gray-400 mt-1 line-clamp-2">{post.caption}</p>
                       )}
@@ -1238,7 +1238,7 @@ export default function AnalyzePage() {
             </div>
             <div>
               <h2 className="text-lg font-bold text-gray-900">{t.analyze.similarProfiles}</h2>
-              <p className="text-sm text-gray-500">{t.lookalikes.similarTo} @{profile.username} &middot; {formatNumber(profile.followers)} {t.campaigns.followers.toLowerCase()}</p>
+              <p className="text-sm text-gray-500">{t.lookalikes.similarTo} @{profile.username} &middot; {formatNumber(profile.followers, { locale })} {t.campaigns.followers.toLowerCase()}</p>
             </div>
           </div>
 
@@ -1288,7 +1288,7 @@ export default function AnalyzePage() {
                           </div>
                         </button>
                       </TableCell>
-                      <TableCell className="font-medium">{formatNumber(item.followers)}</TableCell>
+                      <TableCell className="font-medium">{formatNumber(item.followers, { locale })}</TableCell>
                       <TableCell>
                         <span className={
                           item.engagementRate >= 5
@@ -1297,11 +1297,11 @@ export default function AnalyzePage() {
                               ? 'text-purple-600 font-medium'
                               : 'text-gray-600'
                         }>
-                          {item.engagementRate}%
+                          {formatPercent(item.engagementRate, { locale })}
                         </span>
                       </TableCell>
-                      <TableCell>{formatNumber(item.avgLikes)}</TableCell>
-                      <TableCell>{formatNumber(item.avgViews)}</TableCell>
+                      <TableCell>{formatNumber(item.avgLikes, { locale })}</TableCell>
+                      <TableCell>{formatNumber(item.avgViews, { locale })}</TableCell>
                       <TableCell>
                         <span className="text-xs text-gray-500 max-w-[180px] truncate block">
                           {item.email || 'Not Provided'}
@@ -1321,7 +1321,7 @@ export default function AnalyzePage() {
                               style={{ width: `${item.matchScore}%` }}
                             />
                           </div>
-                          <span className="text-xs font-semibold text-gray-700">{item.matchScore}%</span>
+                          <span className="text-xs font-semibold text-gray-700">{formatPercent(item.matchScore, { digits: 0, locale })}</span>
                         </div>
                       </TableCell>
                       <TableCell>
@@ -1405,7 +1405,7 @@ export default function AnalyzePage() {
                             </div>
                           </button>
                         </TableCell>
-                        <TableCell className="font-medium">{formatNumber(item.followers)}</TableCell>
+                        <TableCell className="font-medium">{formatNumber(item.followers, { locale })}</TableCell>
                         <TableCell>
                           <span className={
                             item.engagementRate >= 5
@@ -1414,12 +1414,12 @@ export default function AnalyzePage() {
                                 ? 'text-purple-600 font-medium'
                                 : 'text-gray-600'
                           }>
-                            {item.engagementRate}%
+                            {formatPercent(item.engagementRate, { locale })}
                           </span>
                         </TableCell>
-                        <TableCell>{formatNumber(item.avgLikes)}</TableCell>
-                        <TableCell>{formatNumber(item.avgComments)}</TableCell>
-                        <TableCell>{formatNumber(item.avgViews)}</TableCell>
+                        <TableCell>{formatNumber(item.avgLikes, { locale })}</TableCell>
+                        <TableCell>{formatNumber(item.avgComments, { locale })}</TableCell>
+                        <TableCell>{formatNumber(item.avgViews, { locale })}</TableCell>
                         <TableCell>
                           <span className="text-xs text-gray-500 max-w-[180px] truncate block">
                             {item.email || 'Not Provided'}
@@ -1510,7 +1510,7 @@ export default function AnalyzePage() {
                               </div>
                             </button>
                           </TableCell>
-                          <TableCell className="font-medium">{formatNumber(item.followers)}</TableCell>
+                          <TableCell className="font-medium">{formatNumber(item.followers, { locale })}</TableCell>
                           <TableCell>
                             <span className={
                               item.engagementRate >= 5
@@ -1519,12 +1519,12 @@ export default function AnalyzePage() {
                                   ? 'text-purple-600 font-medium'
                                   : 'text-gray-600'
                             }>
-                              {item.engagementRate}%
+                              {formatPercent(item.engagementRate, { locale })}
                             </span>
                           </TableCell>
-                          <TableCell>{formatNumber(item.avgLikes)}</TableCell>
-                          <TableCell>{formatNumber(item.avgComments)}</TableCell>
-                          <TableCell>{formatNumber(item.avgViews)}</TableCell>
+                          <TableCell>{formatNumber(item.avgLikes, { locale })}</TableCell>
+                          <TableCell>{formatNumber(item.avgComments, { locale })}</TableCell>
+                          <TableCell>{formatNumber(item.avgViews, { locale })}</TableCell>
                           <TableCell>
                             <span className="text-xs text-gray-500 max-w-[180px] truncate block">
                               {item.email || 'Not Provided'}

@@ -1,8 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { TrendingUp, TrendingDown, DollarSign, Target, ChevronDown, ChevronUp, MessageSquare } from 'lucide-react'
+import { TrendingUp, TrendingDown, Euro, Target, ChevronDown, ChevronUp, MessageSquare } from 'lucide-react'
 import { useI18n } from '@/i18n/context'
+import { formatEur, formatPercent, type EurLocale } from '@/lib/utils'
 import type { AppliedModifier, DealTerms } from '@/lib/benchmarks'
 
 /**
@@ -157,7 +158,7 @@ export function DealAdvisorPanel({ username, platform, followers, avgViews, avgL
           </>
         ) : (
           <>
-            <DollarSign className="h-3 w-3" />
+            <Euro className="h-3 w-3" />
             <span>Deal Advisor™</span>
           </>
         )}
@@ -172,11 +173,11 @@ export function DealAdvisorPanel({ username, platform, followers, avgViews, avgL
   )
 }
 
-function DealContent({ result, onClose, locale = 'es' }: { result: DealResult; onClose: () => void; locale?: string }) {
+function DealContent({ result, onClose, locale = 'es' }: { result: DealResult; onClose: () => void; locale?: EurLocale }) {
   const style = VERDICT_STYLES[result.verdict] || VERDICT_STYLES.fair_deal
   const es = locale === 'es'
   const modifiers = result.appliedModifiers || []
-  const fmtPct = (p: number) => `${p > 0 ? '+' : p < 0 ? '−' : ''}${Math.abs(Math.round(p * 100))} %`
+  const fmtPct = (p: number) => `${p > 0 ? '+' : p < 0 ? '−' : ''}${formatPercent(Math.abs(p * 100), { digits: 0, locale })}`
 
   // Market range bar positioning
   const rangeMin = result.recommendedFeeMin
@@ -200,8 +201,8 @@ function DealContent({ result, onClose, locale = 'es' }: { result: DealResult; o
       {/* Market Range Bar */}
       <div className="space-y-1">
         <div className="flex justify-between text-[10px] text-gray-400">
-          <span>€{result.recommendedFeeMin.toLocaleString()}</span>
-          <span>€{result.recommendedFeeMax.toLocaleString()}</span>
+          <span>{formatEur(result.recommendedFeeMin, { locale })}</span>
+          <span>{formatEur(result.recommendedFeeMax, { locale })}</span>
         </div>
         <div className="relative h-3 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
           {/* Green zone */}
@@ -217,7 +218,7 @@ function DealContent({ result, onClose, locale = 'es' }: { result: DealResult; o
         </div>
         <div className="flex justify-between text-[10px]">
           <span className="text-gray-400">{es ? 'Rango recomendado' : 'Recommended range'}</span>
-          <span className={`font-semibold ${style.text}`}>Fee: €{result.askedFee.toLocaleString()}</span>
+          <span className={`font-semibold ${style.text}`}>Fee: {formatEur(result.askedFee, { locale })}</span>
         </div>
       </div>
 
@@ -230,7 +231,7 @@ function DealContent({ result, onClose, locale = 'es' }: { result: DealResult; o
                 {result.percentileLabels?.p50 || (es ? 'Precio de mercado' : 'Market price')}
                 {modifiers.length > 0 ? (es ? ' (con modificadores)' : ' (with modifiers)') : ''}
               </span>
-              <span className="font-semibold text-gray-700 dark:text-gray-200">€{result.referenceFee.toLocaleString()}</span>
+              <span className="font-semibold text-gray-700 dark:text-gray-200">{formatEur(result.referenceFee, { locale })}</span>
             </div>
           )}
           {modifiers.length > 0 && (
@@ -250,16 +251,16 @@ function DealContent({ result, onClose, locale = 'es' }: { result: DealResult; o
       <div className="grid grid-cols-3 gap-2 text-center">
         <div className="rounded-lg bg-gray-50 dark:bg-gray-800 p-2">
           <p className="text-[10px] text-gray-400">CPM Real</p>
-          <p className="text-sm font-bold text-gray-700 dark:text-gray-200">€{result.cpmReal.toFixed(0)}</p>
+          <p className="text-sm font-bold text-gray-700 dark:text-gray-200">{formatEur(result.cpmReal, { locale, maxFractionDigits: 2 })}</p>
         </div>
         <div className="rounded-lg bg-gray-50 dark:bg-gray-800 p-2">
           <p className="text-[10px] text-gray-400">CPM Benchmark</p>
-          <p className="text-sm font-bold text-gray-700 dark:text-gray-200">€{result.cpmBenchmark?.toFixed(0) || '—'}</p>
+          <p className="text-sm font-bold text-gray-700 dark:text-gray-200">{result.cpmBenchmark != null ? formatEur(result.cpmBenchmark, { locale, maxFractionDigits: 2 }) : '—'}</p>
         </div>
         <div className={`rounded-lg p-2 ${result.savingsOrOvercost >= 0 ? 'bg-emerald-50 dark:bg-emerald-900/20' : 'bg-red-50 dark:bg-red-900/20'}`}>
           <p className="text-[10px] text-gray-400">{result.savingsOrOvercost >= 0 ? (es ? 'Ahorro' : 'Savings') : (es ? 'Sobrecoste' : 'Overcost')}</p>
           <p className={`text-sm font-bold ${result.savingsOrOvercost >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
-            {result.savingsOrOvercost >= 0 ? '+' : ''}€{result.savingsOrOvercost.toLocaleString()}
+            {result.savingsOrOvercost > 0 ? '+' : result.savingsOrOvercost < 0 ? '−' : ''}{formatEur(Math.abs(result.savingsOrOvercost), { locale })}
           </p>
         </div>
       </div>

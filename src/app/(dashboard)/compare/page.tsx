@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { formatNumber } from '@/lib/utils'
+import { formatNumber, formatEur, formatRatio, formatPercent } from '@/lib/utils'
 import { useI18n } from '@/i18n/context'
 import {
   ArrowLeft,
@@ -17,7 +17,7 @@ import {
   Users,
   Eye,
   Heart,
-  DollarSign,
+  Euro,
   Zap,
 } from 'lucide-react'
 
@@ -47,13 +47,16 @@ interface ComparisonData {
   totalViews: number
   totalCost: number
   emvExtended: number
+  /** Ratio EMV = EMV ÷ agreed fees (decision 9B). Shown as "×2,4", labelled "Ratio EMV", never ROI. */
+  emvRatio: number | null
+  /** @deprecated legacy alias of emvRatio kept by the API for old clients */
   roi: number | null
   platformBreakdown: Record<string, number>
   tierBreakdown: Record<string, number>
 }
 
 export default function CompareCampaignsPage() {
-  const { locale } = useI18n()
+  const { t, locale } = useI18n()
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [comparisonData, setComparisonData] = useState<ComparisonData[]>([])
@@ -93,13 +96,13 @@ export default function CompareCampaignsPage() {
   const metrics = [
     { key: 'influencerCount', label: locale === 'es' ? 'Influencers' : 'Influencers', icon: Users, format: (v: number) => v.toString() },
     { key: 'mediaCount', label: locale === 'es' ? 'Publicaciones' : 'Posts', icon: BarChart3, format: (v: number) => v.toString() },
-    { key: 'totalReach', label: locale === 'es' ? 'Alcance Total' : 'Total Reach', icon: Eye, format: formatNumber },
-    { key: 'totalEngagements', label: locale === 'es' ? 'Engagements' : 'Engagements', icon: Heart, format: formatNumber },
-    { key: 'engagementRate', label: locale === 'es' ? 'Tasa Engagement' : 'Engagement Rate', icon: TrendingUp, format: (v: number) => `${v.toFixed(2)}%` },
-    { key: 'totalViews', label: locale === 'es' ? 'Vistas Totales' : 'Total Views', icon: Eye, format: formatNumber },
-    { key: 'totalCost', label: locale === 'es' ? 'Coste Total' : 'Total Cost', icon: DollarSign, format: (v: number) => `€${v.toLocaleString()}` },
-    { key: 'emvExtended', label: 'EMV', icon: Zap, format: (v: number) => `€${v.toLocaleString()}` },
-    { key: 'roi', label: 'ROI', icon: TrendingUp, format: (v: number | null) => v !== null ? `${v.toFixed(1)}x` : '—' },
+    { key: 'totalReach', label: locale === 'es' ? 'Alcance Total' : 'Total Reach', icon: Eye, format: (v: number) => formatNumber(v, { locale }) },
+    { key: 'totalEngagements', label: locale === 'es' ? 'Engagements' : 'Engagements', icon: Heart, format: (v: number) => formatNumber(v, { locale }) },
+    { key: 'engagementRate', label: locale === 'es' ? 'Tasa Engagement' : 'Engagement Rate', icon: TrendingUp, format: (v: number) => formatPercent(v, { locale }) },
+    { key: 'totalViews', label: locale === 'es' ? 'Vistas Totales' : 'Total Views', icon: Eye, format: (v: number) => formatNumber(v, { locale }) },
+    { key: 'totalCost', label: locale === 'es' ? 'Coste Total' : 'Total Cost', icon: Euro, format: (v: number) => formatEur(v, { locale }) },
+    { key: 'emvExtended', label: 'EMV', icon: Zap, format: (v: number) => formatEur(v, { locale }) },
+    { key: 'emvRatio', label: t.campaignDetail.emvRatio, icon: TrendingUp, format: (v: number | null) => v !== null ? formatRatio(v, { locale }) : '—' },
   ]
 
   const tierLabels: Record<string, string> = {
@@ -260,7 +263,7 @@ export default function CompareCampaignsPage() {
                       <div key={c.id}>
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-xs text-gray-600 truncate max-w-[150px]">{c.name}</span>
-                          <span className="text-xs font-bold text-gray-900">{formatNumber(c.totalReach)}</span>
+                          <span className="text-xs font-bold text-gray-900">{formatNumber(c.totalReach, { locale })}</span>
                         </div>
                         <div className="h-3 w-full rounded-full bg-gray-100">
                           <div className={`h-3 rounded-full ${colors[i]} transition-all`} style={{ width: `${pct}%` }} />
@@ -272,20 +275,24 @@ export default function CompareCampaignsPage() {
               </CardContent>
             </Card>
 
-            {/* ROI Comparison */}
+            {/* Ratio EMV comparison (EMV ÷ cost, as a multiple — never "ROI") */}
             <Card variant="elevated">
               <CardContent>
-                <h4 className="mb-4 text-sm font-semibold text-gray-700">ROI (EMV / Cost)</h4>
+                <h4 className="mb-4 text-sm font-semibold text-gray-700">
+                  {t.campaignDetail.emvRatio} {locale === 'es' ? '(EMV ÷ coste)' : '(EMV ÷ cost)'}
+                </h4>
                 <div className="space-y-3">
                   {comparisonData.map((c, i) => {
-                    const maxRoi = Math.max(...comparisonData.map(d => d.roi || 0))
-                    const pct = maxRoi > 0 && c.roi ? (c.roi / maxRoi) * 100 : 0
+                    const ratios = comparisonData.map(d => d.emvRatio ?? d.roi ?? 0)
+                    const maxRatio = Math.max(...ratios)
+                    const ratio = c.emvRatio ?? c.roi
+                    const pct = maxRatio > 0 && ratio ? (ratio / maxRatio) * 100 : 0
                     return (
                       <div key={c.id}>
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-xs text-gray-600 truncate max-w-[150px]">{c.name}</span>
-                          <span className="text-xs font-bold text-gray-900">
-                            {c.roi !== null ? `${c.roi.toFixed(1)}x` : '—'}
+                          <span className="text-xs font-bold tabular-nums text-gray-900">
+                            {ratio !== null ? formatRatio(ratio, { locale }) : '—'}
                           </span>
                         </div>
                         <div className="h-3 w-full rounded-full bg-gray-100">
@@ -333,7 +340,7 @@ export default function CompareCampaignsPage() {
                       <div key={c.id}>
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-xs text-gray-600 truncate max-w-[150px]">{c.name}</span>
-                          <span className="text-xs font-bold text-gray-900">{c.engagementRate.toFixed(2)}%</span>
+                          <span className="text-xs font-bold text-gray-900">{formatPercent(c.engagementRate, { locale })}</span>
                         </div>
                         <div className="h-3 w-full rounded-full bg-gray-100">
                           <div className={`h-3 rounded-full ${colors[i]} transition-all`} style={{ width: `${pct}%` }} />

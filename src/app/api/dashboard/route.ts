@@ -1,10 +1,54 @@
+/**
+ * GET /api/dashboard — agency-level KPIs.
+ *
+ * Every aggregate (investment, EMV, content, engagement, audience) uses the
+ * SAME campaign filter: the role-scoped, non-archived campaigns. Each campaign
+ * is valued by computeCampaignOverview (the one source of truth) and the
+ * dashboard only sums. Posts that live in several campaigns (annual + monthly)
+ * count ONCE at agency level: rows are deduplicated by post and the number of
+ * duplicates removed is reported in `stats.dedupedPosts`. Cost is per campaign
+ * membership (a creator paid in two campaigns has two fees).
+ *
+ * BRAND users never receive fees, cost, CPM or the EMV ratio.
+ */
+
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus } from '@/generated/prisma/client'
-import { calculateCampaignEMV } from '@/lib/emv'
-import { loadEmvRates, getCreatorStoryViewRates } from '@/lib/emv-server'
-import { instagramShortcode } from '@/lib/campaign-capture'
+import { computeCampaignOverview } from '@/lib/campaign-overview'
+import { dedupeMediaByPost } from '@/lib/campaign-capture'
+import {
+  cpmOf,
+  emvRatioOf,
+  engagementRateOf,
+  engagementsOf,
+  isStoryType,
+  sumAudience,
+  type AudienceResult,
+  type CampaignOverview,
+  type PerMediaMetrics,
+} from '@/lib/metrics'
+
+/** One overview per campaign, a few at a time so the connection pool is not flooded. */
+async function computeOverviews(ids: string[]): Promise<Map<string, CampaignOverview>> {
+  const out = new Map<string, CampaignOverview>()
+  const CHUNK = 5
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK)
+    const results = await Promise.all(chunk.map(id => computeCampaignOverview(id)))
+    results.forEach((o, j) => { if (o) out.set(chunk[j], o) })
+  }
+  return out
+}
+
+type DashMedia = {
+  id: string; externalId: string | null; platform: string; permalink: string | null; mediaType: string
+  views: number; likes: number; comments: number; shares: number; saves: number
+  postedAt: Date | null; influencerId: string
+  influencer: { username: string; followers: number }
+  campaign: { name: string } | null
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,6 +56,7 @@ export async function GET(request: NextRequest) {
     if (!session) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
+    const isBrand = session.role === 'BRAND'
 
     // ADMIN sees all campaigns
     // EMPLOYEE sees own + assigned campaigns + campaigns from assigned brands
@@ -44,38 +89,25 @@ export async function GET(request: NextRequest) {
         orConditions.push({ user: { id: { in: assignedBrandIds } } })
       }
       campaignWhere = { ...campaignWhere, OR: orConditions }
-    } else if (session.role === 'BRAND') {
+    } else if (isBrand) {
       campaignWhere = { ...campaignWhere, userId: session.id }
     }
 
-    // Active campaigns count
-    const activeCampaigns = await prisma.campaign.count({
-      where: { ...campaignWhere, status: CampaignStatus.ACTIVE },
-    })
+    // THE filter: the exact campaign ids every aggregate below is built on.
+    const campaignRows = await prisma.campaign.findMany({ where: campaignWhere, select: { id: true, status: true } })
+    const campaignIds = campaignRows.map(c => c.id)
+    const activeCampaigns = campaignRows.filter(c => c.status === CampaignStatus.ACTIVE).length
+    const totalCampaigns = campaignRows.length
 
-    const totalCampaigns = await prisma.campaign.count({
-      where: campaignWhere,
-    })
-
-    // Total influencers across all campaigns
-    const uniqueInfluencers = await prisma.campaignInfluencer.findMany({
-      where: { campaign: campaignWhere },
-      select: { influencerId: true },
-      distinct: ['influencerId'],
-    })
-
-    // Total reach (sum of followers of all unique influencers)
+    // Total influencers across those campaigns
+    const uniqueInfluencers = campaignIds.length > 0
+      ? await prisma.campaignInfluencer.findMany({
+          where: { campaignId: { in: campaignIds } },
+          select: { influencerId: true },
+          distinct: ['influencerId'],
+        })
+      : []
     const influencerIds = uniqueInfluencers.map((ci) => ci.influencerId)
-    const reachData = await prisma.influencer.aggregate({
-      where: { id: { in: influencerIds } },
-      _sum: { followers: true },
-    })
-
-    // Average engagement rate
-    const engData = await prisma.influencer.aggregate({
-      where: { id: { in: influencerIds } },
-      _avg: { engagementRate: true },
-    })
 
     // Recent campaigns with influencer counts
     const recentCampaigns = await prisma.campaign.findMany({
@@ -94,101 +126,88 @@ export async function GET(request: NextRequest) {
       take: 5,
     })
 
-    // --- NEW: Extended dashboard data ---
-
-    // 1. Total investment (sum of agreedFee from active campaign influencers)
-    let totalInvestment = 0
-    try {
-      const investmentData = await prisma.campaignInfluencer.aggregate({
-        where: {
-          campaign: { ...campaignWhere, status: CampaignStatus.ACTIVE },
-        },
-        _sum: { agreedFee: true },
-      })
-      totalInvestment = investmentData._sum.agreedFee || 0
-    } catch { totalInvestment = 0 }
-
-    // 2-6. Media KPIs — counted per DISTINCT post. A post that satisfies several
-    // campaigns' rules has one Media row per campaign; the global dashboard must
-    // not count it twice (campaign pages keep their own per-campaign rows). The
-    // post key is the Instagram shortcode when available (Apify and Meta give
-    // the same post different externalIds), else externalId, else the row id.
-    let totalEMV = { basic: 0, extended: 0 }
-    let totalMediaPosts = 0
-    let totalViews = 0
-    let totalLikes = 0
-    let totalComments = 0
-    type DashMedia = {
-      id: string; externalId: string | null; platform: string; permalink: string | null; mediaType: string
-      impressions: number; reach: number; views: number; likes: number; comments: number; shares: number; saves: number
-      postedAt: Date | null; influencerId: string
-      influencer: { username: string; followers: number }
-      campaign: { name: string } | null
-    }
+    // --- Campaign numbers: one overview per campaign, then sum ---
+    let cost = 0
+    let membersWithCost = 0
+    let emvBasic = 0
+    let emvExtended = 0
+    let views = 0, likes = 0, comments = 0, shares = 0, saves = 0, engagements = 0
+    let mediaDeleted = 0, stories = 0
+    let dedupedPosts = 0
     let uniqueMedia: DashMedia[] = []
+    const audienceResults: AudienceResult[] = []
     try {
-      const allMedia: DashMedia[] = await prisma.media.findMany({
-        where: { campaign: campaignWhere },
-        select: {
-          id: true,
-          externalId: true,
-          platform: true,
-          permalink: true,
-          mediaType: true,
-          impressions: true,
-          reach: true,
-          views: true,
-          likes: true,
-          comments: true,
-          shares: true,
-          saves: true,
-          postedAt: true,
-          influencerId: true,
-          influencer: { select: { username: true, followers: true } },
-          campaign: { select: { name: true } },
-        },
-      })
-      const seen = new Set<string>()
-      uniqueMedia = allMedia.filter(m => {
-        const sc = m.platform === 'INSTAGRAM' ? instagramShortcode(m.permalink) : null
-        const key = sc ? `${m.platform}|sc:${sc}` : m.externalId ? `${m.platform}|${m.externalId}` : `id|${m.id}`
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
-      })
-      const [emvRates, storyViewRates] = await Promise.all([
-        loadEmvRates(),
-        getCreatorStoryViewRates(Array.from(new Set(uniqueMedia.map(m => m.influencerId)))),
-      ])
-      totalEMV = calculateCampaignEMV(
-        uniqueMedia.map(m => ({ ...m, followers: m.influencer?.followers ?? null })),
-        { rates: emvRates, storyViewRates }
-      )
-      totalMediaPosts = uniqueMedia.length
+      const overviews = await computeOverviews(campaignIds)
+
+      // Cost is per campaign membership — summed straight from the overviews.
+      for (const o of overviews.values()) {
+        cost += o.totals.cost
+        membersWithCost += o.totals.membersWithCost
+      }
+
+      // Per-publication figures from the overviews, keyed by Media row id.
+      const perMediaById = new Map<string, PerMediaMetrics>()
+      for (const o of overviews.values()) for (const pm of o.perMedia) perMediaById.set(pm.id, pm)
+
+      // Media rows of the same campaigns, deduplicated by post (annual + monthly = one post).
+      const allMedia: DashMedia[] = campaignIds.length > 0
+        ? await prisma.media.findMany({
+            where: { campaignId: { in: campaignIds } },
+            select: {
+              id: true, externalId: true, platform: true, permalink: true, mediaType: true,
+              views: true, likes: true, comments: true, shares: true, saves: true,
+              postedAt: true, influencerId: true,
+              influencer: { select: { username: true, followers: true } },
+              campaign: { select: { name: true } },
+            },
+            orderBy: [{ postedAt: 'asc' }, { id: 'asc' }],
+          })
+        : []
+      uniqueMedia = dedupeMediaByPost(allMedia)
+      dedupedPosts = allMedia.length - uniqueMedia.length
+
       for (const m of uniqueMedia) {
-        totalViews += m.views || 0
-        totalLikes += m.likes || 0
-        totalComments += m.comments || 0
+        views += m.views || 0
+        likes += m.likes || 0
+        comments += m.comments || 0
+        shares += m.shares || 0
+        saves += m.saves || 0
+        engagements += engagementsOf(m)
+        if (isStoryType(m.mediaType)) stories++
+        const pm = perMediaById.get(m.id)
+        if (!pm) continue
+        emvBasic += pm.emvBasic
+        emvExtended += pm.emvExtended
+        if (pm.isDeleted) mediaDeleted++
+        audienceResults.push({ value: pm.audience, basis: pm.audienceBasis, estimated: pm.audienceEstimated })
       }
-    } catch { /* defaults remain 0 */ }
+      cost = Math.round(cost * 100) / 100
+      emvBasic = Math.round(emvBasic * 100) / 100
+      emvExtended = Math.round(emvExtended * 100) / 100
+    } catch (err) {
+      console.error('Dashboard campaign numbers failed:', err instanceof Error ? err.message : err)
+    }
 
-    // 7. Campaigns by status
-    let campaignsByStatus = { active: 0, paused: 0, archived: 0 }
-    try {
-      const statusGroups = await prisma.campaign.groupBy({
-        by: ['status'],
-        where: campaignWhere,
-        _count: true,
-      })
-      for (const g of statusGroups) {
-        const key = g.status.toLowerCase() as keyof typeof campaignsByStatus
-        if (key in campaignsByStatus) {
-          campaignsByStatus[key] = g._count
-        }
-      }
-    } catch { /* defaults remain 0 */ }
+    const audience = sumAudience(audienceResults)
+    const er = engagementRateOf(engagements, audience)
+    const media = uniqueMedia.length
 
-    // 8. Campaigns by type
+    // BRAND users never receive fees, cost, CPM or the EMV ratio (decision 9B + portal rule).
+    if (isBrand) {
+      cost = 0
+      membersWithCost = 0
+    }
+    const emvRatio = isBrand ? null : emvRatioOf(emvExtended, cost)
+    const cpm = isBrand ? null : cpmOf(cost, audience.total)
+
+    // Campaigns by status
+    const campaignsByStatus = { active: 0, paused: 0, archived: 0 }
+    for (const c of campaignRows) {
+      const key = c.status.toLowerCase() as keyof typeof campaignsByStatus
+      if (key in campaignsByStatus) campaignsByStatus[key]++
+    }
+
+    // Campaigns by type
     let campaignsByType = { SOCIAL_LISTENING: 0, INFLUENCER_TRACKING: 0, UGC: 0 }
     try {
       const typeGroups = await prisma.campaign.groupBy({
@@ -203,27 +222,29 @@ export async function GET(request: NextRequest) {
       }
     } catch { /* defaults remain 0 */ }
 
-    // 9. Top 5 influencers by total engagement — from the deduplicated posts
+    // Top 5 influencers by interacciones (likes + comentarios + shares + saves) — from the deduplicated posts
     let topInfluencers: Array<{
       username: string
       platform: string
       followers: number
       engagementRate: number
       avatarUrl: string | null
+      totalEngagements: number
       totalLikes: number
       totalComments: number
       totalViews: number
     }> = []
     try {
-      const sums = new Map<string, { likes: number; comments: number; views: number }>()
+      const sums = new Map<string, { engagements: number; likes: number; comments: number; views: number }>()
       for (const m of uniqueMedia) {
-        const acc = sums.get(m.influencerId) || { likes: 0, comments: 0, views: 0 }
+        const acc = sums.get(m.influencerId) || { engagements: 0, likes: 0, comments: 0, views: 0 }
+        acc.engagements += engagementsOf(m)
         acc.likes += m.likes || 0
         acc.comments += m.comments || 0
         acc.views += m.views || 0
         sums.set(m.influencerId, acc)
       }
-      const top = Array.from(sums.entries()).sort((a, b) => b[1].likes - a[1].likes).slice(0, 5)
+      const top = Array.from(sums.entries()).sort((a, b) => b[1].engagements - a[1].engagements).slice(0, 5)
       if (top.length > 0) {
         const influencerDetails = await prisma.influencer.findMany({
           where: { id: { in: top.map(([id]) => id) } },
@@ -240,6 +261,7 @@ export async function GET(request: NextRequest) {
               followers: details.followers,
               engagementRate: details.engagementRate,
               avatarUrl: details.avatarUrl,
+              totalEngagements: sum.engagements,
               totalLikes: sum.likes,
               totalComments: sum.comments,
               totalViews: sum.views,
@@ -249,48 +271,39 @@ export async function GET(request: NextRequest) {
       }
     } catch { topInfluencers = [] }
 
-    // 10. Recent activity - last 10 distinct posts
-    let recentActivity: Array<{
-      username: string
-      platform: string
-      likes: number
-      comments: number
-      views: number
-      postedAt: Date | null
-      campaignName: string | null
-      permalink: string | null
-    }> = []
-    try {
-      recentActivity = [...uniqueMedia]
-        .sort((a, b) => (b.postedAt?.getTime() ?? 0) - (a.postedAt?.getTime() ?? 0))
-        .slice(0, 10)
-        .map((m) => ({
-          username: m.influencer.username,
-          platform: m.platform,
-          likes: m.likes,
-          comments: m.comments,
-          views: m.views,
-          postedAt: m.postedAt,
-          campaignName: m.campaign?.name || null,
-          permalink: m.permalink,
-        }))
-    } catch { recentActivity = [] }
+    // Recent activity - last 10 distinct posts
+    const recentActivity = [...uniqueMedia]
+      .sort((a, b) => (b.postedAt?.getTime() ?? 0) - (a.postedAt?.getTime() ?? 0))
+      .slice(0, 10)
+      .map((m) => ({
+        influencerUsername: m.influencer.username,
+        platform: m.platform,
+        likes: m.likes,
+        comments: m.comments,
+        views: m.views,
+        engagements: engagementsOf(m),
+        postedAt: m.postedAt,
+        campaignName: m.campaign?.name || '',
+        permalink: m.permalink,
+      }))
 
-    // 11. Platform breakdown - influencers and DISTINCT posts by platform
-    let platformBreakdown: Record<string, { influencers: number; media: number }> = {
+    // Platform breakdown - influencers and DISTINCT posts by platform
+    const platformBreakdown: Record<string, { influencers: number; media: number }> = {
       INSTAGRAM: { influencers: 0, media: 0 },
       TIKTOK: { influencers: 0, media: 0 },
       YOUTUBE: { influencers: 0, media: 0 },
     }
     try {
-      const influencersByPlatform = await prisma.influencer.groupBy({
-        by: ['platform'],
-        where: { id: { in: influencerIds } },
-        _count: true,
-      })
-      for (const g of influencersByPlatform) {
-        if (g.platform in platformBreakdown) {
-          platformBreakdown[g.platform].influencers = g._count
+      if (influencerIds.length > 0) {
+        const influencersByPlatform = await prisma.influencer.groupBy({
+          by: ['platform'],
+          where: { id: { in: influencerIds } },
+          _count: true,
+        })
+        for (const g of influencersByPlatform) {
+          if (g.platform in platformBreakdown) {
+            platformBreakdown[g.platform].influencers = g._count
+          }
         }
       }
       for (const m of uniqueMedia) {
@@ -298,43 +311,62 @@ export async function GET(request: NextRequest) {
       }
     } catch { /* defaults remain 0 */ }
 
-    // Transform platformBreakdown from object to array for frontend
     const platformBreakdownArray = Object.entries(platformBreakdown).map(([platform, data]) => ({
       platform,
       influencers: data.influencers,
       media: data.media,
     })).filter(p => p.influencers > 0 || p.media > 0)
 
-    // Transform recentActivity to match frontend expected field names
-    const recentActivityFormatted = recentActivity.map(a => ({
-      influencerUsername: a.username,
-      platform: a.platform,
-      likes: a.likes,
-      comments: a.comments,
-      views: a.views,
-      postedAt: a.postedAt,
-      campaignName: a.campaignName || '',
-      permalink: a.permalink,
-    }))
-
     return NextResponse.json({
+      definitionsVersion: 2,
       stats: {
         activeCampaigns,
         totalCampaigns,
         totalInfluencers: uniqueInfluencers.length,
-        totalReach: reachData._sum.followers || 0,
-        avgEngagementRate: Math.round((engData._avg.engagementRate || 0) * 10) / 10,
-        totalInvestment,
-        totalEMV,
-        totalMediaPosts,
-        totalViews,
-        totalLikes,
-        totalComments,
+        /** Campaigns the numbers below are built on (role-scoped, non-archived). */
+        campaignsIncluded: campaignIds.length,
+
+        // Content (distinct posts at agency level)
+        media,
+        mediaDeleted,
+        stories,
+        posts: media - stories,
+        /** Media rows removed because the same post lives in several campaigns. */
+        dedupedPosts,
+
+        // Interacciones (3A) and audiencia (5)
+        views,
+        likes,
+        comments,
+        shares,
+        saves,
+        engagements,
+        audience,
+        er,
+
+        // Economics (zero / null for BRAND)
+        cost,
+        membersWithCost,
+        emvBasic,
+        emvExtended,
+        emvRatio,
+        cpm,
+
+        // Legacy keys the dashboard page still reads
+        totalInvestment: cost,
+        totalEMV: { basic: emvBasic, extended: emvExtended },
+        totalReach: audience.total,
+        engagementRate: er.value,
+        avgEngagementRate: er.value ?? 0,
+        totalMediaPosts: media,
+        totalViews: views,
+        totalLikes: likes,
+        totalComments: comments,
       },
       campaignsByStatus,
       campaignsByType,
       topInfluencers,
-      recentActivity: recentActivityFormatted,
+      recentActivity,
       platformBreakdown: platformBreakdownArray,
       recentCampaigns,
       pinnedLists,

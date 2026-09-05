@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db'
 import { scrapeProfile, scrapeStories, isApifyExhausted } from '@/lib/apify'
 import type { ScrapedPost, ScrapedStory } from '@/lib/apify'
 import type { MediaType, Platform } from '@/generated/prisma/client'
+import { computeBaseline } from '@/lib/creator-baseline'
 
 /**
  * PRECISE CONTENT CAPTURE — the single source of truth for "does this piece
@@ -480,6 +481,35 @@ export interface CaptureOptions {
 }
 
 /**
+ * The instant the creator baseline must be sampled BEFORE (decision 2): the
+ * earliest of the deal close, the campaign start and the first campaign
+ * publication of this member. Never "now" while any of those exists — a late
+ * or gifted freeze would otherwise sample the campaign period itself and admit
+ * untagged campaign posts into the creator's "normal".
+ */
+async function baselineBeforeInstant(
+  campaign: { id: string; startDate: Date },
+  influencerId: string,
+  dealClosedAt: Date | null
+): Promise<Date> {
+  const firstPost = await prisma.media.findFirst({
+    where: { campaignId: campaign.id, influencerId, postedAt: { not: null } },
+    orderBy: { postedAt: 'asc' },
+    select: { postedAt: true },
+  })
+  // David (decision 2): the baseline is "before the deal". When the deal close is
+  // stamped it wins outright — a creator who joins a long campaign late must not be
+  // sampled from before the campaign start. Without a stamp (gifted / fee-less
+  // deals) we take the earliest defensible instant: campaign start or the first
+  // campaign post of this creator, whichever came first; last resort: now.
+  if (dealClosedAt instanceof Date && Number.isFinite(dealClosedAt.getTime())) return dealClosedAt
+  const candidates = [campaign.startDate, firstPost?.postedAt ?? null]
+    .filter((d): d is Date => d instanceof Date && Number.isFinite(d.getTime()))
+  if (candidates.length === 0) return new Date()
+  return new Date(Math.min(...candidates.map(d => d.getTime())))
+}
+
+/**
  * Scrape one campaign member's profile (+ stories on Instagram) and store
  * ONLY the content that passes the campaign rules. Never throws.
  */
@@ -501,9 +531,19 @@ export async function captureMemberContent(
       },
     })
     if (!membership) return result // rule (1): not a member → nothing to capture
+    const CLOSED = new Set(['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'])
+    // A member already POSTED/COMPLETED without a deal-close instant has nothing
+    // defensible to anchor the baseline on: leave it to the manual baseline.
+    const LATE = new Set(['POSTED', 'COMPLETED'])
+    const lateWithoutDeal = LATE.has(membership.status) && !membership.dealClosedAt
+    const needsBaseline = CLOSED.has(membership.status) && !membership.baselineAt && !lateWithoutDeal
 
     const campaign = membership.campaign
     const influencer = membership.influencer
+
+    if (CLOSED.has(membership.status) && !membership.baselineAt && lateWithoutDeal) {
+      console.log(`[campaign-capture] baseline not frozen for @${influencer.username} in "${campaign.name}": ${membership.status} without dealClosedAt — PM can enter it manually`)
+    }
 
     if (!campaignHasTargets(campaign)) {
       console.warn(`[campaign-capture] Campaign "${campaign.name}" has no target accounts/hashtags — nothing captured for @${influencer.username}`)
@@ -552,6 +592,30 @@ export async function captureMemberContent(
         const ok = await upsertCampaignPost(campaign.id, influencer.id, influencer.platform, post)
         if (ok) result.captured++
         else result.skipped++
+      }
+
+      // ----- Creator baseline (decision 2): frozen once, from THIS scrape, at zero extra cost -----
+      if (needsBaseline) {
+        try {
+          const before = await baselineBeforeInstant(campaign, influencer.id, membership.dealClosedAt)
+          const snapshot = computeBaseline(scraped.recentPosts || [], {
+            format: membership.negotiatedFormat,
+            before,
+            isCampaignPost: post => mediaMatchesCampaignRules(campaign, scrapedPostToRuleItem(post)),
+            source: 'apify',
+          })
+          if (snapshot) {
+            await prisma.campaignInfluencer.update({
+              where: { campaignId_influencerId: { campaignId, influencerId } },
+              data: { baselineSnapshot: snapshot as object, baselineAt: new Date() },
+            })
+            console.log(`[campaign-capture] baseline frozen for @${influencer.username} in "${campaign.name}": ${snapshot.family} n=${snapshot.n} medianViews=${snapshot.medianViews} medianEng=${snapshot.medianEngagement} before=${before.toISOString()}`)
+          } else {
+            console.log(`[campaign-capture] baseline not yet available for @${influencer.username} (sample < ${6} eligible posts) — PM can enter it manually`)
+          }
+        } catch (err) {
+          console.error(`[campaign-capture] baseline failed for @${influencer.username}:`, err instanceof Error ? err.message : err)
+        }
       }
     }
 

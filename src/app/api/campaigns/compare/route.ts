@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
+import { computeCampaignOverviews, stripEconomics } from '@/lib/campaign-overview'
 
 function getInfluencerTier(followers: number): string {
   if (followers >= 1_000_000) return 'mega'
@@ -10,6 +11,12 @@ function getInfluencerTier(followers: number): string {
   return 'nano'
 }
 
+// GET /api/campaigns/compare?ids=a,b[,c]
+// Every figure comes from computeCampaignOverview (src/lib/campaign-overview.ts,
+// definitions in src/lib/metrics.ts): audience = reach → impressions → views →
+// labelled estimate, ER = interacciones ÷ audiencia, cost = agreedFee (else
+// cost), EMV from the live valuation, Ratio EMV = EMV ÷ coste. Nothing is
+// aggregated here any more. Brands get the economics stripped.
 export async function GET(request: NextRequest) {
   try {
     const session = await getSession(request)
@@ -27,30 +34,24 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // Fetch all campaigns with their influencers and media
+    // Campaign rows: identity fields plus what the breakdowns need (platform of
+    // each publication, followers of each member). No metric columns.
     const campaigns = await prisma.campaign.findMany({
       where: { id: { in: ids } },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        status: true,
+        paymentType: true,
+        startDate: true,
+        endDate: true,
+        country: true,
+        userId: true,
         influencers: {
-          include: {
-            influencer: {
-              select: { id: true, followers: true },
-            },
-          },
+          select: { influencer: { select: { followers: true } } },
         },
-        media: {
-          select: {
-            platform: true,
-            likes: true,
-            comments: true,
-            shares: true,
-            saves: true,
-            views: true,
-            reach: true,
-            impressions: true,
-            mediaValue: true,
-          },
-        },
+        media: { select: { platform: true } },
       },
     })
 
@@ -64,41 +65,32 @@ export async function GET(request: NextRequest) {
     }
 
     // BRAND users can only compare their own campaigns
-    if (session.role === 'BRAND') {
+    const isBrand = session.role === 'BRAND'
+    if (isBrand) {
       const forbidden = campaigns.filter((c) => c.userId !== session.id)
       if (forbidden.length > 0) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
     }
 
+    // The single source of truth, over ALL media of each campaign.
+    const overviews = await computeCampaignOverviews(ids)
+    const uncomputed = ids.filter((id) => !overviews.has(id))
+    if (uncomputed.length > 0) {
+      console.error('Compare campaigns: overview unavailable for', uncomputed.join(', '))
+      return NextResponse.json(
+        { error: 'Could not compute the campaign figures. Try again.' },
+        { status: 500 }
+      )
+    }
+
     // Build comparison data for each campaign, preserving the requested order
     const comparisons = ids.map((id) => {
       const campaign = campaigns.find((c) => c.id === id)!
-
-      const influencerCount = campaign.influencers.length
-      const mediaCount = campaign.media.length
-
-      const totalReach = campaign.media.reduce((sum, m) => sum + m.reach, 0)
-      const totalImpressions = campaign.media.reduce((sum, m) => sum + m.impressions, 0)
-      const totalEngagements = campaign.media.reduce(
-        (sum, m) => sum + m.likes + m.comments + m.shares + m.saves,
-        0
-      )
-      const engagementRate = totalReach > 0
-        ? Math.round((totalEngagements / totalReach) * 100 * 100) / 100
-        : 0
-      const totalViews = campaign.media.reduce((sum, m) => sum + m.views, 0)
-
-      const totalCost = campaign.influencers.reduce(
-        (sum, ci) => sum + (ci.agreedFee || 0),
-        0
-      )
-
-      const emvExtended = campaign.media.reduce((sum, m) => sum + m.mediaValue, 0)
-
-      const roi = totalCost > 0
-        ? Math.round((emvExtended / totalCost) * 100) / 100
-        : null
+      const full = overviews.get(id)!
+      // Brands never see cost, CPM, Ratio EMV or the basic EMV.
+      const overview = isBrand ? stripEconomics(full) : full
+      const t = overview.totals
 
       // Platform breakdown: count media by platform
       const platformBreakdown: Record<string, number> = {}
@@ -128,16 +120,29 @@ export async function GET(request: NextRequest) {
         startDate: campaign.startDate,
         endDate: campaign.endDate,
         country: campaign.country,
-        influencerCount,
-        mediaCount,
-        totalReach,
-        totalImpressions,
-        totalEngagements,
-        engagementRate,
-        totalViews,
-        totalCost,
-        emvExtended,
-        roi,
+        influencerCount: t.members,
+        mediaCount: t.media,
+        /** Audiencia total (real + estimada) — what the compare page labels "Alcance Total". */
+        totalReach: t.audience.total,
+        /** Real reach only (Σ reach). */
+        totalReachReal: t.reachReal,
+        /** Share (0–1) of the audience that is estimated. */
+        audienceEstimatedShare: t.audience.estimatedShare,
+        totalImpressions: t.impressionsReal ?? 0,
+        /** Interacciones = likes + comentarios + shares + saves. */
+        totalEngagements: t.engagements,
+        /** ER = interacciones ÷ audiencia × 100; 0 when there is no audience base. */
+        engagementRate: t.er.value ?? 0,
+        engagementRateEstimatedShare: t.er.estimatedShare,
+        totalViews: t.views,
+        /** Coste = fee acordado, si no coste registrado (0 for brands). */
+        totalCost: t.cost,
+        emvExtended: t.emvExtended,
+        /** Ratio EMV (decision 9B): EMV ÷ coste, shown as "×2,4". Never ROI. */
+        emvRatio: t.emvRatio,
+        /** @deprecated legacy alias of emvRatio; kept so older clients keep working */
+        roi: t.emvRatio,
+        cpm: t.cpm,
         platformBreakdown,
         tierBreakdown,
       }

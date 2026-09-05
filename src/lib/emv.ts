@@ -66,6 +66,14 @@ export interface EmvRates {
   storyReachRates: Record<FollowerTier, number>
   /** Multiplier applied to each consecutive story of the same creator (drop-off). */
   storySequenceDecay: number
+  /**
+   * Share of followers assumed to be reached by a feed post/reel/video that has
+   * NO real reach, impressions or views (typically image posts captured from
+   * public data). Used ONLY by the audience/ER metrics (src/lib/metrics.ts),
+   * never by the EMV valuation, and always labelled as estimated.
+   * David 2026-09-05 (decision 5): nano 25 %, micro 18 %, mid 12 %, macro 9 %, mega 6 %.
+   */
+  postReachRates: Record<FollowerTier, number>
 }
 
 /**
@@ -91,6 +99,7 @@ export const DEFAULT_EMV_RATES: EmvRates = {
   // mid 3-6%, macro 2-4%, mega 1.5-3%. Values chosen by David (upper end).
   storyReachRates: { NANO: 0.15, MICRO: 0.10, MID: 0.07, MACRO: 0.05, MEGA: 0.04 },
   storySequenceDecay: 0.85,
+  postReachRates: { NANO: 0.25, MICRO: 0.18, MID: 0.12, MACRO: 0.09, MEGA: 0.06 },
 }
 
 /** Two stories of the same creator closer than this are one "sequence". */
@@ -110,6 +119,14 @@ export function mergeEmvRates(partial: unknown): EmvRates {
   const cpm = (p.cpmRates || {}) as Partial<EmvRates['cpmRates']>
   const eng = (p.engagementValues || {}) as Partial<EmvRates['engagementValues']>
   const reach = (p.storyReachRates || {}) as Partial<Record<FollowerTier, number>>
+  const postReach = (p.postReachRates || {}) as Partial<Record<FollowerTier, number>>
+  const validRates = (src: Partial<Record<FollowerTier, number>>): Partial<Record<FollowerTier, number>> => {
+    const out: Partial<Record<FollowerTier, number>> = {}
+    for (const [k, v] of Object.entries(src)) {
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 1) out[k as FollowerTier] = v
+    }
+    return out
+  }
   return {
     cpmRates: {
       INSTAGRAM: { ...DEFAULT_EMV_RATES.cpmRates.INSTAGRAM, ...(cpm.INSTAGRAM || {}) },
@@ -122,7 +139,8 @@ export function mergeEmvRates(partial: unknown): EmvRates {
       TIKTOK: { ...DEFAULT_EMV_RATES.engagementValues.TIKTOK, ...(eng.TIKTOK || {}) },
       YOUTUBE: { ...DEFAULT_EMV_RATES.engagementValues.YOUTUBE, ...(eng.YOUTUBE || {}) },
     },
-    storyReachRates: { ...DEFAULT_EMV_RATES.storyReachRates, ...reach },
+    storyReachRates: { ...DEFAULT_EMV_RATES.storyReachRates, ...validRates(reach) },
+    postReachRates: { ...DEFAULT_EMV_RATES.postReachRates, ...validRates(postReach) },
     storySequenceDecay:
       typeof p.storySequenceDecay === 'number' && p.storySequenceDecay > 0 && p.storySequenceDecay <= 1
         ? p.storySequenceDecay

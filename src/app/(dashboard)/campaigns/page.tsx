@@ -300,7 +300,7 @@ export default function CampaignsPage() {
         <StatCard
           icon={<Users className="h-5 w-5" />}
           label={t.campaigns.profilesTracked}
-          value={formatNumber(stats.profiles)}
+          value={formatNumber(stats.profiles, { locale })}
         />
         <StatCard
           icon={<FileText className="h-5 w-5" />}
@@ -310,7 +310,7 @@ export default function CampaignsPage() {
         <StatCard
           icon={<Camera className="h-5 w-5" />}
           label={t.campaigns.mediaFound}
-          value={formatNumber(stats.media)}
+          value={formatNumber(stats.media, { locale })}
         />
       </div>
 
@@ -400,7 +400,7 @@ export default function CampaignsPage() {
                             </Link>
                           </TableCell>
                           <TableCell>{campaign._count?.influencers || 0} {t.dashboard.influencers}</TableCell>
-                          <TableCell>{formatDate(campaign.createdAt)}</TableCell>
+                          <TableCell>{formatDate(campaign.createdAt, { locale })}</TableCell>
                           <TableCell>
                             <div className="flex flex-wrap gap-1">
                               {campaign.targetHashtags.slice(0, 2).map((tag) => (
@@ -454,7 +454,7 @@ export default function CampaignsPage() {
                         </Link>
                       </TableCell>
                       <TableCell>{campaign._count?.influencers || 0} {t.dashboard.influencers}</TableCell>
-                      <TableCell>{formatDate(campaign.createdAt)}</TableCell>
+                      <TableCell>{formatDate(campaign.createdAt, { locale })}</TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
                           {campaign.targetHashtags.slice(0, 2).map((tag) => (

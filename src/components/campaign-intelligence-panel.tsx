@@ -1,16 +1,34 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import {
   analyzeCampaign,
   getSignalConfig,
-  formatCurrency,
-  formatKPI,
   CAMPAIGN_OBJECTIVES,
   type CampaignObjective,
+  type RawInfluencerData,
   type Signal,
 } from '@/lib/campaign-intelligence'
 import { calculateCampaignEMV } from '@/lib/emv'
+import type { PerInfluencerMetrics } from '@/lib/metrics'
+import { formatEur, formatNumber, formatPercent, formatRatio, type EurLocale } from '@/lib/utils'
+import { useIntelligenceText } from '@/components/creator-score-badge'
+
+/**
+ * Campaign Intelligence panel (Aprender tab).
+ *
+ * Figures: each creator is scored from the campaign overview's PerInfluencerMetrics
+ * (`perInfluencer` prop — views, audience, interacciones, ER, CPM, cost, EMV over
+ * ALL media with the brand's rates), so this table can never disagree with the
+ * Resumen / Elegir cards on the same page. The paginated `media` slice is only a
+ * fallback for creators the overview does not carry (or when it is null).
+ *
+ * Formatting: every figure goes through src/lib/utils with the UI locale
+ * (formatEur / formatPercent / formatRatio / formatNumber). Recommendation texts
+ * come as keys resolved in translations.*.intelligence; the engine's Spanish
+ * string is the fallback.
+ */
 
 // ============ TYPES ============
 
@@ -33,6 +51,7 @@ interface CampaignIntelligencePanelProps {
       avgViews: number | null
     }
   }>
+  /** Fallback only: the media slice the page holds (used when a creator has no overview row). */
   media: Array<{
     likes?: number | null
     comments?: number | null
@@ -54,7 +73,19 @@ interface CampaignIntelligencePanelProps {
     emvExtended: number
     totalCost: number
   }
-  locale: string
+  /**
+   * Per-creator figures from the single campaign overview (GET /api/campaigns/[id]).
+   * Authoritative for everything the engine scores: views, audience (the CPM/ER
+   * base), interacciones, ER, CPM, cost and EMV. Null while the overview loads.
+   */
+  perInfluencer?: PerInfluencerMetrics[] | null
+  locale: EurLocale
+  /**
+   * When provided (ADMIN/EMPLOYEE), the "objective not set" state turns the
+   * objective chips into buttons that persist the choice. BRAND users never
+   * get this prop, so for them the chips stay read-only.
+   */
+  onSetObjective?: (value: string) => Promise<void>
 }
 
 // ============ HELPERS ============
@@ -63,20 +94,7 @@ function t(locale: string, es: string, en: string): string {
   return locale === 'es' ? es : en
 }
 
-function formatNumber(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '\u2014'
-  return value.toLocaleString('es-ES')
-}
-
-function formatPercent(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '\u2014'
-  return `${value.toFixed(2)}%`
-}
-
-function formatRatio(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '\u2014'
-  return `${value.toFixed(1)}x`
-}
+const DASH = '—'
 
 function SignalDot({ signal, size = 'md' }: { signal: Signal; size?: 'sm' | 'md' | 'lg' }) {
   const config = getSignalConfig(signal)
@@ -108,16 +126,26 @@ export function CampaignIntelligencePanel({
   campaign,
   influencers,
   media,
-  overview,
+  perInfluencer,
   locale,
+  onSetObjective,
 }: CampaignIntelligencePanelProps) {
+  const text = useIntelligenceText()
+  const perInfluencerById = useMemo(() => new Map((perInfluencer ?? []).map(p => [p.influencerId, p])), [perInfluencer])
+  // Which objective chip is being persisted right now (empty state only)
+  const [settingObjective, setSettingObjective] = useState<string | null>(null)
+
+  // Money with two decimals (CPM / CPE / fees) in the UI locale
+  const eur = (value: number) => formatEur(value, { locale, maxFractionDigits: 2 })
+
   // Compute intelligence data
   const intelligence = useMemo(() => {
     if (!campaign.objective) return null
 
     const objective = campaign.objective as CampaignObjective
 
-    // Group media by influencer
+    // Fallback path only: the media slice grouped by creator (used for members
+    // the overview has no row for — typically while it is still loading)
     const mediaByInfluencer = new Map<string, typeof media>()
     for (const m of media) {
       const id = m.influencer?.id
@@ -129,13 +157,34 @@ export function CampaignIntelligencePanel({
     }
 
     // Build raw influencer data for the intelligence engine
-    const rawInfluencers = influencers.map((ci) => {
+    const rawInfluencers: RawInfluencerData[] = influencers.map((ci) => {
       const inf = ci.influencer
-      const influencerMedia = mediaByInfluencer.get(inf.id) || []
+      const authoritative = perInfluencerById.get(inf.id)
 
-      // Per-influencer EMV, per media item (CPM by content type; stories
-      // without real views estimated from followers). Default rates on the
-      // client — the campaign overview from the API is the authoritative figure.
+      if (authoritative) {
+        // The overview's figures, verbatim (decisions 3A / 4C / 5 / 6 already applied)
+        return {
+          username: inf.username,
+          platform: inf.platform,
+          influencerId: inf.id,
+          fee: authoritative.cost,
+          emv: authoritative.emvExtended,
+          totals: {
+            views: authoritative.views,
+            audience: authoritative.audience.total,
+            engagements: authoritative.engagements,
+            pieces: authoritative.media,
+            fee: authoritative.cost,
+            emv: authoritative.emvExtended,
+            er: authoritative.er.value,
+            cpm: authoritative.cpm,
+          },
+        }
+      }
+
+      // Fallback (no overview row for this creator): the page's media slice with
+      // default EMV rates. Only shown until the overview arrives.
+      const influencerMedia = mediaByInfluencer.get(inf.id) || []
       const emvResult = calculateCampaignEMV(influencerMedia.map(m => ({
         platform: inf.platform,
         impressions: m.impressions || 0,
@@ -150,14 +199,15 @@ export function CampaignIntelligencePanel({
         influencerId: inf.id,
         followers: inf.followers,
       })))
-
-      const fee = ci.agreedFee ?? ci.cost ?? 0
+      // Cost rule (decision 6): fee acordado, si no coste
+      const fee = (ci.agreedFee && ci.agreedFee > 0) ? ci.agreedFee : (ci.cost ?? 0)
 
       return {
         username: inf.username,
         platform: inf.platform,
         influencerId: inf.id,
         fee,
+        emv: emvResult.extended,
         media: influencerMedia.map((m) => ({
           likes: m.likes || 0,
           comments: m.comments || 0,
@@ -166,14 +216,13 @@ export function CampaignIntelligencePanel({
           views: m.views || 0,
           reach: m.reach || 0,
           impressions: m.impressions || 0,
-          mediaType: 'post',
+          mediaType: m.mediaType ?? null,
         })),
-        emv: emvResult.extended,
       }
     })
 
     return analyzeCampaign({ objective, influencers: rawInfluencers })
-  }, [campaign.objective, influencers, media])
+  }, [campaign.objective, influencers, media, perInfluencerById])
 
   // No objective set
   if (!campaign.objective) {
@@ -188,20 +237,53 @@ export function CampaignIntelligencePanel({
         <p className="text-sm text-gray-500 dark:text-gray-400 text-center max-w-md mb-6">
           {t(
             locale,
-            'Establece un objetivo para esta campana para activar el analisis inteligente. El sistema evaluara el rendimiento de cada influencer segun el objetivo elegido.',
+            'Establece un objetivo para esta campaña para activar el análisis inteligente. El sistema evaluará el rendimiento de cada influencer según el objetivo elegido.',
             'Set an objective for this campaign to activate intelligent analysis. The system will evaluate each influencer\'s performance based on the chosen objective.'
+          )}
+          {onSetObjective && (
+            <>
+              {' '}
+              <span className="font-medium text-gray-700 dark:text-gray-200">
+                {t(locale, 'Elige uno para activarlo ahora:', 'Pick one to activate it now:')}
+              </span>
+            </>
           )}
         </p>
         <div className="flex flex-wrap gap-2 justify-center">
-          {CAMPAIGN_OBJECTIVES.map((obj) => (
-            <span
-              key={obj.value}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-sm text-gray-600 dark:text-gray-300"
-            >
-              <span>{obj.icon}</span>
-              {locale === 'es' ? obj.labelEs : obj.labelEn}
-            </span>
-          ))}
+          {CAMPAIGN_OBJECTIVES.map((obj) =>
+            onSetObjective ? (
+              // Editors: one click persists the objective (PUT) and the page refetches.
+              <button
+                key={obj.value}
+                type="button"
+                disabled={settingObjective !== null}
+                onClick={async () => {
+                  setSettingObjective(obj.value)
+                  try {
+                    await onSetObjective(obj.value)
+                  } finally {
+                    setSettingObjective(null)
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-200 hover:border-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 hover:text-purple-700 dark:hover:text-purple-300 disabled:opacity-60 disabled:cursor-wait transition-colors"
+              >
+                {settingObjective === obj.value ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <span>{obj.icon}</span>
+                )}
+                {locale === 'es' ? obj.labelEs : obj.labelEn}
+              </button>
+            ) : (
+              <span
+                key={obj.value}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-sm text-gray-600 dark:text-gray-300"
+              >
+                <span>{obj.icon}</span>
+                {locale === 'es' ? obj.labelEs : obj.labelEn}
+              </span>
+            )
+          )}
         </div>
       </div>
     )
@@ -211,6 +293,7 @@ export function CampaignIntelligencePanel({
 
   const overallConfig = getSignalConfig(intelligence.overallSignal)
   const objectiveInfo = CAMPAIGN_OBJECTIVES.find((o) => o.value === intelligence.objective)
+  const overallText = text(intelligence.overallRecommendationKey, undefined, intelligence.overallRecommendation)
 
   return (
     <div className="space-y-6">
@@ -220,7 +303,7 @@ export function CampaignIntelligencePanel({
         <div className="flex items-center gap-2">
           <span className="text-2xl font-bold text-gray-900 dark:text-white">
             {intelligence.overallSignal === 'gray' ? (
-              <span className="text-gray-400">—</span>
+              <span className="text-gray-400">{DASH}</span>
             ) : (
               <>
                 {intelligence.overallScore}
@@ -236,31 +319,31 @@ export function CampaignIntelligencePanel({
           </span>
         )}
         <p className={`text-sm font-medium ${overallConfig.color} flex-1 min-w-[200px]`}>
-          {intelligence.overallRecommendation}
+          {overallText}
         </p>
       </div>
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <SummaryCard
-          label={t(locale, 'Inversion total', 'Total Investment')}
-          value={formatCurrency(intelligence.totalInvestment)}
+          label={t(locale, 'Inversión total', 'Total Investment')}
+          value={eur(intelligence.totalInvestment)}
           icon="💶"
         />
         <SummaryCard
           label={t(locale, 'EMV total', 'Total EMV')}
-          value={formatCurrency(intelligence.totalEMV)}
+          value={eur(intelligence.totalEMV)}
           icon="📈"
         />
         <SummaryCard
-          label={t(locale, 'Ratio EMV/Coste', 'EMV/Cost Ratio')}
-          value={formatRatio(intelligence.emvRatio)}
+          label={t(locale, 'Ratio EMV', 'EMV Ratio')}
+          value={intelligence.emvRatio !== null ? formatRatio(intelligence.emvRatio, { locale }) : DASH}
           icon="⚡"
           highlight={intelligence.emvRatio !== null && intelligence.emvRatio >= 2}
         />
         <SummaryCard
-          label={t(locale, 'Puntuacion general', 'Overall Score')}
-          value={intelligence.overallSignal === 'gray' ? '—' : `${intelligence.overallScore}/100`}
+          label={t(locale, 'Puntuación general', 'Overall Score')}
+          value={intelligence.overallSignal === 'gray' ? DASH : `${intelligence.overallScore}/100`}
           icon="🎯"
           signal={intelligence.overallSignal}
         />
@@ -295,19 +378,20 @@ export function CampaignIntelligencePanel({
                     Eng. Rate
                   </th>
                   <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                    EMV/Cost
+                    {t(locale, 'Ratio EMV', 'EMV Ratio')}
                   </th>
                   <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     Score
                   </th>
                   <th className="text-left px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                    {t(locale, 'Recomendacion', 'Recommendation')}
+                    {t(locale, 'Recomendación', 'Recommendation')}
                   </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                 {intelligence.influencers.map((inf) => {
                   const signalConfig = getSignalConfig(inf.signal)
+                  const recommendation = text(inf.recommendationKey, undefined, inf.recommendation)
                   return (
                     <tr
                       key={inf.influencerId}
@@ -331,32 +415,32 @@ export function CampaignIntelligencePanel({
                       </td>
                       {/* Fee */}
                       <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                        {inf.fee > 0 ? formatCurrency(inf.fee) : '\u2014'}
+                        {inf.fee > 0 ? eur(inf.fee) : DASH}
                       </td>
                       {/* Views */}
                       <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                        {inf.totalViews > 0 ? formatNumber(inf.totalViews) : '\u2014'}
+                        {inf.totalViews > 0 ? formatNumber(inf.totalViews, { locale }) : DASH}
                       </td>
                       {/* CPM */}
                       <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                        {inf.cpm !== null ? formatCurrency(inf.cpm) : '\u2014'}
+                        {inf.cpm !== null ? eur(inf.cpm) : DASH}
                       </td>
                       {/* CPE */}
                       <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                        {inf.cpe !== null ? formatCurrency(inf.cpe) : '\u2014'}
+                        {inf.cpe !== null ? eur(inf.cpe) : DASH}
                       </td>
                       {/* Engagement Rate */}
                       <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                        {formatPercent(inf.engagementRate)}
+                        {formatPercent(inf.engagementRate, { locale })}
                       </td>
-                      {/* EMV/Cost */}
+                      {/* Ratio EMV */}
                       <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                        {formatRatio(inf.emvCostRatio)}
+                        {inf.emvCostRatio !== null ? formatRatio(inf.emvCostRatio, { locale }) : DASH}
                       </td>
                       {/* Score — unscored creators (gray signal) show a dash, not a misleading number */}
                       <td className="px-3 py-3 text-right font-semibold text-gray-900 dark:text-white whitespace-nowrap">
                         {inf.signal === 'gray' ? (
-                          <span className="text-gray-400 font-normal">—</span>
+                          <span className="text-gray-400 font-normal">{DASH}</span>
                         ) : (
                           <>
                             {inf.score}
@@ -364,13 +448,13 @@ export function CampaignIntelligencePanel({
                           </>
                         )}
                       </td>
-                      {/* Recommendation */}
+                      {/* Recommendation (translations.*.intelligence, Spanish fallback) */}
                       <td className="px-3 py-3 max-w-[220px]">
                         <span
                           className={`inline-block px-2 py-1 rounded-md text-xs font-medium truncate max-w-full ${signalConfig.bg} ${signalConfig.color} dark:bg-opacity-30`}
-                          title={inf.recommendation}
+                          title={recommendation}
                         >
-                          {inf.recommendation}
+                          {recommendation}
                         </span>
                       </td>
                     </tr>
@@ -387,7 +471,7 @@ export function CampaignIntelligencePanel({
         <div className="text-center py-10 text-gray-500 dark:text-gray-400 text-sm">
           {t(
             locale,
-            'No hay influencers en esta campana todavia.',
+            'No hay influencers en esta campaña todavía.',
             'No influencers in this campaign yet.'
           )}
         </div>

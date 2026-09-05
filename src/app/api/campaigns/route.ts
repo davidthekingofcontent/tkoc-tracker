@@ -4,6 +4,21 @@ import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus, CampaignType, Prisma } from '@/generated/prisma/client'
 import { notifyAllTeam } from '@/lib/notifications'
+import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
+
+// ---- Numeric targets (decision 1B, David 2026-09-05) ----
+// A target that is not filled in is stored as null, never as 0.
+function toPositiveInt(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const n = typeof value === 'number' ? value : parseInt(String(value), 10)
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null
+}
+
+function toPositiveFloat(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const n = typeof value === 'number' ? value : parseFloat(String(value))
+  return Number.isFinite(n) && n > 0 ? n : null
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -156,16 +171,56 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, type, platforms, targetAccounts, targetHashtags, targetKeywords, startDate, endDate, country, paymentType, briefText, objective, brandId } = body
+    const {
+      name, type, platforms, targetAccounts, targetHashtags, targetKeywords, startDate, endDate, country, paymentType, briefText, objective, brandId,
+      targetViews, targetReach, targetEngagement, targetER, targetCpmMax,
+    } = body
 
     if (!name) {
       return NextResponse.json({ error: 'Campaign name is required' }, { status: 400 })
     }
 
+    // Numeric targets. New campaigns are ACTIVE by default (schema), so when at
+    // least one target is set the targets are frozen right away (targetsFrozenAt);
+    // later changes go through PUT /api/campaigns/[id] and land in targetsChangeLog.
+    const targets = {
+      targetViews: toPositiveInt(targetViews),
+      targetReach: toPositiveInt(targetReach),
+      targetEngagement: toPositiveInt(targetEngagement),
+      targetER: toPositiveFloat(targetER),
+      targetCpmMax: toPositiveFloat(targetCpmMax),
+    }
+    const hasAnyTarget = Object.values(targets).some(v => v !== null)
+
+    // Decision 1B (David, 2026-09-05): objective AND at least one numeric target
+    // are mandatory. Social Listening has no deliverables, so it is exempt.
+    const resolvedType: CampaignType = type && Object.values(CampaignType).includes(type) ? type : CampaignType.INFLUENCER_TRACKING
+    if (type !== 'SOCIAL_LISTENING') {
+      const objectiveValue = typeof objective === 'string' ? objective.trim() : ''
+      if (!objectiveValue) {
+        return NextResponse.json(
+          { error: 'El objetivo de la campaña es obligatorio (notoriedad, engagement, tráfico, conversión o contenido).' },
+          { status: 400 }
+        )
+      }
+      if (!CAMPAIGN_OBJECTIVES.some(o => o.value === objectiveValue)) {
+        return NextResponse.json(
+          { error: `Objetivo no válido: "${objectiveValue}". Usa uno de: ${CAMPAIGN_OBJECTIVES.map(o => o.value).join(', ')}.` },
+          { status: 400 }
+        )
+      }
+      if (!hasAnyTarget) {
+        return NextResponse.json(
+          { error: 'Define al menos un objetivo numérico mayor que 0: vistas, alcance, interacciones, ER (%) o CPM máximo (€).' },
+          { status: 400 }
+        )
+      }
+    }
+
     const campaign = await prisma.campaign.create({
       data: {
         name,
-        type: type && Object.values(CampaignType).includes(type) ? type : CampaignType.INFLUENCER_TRACKING,
+        type: resolvedType,
         platforms: platforms && platforms.length > 0 ? platforms : ['INSTAGRAM'],
         targetAccounts: targetAccounts || [],
         targetHashtags: targetHashtags || [],
@@ -176,7 +231,10 @@ export async function POST(request: NextRequest) {
         ...(country && { country }),
         paymentType: type === 'UGC' ? 'PAID' : (paymentType && ['PAID', 'GIFTED'].includes(paymentType) ? paymentType : 'PAID'),
         ...(briefText !== undefined && { briefText }),
-        ...(objective && { objective }),
+        ...(typeof objective === 'string' && objective.trim() && { objective: objective.trim() }),
+        ...targets,
+        // Born ACTIVE (schema default, no status override accepted here) → freeze now.
+        ...(hasAnyTarget && { targetsFrozenAt: new Date() }),
         userId: session.id,
         // Auto-assign creator
         assignments: {

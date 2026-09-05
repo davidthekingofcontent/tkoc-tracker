@@ -30,7 +30,7 @@ interface ListData {
 }
 
 export default function ListsPage() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [lists, setLists] = useState<ListData[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -170,8 +170,8 @@ export default function ListsPage() {
                   {list._count?.items || 0}
                 </span>
               </TableCell>
-              <TableCell>{formatDate(list.createdAt)}</TableCell>
-              <TableCell>{formatNumber(list.totalReach || 0)}</TableCell>
+              <TableCell>{formatDate(list.createdAt, { locale })}</TableCell>
+              <TableCell>{formatNumber(list.totalReach || 0, { locale })}</TableCell>
               <TableCell className="text-right">
                 <div className="flex items-center justify-end gap-1">
                   <button
@@ -230,12 +230,12 @@ export default function ListsPage() {
         <StatCard
           icon={<Users className="h-5 w-5" />}
           label={t.lists.creators}
-          value={formatNumber(totalInfluencers)}
+          value={formatNumber(totalInfluencers, { locale })}
         />
         <StatCard
           icon={<Eye className="h-5 w-5" />}
           label={t.lists.reach}
-          value={formatNumber(combinedReach)}
+          value={formatNumber(combinedReach, { locale })}
         />
       </div>
 

@@ -3,11 +3,18 @@
  * "Which creators should we work with again?"
  *
  * Scoring based on:
- * 1. Performance vs. cost (EMV/fee ratio)
+ * 1. Performance vs. cost (Ratio EMV = EMV ÷ fee — never called ROI)
  * 2. Engagement quality (vs. tier benchmark)
  * 3. Content delivery reliability
  * 4. Engagement trend (growing = bonus)
  * 5. CPM efficiency
+ *
+ * Definitions (src/lib/metrics.ts): interacciones = likes + comentarios +
+ * shares + saves (3A); the ER and the CPM are computed over the audience of the
+ * creator's publications as the campaign overview defines it — alcance →
+ * impresiones → vistas → estimaciones etiquetadas (4C / 5) — so the radar can
+ * never disagree with the campaign page. Views are the base only when a
+ * campaign carries no audience at all.
  *
  * Output: REPEAT (green) / CONSIDER (yellow) / SKIP (red) + reasoning
  */
@@ -30,6 +37,13 @@ export interface RepeatRadarInput {
     totalLikes: number
     totalComments: number
     totalViews: number
+    /**
+     * Audience of the creator's publications in this campaign as the overview
+     * defines it (perInfluencer.audience.total: reach → impressions → views →
+     * labelled estimates). Base of the ER and the CPM; views only fall back in
+     * when this is 0.
+     */
+    audience: number
     totalShares: number
     totalSaves: number
     mediaPosts: number
@@ -58,7 +72,7 @@ export interface RepeatRadarResult {
   totalCampaigns: number
   totalSpent: number
   totalEMV: number
-  roiRatio: number         // EMV / spent
+  roiRatio: number         // Ratio EMV = EMV ÷ spent (field name kept for API compatibility; label it "Ratio EMV")
   avgCPM: number
   avgEngagementRate: number
   deliveryRate: number     // % of campaigns with content delivered
@@ -80,19 +94,25 @@ export function analyzeRepeatWorthiness(input: RepeatRadarInput): RepeatRadarRes
   const totalEMV = campaigns.reduce((sum, c) => sum + c.emvGenerated, 0)
   const totalMedia = campaigns.reduce((sum, c) => sum + c.mediaPosts, 0)
   const totalViews = campaigns.reduce((sum, c) => sum + c.totalViews, 0)
+  const totalAudience = campaigns.reduce((sum, c) => sum + (c.audience || 0), 0)
   const totalLikes = campaigns.reduce((sum, c) => sum + c.totalLikes, 0)
   const totalComments = campaigns.reduce((sum, c) => sum + c.totalComments, 0)
-  const totalEngagements = totalLikes + totalComments
+  const totalShares = campaigns.reduce((sum, c) => sum + (c.totalShares || 0), 0)
+  const totalSaves = campaigns.reduce((sum, c) => sum + (c.totalSaves || 0), 0)
+  // Interacciones (decision 3A): likes + comentarios + shares + saves
+  const totalEngagements = totalLikes + totalComments + totalShares + totalSaves
   const deliveredCampaigns = campaigns.filter(c => c.contentDelivered || c.status === 'COMPLETED' || c.status === 'POSTED').length
   const deliveryRate = deliveredCampaigns / totalCampaigns
 
-  // Calculate key ratios
+  // Calculate key ratios — ER and CPM over the audience (decisions 4C / 5), the
+  // same base as the campaign page; views only when no campaign has an audience.
   const roiRatio = totalSpent > 0 ? totalEMV / totalSpent : 0
-  const avgCPM = totalViews > 0 ? (totalSpent / totalViews) * 1000 : 0
-  const avgEngagementRate = totalViews > 0 ? (totalEngagements / totalViews) * 100 :
+  const base = totalAudience > 0 ? totalAudience : totalViews
+  const avgCPM = base > 0 ? (totalSpent / base) * 1000 : 0
+  const avgEngagementRate = base > 0 ? (totalEngagements / base) * 100 :
                             input.followers > 0 ? (totalEngagements / input.followers) * 100 : 0
 
-  // Score components (based on real data only, NOT ROI/EMV ratio)
+  // Score components (based on real data only, NOT the Ratio EMV)
   let score = 0
 
   // 1. Engagement quality (35% weight) — primary decision factor
@@ -158,7 +178,7 @@ export function analyzeRepeatWorthiness(input: RepeatRadarInput): RepeatRadarRes
 
 function determineVerdict(
   score: number,
-  roi: number,
+  emvRatio: number,
   delivery: number,
   engagement: number,
   cpm: number,
@@ -169,20 +189,20 @@ function determineVerdict(
     return { verdict: 'skip', signal: 'red', reason: 'Unreliable delivery — failed to deliver content in most campaigns.', reasonKey: 'repeat_unreliable' }
   }
 
-  if (roi < 0.3 && campaigns >= 2) {
-    return { verdict: 'skip', signal: 'red', reason: 'Very low ROI — EMV generated does not justify the investment.', reasonKey: 'repeat_low_roi' }
+  if (emvRatio < 0.3 && campaigns >= 2) {
+    return { verdict: 'skip', signal: 'red', reason: 'Very low EMV ratio — the EMV generated does not justify the fee.', reasonKey: 'repeat_low_roi' }
   }
 
   // Scoring thresholds
   if (score >= 75) {
-    if (roi >= 2.5) {
-      return { verdict: 'repeat', signal: 'green', reason: `Excellent performer. ${roi.toFixed(1)}x ROI with strong engagement. Definitely repeat.`, reasonKey: 'repeat_excellent' }
+    if (emvRatio >= 2.5) {
+      return { verdict: 'repeat', signal: 'green', reason: `Excellent performer. EMV ratio ${emvRatio.toFixed(1)}× with strong engagement. Definitely repeat.`, reasonKey: 'repeat_excellent' }
     }
     return { verdict: 'repeat', signal: 'green', reason: 'Strong performance across campaigns. Reliable and good value.', reasonKey: 'repeat_strong' }
   }
 
   if (score >= 50) {
-    if (cpm > 25 && roi < 1.5) {
+    if (cpm > 25 && emvRatio < 1.5) {
       return { verdict: 'consider', signal: 'yellow', reason: 'Decent engagement but CPM is high. Repeat only at a lower fee.', reasonKey: 'repeat_consider_fee' }
     }
     if (campaigns === 1) {

@@ -1,9 +1,76 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { CampaignStatus } from '@/generated/prisma/client'
-import { calculateCampaignEMV } from '@/lib/emv'
-import { loadEmvRates, campaignBrandId, getCreatorStoryViewRates } from '@/lib/emv-server'
+import { CampaignStatus, CampaignType, Prisma } from '@/generated/prisma/client'
+import { campaignBrandId } from '@/lib/emv-server'
+import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
+import { computeCampaignOverview, stripEconomics } from '@/lib/campaign-overview'
+import { loadReportConfig } from '@/lib/report-config'
+import { sanitizeCampaignForBrand } from '@/lib/brand-scope'
+import type { CampaignOverview } from '@/lib/metrics'
+
+// ---- Numeric targets (decision 1B, David 2026-09-05) ----
+// Objective + at least one target are mandatory in the UI; here we sanitize and
+// freeze/log. A target that is not filled in is stored as null, never as 0.
+const TARGET_KEYS = ['targetViews', 'targetReach', 'targetEngagement', 'targetER', 'targetCpmMax'] as const
+type TargetKey = (typeof TARGET_KEYS)[number]
+
+function toPositiveInt(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const n = typeof value === 'number' ? value : parseInt(String(value), 10)
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null
+}
+
+function toPositiveFloat(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const n = typeof value === 'number' ? value : parseFloat(String(value))
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** ER and CPM are decimals; views, reach and engagements are whole numbers. */
+function sanitizeTarget(key: TargetKey, value: unknown): number | null {
+  return key === 'targetER' || key === 'targetCpmMax' ? toPositiveFloat(value) : toPositiveInt(value)
+}
+
+// ---- Business results reported by the client (decision 14A) ----
+// The PM types what the client sends (code redemptions, sales, leads, revenue,
+// where it came from and when). Nothing is inferred: an empty field stays null
+// and is therefore never shown. `undefined` from a parser means "invalid" → 400.
+
+/** Optional non-negative integer: null/'' clears; undefined = invalid. */
+function parseNonNegativeInt(value: unknown): number | null | undefined {
+  if (value === null || value === undefined || value === '') return null
+  const n = typeof value === 'number' ? value : Number(String(value).trim())
+  if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return undefined
+  return n
+}
+
+/** Optional non-negative decimal (money): null/'' clears; undefined = invalid. */
+function parseNonNegativeFloat(value: unknown): number | null | undefined {
+  if (value === null || value === undefined || value === '') return null
+  const n = typeof value === 'number' ? value : Number(String(value).trim())
+  if (!Number.isFinite(n) || n < 0) return undefined
+  return n
+}
+
+/** Optional trimmed text capped at `max` chars: null/'' clears; undefined = invalid (not a string / too long). */
+function parseOptionalText(value: unknown, max: number): string | null | undefined {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  return trimmed.length <= max ? trimmed : undefined
+}
+
+/** Optional ISO date (YYYY-MM-DD or full ISO 8601): null/'' clears; undefined = invalid. */
+function parseIsoDate(value: unknown): Date | null | undefined {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!/^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(trimmed)) return undefined
+  const d = new Date(trimmed)
+  return Number.isNaN(d.getTime()) ? undefined : d
+}
 
 // Brands are not a Prisma model: Setting 'campaign_brand_{campaignId}' holds
 // the brandId, and Setting key=brandId holds JSON { name, logo?, ... } (see
@@ -29,6 +96,45 @@ async function resolveCampaignBrand(
   }
 }
 
+// ---- GET: campaign row + ONE page of media + the single overview ----
+// Every figure comes from computeCampaignOverview (src/lib/campaign-overview.ts);
+// nothing is aggregated here any more. `view=report` applies the ReportConfig
+// (media/creators the PM hid from the client) to every figure AND to the lists,
+// so the report's totals always match its tables. The legacy top-level keys of
+// `overview` are plain aliases of `overview.totals` for older client code.
+
+/** Per-publication figures attached to each media row of the page (from overview.perMedia). */
+type MediaRowMetrics = Pick<
+  CampaignOverview['perMedia'][number],
+  'audience' | 'audienceBasis' | 'audienceEstimated' | 'engagements' | 'emvExtended'
+>
+
+/** Legacy aliases (same values as overview.totals) kept for existing consumers. */
+function legacyOverviewKeys(ov: CampaignOverview) {
+  const t = ov.totals
+  return {
+    totalReach: t.audience.total,
+    totalReachReal: t.reachReal,
+    totalImpressions: t.impressionsReal,
+    totalEngagements: t.engagements,
+    engagementRate: t.er.value ?? 0,
+    engagementRateEstimatedShare: t.er.estimatedShare,
+    totalViews: t.views,
+    profilesPosted: t.creatorsActive,
+    totalMedia: t.media,
+    totalCost: t.cost,
+    membersWithCost: t.membersWithCost,
+    mediaCounts: t.mediaCounts,
+    emvBasic: t.emvBasic,
+    emvExtended: t.emvExtended,
+    emvEstimatedStories: t.emvEstimatedStories,
+    emvEstimatedAudience: t.emvEstimatedAudience,
+    emvRealStories: t.emvRealStories,
+    emvRatio: t.emvRatio,
+    cpm: t.cpm,
+  }
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -42,32 +148,63 @@ export async function GET(
     const { id } = await params
 
     const { searchParams } = new URL(request.url)
-    const mediaOffset = parseInt(searchParams.get('mediaOffset') || '0', 10)
-    const mediaLimit = parseInt(searchParams.get('mediaLimit') || '50', 10)
+    const mediaOffset = Math.max(parseInt(searchParams.get('mediaOffset') || '0', 10) || 0, 0)
+    const mediaLimit = Math.min(Math.max(parseInt(searchParams.get('mediaLimit') || '50', 10) || 50, 1), 100)
+    const reportView = searchParams.get('view') === 'report'
 
-    const campaign = await prisma.campaign.findUnique({
-      where: { id },
-      include: {
-        user: { select: { id: true, name: true, email: true } },
-        influencers: {
-          include: {
-            influencer: true,
+    // Report view: what the PM hid from the client (ReportConfig) leaves the
+    // figures and the lists alike. The PM's campaign page never passes it.
+    const reportConfig = reportView ? await loadReportConfig(id) : null
+    const hiddenMediaIds = reportConfig?.hiddenMediaIds ?? []
+    const hiddenInfluencerIds = reportConfig?.hiddenInfluencerIds ?? []
+    const mediaWhere: Prisma.MediaWhereInput | undefined =
+      hiddenMediaIds.length > 0 || hiddenInfluencerIds.length > 0
+        ? {
+            ...(hiddenMediaIds.length > 0 ? { id: { notIn: hiddenMediaIds } } : {}),
+            ...(hiddenInfluencerIds.length > 0 ? { influencerId: { notIn: hiddenInfluencerIds } } : {}),
+          }
+        : undefined
+    const influencersWhere: Prisma.CampaignInfluencerWhereInput | undefined =
+      hiddenInfluencerIds.length > 0 ? { influencerId: { notIn: hiddenInfluencerIds } } : undefined
+
+    // The campaign row (with ONE page of media) and the overview (over ALL media,
+    // never a page) are independent: load them together with the brand info.
+    const [campaign, fullOverview, brand, brandId] = await Promise.all([
+      prisma.campaign.findUnique({
+        where: { id },
+        include: {
+          user: { select: { id: true, name: true, email: true } },
+          influencers: {
+            where: influencersWhere,
+            include: { influencer: true },
           },
-        },
-        media: {
-          orderBy: { postedAt: 'desc' },
-          skip: mediaOffset,
-          take: Math.min(mediaLimit, 100),
-          include: {
-            influencer: {
-              select: { id: true, username: true, displayName: true, avatarUrl: true, platform: true },
+          // `include` (not `select`) returns every Media scalar, so isDeleted,
+          // deletedAt and source travel to the client: the report marks deleted
+          // posts and badges Meta vs public data.
+          media: {
+            where: mediaWhere,
+            orderBy: { postedAt: 'desc' },
+            skip: mediaOffset,
+            take: mediaLimit,
+            include: {
+              influencer: {
+                select: { id: true, username: true, displayName: true, avatarUrl: true, platform: true },
+              },
             },
           },
         },
-      },
-    })
+      }),
+      computeCampaignOverview(
+        id,
+        reportView ? { exclude: { mediaIds: hiddenMediaIds, influencerIds: hiddenInfluencerIds } } : {}
+      ),
+      // Brand info for the report cover ({ name, logo } | null) and the brandId so the client
+      // can load that brand's benchmark overrides (Deal Advisor, CPM row, fee badge).
+      resolveCampaignBrand(id),
+      campaignBrandId(id),
+    ])
 
-    if (!campaign) {
+    if (!campaign || !fullOverview) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
     }
 
@@ -76,162 +213,50 @@ export async function GET(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    // Aggregate metrics from media
-    const metrics = await prisma.media.aggregate({
-      where: { campaignId: id },
-      _sum: {
-        reach: true,
-        impressions: true,
-        likes: true,
-        comments: true,
-        shares: true,
-        saves: true,
-        views: true,
-        mediaValue: true,
-      },
-      _count: true,
+    // Brands never see fees, cost, CPM, ratio EMV or the basic EMV.
+    const isBrand = session.role === 'BRAND'
+    const overview = isBrand ? stripEconomics(fullOverview) : fullOverview
+
+    // Per-publication figures for this page of media, from the same computation
+    // (matched by id). `null` only if a row was created after the overview ran.
+    const perMediaById = new Map(overview.perMedia.map(m => [m.id, m]))
+    const media = campaign.media.map(m => {
+      const pm = perMediaById.get(m.id)
+      const metrics: MediaRowMetrics | null = pm
+        ? {
+            audience: pm.audience,
+            audienceBasis: pm.audienceBasis,
+            audienceEstimated: pm.audienceEstimated,
+            engagements: pm.engagements,
+            emvExtended: pm.emvExtended,
+          }
+        : null
+      return { ...m, metrics }
     })
 
-    const totalEngagements =
-      (metrics._sum.likes || 0) +
-      (metrics._sum.comments || 0) +
-      (metrics._sum.shares || 0) +
-      (metrics._sum.saves || 0)
-
-    const totalReach = metrics._sum.reach || 0
-    const totalViews = metrics._sum.views || 0
-    const totalImpressions = metrics._sum.impressions || 0
-
-    // Engagement rate: (likes + comments) / reach, fallback to views if no reach
-    const engagementNumerator = (metrics._sum.likes || 0) + (metrics._sum.comments || 0)
-    const engagementDenominator = totalReach > 0 ? totalReach : totalViews > 0 ? totalViews : 0
-    const engagementRate = engagementDenominator > 0 ? (engagementNumerator / engagementDenominator) * 100 : 0
-
-    // Count distinct influencers who posted
-    const profilesPosted = await prisma.media.findMany({
-      where: { campaignId: id },
-      select: { influencerId: true },
-      distinct: ['influencerId'],
-    })
-
-    // Media counts by type
-    const mediaCounts = await prisma.media.groupBy({
-      by: ['mediaType'],
-      where: { campaignId: id },
-      _count: true,
-    })
-
-    // Calculate total cost from agreedFees
-    const totalCost = campaign.influencers.reduce(
-      (sum, ci) => sum + (ci.agreedFee || 0),
-      0
-    )
-
-    const overview = {
-      totalReach: totalReach > 0 ? totalReach : totalViews, // fallback to views if no reach data
-      totalImpressions: totalImpressions > 0 ? totalImpressions : null, // null when no real impressions data (Apify doesn't capture)
-      totalEngagements,
-      engagementRate: Math.round(engagementRate * 100) / 100,
-      mediaValue: metrics._sum.mediaValue || 0,
-      totalViews,
-      profilesPosted: profilesPosted.length,
-      totalMedia: metrics._count,
-      totalCost,
-      mediaCounts: mediaCounts.reduce(
-        (acc, item) => ({ ...acc, [item.mediaType]: item._count }),
-        {} as Record<string, number>
-      ),
+    const payload = {
+      campaign: { ...campaign, media, brand, brandId },
+      overview: { ...overview, ...legacyOverviewKeys(overview) },
+      timeline: overview.timeline,
     }
 
-    // Timeline data for growth charts — group media by date
-    const timelineMedia = await prisma.media.findMany({
-      where: { campaignId: id, postedAt: { not: null } },
-      select: {
-        postedAt: true,
-        likes: true,
-        comments: true,
-        shares: true,
-        views: true,
-        reach: true,
-        mediaType: true,
-      },
-      orderBy: { postedAt: 'asc' },
-    })
-
-    // Aggregate by day
-    const timelineMap = new Map<string, {
-      date: string
-      posts: number
-      likes: number
-      comments: number
-      views: number
-      reach: number
-      engagements: number
-    }>()
-
-    for (const m of timelineMedia) {
-      if (!m.postedAt) continue
-      const dateKey = m.postedAt.toISOString().split('T')[0]
-      const existing = timelineMap.get(dateKey) || {
-        date: dateKey,
-        posts: 0,
-        likes: 0,
-        comments: 0,
-        views: 0,
-        reach: 0,
-        engagements: 0,
-      }
-      existing.posts++
-      existing.likes += m.likes || 0
-      existing.comments += m.comments || 0
-      existing.views += m.views || 0
-      existing.reach += m.reach || 0
-      existing.engagements += (m.likes || 0) + (m.comments || 0) + (m.shares || 0)
-      timelineMap.set(dateKey, existing)
+    if (isBrand) {
+      // Drop the confidential field names too (agreedFee, cost, budget, notes,
+      // shipping*, totalCost…) plus the fee figures deepStrip does not know about:
+      // the asking fee of each creator and the CPM cap of the campaign.
+      const { targetCpmMax: _cpmMax, ...campaignForBrand } = payload.campaign
+      void _cpmMax
+      const influencers = campaignForBrand.influencers.map(ci => {
+        const { askingFee: _askingFee, ...rest } = ci
+        void _askingFee
+        return rest
+      })
+      return NextResponse.json(
+        sanitizeCampaignForBrand({ ...payload, campaign: { ...campaignForBrand, influencers } })
+      )
     }
 
-    const timeline = Array.from(timelineMap.values())
-
-    // Calculate EMV using the proper TKOC formula
-    const allMediaForEMV = await prisma.media.findMany({
-      where: { campaignId: id },
-      select: {
-        likes: true, comments: true, shares: true, saves: true,
-        views: true, reach: true, impressions: true,
-        mediaType: true, postedAt: true, influencerId: true,
-        influencer: { select: { platform: true, followers: true } },
-      },
-    })
-
-    // Rates from Ajustes → Benchmarks (brand override if the campaign has a
-    // brand) and each creator's real story view rate when known.
-    const [emvRates, storyViewRates] = await Promise.all([
-      loadEmvRates(await campaignBrandId(id)),
-      getCreatorStoryViewRates(Array.from(new Set(allMediaForEMV.map(m => m.influencerId)))),
-    ])
-    const emv = calculateCampaignEMV(
-      allMediaForEMV.map(m => ({
-        platform: m.influencer?.platform || 'INSTAGRAM',
-        impressions: m.impressions || 0,
-        reach: m.reach || 0,
-        views: m.views || 0,
-        likes: m.likes || 0,
-        comments: m.comments || 0,
-        shares: m.shares || 0,
-        saves: m.saves || 0,
-        mediaType: m.mediaType,
-        postedAt: m.postedAt,
-        influencerId: m.influencerId,
-        followers: m.influencer?.followers ?? null,
-      })),
-      { rates: emvRates, storyViewRates }
-    )
-
-    // Brand info for the report cover ({ name, logo } | null) and the brandId so the client
-    // can load that brand's benchmark overrides (Deal Advisor, CPM row, fee badge).
-    const [brand, brandId] = await Promise.all([resolveCampaignBrand(id), campaignBrandId(id)])
-
-    return NextResponse.json({ campaign: { ...campaign, brand, brandId }, overview: { ...overview, emvBasic: emv.basic, emvExtended: emv.extended, emvEstimatedStories: emv.estimatedStories, emvEstimatedAudience: emv.estimatedAudience, emvRealStories: emv.realStories }, timeline })
+    return NextResponse.json(payload)
   } catch (error) {
     console.error('Get campaign error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -260,7 +285,13 @@ export async function PUT(
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
     }
 
-    const { name, status, budget, isPinned, startDate, endDate, platforms, targetAccounts, targetHashtags, targetKeywords, country, paymentType, briefText, briefFiles, objective, manualROI, manualROINotes } = body
+    const {
+      name, status, budget, isPinned, startDate, endDate, platforms, targetAccounts, targetHashtags, targetKeywords, country, paymentType, briefText, briefFiles, objective, manualROI, manualROINotes,
+      targetsChangeReason,
+      // Business results reported by the client (decision 14A)
+      promoCode, codeRedemptions, clientReportedSales, clientReportedLeads, clientReportedRevenue,
+      businessResultsSource, businessResultsReportedAt, businessResultsNotes,
+    } = body
 
     // BRAND users cannot edit campaign data fields
     if (session.role === 'BRAND') {
@@ -269,6 +300,119 @@ export async function PUT(
       const hasDisallowedFields = Object.keys(body).some(k => !['status', 'isPinned'].includes(k))
       if (hasDisallowedFields) {
         return NextResponse.json({ error: 'Brands cannot edit campaign data' }, { status: 403 })
+      }
+    }
+
+    // ---- Business results: validate only the keys that came in (absent = untouched) ----
+    const business: {
+      promoCode?: string | null
+      codeRedemptions?: number | null
+      clientReportedSales?: number | null
+      clientReportedLeads?: number | null
+      clientReportedRevenue?: number | null
+      businessResultsSource?: string | null
+      businessResultsReportedAt?: Date | null
+      businessResultsNotes?: string | null
+    } = {}
+    const invalid = (message: string) => NextResponse.json({ error: message }, { status: 400 })
+    if (promoCode !== undefined) {
+      const v = parseOptionalText(promoCode, 100)
+      if (v === undefined) return invalid('promoCode must be text of at most 100 characters')
+      business.promoCode = v
+    }
+    if (codeRedemptions !== undefined) {
+      const v = parseNonNegativeInt(codeRedemptions)
+      if (v === undefined) return invalid('codeRedemptions must be a non-negative integer')
+      business.codeRedemptions = v
+    }
+    if (clientReportedSales !== undefined) {
+      const v = parseNonNegativeInt(clientReportedSales)
+      if (v === undefined) return invalid('clientReportedSales must be a non-negative integer')
+      business.clientReportedSales = v
+    }
+    if (clientReportedLeads !== undefined) {
+      const v = parseNonNegativeInt(clientReportedLeads)
+      if (v === undefined) return invalid('clientReportedLeads must be a non-negative integer')
+      business.clientReportedLeads = v
+    }
+    if (clientReportedRevenue !== undefined) {
+      const v = parseNonNegativeFloat(clientReportedRevenue)
+      if (v === undefined) return invalid('clientReportedRevenue must be a non-negative number')
+      business.clientReportedRevenue = v
+    }
+    if (businessResultsSource !== undefined) {
+      const v = parseOptionalText(businessResultsSource, 200)
+      if (v === undefined) return invalid('businessResultsSource must be text of at most 200 characters')
+      business.businessResultsSource = v
+    }
+    if (businessResultsReportedAt !== undefined) {
+      const v = parseIsoDate(businessResultsReportedAt)
+      if (v === undefined) return invalid('businessResultsReportedAt must be an ISO date (YYYY-MM-DD)')
+      business.businessResultsReportedAt = v
+    }
+    if (businessResultsNotes !== undefined) {
+      const v = parseOptionalText(businessResultsNotes, 2000)
+      if (v === undefined) return invalid('businessResultsNotes must be text of at most 2000 characters')
+      business.businessResultsNotes = v
+    }
+
+    // ---- Objective: same rule as POST (decision 1B) ----
+    // Only one of CAMPAIGN_OBJECTIVES is stored; an unknown value would crash
+    // the intelligence panel (THRESHOLDS[objective]). Clearing it (null/'') is
+    // allowed only for Social Listening, which has no deliverables.
+    let nextObjective: string | null | undefined
+    if (objective !== undefined) {
+      if (objective !== null && typeof objective !== 'string') {
+        return invalid(`Objetivo no válido. Usa uno de: ${CAMPAIGN_OBJECTIVES.map(o => o.value).join(', ')}.`)
+      }
+      const objectiveValue = typeof objective === 'string' ? objective.trim() : ''
+      if (!objectiveValue) {
+        if (existing.type !== CampaignType.SOCIAL_LISTENING) {
+          return invalid('El objetivo de la campaña es obligatorio (notoriedad, engagement, tráfico, conversión o contenido).')
+        }
+        nextObjective = null
+      } else if (!CAMPAIGN_OBJECTIVES.some(o => o.value === objectiveValue)) {
+        return invalid(`Objetivo no válido: "${objectiveValue}". Usa uno de: ${CAMPAIGN_OBJECTIVES.map(o => o.value).join(', ')}.`)
+      } else {
+        nextObjective = objectiveValue
+      }
+    }
+
+    // ---- Numeric targets: sanitize what came in, merge with what is stored ----
+    const incomingTargets: Partial<Record<TargetKey, number | null>> = {}
+    for (const key of TARGET_KEYS) {
+      if (body[key] !== undefined) incomingTargets[key] = sanitizeTarget(key, body[key])
+    }
+    const mergedTargets = Object.fromEntries(
+      TARGET_KEYS.map(key => [key, key in incomingTargets ? incomingTargets[key] ?? null : existing[key]])
+    ) as Record<TargetKey, number | null>
+    const hasAnyTarget = TARGET_KEYS.some(key => mergedTargets[key] !== null)
+
+    const nextStatus: CampaignStatus =
+      status !== undefined && Object.values(CampaignStatus).includes(status) ? status : existing.status
+    const now = new Date()
+
+    // Freeze: the first time an ACTIVE campaign has at least one target.
+    const shouldFreeze = nextStatus === CampaignStatus.ACTIVE && hasAnyTarget && !existing.targetsFrozenAt
+
+    // After freezing, every target change is appended to targetsChangeLog with who/when/why.
+    let nextChangeLog: Prisma.InputJsonValue | undefined
+    if (existing.targetsFrozenAt) {
+      const reason =
+        typeof targetsChangeReason === 'string' && targetsChangeReason.trim() ? targetsChangeReason.trim() : null
+      const entries = TARGET_KEYS
+        .filter(key => key in incomingTargets && (incomingTargets[key] ?? null) !== existing[key])
+        .map(key => ({
+          at: now.toISOString(),
+          by: session.email || session.id,
+          field: key,
+          from: existing[key],
+          to: incomingTargets[key] ?? null,
+          reason,
+        }))
+      if (entries.length > 0) {
+        const previous = Array.isArray(existing.targetsChangeLog) ? existing.targetsChangeLog : []
+        nextChangeLog = [...previous, ...entries] as unknown as Prisma.InputJsonValue
       }
     }
 
@@ -289,9 +433,15 @@ export async function PUT(
         ...(paymentType !== undefined && ['PAID', 'GIFTED'].includes(paymentType) && { paymentType }),
         ...(briefText !== undefined && { briefText: briefText || null }),
         ...(briefFiles !== undefined && { briefFiles }),
-        ...(objective !== undefined && { objective: objective || null }),
+        ...(nextObjective !== undefined && { objective: nextObjective }),
         ...(manualROI !== undefined && { manualROI: manualROI !== null ? parseFloat(manualROI) : null }),
         ...(manualROINotes !== undefined && { manualROINotes: manualROINotes || null }),
+        // Numeric targets (decision 1B)
+        ...incomingTargets,
+        ...(shouldFreeze && { targetsFrozenAt: now }),
+        ...(nextChangeLog !== undefined && { targetsChangeLog: nextChangeLog }),
+        // Business results reported by the client (decision 14A) — only the keys that came in
+        ...business,
       },
       include: {
         _count: { select: { influencers: true, media: true } },

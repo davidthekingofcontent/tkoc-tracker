@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { History, Loader2, X, Star, TrendingUp, Shield, Zap, Award } from 'lucide-react'
-import { formatNumber } from '@/lib/utils'
+import { formatEur, formatRatio, type EurLocale } from '@/lib/utils'
 
 interface PriceEntry {
   campaignId: string
@@ -14,6 +14,10 @@ interface PriceEntry {
   startDate: string | null
   endDate: string | null
   mediaValue: number
+  /** EMV of this creator in the campaign (same value as mediaValue, new name). */
+  emvExtended?: number
+  /** EMV ÷ coste of this creator in the campaign; null without cost. */
+  ratioEmv?: number | null
 }
 
 interface Score {
@@ -21,13 +25,15 @@ interface Score {
   engagement: number
   reliability: number
   roi: number
+  /** Same score as roi under its real name (decision 9B: never call EMV-based figures ROI). */
+  ratioEmv?: number
   consistency: number
 }
 
 interface InfluencerHistoryProps {
   influencerId: string
   influencerName: string
-  locale: string
+  locale: EurLocale
 }
 
 export function InfluencerHistoryButton({ influencerId, influencerName, locale }: InfluencerHistoryProps) {
@@ -127,7 +133,7 @@ export function InfluencerHistoryButton({ influencerId, influencerName, locale }
                     {[
                       { label: 'Engagement', value: score.engagement, icon: TrendingUp },
                       { label: locale === 'es' ? 'Fiabilidad' : 'Reliability', value: score.reliability, icon: Shield },
-                      { label: 'ROI', value: score.roi, icon: Zap },
+                      { label: 'Ratio EMV', value: score.ratioEmv ?? score.roi, icon: Zap },
                       { label: locale === 'es' ? 'Consistencia' : 'Consistency', value: score.consistency, icon: Star },
                     ].map(({ label, value, icon: Icon }) => (
                       <div key={label} className="text-center">
@@ -157,7 +163,7 @@ export function InfluencerHistoryButton({ influencerId, influencerName, locale }
                           <span className={`text-xs font-bold ${
                             (entry.agreedFee || entry.cost) ? 'text-gray-900' : 'text-gray-400'
                           }`}>
-                            {(entry.agreedFee || entry.cost) ? `€${(entry.agreedFee || entry.cost)!.toLocaleString()}` : '—'}
+                            {(entry.agreedFee || entry.cost) ? formatEur((entry.agreedFee || entry.cost) as number, { locale }) : '—'}
                           </span>
                         </div>
                         <div className="mt-0.5 flex items-center gap-2 text-[10px] text-gray-400">
@@ -171,7 +177,12 @@ export function InfluencerHistoryButton({ influencerId, influencerName, locale }
                           {entry.mediaValue > 0 && (
                             <>
                               <span>&middot;</span>
-                              <span className="text-green-500">EMV: €{formatNumber(Math.round(entry.mediaValue))}</span>
+                              <span className="text-green-500">
+                                EMV: {formatEur(Math.round(entry.emvExtended ?? entry.mediaValue), { compact: true, locale })}
+                                {typeof entry.ratioEmv === 'number' && entry.ratioEmv > 0 && (
+                                  <span className="ml-1 text-gray-400">· {locale === 'es' ? 'Ratio EMV' : 'EMV ratio'} {formatRatio(entry.ratioEmv, { locale })}</span>
+                                )}
+                              </span>
                             </>
                           )}
                         </div>
