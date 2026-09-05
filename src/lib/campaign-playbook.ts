@@ -389,7 +389,8 @@ function generateInsights(
   }
 
   // Cost efficiency
-  const cheapHighPerformers = sorted.filter(inf => inf.cpm <= 15 && inf.totalEngagement > 100)
+  // Only creators with a recorded fee can be judged on CPM (fee 0 → CPM 0 is not 'good value')
+  const cheapHighPerformers = sorted.filter(inf => inf.agreedFee > 0 && Number.isFinite(inf.cpm) && inf.cpm <= 15 && inf.totalEngagement > 100)
   if (cheapHighPerformers.length > 0) {
     const n = cheapHighPerformers.length
     insights.push({
@@ -403,7 +404,7 @@ function generateInsights(
   }
 
   // Underperformers
-  const expensive = sorted.filter(inf => inf.cpm > 30 && inf.totalEngagement < 500)
+  const expensive = sorted.filter(inf => inf.agreedFee > 0 && Number.isFinite(inf.cpm) && inf.cpm > 30 && inf.totalEngagement < 500)
   if (expensive.length > 0) {
     const n = expensive.length
     insights.push({
