@@ -132,9 +132,13 @@ export function generatePlaybook(input: PlaybookInput, locale: PlaybookLocale = 
   }
 
   // EMV ratio (EMV / spend). Drives the grade; never described as ROI.
-  const roiRatio = totalSpent > 0 ? Math.round((totalEMV / totalSpent) * 100) / 100 : 0
-  const campaignGrade = gradeEmvRatio(roiRatio)
-  const roiVerdict = emvVerdict(roiRatio, locale)
+  // Without any recorded cost there is no ratio to judge: say so instead of "×0,0 / Ratio EMV bajo".
+  const hasSpend = totalSpent > 0
+  const roiRatio = hasSpend ? Math.round((totalEMV / totalSpent) * 100) / 100 : 0
+  const campaignGrade = hasSpend ? gradeEmvRatio(roiRatio) : 'N/A'
+  const roiVerdict = hasSpend
+    ? emvVerdict(roiRatio, locale)
+    : (locale === 'es' ? 'Sin coste registrado' : 'No cost recorded')
 
   // Analyze each influencer
   const influencerAnalysis = influencers.map(inf => {
@@ -219,10 +223,14 @@ export function generatePlaybook(input: PlaybookInput, locale: PlaybookLocale = 
   }
 
   // Generate insights
-  const insights = generateInsights(input, influencerAnalysis, sorted, roiRatio, bestFormat, locale)
+  const insights = generateInsights(input, influencerAnalysis, sorted, hasSpend ? roiRatio : null, bestFormat, locale)
 
   // Budget advice
-  const budgetAdvice = generateBudgetAdvice(roiRatio, locale)
+  const budgetAdvice = hasSpend
+    ? generateBudgetAdvice(roiRatio, locale)
+    : (locale === 'es'
+        ? 'Registra los fees o costes de los creadores en la pestaña Elegir para obtener el Ratio EMV y el consejo de presupuesto.'
+        : 'Record the creators\' fees or costs in the Elegir tab to get the EMV ratio and budget advice.')
 
   // Next campaign recommendation
   const nextCampaignRec = generateNextCampaignRec(roiRatio, sorted, bestFormat, locale)
@@ -313,15 +321,25 @@ function generateInsights(
   input: PlaybookInput,
   analysis: AnalyzedInfluencer[],
   sorted: AnalyzedInfluencer[],
-  ratio: number,
+  /** EMV ratio; null when the campaign has no recorded cost (no ratio insight then). */
+  ratio: number | null,
   bestFormat: PlaybookResult['bestFormat'],
   locale: PlaybookLocale
 ): PlaybookInsight[] {
   const insights: PlaybookInsight[] = []
   const es = locale === 'es'
 
-  // EMV-ratio insight
-  if (ratio >= 2.0) {
+  // EMV-ratio insight (only when there is a cost to compare against)
+  if (ratio === null) {
+    insights.push({
+      type: 'info',
+      icon: 'ℹ️',
+      text: es
+        ? 'Sin fees ni costes registrados: el Ratio EMV no se puede calcular. Regístralos en la pestaña Elegir.'
+        : 'No fees or costs recorded: the EMV ratio cannot be computed. Record them in the Elegir tab.',
+      textKey: 'playbook_no_cost',
+    })
+  } else if (ratio >= 2.0) {
     insights.push({
       type: 'success',
       icon: '🎯',
