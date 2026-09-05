@@ -3526,11 +3526,17 @@ export default function CampaignDetailPage() {
                         <span className="text-xs text-gray-400 tabular-nums">
                           {totals.er.value !== null
                             ? t.campaignDetail.erRealBaseSub.replace('{n}', formatNumber(totals.er.pieces, { locale }))
-                            : t.campaignDetail.erNoRealHint}
+                            : (totals.er.reason === 'insufficient_sample' || totals.er.reason === 'implausible')
+                              ? t.campaignDetail.erInsufficientHint.replace('{n}', formatNumber(totals.er.pieces, { locale }))
+                              : t.campaignDetail.erNoRealHint}
                         </span>
                       </span>
                     )}
-                    value={totals.er.value !== null ? formatPercent(totals.er.value, { locale, digits: 2 }) : t.campaignDetail.erNoRealData}
+                    value={totals.er.value !== null
+                      ? formatPercent(totals.er.value, { locale, digits: 2 })
+                      : (totals.er.reason === 'insufficient_sample' || totals.er.reason === 'implausible')
+                        ? t.campaignDetail.erInsufficientSample
+                        : t.campaignDetail.erNoRealData}
                   />
                   <StatCard
                     icon={<TrendingUp className="h-5 w-5" />}

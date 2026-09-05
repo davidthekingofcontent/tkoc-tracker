@@ -28,7 +28,7 @@ import {
   type AudienceResult,
   type CampaignOverview,
   type PerMediaMetrics,
-} from '@/lib/metrics'
+ ER_MIN_PIECES_CAMPAIGN } from '@/lib/metrics'
 
 /** One overview per campaign, a few at a time so the connection pool is not flooded. */
 async function computeOverviews(ids: string[]): Promise<Map<string, CampaignOverview>> {
@@ -194,7 +194,7 @@ export async function GET(request: NextRequest) {
 
     const audience = sumAudience(audienceResults)
     // 4A: ER = interacciones of the real-audience publications ÷ real audience
-    const er = engagementRateOf(engagementsReal, audience)
+    const er = engagementRateOf(engagementsReal, audience, { minPieces: ER_MIN_PIECES_CAMPAIGN })
     const media = uniqueMedia.length
 
     // BRAND users never receive fees, cost, CPM or the EMV ratio (decision 9B + portal rule).

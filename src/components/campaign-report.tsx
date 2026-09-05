@@ -1692,8 +1692,8 @@ export function CampaignReport({
   const objW = columnWidths([['kpi', 40], ['target', 20], ['actual', 20], ['variation', 20]])
   const creatorsW = columnWidths([
     editing && ['toggle', 4],
-    ['creator', 22],
-    ['platform', 10],
+    ['creator', 20],
+    ['platform', 12],
     showCol('creators.posts') && ['posts', 6],
     showCol('creators.posts') && ['stories', 6],
     ['interactions', 9],
@@ -1717,7 +1717,7 @@ export function CampaignReport({
     ['link', 4],
   ])
 
-  const thBase = 'px-3 py-2.5 align-bottom'
+  const thBase = 'px-3 py-2.5 align-bottom whitespace-nowrap'
   const tdNum = 'px-3 py-2.5 text-right tabular-nums'
 
   return (
@@ -2051,7 +2051,13 @@ export function CampaignReport({
                       sub={fill(tr.erRealBaseSub, { n: totals.er.pieces ?? realPieces })}
                     />
                   ) : (
-                    <StatCard icon={TrendingUp} label={tr.cardEr} value={tr.erNoRealData} sub={tr.erNoRealHint} muted />
+                    <StatCard
+                      icon={TrendingUp}
+                      label={tr.cardEr}
+                      value={totals.er.reason === 'insufficient_sample' || totals.er.reason === 'implausible' ? tr.erInsufficientSample : tr.erNoRealData}
+                      sub={totals.er.reason === 'insufficient_sample' || totals.er.reason === 'implausible' ? fill(tr.erInsufficientHint, { n: totals.er.pieces ?? realPieces }) : tr.erNoRealHint}
+                      muted
+                    />
                   )
                 )}
               </div>
@@ -2266,7 +2272,7 @@ export function CampaignReport({
                           </th>
                         )}
                         <th className={thBase} style={{ width: creatorsW.creator }}>{tr.colCreator}</th>
-                        <th className={thBase} style={{ width: creatorsW.platform }}>Plataforma</th>
+                        <th className={thBase} style={{ width: creatorsW.platform }}>{locale === 'es' ? 'Red' : 'Network'}</th>
                         {showCol('creators.posts') && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.posts }}>Posts</th>}
                         {showCol('creators.posts') && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.stories }}>{tr.colStories}</th>}
                         <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.interactions }}>{tr.colInteractions}</th>

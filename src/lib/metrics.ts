@@ -153,22 +153,41 @@ export interface EngagementRateResult {
   estimatedShare: number
   /** Publications behind the figure. */
   pieces: number
+  /**
+   * Why `value` is null: no real audience at all, a real sample too small to
+   * publish (fewer pieces / smaller audience than the minimums), or an
+   * implausible ratio (> 100 %, i.e. the real audience figure is partial —
+   * e.g. a reel whose public play count is far below its likes).
+   */
+  reason?: 'no_real_base' | 'insufficient_sample' | 'implausible'
+  /** The raw ratio even when not published (internal diagnostics). */
+  rawValue?: number
 }
+
+export interface EngagementRateOptions {
+  /** Minimum publications with real audience to publish an ER (campaign: 3; creator: 1). */
+  minPieces?: number
+  /** Minimum real audience to publish an ER. */
+  minAudience?: number
+}
+export const ER_MIN_PIECES_CAMPAIGN = 3
+export const ER_MIN_AUDIENCE = 500
 
 /**
  * ER over REAL audience only (decision 4A). `engagementsReal` must be the
- * interacciones of the same publications that carry a real audience figure;
- * pass the campaign total only when every publication has one.
+ * interacciones of the same publications that carry a real audience figure.
+ * The figure is only PUBLISHED when the real sample is meaningful and the
+ * ratio is plausible; otherwise value = null with a reason ("sin dato real").
  */
-export function engagementRateOf(engagementsReal: number, audience: AudienceTotals): EngagementRateResult {
-  if (audience.real <= 0) return { value: null, numerator: engagementsReal, denominator: 0, estimatedShare: 0, pieces: 0 }
-  return {
-    value: Math.round((engagementsReal / audience.real) * 100 * 100) / 100,
-    numerator: engagementsReal,
-    denominator: audience.real,
-    estimatedShare: 0,
-    pieces: audience.realPieces,
-  }
+export function engagementRateOf(engagementsReal: number, audience: AudienceTotals, options: EngagementRateOptions = {}): EngagementRateResult {
+  const minPieces = options.minPieces ?? 1
+  const minAudience = options.minAudience ?? ER_MIN_AUDIENCE
+  if (audience.real <= 0) return { value: null, numerator: engagementsReal, denominator: 0, estimatedShare: 0, pieces: 0, reason: 'no_real_base' }
+  const raw = Math.round((engagementsReal / audience.real) * 100 * 100) / 100
+  const base = { numerator: engagementsReal, denominator: audience.real, estimatedShare: 0, pieces: audience.realPieces, rawValue: raw }
+  if (audience.realPieces < minPieces || audience.real < minAudience) return { value: null, ...base, reason: 'insufficient_sample' }
+  if (raw > 100) return { value: null, ...base, reason: 'implausible' }
+  return { value: raw, ...base }
 }
 
 // ============ COSTE (6) ============

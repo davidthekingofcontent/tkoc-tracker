@@ -18,6 +18,7 @@ import { calculateCampaignEMV, type EmvRates } from '@/lib/emv'
 import { loadEmvRates, campaignBrandId, getCreatorStoryViewRates } from '@/lib/emv-server'
 import { compareWithBaseline, familyOf, parseBaseline } from '@/lib/creator-baseline'
 import {
+  ER_MIN_PIECES_CAMPAIGN,
   audienceOf,
   buildBusinessResults,
   compareTargets,
@@ -138,7 +139,8 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
   // 4A: ER and CPM on REAL audience only — interacciones of the same publications that have a real figure
   const isRealIdx = (i: number) => !audienceResults[i].estimated && audienceResults[i].value > 0
   const engagementsReal = media.reduce((s, m, i) => s + (isRealIdx(i) ? engagementsOf(m) : 0), 0)
-  const er = engagementRateOf(engagementsReal, audience)
+  // Campaign ER is published only with ≥ 3 publications with real audience and a plausible ratio
+  const er = engagementRateOf(engagementsReal, audience, { minPieces: ER_MIN_PIECES_CAMPAIGN })
   const cpm = cpmOf(cost.total, audience.real)
 
   // Per creator (over ALL media, never a page)

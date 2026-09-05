@@ -50,7 +50,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
             hidden when printing); the report page also resets it by class. */}
         <div className="ml-0 lg:ml-[260px] print:ml-0 flex min-w-0 flex-1 flex-col">
           {/* Mobile top bar with hamburger */}
-          <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 py-3 lg:hidden">
+          <div className="no-print sticky top-0 z-30 flex items-center gap-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 py-3 lg:hidden print:hidden">
             <button
               type="button"
               onClick={() => setMobileNavOpen(true)}

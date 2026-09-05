@@ -30,7 +30,7 @@ import {
   type AudienceResult,
   type AudienceTotals,
   type PerMediaMetrics,
-} from '@/lib/metrics'
+ ER_MIN_PIECES_CAMPAIGN } from '@/lib/metrics'
 
 interface BrandData {
   brandName: string
@@ -185,7 +185,7 @@ export async function GET(request: NextRequest) {
       }
 
       const audience = sumAudience(audienceResults)
-      const er = engagementRateOf(engagementsReal, audience)
+      const er = engagementRateOf(engagementsReal, audience, { minPieces: ER_MIN_PIECES_CAMPAIGN })
       cost = isBrand ? 0 : Math.round(cost * 100) / 100
       emvExtended = Math.round(emvExtended * 100) / 100
 
