@@ -19,6 +19,8 @@ import {
   MetaApiError,
   type IgMediaItem,
 } from '@/lib/meta-api'
+import { isApifyExhausted } from '@/lib/apify'
+import { ENRICH_ROW_RESERVE_MS, enrichMetaReelViews, type EnrichSummary } from '@/lib/media-enrich'
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -33,7 +35,32 @@ export interface SyncResult {
   warning?: string
   /** Brand flow: whether the full tagged-media history has been crawled for this connection. */
   tagsCrawlComplete?: boolean
+  /** Brand flow: real views fetched for Meta-attributed reels at the end of the run (see media-enrich.ts). */
+  enriched?: EnrichSummary
 }
+
+/**
+ * Real views for Meta-attributed reels (src/lib/media-enrich.ts) run at the end
+ * of a brand sync at most once per ENRICH_MIN_INTERVAL_MS per process: the cron
+ * syncs up to 20 connections in a row and the materialization happens in the
+ * caller after the sync, so the rows created by THIS run get their views in the
+ * NEXT one. Small batch (≤ ENRICH_MAX_ROWS_PER_SYNC rows) and ONLY the time the
+ * sync has actually left of its own budget (see SyncOptions.timeBudgetMs): one
+ * Apify row can take minutes and cannot be aborted, so the enrichment must
+ * never push the cron past its 300 s self-fetch limit.
+ */
+const ENRICH_MIN_INTERVAL_MS = 10 * 60 * 1000
+const ENRICH_MAX_ROWS_PER_SYNC = 5
+let lastEnrichAt = 0
+
+/** Default budget for the tagged-media pagination (brand flow). */
+const TAGS_DEFAULT_BUDGET_MS = 180_000
+/**
+ * What the callers reserve on top of the tags budget for the profile / media /
+ * insights / stories calls (the cron passes tagsTimeBudgetMs = remaining − 45 s).
+ * Used to derive the sync's total budget when timeBudgetMs is not given.
+ */
+const SYNC_OVERHEAD_MS = 45_000
 
 /**
  * Persisted per-connection crawl position for the brand's tagged media
@@ -58,9 +85,21 @@ export interface SyncOptions {
   tagsTimeBudgetMs?: number
   /** Explicit lower bound for tagged items (overrides the "3 days before newest stored" default). */
   tagsSince?: Date
+  /** Brand flow: fetch real views for Meta-attributed reels at the end of the run (default true). */
+  enrichViews?: boolean
+  /**
+   * Wall-clock budget for the WHOLE sync. The views enrichment at the end gets
+   * only what is left of it (and skips when less than one Apify row fits).
+   * Default: tagsTimeBudgetMs + 45 s, i.e. exactly what the callers assume.
+   */
+  timeBudgetMs?: number
+  /** Optional cap for the enrichment on top of the remaining budget (never more than what is left). */
+  enrichTimeBudgetMs?: number
 }
 
 export async function syncMetaConnection(connectionId: string, options: SyncOptions = {}): Promise<SyncResult> {
+  const syncStartedAt = Date.now()
+  const syncBudgetMs = options.timeBudgetMs ?? ((options.tagsTimeBudgetMs ?? TAGS_DEFAULT_BUDGET_MS) + SYNC_OVERHEAD_MS)
   const result: SyncResult = { success: false, snapshots: 0, media: 0, stories: 0, mentions: 0 }
 
   const token = await prisma.socialToken.findUnique({ where: { id: connectionId } })
@@ -262,7 +301,7 @@ export async function syncMetaConnection(connectionId: string, options: SyncOpti
     try {
       const collected = new Map<string, IgMediaItem>()
       const tagsStartedAt = Date.now()
-      const totalBudget = options.tagsTimeBudgetMs ?? 180_000
+      const totalBudget = options.tagsTimeBudgetMs ?? TAGS_DEFAULT_BUDGET_MS
       const maxItems = options.tagsMaxItems ?? 45
 
       // Crawl position persisted across runs (see TagsCrawlState).
@@ -393,6 +432,34 @@ export async function syncMetaConnection(connectionId: string, options: SyncOpti
     where: { id: connectionId },
     data: { lastUsedAt: new Date(), lastError: null },
   })
+
+  // 6) Real views for Meta-attributed reels materialized by earlier runs
+  // (Meta hides other accounts' play counts; the public post shows them).
+  // Guarded by the Apify circuit breaker, the time the sync has ACTUALLY left of
+  // its budget (one Apify row can take minutes and cannot be aborted, so the
+  // enrichment only gets the slack the tags crawl did not use) and a per-process
+  // throttle; never fails the sync.
+  if (token.tokenType === 'brand' && options.enrichViews !== false) {
+    const remainingMs = Math.max(0, syncBudgetMs - (Date.now() - syncStartedAt))
+    const enrichBudgetMs = options.enrichTimeBudgetMs !== undefined ? Math.min(options.enrichTimeBudgetMs, remainingMs) : remainingMs
+    if (isApifyExhausted()) {
+      console.log('[meta-sync] views enrichment skipped: Apify monthly limit exhausted')
+    } else if (Date.now() - lastEnrichAt < ENRICH_MIN_INTERVAL_MS) {
+      console.log('[meta-sync] views enrichment skipped: ran less than 10 min ago in this process')
+    } else if (enrichBudgetMs < ENRICH_ROW_RESERVE_MS) {
+      console.log(`[meta-sync] views enrichment skipped: ${Math.round(enrichBudgetMs / 1000)} s left of the sync budget (< ${ENRICH_ROW_RESERVE_MS / 1000} s per Apify row)`)
+    } else {
+      lastEnrichAt = Date.now()
+      try {
+        result.enriched = await enrichMetaReelViews({
+          limit: ENRICH_MAX_ROWS_PER_SYNC,
+          timeBudgetMs: enrichBudgetMs,
+        })
+      } catch (err) {
+        console.error('[meta-sync] views enrichment failed', err instanceof Error ? err.message : err)
+      }
+    }
+  }
 
   result.success = true
   return result

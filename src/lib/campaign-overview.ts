@@ -135,8 +135,11 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
   const stories = media.filter(m => isStoryType(m.mediaType)).length
   const mediaCounts: Record<string, number> = {}
   for (const m of media) mediaCounts[m.mediaType] = (mediaCounts[m.mediaType] || 0) + 1
-  const er = engagementRateOf(engagements, audience)
-  const cpm = cpmOf(cost.total, audience.total)
+  // 4A: ER and CPM on REAL audience only — interacciones of the same publications that have a real figure
+  const isRealIdx = (i: number) => !audienceResults[i].estimated && audienceResults[i].value > 0
+  const engagementsReal = media.reduce((s, m, i) => s + (isRealIdx(i) ? engagementsOf(m) : 0), 0)
+  const er = engagementRateOf(engagementsReal, audience)
+  const cpm = cpmOf(cost.total, audience.real)
 
   // Per creator (over ALL media, never a page)
   const mediaByInfluencer = new Map<string, number[]>()
@@ -152,6 +155,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
       const own = idxs.map(i => media[i])
       const ownAudience = sumAudience(idxs.map(i => audienceResults[i]))
       const ownEng = own.reduce((s, m) => s + engagementsOf(m), 0)
+      const ownEngReal = idxs.reduce((s, i) => s + (isRealIdx(i) ? engagementsOf(media[i]) : 0), 0)
       const ownViews = own.reduce((s, m) => s + (m.views || 0), 0)
       const ownEmvBasic = idxs.reduce((s, i) => s + (emv.items[i]?.basic ?? 0), 0)
       const ownEmvExt = idxs.reduce((s, i) => s + (emv.items[i]?.extended ?? 0), 0)
@@ -186,12 +190,12 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
         views: ownViews,
         engagements: ownEng,
         audience: ownAudience,
-        er: engagementRateOf(ownEng, ownAudience),
+        er: engagementRateOf(ownEngReal, ownAudience),
         cost: c,
         emvBasic: Math.round(ownEmvBasic * 100) / 100,
         emvExtended: Math.round(ownEmvExt * 100) / 100,
         emvRatio: emvRatioOf(ownEmvExt, c),
-        cpm: cpmOf(c, ownAudience.total),
+        cpm: cpmOf(c, ownAudience.real),
         deliverablesPlanned: ci.deliverablesPlanned ?? null,
         status: ci.status,
         vsBaseline,
@@ -218,7 +222,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
 
   const targets = compareTargets(campaign, {
     views,
-    audience: audience.total,
+    audience: audience.real,
     engagements,
     er: er.value,
     cpm,

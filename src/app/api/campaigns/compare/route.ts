@@ -122,8 +122,9 @@ export async function GET(request: NextRequest) {
         country: campaign.country,
         influencerCount: t.members,
         mediaCount: t.media,
-        /** Audiencia total (real + estimada) — what the compare page labels "Alcance Total". */
-        totalReach: t.audience.total,
+        /** 4A: headline reach = REAL audience (reach → impressions → views). Estimated stays apart. */
+        totalReach: t.audience.real,
+        totalReachEstimated: t.audience.estimated,
         /** Real reach only (Σ reach). */
         totalReachReal: t.reachReal,
         /** Share (0–1) of the audience that is estimated. */

@@ -8,7 +8,9 @@
  *    count ONCE: rows are deduplicated by post before summing.
  *  - Cost is per campaign membership (fee acordado, si no coste — decision 6).
  *  - Audiencia follows decision 5 (alcance real → impresiones → vistas →
- *    estimación etiquetada); the estimated share travels with the ER.
+ *    estimación etiquetada). The ER follows 4A: interacciones of the
+ *    publications WITH a real audience figure ÷ that real audience — estimates
+ *    are reported apart and never enter the ER.
  *  - EMV ÷ cost is the "Ratio EMV" (×2,4). It is never called ROI (decision 9B).
  *  - Deleted publications stay in the totals and are counted apart (7B).
  *
@@ -49,9 +51,9 @@ interface BrandData {
   totalCost: number
   /** Extended EMV — the one EMV the client sees ("Valor mediático equivalente (estimado)"). */
   totalEMV: number
-  /** Interacciones ÷ audiencia × 100 (4C); null without an audience base. */
+  /** Interacciones of the real-audience publications ÷ audiencia real × 100 (4A); null without a real base. */
   engagementRate: number | null
-  /** Share of the ER denominator that is estimated, 0–1 — always shown next to the ER. */
+  /** Always 0 since 4A (estimates never enter the ER); kept for old consumers. */
   erEstimatedShare: number
   /** @deprecated Legacy alias of `engagementRate` (0 when null). */
   avgEngagementRate: number
@@ -167,6 +169,9 @@ export async function GET(request: NextRequest) {
       // The same post in the annual and the monthly campaign counts once for the brand.
       const distinct = dedupeMediaByPost(rows)
       let engagements = 0, views = 0, emvExtended = 0, mediaDeleted = 0
+      // 4A: ER numerator = interacciones of the SAME rows that carry a real audience
+      // figure (mirrors isRealIdx in campaign-overview.ts), never the brand total.
+      let engagementsReal = 0
       const audienceResults: AudienceResult[] = []
       for (const m of distinct) {
         views += m.views || 0
@@ -176,10 +181,11 @@ export async function GET(request: NextRequest) {
         emvExtended += pm.emvExtended
         if (pm.isDeleted) mediaDeleted++
         audienceResults.push({ value: pm.audience, basis: pm.audienceBasis, estimated: pm.audienceEstimated })
+        if (!pm.audienceEstimated && pm.audience > 0) engagementsReal += engagementsOf(m)
       }
 
       const audience = sumAudience(audienceResults)
-      const er = engagementRateOf(engagements, audience)
+      const er = engagementRateOf(engagementsReal, audience)
       cost = isBrand ? 0 : Math.round(cost * 100) / 100
       emvExtended = Math.round(emvExtended * 100) / 100
 

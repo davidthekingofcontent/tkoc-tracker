@@ -96,7 +96,7 @@ export default function CompareCampaignsPage() {
   const metrics = [
     { key: 'influencerCount', label: locale === 'es' ? 'Influencers' : 'Influencers', icon: Users, format: (v: number) => v.toString() },
     { key: 'mediaCount', label: locale === 'es' ? 'Publicaciones' : 'Posts', icon: BarChart3, format: (v: number) => v.toString() },
-    { key: 'totalReach', label: locale === 'es' ? 'Alcance Total' : 'Total Reach', icon: Eye, format: (v: number) => formatNumber(v, { locale }) },
+    { key: 'totalReach', label: locale === 'es' ? 'Alcance real' : 'Real reach', icon: Eye, format: (v: number) => formatNumber(v, { locale }) },
     { key: 'totalEngagements', label: locale === 'es' ? 'Engagements' : 'Engagements', icon: Heart, format: (v: number) => formatNumber(v, { locale }) },
     { key: 'engagementRate', label: locale === 'es' ? 'Tasa Engagement' : 'Engagement Rate', icon: TrendingUp, format: (v: number) => formatPercent(v, { locale }) },
     { key: 'totalViews', label: locale === 'es' ? 'Vistas Totales' : 'Total Views', icon: Eye, format: (v: number) => formatNumber(v, { locale }) },
@@ -253,7 +253,7 @@ export default function CompareCampaignsPage() {
             <Card variant="elevated">
               <CardContent>
                 <h4 className="mb-4 text-sm font-semibold text-gray-700">
-                  {locale === 'es' ? 'Alcance' : 'Reach'}
+                  {locale === 'es' ? 'Alcance real' : 'Real reach'}
                 </h4>
                 <div className="space-y-3">
                   {comparisonData.map((c, i) => {

@@ -26,11 +26,17 @@ import { prisma } from '@/lib/db'
 export const REPORT_SECTION_IDS = [
   'summary',
   'timeline',
+  /** Body: "Contenidos destacados" (the 6 pieces with most real audience). */
   'content',
   'creators',
   'quality',
   'business',
+  /** "Aprendizajes y próximos pasos" (learnings built server-side). */
+  'learnings',
+  /** Editable "Decisiones acordadas" text (rendered inside learnings when present). */
   'conclusions',
+  /** Final "Anexo · Todos los contenidos" (one compact line per piece). */
+  'annex',
 ] as const
 export type ReportSectionId = (typeof REPORT_SECTION_IDS)[number]
 
@@ -47,6 +53,8 @@ export const REPORT_COLUMN_IDS = [
   'summary.views',
   'summary.engagement',
   'summary.er',
+  /** The separate, informative "Audiencia estimada" line (decision 4A). */
+  'summary.audience_estimated',
 ] as const
 export type ReportColumnId = (typeof REPORT_COLUMN_IDS)[number]
 

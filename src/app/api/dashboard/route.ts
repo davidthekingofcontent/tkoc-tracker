@@ -132,6 +132,9 @@ export async function GET(request: NextRequest) {
     let emvBasic = 0
     let emvExtended = 0
     let views = 0, likes = 0, comments = 0, shares = 0, saves = 0, engagements = 0
+    // 4A: the ER numerator is the interacciones of the SAME publications that carry a
+    // real audience figure (mirrors isRealIdx in campaign-overview.ts), never the total.
+    let engagementsReal = 0
     let mediaDeleted = 0, stories = 0
     let dedupedPosts = 0
     let uniqueMedia: DashMedia[] = []
@@ -180,6 +183,7 @@ export async function GET(request: NextRequest) {
         emvExtended += pm.emvExtended
         if (pm.isDeleted) mediaDeleted++
         audienceResults.push({ value: pm.audience, basis: pm.audienceBasis, estimated: pm.audienceEstimated })
+        if (!pm.audienceEstimated && pm.audience > 0) engagementsReal += engagementsOf(m)
       }
       cost = Math.round(cost * 100) / 100
       emvBasic = Math.round(emvBasic * 100) / 100
@@ -189,7 +193,8 @@ export async function GET(request: NextRequest) {
     }
 
     const audience = sumAudience(audienceResults)
-    const er = engagementRateOf(engagements, audience)
+    // 4A: ER = interacciones of the real-audience publications ÷ real audience
+    const er = engagementRateOf(engagementsReal, audience)
     const media = uniqueMedia.length
 
     // BRAND users never receive fees, cost, CPM or the EMV ratio (decision 9B + portal rule).
@@ -198,7 +203,8 @@ export async function GET(request: NextRequest) {
       membersWithCost = 0
     }
     const emvRatio = isBrand ? null : emvRatioOf(emvExtended, cost)
-    const cpm = isBrand ? null : cpmOf(cost, audience.total)
+    // 4A: CPM on REAL audience only
+    const cpm = isBrand ? null : cpmOf(cost, audience.real)
 
     // Campaigns by status
     const campaignsByStatus = { active: 0, paused: 0, archived: 0 }
@@ -355,7 +361,9 @@ export async function GET(request: NextRequest) {
         // Legacy keys the dashboard page still reads
         totalInvestment: cost,
         totalEMV: { basic: emvBasic, extended: emvExtended },
-        totalReach: audience.total,
+        // 4A: headline reach is REAL audience; the estimate travels apart
+        totalReach: audience.real,
+        totalReachEstimated: audience.estimated,
         engagementRate: er.value,
         avgEngagementRate: er.value ?? 0,
         totalMediaPosts: media,

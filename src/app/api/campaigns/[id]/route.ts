@@ -5,6 +5,7 @@ import { CampaignStatus, CampaignType, Prisma } from '@/generated/prisma/client'
 import { campaignBrandId } from '@/lib/emv-server'
 import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
 import { computeCampaignOverview, stripEconomics } from '@/lib/campaign-overview'
+import { buildCampaignLearnings, toClientLearnings, type CampaignLearnings, type LearningsMediaRow } from '@/lib/campaign-learnings'
 import { loadReportConfig } from '@/lib/report-config'
 import { sanitizeCampaignForBrand } from '@/lib/brand-scope'
 import type { CampaignOverview } from '@/lib/metrics'
@@ -169,7 +170,9 @@ export async function GET(
 
     // The campaign row (with ONE page of media) and the overview (over ALL media,
     // never a page) are independent: load them together with the brand info.
-    const [campaign, fullOverview, brand, brandId] = await Promise.all([
+    // The report also gets the learnings, which need the likes/comments/shares/
+    // saves split and the formats of ALL (non-hidden) media — a minimal select.
+    const [campaign, fullOverview, brand, brandId, learningsRows] = await Promise.all([
       prisma.campaign.findUnique({
         where: { id },
         include: {
@@ -202,6 +205,12 @@ export async function GET(
       // can load that brand's benchmark overrides (Deal Advisor, CPM row, fee badge).
       resolveCampaignBrand(id),
       campaignBrandId(id),
+      reportView
+        ? prisma.media.findMany({
+            where: { campaignId: id, ...(mediaWhere ?? {}) },
+            select: { influencerId: true, likes: true, comments: true, shares: true, saves: true, mediaType: true },
+          })
+        : Promise.resolve<LearningsMediaRow[] | null>(null),
     ])
 
     if (!campaign || !fullOverview) {
@@ -216,6 +225,28 @@ export async function GET(
     // Brands never see fees, cost, CPM, ratio EMV or the basic EMV.
     const isBrand = session.role === 'BRAND'
     const overview = isBrand ? stripEconomics(fullOverview) : fullOverview
+
+    // Learnings (report view only), computed once from the same overview. BOTH
+    // projections travel together: `learnings` is what the reader on screen
+    // gets (the full staff object for the agency) and `learningsClient` the
+    // client-safe projection (toClientLearnings: no grade, Ratio EMV, worst
+    // performer, skip list, budget advice or € / fee / budget wording). The PM
+    // prints the client PDF from the agency view, so the report renders
+    // `learningsClient` while printing. A BRAND session gets the projection
+    // under both keys and never sees the full object.
+    let learnings: CampaignLearnings | undefined
+    let learningsClient: CampaignLearnings | undefined
+    if (reportView && learningsRows) {
+      const full = buildCampaignLearnings({
+        overview: fullOverview,
+        campaignName: campaign.name,
+        objective: campaign.objective,
+        media: learningsRows,
+        locale: 'es',
+      })
+      learningsClient = toClientLearnings(full)
+      learnings = isBrand ? learningsClient : full
+    }
 
     // Per-publication figures for this page of media, from the same computation
     // (matched by id). `null` only if a row was created after the overview ran.
@@ -238,6 +269,7 @@ export async function GET(
       campaign: { ...campaign, media, brand, brandId },
       overview: { ...overview, ...legacyOverviewKeys(overview) },
       timeline: overview.timeline,
+      ...(learnings && learningsClient ? { learnings, learningsClient } : {}),
     }
 
     if (isBrand) {

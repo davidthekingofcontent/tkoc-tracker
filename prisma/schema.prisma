@@ -358,6 +358,13 @@ model Media {
   contentAngle      String?   // enfoque: problema/solución, tutorial, unboxing, testimonio...
   hook              String?   // gancho de los 3 primeros segundos
   productBenefit    String?   // beneficio de producto destacado
+
+  // Estadísticas reales aportadas por el creador (decisión 2026-09-05, punto 3):
+  // 'creator_screenshot' (captura de insights leída por IA y confirmada por la PM),
+  // 'creator_api' (cuenta conectada), 'manual' (tecleado por la PM). Null = solo datos públicos.
+  insightsSource     String?
+  insightsCapturedAt DateTime?
+  insightsBy         String?   // usuario que registró/confirmó
   isPaidPartnership Boolean   @default(false)
   isAdDisclosed     Boolean   @default(false)
   dataSource        String?   // "api", "oauth", "marketplace", "apify"

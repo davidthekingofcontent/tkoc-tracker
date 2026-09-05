@@ -287,6 +287,26 @@ export async function upsertCampaignPost(
     saves: post.saves,
     views: post.views,
   }
+  /**
+   * Public counts may only RAISE what we hold. Apify returns 0 for shares and
+   * saves (not public) and can lag on views, and a PM may have registered the
+   * creator's real statistics (insightsSource) — a refresh must never lower or
+   * wipe them. Reach/impressions are never touched here (Apify has none).
+   */
+  const raiseOnly = async (rowId: string) => {
+    const row = await prisma.media.findUnique({
+      where: { id: rowId },
+      select: { likes: true, comments: true, shares: true, saves: true, views: true },
+    })
+    if (!row) return metrics
+    return {
+      likes: Math.max(row.likes, post.likes || 0),
+      comments: Math.max(row.comments, post.comments || 0),
+      shares: Math.max(row.shares, post.shares || 0),
+      saves: Math.max(row.saves, post.saves || 0),
+      views: Math.max(row.views, post.views || 0),
+    }
+  }
   const freshRuleInputs = {
     ...(post.caption ? { caption: post.caption } : {}),
     ...(post.hashtags?.length ? { hashtags: post.hashtags } : {}),
@@ -297,12 +317,12 @@ export async function upsertCampaignPost(
     const decision = await decideClaim(post.externalId, platform, campaignId)
     switch (decision.kind) {
       case 'refresh':
-        await prisma.media.update({ where: { id: decision.rowId }, data: metrics })
+        await prisma.media.update({ where: { id: decision.rowId }, data: await raiseOnly(decision.rowId) })
         return true
       case 'claim':
         await prisma.media.update({
           where: { id: decision.rowId },
-          data: { ...metrics, ...freshRuleInputs, campaignId },
+          data: { ...(await raiseOnly(decision.rowId)), ...freshRuleInputs, campaignId },
         })
         return true
       case 'create': {
@@ -316,7 +336,7 @@ export async function upsertCampaignPost(
             // 1-3 were just proven by the caller); keep source 'manual'.
             await prisma.media.update({
               where: { id: twin.id },
-              data: { ...metrics, ...(twin.campaignId ? {} : { campaignId }) },
+              data: { ...(await raiseOnly(twin.id)), ...(twin.campaignId ? {} : { campaignId }) },
             })
             return true
           }
@@ -324,11 +344,7 @@ export async function upsertCampaignPost(
             where: { id: twin.id },
             data: {
               // Apify's public counts can be fresher than a stale Meta sync
-              likes: Math.max(twin.likes, post.likes),
-              comments: Math.max(twin.comments, post.comments),
-              shares: post.shares,
-              saves: post.saves,
-              views: post.views,
+              ...(await raiseOnly(twin.id)),
               ...freshRuleInputs,
               ...(post.thumbnailUrl ? { thumbnailUrl: post.thumbnailUrl } : {}),
               ...(post.mediaUrl ? { mediaUrl: post.mediaUrl } : {}),
@@ -403,17 +419,29 @@ export async function upsertCampaignStory(
   story: ScrapedStory
 ): Promise<boolean> {
   if (!story.externalId) return false
+  /**
+   * Story views may only RAISE what we hold (same rule as upsertCampaignPost's
+   * raiseOnly). Apify cannot see other accounts' story view counts — it reports
+   * 0 — and the creator's figure a PM registered from the screenshot
+   * (insightsSource) is the ONLY real audience a story can ever have (reach and
+   * impressions are never scraped): a re-scrape must never lower or wipe it.
+   * Reach/impressions are not touched here.
+   */
+  const raiseViews = async (rowId: string): Promise<{ views: number }> => {
+    const row = await prisma.media.findUnique({ where: { id: rowId }, select: { views: true } })
+    return { views: Math.max(row?.views ?? 0, story.views || 0) }
+  }
   try {
     const decision = await decideClaim(story.externalId, 'INSTAGRAM', campaignId)
     switch (decision.kind) {
       case 'refresh':
-        await prisma.media.update({ where: { id: decision.rowId }, data: { views: story.views } })
+        await prisma.media.update({ where: { id: decision.rowId }, data: await raiseViews(decision.rowId) })
         return true
       case 'claim':
         await prisma.media.update({
           where: { id: decision.rowId },
           data: {
-            views: story.views,
+            ...(await raiseViews(decision.rowId)),
             ...(story.mentions?.length ? { mentions: story.mentions } : {}),
             ...(story.hashtags?.length ? { hashtags: story.hashtags } : {}),
             campaignId,
@@ -434,7 +462,7 @@ export async function upsertCampaignStory(
               permalink: story.permalink ?? undefined,
               ...(story.thumbnailUrl ? { thumbnailUrl: story.thumbnailUrl } : {}),
               ...(story.mediaUrl ? { mediaUrl: story.mediaUrl } : {}),
-              views: Math.max(twin.views, story.views),
+              views: Math.max(twin.views, story.views || 0),
               mentions: Array.from(new Set([...(twin.mentions || []), ...(story.mentions || [])])),
               ...(story.hashtags?.length ? { hashtags: story.hashtags } : {}),
               campaignId,

@@ -4,8 +4,10 @@
  *
  * Decisions (David, 2026-09-05):
  *  3A  Interacciones = likes + comentarios + shares + saves. Everywhere.
- *  4C  Tasa de engagement = Σ interacciones ÷ Σ audiencia (real + estimada) × 100.
- *      The share of the denominator that is estimated is always reported.
+ *  4A  (David 2026-09-05, replaces 4C) Tasa de engagement = Σ interacciones ÷
+ *      Σ audiencia REAL × 100. Estimates never enter the ER, the CPM or the
+ *      target comparison; they are reported apart and only as information.
+ *      Without any real audience the ER is null ("sin dato"), never invented.
  *  5   Audiencia (alcance) per publication, in this order: alcance real →
  *      impresiones reales → vistas reales (any source: Meta API, Apify,
  *      manual). Without real data: stories use the EMV story estimate
@@ -104,13 +106,18 @@ export function audienceOf(
 }
 
 export interface AudienceTotals {
+  /** real + estimated (informative only; never the base of ER/CPM). */
   total: number
   real: number
   estimated: number
   /** Share of the total that is estimated, 0–1. */
   estimatedShare: number
   byBasis: Record<AudienceBasis, number>
-  /** Publications with no audience at all (excluded from the ER base). */
+  /** Publications per basis (counts, not sums) — for the data-quality lines. */
+  countsByBasis: Record<AudienceBasis, number>
+  /** Publications with a REAL audience figure (reach, impressions or views). */
+  realPieces: number
+  /** Publications with no audience at all (excluded from every base). */
   withoutBase: number
 }
 
@@ -118,34 +125,49 @@ export function sumAudience(results: AudienceResult[]): AudienceTotals {
   const byBasis: Record<AudienceBasis, number> = {
     reach: 0, impressions: 0, views: 0, estimated_story: 0, estimated_post: 0, none: 0,
   }
-  let real = 0, estimated = 0, withoutBase = 0
+  const countsByBasis: Record<AudienceBasis, number> = {
+    reach: 0, impressions: 0, views: 0, estimated_story: 0, estimated_post: 0, none: 0,
+  }
+  let real = 0, estimated = 0, withoutBase = 0, realPieces = 0
   for (const r of results) {
     byBasis[r.basis] += r.value
+    countsByBasis[r.basis] += 1
     if (r.basis === 'none' || r.value <= 0) { withoutBase++; continue }
-    if (r.estimated) estimated += r.value; else real += r.value
+    if (r.estimated) estimated += r.value
+    else { real += r.value; realPieces++ }
   }
   const total = real + estimated
-  return { total, real, estimated, estimatedShare: total > 0 ? estimated / total : 0, byBasis, withoutBase }
+  return { total, real, estimated, estimatedShare: total > 0 ? estimated / total : 0, byBasis, countsByBasis, realPieces, withoutBase }
 }
 
 // ============ TASA DE ENGAGEMENT (4C) ============
 
 export interface EngagementRateResult {
-  /** Percentage, 2 decimals; null when there is no audience base at all. */
+  /** Percentage, 2 decimals; null when there is no REAL audience base ("sin dato"). */
   value: number | null
+  /** Interacciones of the publications WITH a real audience figure (same rows as the denominator). */
   numerator: number
+  /** Σ real audience (reach → impressions → views). */
   denominator: number
-  /** Share of the denominator that is estimated, 0–1. */
+  /** Always 0 since 4A: estimates never enter the ER. Kept for old consumers. */
   estimatedShare: number
+  /** Publications behind the figure. */
+  pieces: number
 }
 
-export function engagementRateOf(engagements: number, audience: AudienceTotals): EngagementRateResult {
-  if (audience.total <= 0) return { value: null, numerator: engagements, denominator: 0, estimatedShare: 0 }
+/**
+ * ER over REAL audience only (decision 4A). `engagementsReal` must be the
+ * interacciones of the same publications that carry a real audience figure;
+ * pass the campaign total only when every publication has one.
+ */
+export function engagementRateOf(engagementsReal: number, audience: AudienceTotals): EngagementRateResult {
+  if (audience.real <= 0) return { value: null, numerator: engagementsReal, denominator: 0, estimatedShare: 0, pieces: 0 }
   return {
-    value: Math.round((engagements / audience.total) * 100 * 100) / 100,
-    numerator: engagements,
-    denominator: audience.total,
-    estimatedShare: audience.estimatedShare,
+    value: Math.round((engagementsReal / audience.real) * 100 * 100) / 100,
+    numerator: engagementsReal,
+    denominator: audience.real,
+    estimatedShare: 0,
+    pieces: audience.realPieces,
   }
 }
 
@@ -174,7 +196,7 @@ export function emvRatioOf(emv: number, cost: number): number | null {
   return Math.round((emv / cost) * 100) / 100
 }
 
-/** CPM real de la campaña sobre la audiencia (€ por mil), null sin base. */
+/** CPM real (€ por mil) sobre la audiencia REAL; null sin coste o sin base real. */
 export function cpmOf(cost: number, audience: number): number | null {
   if (!(cost > 0) || !(audience > 0)) return null
   return Math.round((cost / audience) * 1000 * 100) / 100
@@ -235,7 +257,8 @@ export function compareTargets(
     rows.push({ key, target, actual: value, variationPct: Math.round(variation * 1000) / 10, lowerIsBetter, verdict })
   }
   push('views', targets.targetViews, actual.views)
-  push('reach', targets.targetReach, actual.audience)
+  // Reach target is judged on REAL audience only (4A); without real data → no_data
+  push('reach', targets.targetReach, actual.audience > 0 ? actual.audience : null)
   push('engagement', targets.targetEngagement, actual.engagements)
   push('er', targets.targetER, actual.er)
   push('cpm', targets.targetCpmMax, actual.cpm, true)

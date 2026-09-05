@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { resolveBrandScope, sanitizeCampaignForBrand } from '@/lib/brand-scope'
 import { computeCampaignOverview, stripEconomics } from '@/lib/campaign-overview'
+import { buildCampaignLearnings, toClientLearnings } from '@/lib/campaign-learnings'
 import { loadReportConfig, reportConfigForBrand } from '@/lib/report-config'
 import type { CampaignOverview } from '@/lib/metrics'
 
@@ -208,7 +209,14 @@ export async function GET(
     const hiddenMediaIds = reportConfig.hiddenMediaIds
     const hiddenInfluencerIds = reportConfig.hiddenInfluencerIds
 
-    const [campaign, fullOverview, brand] = await Promise.all([
+    const learningsMediaWhere = (hiddenMediaIds.length > 0 || hiddenInfluencerIds.length > 0)
+      ? {
+          ...(hiddenMediaIds.length > 0 ? { id: { notIn: hiddenMediaIds } } : {}),
+          ...(hiddenInfluencerIds.length > 0 ? { influencerId: { notIn: hiddenInfluencerIds } } : {}),
+        }
+      : {}
+
+    const [campaign, fullOverview, brand, learningsRows] = await Promise.all([
       prisma.campaign.findUnique({
         where: { id },
         select: {
@@ -290,6 +298,9 @@ export async function GET(
               postedAt: true,
               isDeleted: true,
               deletedAt: true,
+              // Provenance of creator-provided statistics (badge "Estadísticas del creador"); never insightsBy (staff email)
+              insightsSource: true,
+              insightsCapturedAt: true,
               influencer: {
                 select: {
                   id: true,
@@ -306,6 +317,11 @@ export async function GET(
       computeCampaignOverview(id, { exclude: { mediaIds: hiddenMediaIds, influencerIds: hiddenInfluencerIds } }),
       // Brand info for the report cover: { name, logo } | null
       resolveCampaignBrand(id),
+      // Minimal rows for the learnings (likes/comments/shares/saves split + formats), same exclusions.
+      prisma.media.findMany({
+        where: { campaignId: id, ...learningsMediaWhere },
+        select: { influencerId: true, likes: true, comments: true, shares: true, saves: true, mediaType: true },
+      }),
     ])
 
     if (!campaign || !fullOverview) {
@@ -314,12 +330,23 @@ export async function GET(
 
     const overview = toPortalOverview(fullOverview)
 
+    // Client-safe learnings from the same overview: no grade, no Ratio EMV, no
+    // worst performer, no skip list, no budget advice, no € / CPM wording.
+    const learnings = toClientLearnings(buildCampaignLearnings({
+      overview: fullOverview,
+      campaignName: campaign.name,
+      objective: campaign.objective,
+      media: learningsRows,
+      locale: 'es',
+    }))
+
     // Defense in depth: the selects above are already narrow and the overview
     // projection drops every economic key, but strip any confidential key that
     // might sneak in if a select widens later.
     return NextResponse.json(sanitizeCampaignForBrand({
       campaign: { ...campaign, brand },
       overview,
+      learnings,
       // Client-safe projection of the agency's report configuration (texts, hidden sections/columns)
       reportConfig: reportConfigForBrand(reportConfig),
     }))

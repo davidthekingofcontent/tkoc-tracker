@@ -10,11 +10,14 @@
  * 5. CPM efficiency
  *
  * Definitions (src/lib/metrics.ts): interacciones = likes + comentarios +
- * shares + saves (3A); the ER and the CPM are computed over the audience of the
- * creator's publications as the campaign overview defines it — alcance →
- * impresiones → vistas → estimaciones etiquetadas (4C / 5) — so the radar can
- * never disagree with the campaign page. Views are the base only when a
- * campaign carries no audience at all.
+ * shares + saves (3A); the ER and the CPM are computed over the REAL audience
+ * of the creator's publications as the campaign overview defines it — alcance
+ * real → impresiones reales → vistas reales (decision 4A / 5). Estimated
+ * audiences NEVER enter the ER or the CPM: the caller feeds
+ * perInfluencer.audience.real and the interacciones of those same real-audience
+ * publications only, so the radar can never disagree with the campaign page.
+ * Views are the base only when a campaign carries no real audience at all
+ * (in practice never: real views are themselves a rung of the real audience).
  *
  * Output: REPEAT (green) / CONSIDER (yellow) / SKIP (red) + reasoning
  */
@@ -34,14 +37,19 @@ export interface RepeatRadarInput {
     campaignId: string
     campaignName: string
     agreedFee: number
+    /**
+     * likes / comments / shares / saves of the creator's publications in this
+     * campaign that carry a REAL audience figure (4A) — the same rows as
+     * `audience`, so Σ of the four equals perInfluencer.er.numerator. Rows with
+     * an estimated or no audience are left out by the caller.
+     */
     totalLikes: number
     totalComments: number
     totalViews: number
     /**
-     * Audience of the creator's publications in this campaign as the overview
-     * defines it (perInfluencer.audience.total: reach → impressions → views →
-     * labelled estimates). Base of the ER and the CPM; views only fall back in
-     * when this is 0.
+     * REAL audience of the creator's publications in this campaign as the
+     * overview defines it (perInfluencer.audience.real: reach → impressions →
+     * views; estimates excluded, decision 4A). Base of the ER and the CPM.
      */
     audience: number
     totalShares: number
@@ -104,8 +112,8 @@ export function analyzeRepeatWorthiness(input: RepeatRadarInput): RepeatRadarRes
   const deliveredCampaigns = campaigns.filter(c => c.contentDelivered || c.status === 'COMPLETED' || c.status === 'POSTED').length
   const deliveryRate = deliveredCampaigns / totalCampaigns
 
-  // Calculate key ratios — ER and CPM over the audience (decisions 4C / 5), the
-  // same base as the campaign page; views only when no campaign has an audience.
+  // Calculate key ratios — ER and CPM over the REAL audience (decision 4A), the
+  // same base as the campaign page; views only when no campaign has a real audience.
   const roiRatio = totalSpent > 0 ? totalEMV / totalSpent : 0
   const base = totalAudience > 0 ? totalAudience : totalViews
   const avgCPM = base > 0 ? (totalSpent / base) * 1000 : 0

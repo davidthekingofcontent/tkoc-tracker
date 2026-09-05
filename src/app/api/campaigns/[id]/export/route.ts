@@ -12,7 +12,7 @@
  *
  * Definitions (src/lib/metrics.ts): interacciones = likes + comentarios +
  * shares + saves; audiencia = alcance real → impresiones → vistas → estimación
- * etiquetada; ER = interacciones ÷ audiencia; coste = fee acordado o coste;
+ * etiquetada e informativa; ER y CPM SOLO sobre audiencia real (4A); coste = fee acordado o coste;
  * "Ratio EMV" = EMV ÷ coste. Money is EUR. Dates are Europe/Madrid.
  *
  * CSV dialect — Excel es-ES (decision for #28). Every label in the file is
@@ -216,7 +216,7 @@ function buildCsv(c: LoadedCampaign, o: CampaignOverview): string {
   L.push(row('Tasa de engagement (%)', n2(t.er.value)))
   L.push(row('Coste total (EUR)', n2(t.cost)))
   L.push(row('Miembros con coste', t.membersWithCost))
-  L.push(row('CPM real sobre audiencia (EUR)', n2(t.cpm)))
+  L.push(row('CPM real sobre audiencia real (EUR)', n2(t.cpm)))
   L.push(row('EMV (EUR)', n2(t.emvExtended)))
   L.push(row('EMV solo alcance (EUR)', n2(t.emvBasic)))
   L.push(row('Ratio EMV (EMV / coste)', n2(t.emvRatio)))
@@ -282,8 +282,12 @@ function buildCsv(c: LoadedCampaign, o: CampaignOverview): string {
   L.push('')
   L.push('DEFINICIONES')
   L.push(row('Interacciones', 'likes + comentarios + shares + saves'))
-  L.push(row('Audiencia', 'alcance real; si no hay: impresiones reales; si no hay: vistas reales; si no hay datos: estimación etiquetada (stories por tier y secuencia; publicaciones por tier de seguidores)'))
-  L.push(row('Tasa de engagement', 'interacciones ÷ audiencia (real + estimada) × 100'))
+  L.push(row('Audiencia real', 'por publicación: alcance real; si no hay, impresiones reales; si no hay, vistas reales (cualquier fuente: API de Meta, Apify, estadísticas del creador registradas por la PM, manual). Es la base de la tasa de engagement, del CPM real y del objetivo de alcance'))
+  L.push(row('Audiencia estimada', 'solo informativa y siempre etiquetada: stories sin vistas (seguidores × % por tier y secuencia) y publicaciones sin alcance, impresiones ni vistas (seguidores × tasa por tier). Nunca entra en la tasa de engagement, el CPM ni los objetivos'))
+  L.push(row('Audiencia total', 'audiencia real + audiencia estimada (cifra informativa; su % estimado se indica aparte)'))
+  L.push(row('Base de audiencia', 'alcance real / impresiones reales / vistas reales = dato real; estimado (story) / estimado (post) = informativo; sin base = sin dato ni seguidores'))
+  L.push(row('Tasa de engagement', 'interacciones de las publicaciones con audiencia real ÷ audiencia real × 100; celda vacía = sin dato real (ninguna publicación con alcance, impresiones o vistas reales), nunca 0'))
+  L.push(row('CPM real', 'coste ÷ audiencia real × 1000; celda vacía = sin coste o sin dato real'))
   L.push(row('Coste', 'fee acordado; si no hay fee, coste'))
   L.push(row('EMV', 'valor mediático equivalente estimado (no representa ventas ni retorno)'))
   L.push(row('Ratio EMV', 'EMV ÷ coste'))
@@ -329,8 +333,12 @@ function buildJson(c: LoadedCampaign, o: CampaignOverview) {
     })),
     definitions: {
       engagements: 'likes + comments + shares + saves',
-      audience: 'real reach → real impressions → real views → labelled estimate (stories: tier rate × sequence decay; posts: follower tier rate)',
-      engagementRate: 'engagements ÷ audience (real + estimated) × 100',
+      audienceReal: 'per publication: real reach → real impressions → real views (any source: Meta API, Apify, creator insights recorded by the PM, manual); the base of the engagement rate, the real CPM and the reach target',
+      audienceEstimated: 'informative only, always labelled: stories without views (followers × tier rate × sequence decay) and publications without reach, impressions or views (followers × tier rate); never enters the engagement rate, the CPM or the targets',
+      audience: 'total = real + estimated (informative; estimatedShare is the estimated part, 0–1)',
+      audienceBasis: 'reach / impressions / views = real; estimated_story / estimated_post = informative estimate; none = no data and no followers',
+      engagementRate: 'engagements of the publications with a real audience ÷ real audience × 100; null = no real data (never 0)',
+      cpm: 'cost ÷ real audience × 1000; null without cost or without real data',
       cost: 'agreed fee, else cost',
       emv: 'estimated equivalent media value; not sales nor return',
       emvRatio: 'EMV ÷ cost',

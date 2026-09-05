@@ -808,13 +808,13 @@ function AdminDashboard({ showEconomics }: { showEconomics: boolean }) {
 
   // Audiencia (decision 5): alcance real → impresiones → vistas → estimación etiquetada.
   // The split "real · estimado" always travels with the figure.
+  // 4A: the headline is REAL audience only; the estimate is informative and travels apart.
   const audience = stats?.audience
-  const audienceSubtitle = audience && audience.total > 0
+  const audienceSubtitle = audience && (audience.real > 0 || audience.estimated > 0)
     ? audience.estimated > 0
-      ? t.campaignReport.audienceMixSub
-          .replace('{real}', formatNumber(audience.real, { locale }))
-          .replace('{estimated}', formatNumber(audience.estimated, { locale }))
-          .replace('{pct} %', formatPercent(audience.estimatedShare * 100, { digits: 0, locale }))
+      ? (locale === 'es'
+          ? `estimado aparte: ${formatNumber(audience.estimated, { locale })} (informativo)`
+          : `estimated apart: ${formatNumber(audience.estimated, { locale })} (informative)`)
       : t.campaignReport.audienceRealSub
     : undefined
 
@@ -895,8 +895,8 @@ function AdminDashboard({ showEconomics }: { showEconomics: boolean }) {
       {/* KPI Cards Row 2 — Performance metrics */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         <KPICard
-          label={locale === 'es' ? 'Alcance' : 'Reach'}
-          value={audience?.total ?? stats?.totalReach ?? 0}
+          label={locale === 'es' ? 'Alcance real' : 'Real reach'}
+          value={audience?.real ?? stats?.totalReach ?? 0}
           format="compact"
           icon={<Globe className="h-5 w-5" />}
           iconBg="bg-teal-100 text-teal-600 dark:bg-teal-900/30"

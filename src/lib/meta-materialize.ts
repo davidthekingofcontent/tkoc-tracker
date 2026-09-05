@@ -182,18 +182,25 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
       }
 
       if (existing) {
+        // Meta returns 0/null reach, impressions, shares and saves for OTHER
+        // accounts' tagged media. Never let those zeros overwrite a value we
+        // already hold — in particular the statistics a PM registered from the
+        // creator's insights screenshot (insightsSource). Only ever raise.
         await prisma.media.update({
           where: { id: existing.id },
           data: {
-            ...metaMetrics,
+            source: metaMetrics.source,
+            dataSource: metaMetrics.dataSource,
             mentions: Array.from(new Set([...(existing.mentions || []), ...mentions])),
             // Manual rows keep their own bookkeeping; only enrich metrics.
             ...(existing.source === 'manual' ? { source: 'manual' } : {}),
             campaignId,
-            // Keep the larger like/comment counts (Apify sometimes sees more
-            // recent numbers than a stale Meta sync)
             likes: Math.max(existing.likes, metaMetrics.likes),
             comments: Math.max(existing.comments, metaMetrics.comments),
+            shares: Math.max(existing.shares, metaMetrics.shares),
+            saves: Math.max(existing.saves, metaMetrics.saves),
+            reach: Math.max(existing.reach, metaMetrics.reach),
+            impressions: Math.max(existing.impressions, metaMetrics.impressions),
           },
         })
         stats.updated++

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
@@ -105,6 +105,8 @@ import {
   Receipt,
   Tag,
   MousePointerClick,
+  Sparkles,
+  ImagePlus,
 } from 'lucide-react'
 import { parseCreatorHandle } from '@/lib/handles'
 
@@ -208,6 +210,10 @@ interface CampaignMedia {
   contentAngle?: string | null
   hook?: string | null
   productBenefit?: string | null
+  // Real insights logged for the piece (decision 2026-09-05, point 3): 'creator_screenshot' | 'creator_api' | 'manual'; null = public data only.
+  insightsSource?: string | null
+  insightsCapturedAt?: string | null
+  insightsBy?: string | null
   influencer: {
     id: string
     username: string
@@ -405,6 +411,91 @@ const TAG_TEXT_MAX = 120
 
 type MediaTagsForm = { contentAngle: string; hook: string; productBenefit: string }
 const EMPTY_TAGS_FORM: MediaTagsForm = { contentAngle: '', hook: '', productBenefit: '' }
+
+// ---- "Registrar estadísticas" (decision 2026-09-05, point 3) ----
+// The PM uploads the creator's insights screenshot, the AI proposes the figures,
+// the PM confirms; PATCH stores them as REAL data with provenance.
+
+/** Editable figures of the insights modal, as typed ('' = not provided → untouched). */
+type InsightsFormKey = 'reach' | 'impressions' | 'views' | 'likes' | 'comments' | 'shares' | 'saves'
+type InsightsForm = Record<InsightsFormKey, string>
+const INSIGHTS_FORM_KEYS: InsightsFormKey[] = ['reach', 'impressions', 'views', 'likes', 'comments', 'shares', 'saves']
+/** Stories lead with views (their "Visualizaciones"); feed pieces lead with reach. */
+const INSIGHTS_STORY_KEYS: InsightsFormKey[] = ['views', 'reach', 'impressions', 'likes', 'comments', 'shares', 'saves']
+const EMPTY_INSIGHTS_FORM: InsightsForm = { reach: '', impressions: '', views: '', likes: '', comments: '', shares: '', saves: '' }
+/** Same limits as the API (src/lib/insights-extract.ts). */
+const INSIGHTS_IMAGE_MAX_BYTES = 6 * 1024 * 1024
+const INSIGHTS_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+/** Longest edge sent to the model: enough to read small labels, small enough to upload fast. */
+const INSIGHTS_IMAGE_MAX_EDGE = 1568
+/** Below this size an image that already fits the edge limit is sent untouched (no re-encoding). */
+const INSIGHTS_IMAGE_KEEP_BYTES = 1.5 * 1024 * 1024
+const INSIGHTS_INPUT_CLASS = 'w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm text-gray-900 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500'
+const INSIGHTS_LABEL_CLASS = 'mb-0.5 block text-[10px] uppercase tracking-wider text-gray-400'
+
+interface InsightsImage {
+  /** For the preview. */
+  dataUrl: string
+  /** Payload sent to the API (no data-URL prefix). */
+  base64: string
+  mimeType: string
+  name: string
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
+}
+
+/**
+ * Prepares a screenshot for the API: kept as is when small enough, otherwise
+ * redrawn at ≤ 1568 px on the longest edge as JPEG (fast upload, well under the
+ * model's image limits). Any canvas problem falls back to the original file.
+ * (`document.createElement('img')` because `Image` here is the lucide icon.)
+ */
+async function prepareInsightsImage(file: File): Promise<InsightsImage> {
+  const originalUrl = await readFileAsDataUrl(file)
+  const original: InsightsImage = { dataUrl: originalUrl, base64: originalUrl.split(',')[1] || '', mimeType: file.type, name: file.name }
+  const img = document.createElement('img')
+  const loaded = await new Promise<boolean>(resolve => {
+    img.onload = () => resolve(true)
+    img.onerror = () => resolve(false)
+    img.src = originalUrl
+  })
+  if (!loaded) return original
+  const width = img.naturalWidth
+  const height = img.naturalHeight
+  if (file.size <= INSIGHTS_IMAGE_KEEP_BYTES && Math.max(width, height) <= INSIGHTS_IMAGE_MAX_EDGE) return original
+  try {
+    const scale = Math.min(1, INSIGHTS_IMAGE_MAX_EDGE / Math.max(width, height))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(width * scale))
+    canvas.height = Math.max(1, Math.round(height * scale))
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return original
+    // White behind transparent PNGs so dark-mode screenshots stay legible as JPEG
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
+    const base64 = dataUrl.split(',')[1] || ''
+    return base64 ? { dataUrl, base64, mimeType: 'image/jpeg', name: file.name } : original
+  } catch {
+    return original
+  }
+}
+
+/** "05/09" — day/month (Europe/Madrid) of the moment the insights were logged; '' when unknown. */
+function formatInsightsDate(value: string | null | undefined, locale: string): string {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleDateString(locale === 'es' ? 'es-ES' : 'en-GB', { day: '2-digit', month: '2-digit', timeZone: 'Europe/Madrid' })
+}
 
 /**
  * GET /api/campaigns/[id] → `overview`: the single server-side computation
@@ -784,6 +875,23 @@ export default function CampaignDetailPage() {
   const [tagsDraft, setTagsDraft] = useState<MediaTagsForm>(EMPTY_TAGS_FORM)
   const [savingTagsFor, setSavingTagsFor] = useState<string | null>(null)
 
+  // "Registrar estadísticas" (decision 2026-09-05, point 3): the publication whose modal is open,
+  // its screenshot, the editable figures, the AI proposal metadata and the save/extract states
+  const [insightsFor, setInsightsFor] = useState<CampaignMedia | null>(null)
+  const [insightsForm, setInsightsForm] = useState<InsightsForm>(EMPTY_INSIGHTS_FORM)
+  // Snapshot of the prefilled figures + the keys the AI filled: only what differs from the snapshot
+  // (or came from the proposal) travels in the PATCH, so a stale page value never overwrites a fresher one
+  const [insightsInitial, setInsightsInitial] = useState<InsightsForm>(EMPTY_INSIGHTS_FORM)
+  const [insightsAiFilled, setInsightsAiFilled] = useState<Set<InsightsFormKey>>(() => new Set())
+  const [insightsImage, setInsightsImage] = useState<InsightsImage | null>(null)
+  const [insightsExtracting, setInsightsExtracting] = useState(false)
+  const [insightsProposal, setInsightsProposal] = useState<{ confidence: number; notes: string | null; storyReplies: number | null; linkTaps: number | null } | null>(null)
+  const [insightsSaving, setInsightsSaving] = useState(false)
+  const [insightsError, setInsightsError] = useState<string | null>(null)
+  const [insightsOverwrite, setInsightsOverwrite] = useState(false)
+  const [insightsDragOver, setInsightsDragOver] = useState(false)
+  const insightsFileInputRef = useRef<HTMLInputElement | null>(null)
+
   // Edit campaign modal
   const [showEditModal, setShowEditModal] = useState(false)
   const [editForm, setEditForm] = useState({
@@ -918,6 +1026,21 @@ export default function CampaignDetailPage() {
     const timer = setTimeout(() => setToast(null), 8000)
     return () => clearTimeout(timer)
   }, [toast])
+
+  // "Registrar estadísticas": while the modal is open, an image pasted anywhere (Ctrl/Cmd+V) becomes the screenshot
+  useEffect(() => {
+    if (!insightsFor) return
+    const onPaste = (e: ClipboardEvent) => {
+      const items = Array.from(e.clipboardData?.items || [])
+      const item = items.find(it => it.kind === 'file' && it.type.startsWith('image/'))
+      const file = item?.getAsFile()
+      if (!file) return
+      e.preventDefault()
+      void handleInsightsFile(file)
+    }
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [insightsFor])
 
   async function handleBulkCsvChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -1403,6 +1526,217 @@ export default function CampaignDetailPage() {
       setToast({ type: 'error', message: failMessage })
     } finally {
       setSavingTagsFor(null)
+    }
+  }
+
+  // ---- "Registrar estadísticas" (decision 2026-09-05, point 3) ----
+
+  /** Label of one insights field; stories call their views "Visualizaciones". */
+  function insightsFieldLabel(key: InsightsFormKey, m: CampaignMedia | null): string {
+    const isStory = m?.mediaType === 'STORY'
+    const labels: Record<InsightsFormKey, string> = {
+      reach: t.campaignDetail.insightsFieldReach,
+      impressions: t.campaignDetail.insightsFieldImpressions,
+      views: isStory ? t.campaignDetail.insightsFieldStoryViews : t.campaignDetail.insightsFieldViews,
+      likes: t.campaignDetail.insightsFieldLikes,
+      comments: t.campaignDetail.insightsFieldComments,
+      shares: t.campaignDetail.insightsFieldShares,
+      saves: t.campaignDetail.insightsFieldSaves,
+    }
+    return labels[key]
+  }
+
+  /** Opens the modal for one publication, preloaded with what is stored (0 shows as empty). */
+  function openInsightsModal(m: CampaignMedia) {
+    const asText = (v: number | null | undefined) => (v && v > 0 ? String(v) : '')
+    const prefilled: InsightsForm = {
+      reach: asText(m.reach),
+      impressions: asText(m.impressions),
+      views: asText(m.views),
+      likes: asText(m.likes),
+      comments: asText(m.comments),
+      shares: asText(m.shares),
+      saves: asText(m.saves),
+    }
+    setInsightsForm(prefilled)
+    setInsightsInitial(prefilled)
+    setInsightsAiFilled(new Set())
+    setInsightsImage(null)
+    setInsightsProposal(null)
+    setInsightsError(null)
+    setInsightsOverwrite(false)
+    setInsightsDragOver(false)
+    setInsightsFor(m)
+  }
+
+  function closeInsightsModal() {
+    if (insightsSaving || insightsExtracting) return
+    setInsightsFor(null)
+    setInsightsImage(null)
+    setInsightsProposal(null)
+    setInsightsError(null)
+  }
+
+  /** Validates and prepares a dropped / chosen / pasted screenshot (type + size, then downscale). */
+  async function handleInsightsFile(file: File) {
+    setInsightsError(null)
+    if (!INSIGHTS_IMAGE_TYPES.includes(file.type)) {
+      setInsightsError(t.campaignDetail.insightsFileInvalidType)
+      return
+    }
+    if (file.size > INSIGHTS_IMAGE_MAX_BYTES) {
+      setInsightsError(t.campaignDetail.insightsFileTooLarge)
+      return
+    }
+    try {
+      const prepared = await prepareInsightsImage(file)
+      if (!prepared.base64) throw new Error('empty image')
+      setInsightsImage(prepared)
+      setInsightsProposal(null)
+    } catch {
+      setInsightsError(t.campaignDetail.insightsFileInvalidType)
+    }
+  }
+
+  /** "Leer con IA": asks the server for a proposal and fills ONLY the figures it read; nothing is saved yet. */
+  async function handleExtractInsights() {
+    if (!insightsFor || !insightsImage || insightsExtracting) return
+    setInsightsExtracting(true)
+    setInsightsError(null)
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/media/${insightsFor.id}/insights`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: insightsImage.base64, mimeType: insightsImage.mimeType, locale }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.proposal) {
+        setInsightsError(data.error || t.campaignDetail.insightsExtractError)
+        return
+      }
+      const p = data.proposal as Record<string, unknown>
+      const count = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : null)
+      const filled: Partial<InsightsForm> = {}
+      for (const key of INSIGHTS_FORM_KEYS) {
+        const v = count(p[key])
+        if (v !== null) filled[key] = String(v)
+      }
+      const filledKeys = Object.keys(filled) as InsightsFormKey[]
+      setInsightsForm(prev => ({ ...prev, ...filled }))
+      // The proposal's figures count as provided even when they match what is stored
+      setInsightsAiFilled(prev => {
+        const next = new Set(prev)
+        for (const key of filledKeys) next.add(key)
+        return next
+      })
+      setInsightsProposal({
+        confidence: typeof p.confidence === 'number' && Number.isFinite(p.confidence) ? Math.min(1, Math.max(0, p.confidence)) : 0,
+        notes: typeof p.notes === 'string' && p.notes.trim() ? p.notes.trim() : null,
+        storyReplies: count(p.storyReplies),
+        linkTaps: count(p.linkTaps),
+      })
+    } catch {
+      setInsightsError(t.campaignDetail.insightsExtractError)
+    } finally {
+      setInsightsExtracting(false)
+    }
+  }
+
+  /**
+   * Re-reads the overview (the single server computation) after real data changed, WITHOUT
+   * replacing the loaded media pages. Nothing is recomputed on the client.
+   */
+  async function refreshOverview() {
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}`)
+      if (!res.ok) return
+      const data = await res.json()
+      if (data.overview) setOverview(data.overview)
+      if (Array.isArray(data.timeline)) setTimeline(data.timeline)
+    } catch {
+      // The card is already right (optimistic); the totals refresh on the next load.
+    }
+  }
+
+  /**
+   * Guardar: PATCH with ONLY the figures the PM changed or the AI proposal filled. Prefilled stored
+   * values that were not touched are compared with the snapshot taken when the modal opened and are
+   * never resent, so a stale page value cannot overwrite a fresher synced one on the server.
+   * Optimistic on the card; on failure the stored values come back.
+   */
+  async function handleSaveInsights() {
+    const m = insightsFor
+    if (!m || !canEdit || insightsSaving) return
+    const values: Partial<Record<InsightsFormKey, number>> = {}
+    let typed = 0
+    for (const key of INSIGHTS_FORM_KEYS) {
+      const raw = insightsForm[key].trim()
+      if (!raw) continue
+      typed++
+      if (!/^\d+$/.test(raw)) {
+        setInsightsError(t.campaignDetail.insightsInvalid)
+        return
+      }
+      // Untouched prefilled figure (same as when the modal opened and not read by the AI): not sent
+      if (raw === insightsInitial[key].trim() && !insightsAiFilled.has(key)) continue
+      values[key] = Number(raw)
+    }
+    if (Object.keys(values).length === 0) {
+      setInsightsError(typed > 0 ? t.campaignDetail.insightsNothingChanged : t.campaignDetail.insightsNothingToSave)
+      return
+    }
+
+    const source = insightsImage ? 'creator_screenshot' : 'manual'
+    const previous: Partial<CampaignMedia> = {
+      reach: m.reach, impressions: m.impressions, views: m.views, likes: m.likes,
+      comments: m.comments, shares: m.shares, saves: m.saves,
+      insightsSource: m.insightsSource ?? null, insightsCapturedAt: m.insightsCapturedAt ?? null, insightsBy: m.insightsBy ?? null,
+    }
+    const apply = (patch: Partial<CampaignMedia>) =>
+      setCampaign(prev => prev
+        ? { ...prev, media: prev.media.map(x => (x.id === m.id ? { ...x, ...patch } : x)) }
+        : prev)
+
+    setInsightsSaving(true)
+    setInsightsError(null)
+    apply({ ...values, insightsSource: source, insightsCapturedAt: new Date().toISOString() })
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/media/${m.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ insights: { ...values, source, overwrite: insightsOverwrite } }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        apply(previous)
+        setInsightsError(data.error || t.campaignDetail.insightsSaveError)
+        return
+      }
+      const saved = data.media as Partial<CampaignMedia> | undefined
+      if (saved) {
+        apply({
+          reach: saved.reach ?? null, impressions: saved.impressions ?? null, views: saved.views ?? null,
+          likes: saved.likes ?? null, comments: saved.comments ?? null, shares: saved.shares ?? null, saves: saved.saves ?? null,
+          insightsSource: saved.insightsSource ?? source, insightsCapturedAt: saved.insightsCapturedAt ?? null, insightsBy: saved.insightsBy ?? null,
+        })
+      }
+      const kept: string[] = Array.isArray(data.keptHigherPublic) ? data.keptHigherPublic : []
+      setToast({
+        type: 'success',
+        message: kept.length > 0
+          ? t.campaignDetail.insightsSavedKept.replace('{fields}', kept.map(k => insightsFieldLabel(k as InsightsFormKey, m)).join(', '))
+          : t.campaignDetail.insightsSaved,
+      })
+      setInsightsFor(null)
+      setInsightsImage(null)
+      setInsightsProposal(null)
+      // Real audience changed → ER / CPM / targets change: re-read the single computation.
+      void refreshOverview()
+    } catch {
+      apply(previous)
+      setInsightsError(t.campaignDetail.insightsSaveError)
+    } finally {
+      setInsightsSaving(false)
     }
   }
 
@@ -2600,6 +2934,61 @@ export default function CampaignDetailPage() {
     )
   }
 
+  /**
+   * Ejecutar → Media / Stories: the REAL insights of one piece (decision 2026-09-05, point 3).
+   * Logged → badge with source + date ("Estadísticas del creador ✓ 05/09") and the real
+   * reach / impressions (stories: views); editors also get "Registrar estadísticas".
+   * Brand users see the badge and the figures, never the button. Nothing to show → null.
+   */
+  function renderMediaInsights(m: CampaignMedia, opts: { compact?: boolean } = {}) {
+    const logged = !!m.insightsSource
+    const isStory = m.mediaType === 'STORY'
+    const figures: Array<{ label: string; value: number }> = []
+    if ((m.reach || 0) > 0) figures.push({ label: t.campaignDetail.insightsRealReach, value: m.reach as number })
+    if ((m.impressions || 0) > 0) figures.push({ label: t.campaignDetail.insightsRealImpressions, value: m.impressions as number })
+    if (isStory && (m.views || 0) > 0) figures.push({ label: t.campaignDetail.insightsRealViews, value: m.views as number })
+    if (!logged && !canEdit && figures.length === 0) return null
+
+    const badgeTemplate = m.insightsSource === 'manual'
+      ? t.campaignDetail.insightsBadgeManual
+      : m.insightsSource === 'creator_api'
+        ? t.campaignDetail.insightsBadgeApi
+        : t.campaignDetail.insightsBadgeCreator
+    const badge = badgeTemplate.replace('{date}', formatInsightsDate(m.insightsCapturedAt, locale)).trim()
+
+    return (
+      <div className={opts.compact ? 'mt-2 space-y-1' : 'border-t border-gray-100 dark:border-gray-800 px-4 py-2.5 space-y-1.5'}>
+        {logged && (
+          <span
+            className="inline-flex max-w-full items-center gap-1 truncate rounded-full bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300"
+            title={m.insightsBy ? t.campaignDetail.insightsCapturedBy.replace('{by}', m.insightsBy) : undefined}
+          >
+            {badge}
+          </span>
+        )}
+        {figures.length > 0 && (
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-600 dark:text-gray-300">
+            {figures.map(f => (
+              <span key={f.label}>
+                {f.label}: <span className="font-semibold text-gray-900 dark:text-white">{formatNumber(f.value, { locale })}</span>
+              </span>
+            ))}
+          </div>
+        )}
+        {canEdit && (
+          <button
+            type="button"
+            onClick={() => openInsightsModal(m)}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-purple-600 hover:underline"
+          >
+            <ImagePlus className="h-3 w-3" />
+            {logged ? t.campaignDetail.insightsEditButton : t.campaignDetail.insightsButton}
+          </button>
+        )}
+      </div>
+    )
+  }
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -3117,7 +3506,7 @@ export default function CampaignDetailPage() {
                 </div>
               </div>
 
-              {/* Views · ER (with its estimated base) · real impressions · creators who posted — same overview */}
+              {/* Views · ER (real audience only, 4A) · real impressions · creators who posted — same overview */}
               {totals && (
                 <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                   <StatCard
@@ -3131,16 +3520,17 @@ export default function CampaignDetailPage() {
                       <span className="flex flex-col">
                         <span className="flex items-center gap-1">
                           {t.campaignDetail.engagementRate}
-                          <InfoTooltip text={`${t.campaignDetail.erHint} · ${formatPercent(totals.er.estimatedShare * 100, { locale, digits: 0 })} ${t.campaignDetail.erEstimatedBase}`} />
+                          <InfoTooltip text={t.campaignDetail.erHint} />
                         </span>
-                        {totals.er.value !== null && (
-                          <span className="text-xs text-gray-400 tabular-nums">
-                            {formatPercent(totals.er.estimatedShare * 100, { locale, digits: 0 })} {t.campaignDetail.erEstimatedBase}
-                          </span>
-                        )}
+                        {/* 4A: the base is the publications with a real audience figure; estimates never enter */}
+                        <span className="text-xs text-gray-400 tabular-nums">
+                          {totals.er.value !== null
+                            ? t.campaignDetail.erRealBaseSub.replace('{n}', formatNumber(totals.er.pieces, { locale }))
+                            : t.campaignDetail.erNoRealHint}
+                        </span>
                       </span>
                     )}
-                    value={formatPercent(totals.er.value, { locale, digits: 2 })}
+                    value={totals.er.value !== null ? formatPercent(totals.er.value, { locale, digits: 2 }) : t.campaignDetail.erNoRealData}
                   />
                   <StatCard
                     icon={<TrendingUp className="h-5 w-5" />}
@@ -4067,6 +4457,8 @@ export default function CampaignDetailPage() {
                   </a>
                   {/* Content tags (decision 15A): chips when filled, collapsible editor for the PM */}
                   {renderMediaTags(m)}
+                  {/* Real insights of the piece (decision 2026-09-05, point 3): badge + real reach/impressions, "Registrar estadísticas" for the PM */}
+                  {renderMediaInsights(m)}
                   </div>
                 ))}
               </div>
@@ -4213,6 +4605,8 @@ export default function CampaignDetailPage() {
                               )}
                             </div>
                           </div>
+                          {/* Real insights of the story (views / reach) — same modal as feed pieces */}
+                          {renderMediaInsights(story, { compact: true })}
                         </div>
                       </div>
                     </div>
@@ -6320,6 +6714,148 @@ export default function CampaignDetailPage() {
         </ModalFooter>
       </Modal>
 
+      {/* "Registrar estadísticas" (decision 2026-09-05, point 3): screenshot → AI proposal → the PM confirms → stored as REAL data with provenance */}
+      <Modal open={!!insightsFor} onClose={closeInsightsModal} className="max-w-2xl">
+        <ModalHeader onClose={closeInsightsModal}>{t.campaignDetail.insightsModalTitle}</ModalHeader>
+        {insightsFor && (
+          <ModalBody className="max-h-[70vh] space-y-4 overflow-y-auto">
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <Avatar name={insightsFor.influencer?.displayName || insightsFor.influencer?.username || '?'} size="sm" src={insightsFor.influencer?.avatarUrl || undefined} />
+              <span className="font-medium text-gray-800">@{insightsFor.influencer?.username || 'unknown'}</span>
+              <span>· {insightsFor.mediaType}</span>
+              {insightsFor.postedAt && <span>· {formatDate(insightsFor.postedAt, { locale })}</span>}
+            </div>
+            <p className="text-xs text-gray-500">{t.campaignDetail.insightsModalIntro}</p>
+
+            {/* (a) Screenshot: drop zone / file picker / paste; preview once loaded */}
+            {insightsImage ? (
+              <div className="flex gap-3 rounded-lg border border-gray-200 p-3">
+                <img src={insightsImage.dataUrl} alt="" className="max-h-56 w-auto max-w-[45%] rounded-md bg-gray-50 object-contain" />
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                  <p className="truncate text-xs text-gray-600">{insightsImage.name}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="primary" size="sm" onClick={handleExtractInsights} disabled={insightsExtracting || insightsSaving}>
+                      {insightsExtracting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                      {insightsExtracting ? t.campaignDetail.insightsReading : t.campaignDetail.insightsReadWithAi}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => { setInsightsImage(null); setInsightsProposal(null) }} disabled={insightsExtracting}>
+                      <Trash2 className="h-3 w-3" />
+                      {t.campaignDetail.insightsRemoveImage}
+                    </Button>
+                  </div>
+                  {/* (b) What the AI read: confidence + note; the figures themselves land in the editable inputs below */}
+                  {insightsProposal && (
+                    <div className="rounded-md bg-purple-50 px-3 py-2 text-xs text-purple-800">
+                      <p className="font-medium">
+                        {t.campaignDetail.insightsAiConfidence.replace('{pct}', String(Math.round(insightsProposal.confidence * 100)))}
+                      </p>
+                      {insightsProposal.notes && (
+                        <p className="mt-0.5">{t.campaignDetail.insightsAiNotes}: {insightsProposal.notes}</p>
+                      )}
+                      {(insightsProposal.storyReplies !== null || insightsProposal.linkTaps !== null) && (
+                        <p className="mt-0.5 text-purple-700">
+                          {insightsProposal.storyReplies !== null && `${t.campaignDetail.insightsExtraStoryReplies}: ${formatNumber(insightsProposal.storyReplies, { locale })}`}
+                          {insightsProposal.storyReplies !== null && insightsProposal.linkTaps !== null && ' · '}
+                          {insightsProposal.linkTaps !== null && `${t.campaignDetail.insightsExtraLinkTaps}: ${formatNumber(insightsProposal.linkTaps, { locale })}`}
+                          {' '}({t.campaignDetail.insightsExtraNotStored})
+                        </p>
+                      )}
+                      <p className="mt-1 text-purple-700">{t.campaignDetail.insightsReviewHint}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div
+                onDragOver={e => { e.preventDefault(); setInsightsDragOver(true) }}
+                onDragLeave={() => setInsightsDragOver(false)}
+                onDrop={e => {
+                  e.preventDefault()
+                  setInsightsDragOver(false)
+                  const file = e.dataTransfer.files?.[0]
+                  if (file) void handleInsightsFile(file)
+                }}
+                className={`flex flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed px-4 py-6 text-center text-xs ${
+                  insightsDragOver ? 'border-purple-400 bg-purple-50' : 'border-gray-300 bg-gray-50'
+                }`}
+              >
+                <Upload className="h-5 w-5 text-gray-400" />
+                <p className="text-gray-600">
+                  {t.campaignDetail.insightsDropHere}{' '}
+                  <button type="button" onClick={() => insightsFileInputRef.current?.click()} className="font-medium text-purple-600 hover:underline">
+                    {t.campaignDetail.insightsChooseFile}
+                  </button>
+                </p>
+                <p className="text-[10px] text-gray-400">{t.campaignDetail.insightsFileHint}</p>
+                <input
+                  ref={insightsFileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  onChange={e => {
+                    const file = e.target.files?.[0]
+                    e.target.value = '' // allow re-selecting the same file
+                    if (file) void handleInsightsFile(file)
+                  }}
+                />
+                <p className="mt-1 text-[10px] text-gray-400">{t.campaignDetail.insightsManualHint}</p>
+              </div>
+            )}
+
+            {/* (c) Figures — editable; prefilled by the AI or typed by hand. Empty = untouched. */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {(insightsFor.mediaType === 'STORY' ? INSIGHTS_STORY_KEYS : INSIGHTS_FORM_KEYS).map(key => {
+                const stored = insightsFor[key] ?? 0
+                return (
+                  <div key={key}>
+                    <label className={INSIGHTS_LABEL_CLASS}>{insightsFieldLabel(key, insightsFor)}</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={insightsForm[key]}
+                      onChange={e => {
+                        const digits = e.target.value.replace(/[^\d]/g, '')
+                        setInsightsForm(prev => ({ ...prev, [key]: digits }))
+                      }}
+                      placeholder="—"
+                      className={INSIGHTS_INPUT_CLASS}
+                    />
+                    {stored > 0 && (
+                      <p className="mt-0.5 text-[10px] text-gray-400">
+                        {t.campaignDetail.insightsCurrentValue.replace('{value}', formatNumber(stored, { locale }))}
+                      </p>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            <label className="flex items-start gap-2 text-xs text-gray-600">
+              <input type="checkbox" checked={insightsOverwrite} onChange={e => setInsightsOverwrite(e.target.checked)} className="mt-0.5" />
+              <span>
+                {t.campaignDetail.insightsOverwriteLabel}
+                <span className="block text-[10px] text-gray-400">{t.campaignDetail.insightsOverwriteHint}</span>
+              </span>
+            </label>
+
+            {insightsError && (
+              <p className="flex items-center gap-1.5 text-xs text-red-600">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                {insightsError}
+              </p>
+            )}
+          </ModalBody>
+        )}
+        <ModalFooter>
+          <Button variant="secondary" onClick={closeInsightsModal} disabled={insightsSaving || insightsExtracting}>
+            {t.common.cancel}
+          </Button>
+          <Button onClick={handleSaveInsights} disabled={insightsSaving || insightsExtracting}>
+            {insightsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            {t.common.save}
+          </Button>
+        </ModalFooter>
+      </Modal>
 
       {/* Toast (revalidation result and other one-off notices) */}
       {toast && (

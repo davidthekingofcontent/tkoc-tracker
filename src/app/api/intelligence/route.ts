@@ -121,10 +121,17 @@ function addPieces(acc: EngagementPieces | undefined, m: { likes: number; commen
 /**
  * Repeat Radar: every (creator, campaign) figure comes from that campaign's
  * overview — EMV = perInfluencer.emvExtended, cost = fee acordado si no coste
- * (memberCost), views / audience (audience.total, the ER and CPM base) / posts
- * = the overview's — so the radar can never disagree with the campaign page.
- * Only the likes/comments/shares/saves split is read from the media rows, once
- * for all campaigns involved.
+ * (memberCost), views / audience / posts = the overview's — so the radar can
+ * never disagree with the campaign page.
+ *
+ * Decision 4A: the radar's ER and CPM are computed over the REAL audience only
+ * (perInfluencer.audience.real). Its numerator must be the interacciones of the
+ * SAME publications that carry a real audience figure, so the
+ * likes/comments/shares/saves split — read from the media rows once for all
+ * campaigns involved — is restricted to the rows the overview marks as real
+ * (perMedia: !audienceEstimated && audience > 0), mirroring isRealIdx in
+ * campaign-overview.ts. Σ of that split per (campaign, creator) equals the
+ * overview's perInfluencer.er.numerator. Estimates never enter the radar.
  */
 async function handleRepeatRadar(data: { campaignId?: string }) {
   try {
@@ -154,20 +161,25 @@ async function handleRepeatRadar(data: { campaignId?: string }) {
       campaignIds.length > 0
         ? prisma.media.findMany({
             where: { campaignId: { in: campaignIds }, influencerId: { in: influencerIds } },
-            select: { campaignId: true, influencerId: true, likes: true, comments: true, shares: true, saves: true },
+            select: { id: true, campaignId: true, influencerId: true, likes: true, comments: true, shares: true, saves: true },
           })
         : Promise.resolve([]),
     ])
 
     // perInfluencer of every campaign, keyed campaignId → influencerId
     const perInfluencerByCampaign = new Map<string, Map<string, PerInfluencerMetrics>>()
+    // Media rows with a REAL audience figure (4A) — the only rows whose interacciones may enter the ER
+    const realMediaIds = new Set<string>()
     for (const [cid, ov] of overviews) {
       perInfluencerByCampaign.set(cid, new Map(ov.perInfluencer.map(p => [p.influencerId, p])))
+      for (const pm of ov.perMedia) if (!pm.audienceEstimated && pm.audience > 0) realMediaIds.add(pm.id)
     }
 
-    // Engagement split per (campaign, creator) — same rows the overview valued
+    // Engagement split per (campaign, creator) — the same real-audience rows the
+    // overview's ER numerator is built on (never rows with an estimated or no audience)
     const pieces = new Map<string, EngagementPieces>()
     for (const m of mediaRows) {
+      if (!realMediaIds.has(m.id)) continue
       const key = `${m.campaignId ?? ''}|${m.influencerId}`
       pieces.set(key, addPieces(pieces.get(key), m))
     }
@@ -189,7 +201,8 @@ async function handleRepeatRadar(data: { campaignId?: string }) {
           totalLikes: e?.likes ?? 0,
           totalComments: e?.comments ?? 0,
           totalViews: p?.views ?? 0,
-          audience: p?.audience.total ?? 0,
+          // 4A: real audience only — estimates never enter the radar's ER or CPM
+          audience: p?.audience.real ?? 0,
           totalShares: e?.shares ?? 0,
           totalSaves: e?.saves ?? 0,
           mediaPosts: p?.media ?? 0,
