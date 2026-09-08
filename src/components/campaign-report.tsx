@@ -883,23 +883,23 @@ function FixedAvatar({ src, name }: { src?: string | null; name: string }) {
  * letterboxes the square and leaves a sliver, so the box takes the STRIP's
  * aspect ratio and object-fit: cover crops the transparent padding away.
  */
-const TKOC_LOGO_ASPECT = '1838 / 189'
-/** Cover: 56px tall (544px wide) but never past 80 % of the page; running header: 24px tall. */
-const TKOC_LOGO_WIDTH = { cover: 544, small: 233 } as const
 
 function TkocLogo({ className = '', size = 'small' }: { className?: string; size?: 'cover' | 'small' }) {
+  // A dedicated wordmark asset (public/images/tkoc-wordmark.png, 1860×208,
+  // transparent) instead of cropping the square logo with object-fit: a plain
+  // <img> with an explicit height renders identically on screen, in the
+  // browser's print preview, in the server PDF and in every PDF viewer
+  // (object-fit crops became clipping paths that some viewers ignored).
+  const height = size === 'cover' ? 56 : 22
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src="/images/tkoc-logo-full.png"
+      src="/images/tkoc-wordmark.png"
       alt="The King of Content"
-      style={{
-        width: TKOC_LOGO_WIDTH[size],
-        maxWidth: size === 'cover' ? '80%' : '100%',
-        height: 'auto',
-        aspectRatio: TKOC_LOGO_ASPECT,
-      }}
-      className={`block object-cover object-center ${className}`}
+      width={1860}
+      height={208}
+      style={{ height, width: 'auto', maxWidth: size === 'cover' ? '80%' : '100%' }}
+      className={`block ${className}`}
     />
   )
 }
