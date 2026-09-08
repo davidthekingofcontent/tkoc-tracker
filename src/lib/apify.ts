@@ -1472,15 +1472,18 @@ export async function scrapeSinglePost(url: string): Promise<ScrapedSinglePost |
   let result: ScrapedSinglePost | null = null
   try {
     if (host.includes('instagram.com') || host.includes('instagr.am')) {
+      // instagram-scraper is the one that actually returns reels in our logs (the
+      // post-scraper came back empty on every row, costing a wasted run each time):
+      // try it first and keep the post-scraper only as the fallback.
       let items: Record<string, unknown>[] = []
       try {
-        items = await runActor('apify~instagram-post-scraper', { directUrls: [url], resultsLimit: 1 })
+        items = await runActor('apify~instagram-scraper', { directUrls: [url], resultsType: 'posts', resultsLimit: 1 })
       } catch (err) {
         if (isExhaustedError(err)) return null
-        console.warn('[Apify] instagram-post-scraper failed for single post, trying instagram-scraper:', err instanceof Error ? err.message : err)
+        console.warn('[Apify] instagram-scraper failed for single post, trying instagram-post-scraper:', err instanceof Error ? err.message : err)
       }
       if (items.length === 0) {
-        items = await runActor('apify~instagram-scraper', { directUrls: [url], resultsType: 'posts', resultsLimit: 1 })
+        items = await runActor('apify~instagram-post-scraper', { directUrls: [url], resultsLimit: 1 })
       }
       for (const item of items) {
         result = mapInstagramSinglePost(item)
