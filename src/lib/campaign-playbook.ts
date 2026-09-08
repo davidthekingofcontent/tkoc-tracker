@@ -135,12 +135,16 @@ export function generatePlaybook(input: PlaybookInput, locale: PlaybookLocale = 
 
   // EMV ratio (EMV / spend). Drives the grade; never described as ROI.
   // Without any recorded cost there is no ratio to judge: say so instead of "×0,0 / Ratio EMV bajo".
-  const hasSpend = totalSpent > 0
+  // A campaign with spend but no captured content yet has no ratio either ("×0,0 / Ratio EMV bajo" would be false).
+  const hasContent = totalEMV > 0 || influencers.some(i => (i.totalViews || 0) + (i.totalLikes || 0) + (i.totalComments || 0) > 0)
+  const hasSpend = totalSpent > 0 && hasContent
   const roiRatio = hasSpend ? Math.round((totalEMV / totalSpent) * 100) / 100 : 0
   const campaignGrade = hasSpend ? gradeEmvRatio(roiRatio) : 'N/A'
   const roiVerdict = hasSpend
     ? emvVerdict(roiRatio, locale)
-    : (locale === 'es' ? 'Sin coste registrado' : 'No cost recorded')
+    : !hasContent
+      ? (locale === 'es' ? 'Sin contenido capturado todavía' : 'No content captured yet')
+      : (locale === 'es' ? 'Sin coste registrado' : 'No cost recorded')
 
   // Analyze each influencer
   const influencerAnalysis = influencers.map(inf => {
