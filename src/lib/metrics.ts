@@ -4,10 +4,13 @@
  *
  * Decisions (David, 2026-09-05):
  *  3A  Interacciones = likes + comentarios + shares + saves. Everywhere.
- *  4A  (David 2026-09-05, replaces 4C) Tasa de engagement = Σ interacciones ÷
- *      Σ audiencia REAL × 100. Estimates never enter the ER, the CPM or the
- *      target comparison; they are reported apart and only as information.
- *      Without any real audience the ER is null ("sin dato"), never invented.
+ *  4A  (David 2026-09-05, replaces 4C) Estimates never enter the ER, the CPM
+ *      or the target comparison; they are reported apart and only as information.
+ *  4B  (David 2026-09-05, evening, from the brand study) Tasa de engagement =
+ *      Σ interacciones ÷ Σ VISTAS reales × 100 (ANA standard for video; the
+ *      only real base every piece can have). CPM = coste ÷ vistas × 1000.
+ *      A secondary ER over REAL reach (creator-provided) exists as erOnReach.
+ *      Without real views the ER is null ("sin dato real"), never invented.
  *  5   Audiencia (alcance) per publication, in this order: alcance real →
  *      impresiones reales → vistas reales (any source: Meta API, Apify,
  *      manual). Without real data: stories use the EMV story estimate
@@ -165,13 +168,47 @@ export interface EngagementRateResult {
 }
 
 export interface EngagementRateOptions {
-  /** Minimum publications with real audience to publish an ER (campaign: 3; creator: 1). */
+  /** Minimum publications with a real base to publish an ER (campaign: 3; creator: 1). */
   minPieces?: number
-  /** Minimum real audience to publish an ER. */
+  /** Minimum real base (views or reach) to publish an ER. */
   minAudience?: number
 }
 export const ER_MIN_PIECES_CAMPAIGN = 3
 export const ER_MIN_AUDIENCE = 500
+
+/** Base for the standard ER (4B): the pieces that carry real views. */
+export interface ViewsBase {
+  /** Σ real views of the pieces with views > 0. */
+  views: number
+  /** Number of pieces with views > 0. */
+  pieces: number
+  /** Σ interacciones of those same pieces. */
+  engagements: number
+}
+
+/**
+ * Standard ER (decision 4B): interacciones ÷ vistas reales × 100, over the
+ * SAME pieces. Published only with a meaningful, plausible sample.
+ */
+export function engagementRateOnViews(base: ViewsBase, options: EngagementRateOptions = {}): EngagementRateResult {
+  const minPieces = options.minPieces ?? 1
+  const minAudience = options.minAudience ?? ER_MIN_AUDIENCE
+  if (base.views <= 0) return { value: null, numerator: base.engagements, denominator: 0, estimatedShare: 0, pieces: 0, reason: 'no_real_base' }
+  const raw = Math.round((base.engagements / base.views) * 100 * 100) / 100
+  const out = { numerator: base.engagements, denominator: base.views, estimatedShare: 0, pieces: base.pieces, rawValue: raw }
+  if (base.pieces < minPieces || base.views < minAudience) return { value: null, ...out, reason: 'insufficient_sample' }
+  if (raw > 100) return { value: null, ...out, reason: 'implausible' }
+  return { value: raw, ...out }
+}
+
+/** Σ views / pieces / engagements of the pieces with real views. */
+export function viewsBaseOf(items: Array<Pick<MetricMedia, 'views' | 'likes' | 'comments' | 'shares' | 'saves'>>): ViewsBase {
+  let views = 0, pieces = 0, engagements = 0
+  for (const m of items) {
+    if ((m.views || 0) > 0) { views += m.views as number; pieces++; engagements += engagementsOf(m) }
+  }
+  return { views, pieces, engagements }
+}
 
 /**
  * ER over REAL audience only (decision 4A). `engagementsReal` must be the
@@ -215,7 +252,7 @@ export function emvRatioOf(emv: number, cost: number): number | null {
   return Math.round((emv / cost) * 100) / 100
 }
 
-/** CPM real (€ por mil) sobre la audiencia REAL; null sin coste o sin base real. */
+/** CPM real (€ por mil) sobre VISTAS reales (4B); null sin coste o sin base real. */
 export function cpmOf(cost: number, audience: number): number | null {
   if (!(cost > 0) || !(audience > 0)) return null
   return Math.round((cost / audience) * 1000 * 100) / 100
@@ -371,6 +408,35 @@ export interface BusinessResults {
   roas: number | null
 }
 
+// ============ PROMETIDO VS ENTREGADO (checklist) y BALANCE ============
+
+export interface DeliveryChecklist {
+  /** Creators expected to publish (status Acordado or later) vs creators with ≥ 1 piece. */
+  creators: { planned: number; delivered: number; ok: boolean }
+  /** Pieces committed (Σ deliverablesPlanned; null when none set) vs pieces published. */
+  pieces: { planned: number | null; delivered: number; ok: boolean }
+  /** Pieces published inside the campaign window. */
+  dates: { inWindow: number; total: number; ok: boolean }
+  /** Feed pieces (stories excluded) with a correct ad identification. */
+  disclosure: { disclosed: number; total: number; ok: boolean; missingMediaIds: string[] }
+  allOk: boolean
+}
+
+export type BalanceExecution = 'complete' | 'issues' | 'incomplete' | 'no_data'
+export type BalanceResults = 'above' | 'on_target' | 'below' | 'no_targets'
+export type BalanceEfficiency = 'better' | 'in_range' | 'worse' | 'no_data'
+export type BalanceReliability = 'high' | 'medium' | 'low' | 'no_data'
+
+/** Four labelled dimensions instead of a single score (David: no Campaign Score). */
+export interface CampaignBalance {
+  execution: BalanceExecution
+  results: BalanceResults
+  efficiency: BalanceEfficiency
+  dataReliability: BalanceReliability
+  /** Share (0–1) of pieces with real views. */
+  realShare: number
+}
+
 export interface CampaignOverview {
   /** Bump when a definition changes so clients can detect stale caches. */
   definitionsVersion: 2
@@ -409,6 +475,10 @@ export interface CampaignOverview {
   timeline: TimelinePoint[]
   targets: TargetComparison[]
   business: BusinessResults | null
+  /** Secondary ER over REAL reach (creator-provided); null when no real reach. */
+  erOnReach: EngagementRateResult | null
+  delivery: DeliveryChecklist
+  balance: CampaignBalance
 }
 
 /** Business results only when the client actually provided something (David's principle). */

@@ -17,6 +17,7 @@ import { prisma } from '@/lib/db'
 import { calculateCampaignEMV, type EmvRates } from '@/lib/emv'
 import { loadEmvRates, campaignBrandId, getCreatorStoryViewRates } from '@/lib/emv-server'
 import { compareWithBaseline, familyOf, parseBaseline } from '@/lib/creator-baseline'
+import { isDisclosed } from '@/lib/disclosure'
 import {
   ER_MIN_PIECES_CAMPAIGN,
   audienceOf,
@@ -25,6 +26,7 @@ import {
   cpmOf,
   emvRatioOf,
   engagementRateOf,
+  engagementRateOnViews,
   engagementsOf,
   isStoryType,
   madridDayKey,
@@ -36,6 +38,10 @@ import {
   type PerInfluencerMetrics,
   type PerMediaMetrics,
   type TimelinePoint,
+  viewsBaseOf,
+  type CampaignBalance,
+  type DeliveryChecklist,
+  type EngagementRateResult,
 } from '@/lib/metrics'
 
 export interface ComputeOverviewOptions {
@@ -53,13 +59,16 @@ export interface ComputeOverviewOptions {
 const MEDIA_SELECT = {
   id: true, mediaType: true, platform: true, likes: true, comments: true, shares: true, saves: true,
   views: true, reach: true, impressions: true, postedAt: true, influencerId: true, isDeleted: true,
+  caption: true, isAdDisclosed: true, isPaidPartnership: true,
 } as const
+
+const CLOSED_STATUSES = new Set(['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'])
 
 export async function computeCampaignOverview(campaignId: string, options: ComputeOverviewOptions = {}): Promise<CampaignOverview | null> {
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
     select: {
-      id: true,
+      id: true, startDate: true, endDate: true,
       targetViews: true, targetReach: true, targetEngagement: true, targetER: true, targetCpmMax: true,
       promoCode: true, codeRedemptions: true, clientReportedSales: true, clientReportedLeads: true,
       clientReportedRevenue: true, businessResultsSource: true, businessResultsReportedAt: true, businessResultsNotes: true,
@@ -136,12 +145,19 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
   const stories = media.filter(m => isStoryType(m.mediaType)).length
   const mediaCounts: Record<string, number> = {}
   for (const m of media) mediaCounts[m.mediaType] = (mediaCounts[m.mediaType] || 0) + 1
-  // 4A: ER and CPM on REAL audience only — interacciones of the same publications that have a real figure
+  // 4B: ER and CPM on real VIEWS (same pieces in numerator and denominator); ≥ 3 pieces with views for the campaign
   const isRealIdx = (i: number) => !audienceResults[i].estimated && audienceResults[i].value > 0
-  const engagementsReal = media.reduce((s, m, i) => s + (isRealIdx(i) ? engagementsOf(m) : 0), 0)
-  // Campaign ER is published only with ≥ 3 publications with real audience and a plausible ratio
-  const er = engagementRateOf(engagementsReal, audience, { minPieces: ER_MIN_PIECES_CAMPAIGN })
-  const cpm = cpmOf(cost.total, audience.real)
+  const er = engagementRateOnViews(viewsBaseOf(media), { minPieces: ER_MIN_PIECES_CAMPAIGN })
+  const cpm = cpmOf(cost.total, views)
+  // Secondary ER over REAL reach (only pieces where the creator provided reach)
+  const reachRows = media.filter(m => (m.reach || 0) > 0)
+  const erOnReach: EngagementRateResult | null = reachRows.length > 0
+    ? engagementRateOf(
+        reachRows.reduce((s, m) => s + engagementsOf(m), 0),
+        { ...audience, real: reachRows.reduce((s, m) => s + (m.reach || 0), 0), realPieces: reachRows.length },
+        { minPieces: 1 }
+      )
+    : null
 
   // Per creator (over ALL media, never a page)
   const mediaByInfluencer = new Map<string, number[]>()
@@ -157,7 +173,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
       const own = idxs.map(i => media[i])
       const ownAudience = sumAudience(idxs.map(i => audienceResults[i]))
       const ownEng = own.reduce((s, m) => s + engagementsOf(m), 0)
-      const ownEngReal = idxs.reduce((s, i) => s + (isRealIdx(i) ? engagementsOf(media[i]) : 0), 0)
+      void isRealIdx
       const ownViews = own.reduce((s, m) => s + (m.views || 0), 0)
       const ownEmvBasic = idxs.reduce((s, i) => s + (emv.items[i]?.basic ?? 0), 0)
       const ownEmvExt = idxs.reduce((s, i) => s + (emv.items[i]?.extended ?? 0), 0)
@@ -192,12 +208,12 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
         views: ownViews,
         engagements: ownEng,
         audience: ownAudience,
-        er: engagementRateOf(ownEngReal, ownAudience),
+        er: engagementRateOnViews(viewsBaseOf(own)),
         cost: c,
         emvBasic: Math.round(ownEmvBasic * 100) / 100,
         emvExtended: Math.round(ownEmvExt * 100) / 100,
         emvRatio: emvRatioOf(ownEmvExt, c),
-        cpm: cpmOf(c, ownAudience.real),
+        cpm: cpmOf(c, ownViews),
         deliverablesPlanned: ci.deliverablesPlanned ?? null,
         status: ci.status,
         vsBaseline,
@@ -230,6 +246,57 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
     cpm,
   })
 
+  // ----- Prometido vs entregado (real data; green only when it is true) -----
+  const plannedMembers = campaign.influencers.filter(ci => CLOSED_STATUSES.has(ci.status))
+  const creatorsPlanned = plannedMembers.length
+  const creatorsDelivered = plannedMembers.filter(ci => (mediaByInfluencer.get(ci.influencerId)?.length ?? 0) > 0).length
+  const plannedPieces = campaign.influencers.reduce((s, ci) => s + (ci.deliverablesPlanned ?? 0), 0)
+  const hasPlannedPieces = campaign.influencers.some(ci => typeof ci.deliverablesPlanned === 'number' && ci.deliverablesPlanned > 0)
+  const start = campaign.startDate ? new Date(campaign.startDate).getTime() : null
+  const end = campaign.endDate ? new Date(campaign.endDate).getTime() + 24 * 60 * 60 * 1000 : null
+  const dated = media.filter(m => m.postedAt)
+  const inWindow = dated.filter(m => {
+    const t = new Date(m.postedAt as Date).getTime()
+    return (start === null || t >= start) && (end === null || t < end)
+  }).length
+  const feed = media.filter(m => !isStoryType(m.mediaType))
+  const disclosedRows = feed.filter(m => isDisclosed(m))
+  const delivery: DeliveryChecklist = {
+    creators: { planned: creatorsPlanned, delivered: creatorsDelivered, ok: creatorsPlanned > 0 && creatorsDelivered >= creatorsPlanned },
+    pieces: {
+      planned: hasPlannedPieces ? plannedPieces : null,
+      delivered: media.length,
+      ok: hasPlannedPieces ? media.length >= plannedPieces : media.length > 0,
+    },
+    dates: { inWindow, total: dated.length, ok: dated.length > 0 && inWindow === dated.length },
+    disclosure: {
+      disclosed: disclosedRows.length,
+      total: feed.length,
+      ok: feed.length > 0 && disclosedRows.length === feed.length,
+      missingMediaIds: feed.filter(m => !isDisclosed(m)).map(m => m.id),
+    },
+    allOk: false,
+  }
+  delivery.allOk = delivery.creators.ok && delivery.pieces.ok && delivery.dates.ok && delivery.disclosure.ok
+
+  // ----- Balance in four labelled dimensions -----
+  const realShare = media.length > 0 ? media.filter(m => (m.views || 0) > 0 || (m.reach || 0) > 0).length / media.length : 0
+  const verdicts = targets.map(t => t.verdict)
+  const cpmTarget = targets.find(t => t.key === 'cpm')
+  const balance: CampaignBalance = {
+    execution: media.length === 0 && creatorsPlanned === 0 ? 'no_data'
+      : delivery.allOk ? 'complete'
+        : (!delivery.pieces.ok || !delivery.creators.ok) ? 'incomplete' : 'issues',
+    results: verdicts.length === 0 ? 'no_targets'
+      : verdicts.includes('below') ? 'below'
+        : verdicts.includes('above') ? 'above'
+          : verdicts.includes('on_target') ? 'on_target' : 'no_targets',
+    efficiency: !cpmTarget || cpmTarget.verdict === 'no_data' ? 'no_data'
+      : cpmTarget.verdict === 'above' ? 'better' : cpmTarget.verdict === 'below' ? 'worse' : 'in_range',
+    dataReliability: media.length === 0 ? 'no_data' : realShare >= 0.8 ? 'high' : realShare >= 0.5 ? 'medium' : 'low',
+    realShare: Math.round(realShare * 100) / 100,
+  }
+
   return {
     definitionsVersion: 2,
     totals: {
@@ -260,6 +327,9 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
     timeline,
     targets,
     business: buildBusinessResults(campaign, cost.total),
+    erOnReach,
+    delivery,
+    balance,
   }
 }
 
@@ -277,6 +347,8 @@ export function stripEconomics(overview: CampaignOverview): CampaignOverview {
     perMedia: overview.perMedia.map(m => ({ ...m, emvBasic: 0 })),
     targets: overview.targets.filter(t => t.key !== 'cpm'),
     business: overview.business ? { ...overview.business, cpa: null, roas: null } : null,
+    // Efficiency is a cost judgement: never exposed to the client
+    balance: { ...overview.balance, efficiency: 'no_data' },
   }
 }
 
