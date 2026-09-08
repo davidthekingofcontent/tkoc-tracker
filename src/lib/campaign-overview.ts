@@ -28,6 +28,7 @@ import {
   engagementRateOf,
   engagementRateOnViews,
   engagementsOf,
+  hasPlausibleViews,
   isStoryType,
   madridDayKey,
   memberCost,
@@ -284,7 +285,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
   delivery.allOk = delivery.creators.ok && delivery.pieces.ok && delivery.dates.ok && delivery.disclosure.ok
 
   // ----- Balance in four labelled dimensions -----
-  const realShare = media.length > 0 ? media.filter(m => (m.views || 0) > 0 || (m.reach || 0) > 0).length / media.length : 0
+  const realShare = media.length > 0 ? media.filter(m => hasPlausibleViews(m) || (m.reach || 0) > 0).length / media.length : 0
   const verdicts = targets.map(t => t.verdict)
   const cpmTarget = targets.find(t => t.key === 'cpm')
   const balance: CampaignBalance = {

@@ -60,6 +60,7 @@ export async function GET(
       cookieToken,
       cookieName: 'token',
       signal: request.signal,
+      locale: request.nextUrl.searchParams.get('locale') === 'en' ? 'en' : 'es',
     })
 
     const filename = `informe-${slugify(campaign.name) || campaign.id}.pdf`

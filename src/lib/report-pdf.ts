@@ -28,6 +28,8 @@ export interface RenderReportPdfOptions {
    * given up on is not started, and one in flight is cut short.
    */
   signal?: AbortSignal
+  /** UI language of the rendered report (the app stores it in localStorage; headless Chromium would default to English). */
+  locale?: 'es' | 'en'
 }
 
 /** Thrown when the render queue is full or the caller waited too long for a slot: the route answers 503. */
@@ -145,6 +147,7 @@ export async function renderReportPdf({
   cookieToken,
   cookieName = 'token',
   signal,
+  locale = 'es',
 }: RenderReportPdfOptions): Promise<Buffer> {
   if (!path.startsWith('/')) throw new Error('renderReportPdf: path must start with "/"')
   if (!cookieToken) throw new Error('renderReportPdf: missing auth token')
@@ -171,7 +174,7 @@ export async function renderReportPdf({
     browser = await puppeteer.launch({
       executablePath,
       headless: true,
-      args: LAUNCH_ARGS,
+      args: [...LAUNCH_ARGS, `--lang=${locale === 'en' ? 'en-US' : 'es-ES'}`],
     })
     throwIfAborted()
 
@@ -187,6 +190,8 @@ export async function renderReportPdf({
     })
 
     const page = await browser.newPage()
+    // The i18n provider reads localStorage('tkoc-locale') and otherwise falls back to navigator.language.
+    await page.evaluateOnNewDocument((l: string) => { try { window.localStorage.setItem('tkoc-locale', l) } catch { /* private mode */ } }, locale)
     await page.setViewport({ width: 1240, height: 1754, deviceScaleFactor: 1 })
     await page.emulateMediaType('print')
     await page.goto(url, { waitUntil: 'networkidle0', timeout: NAVIGATION_TIMEOUT_MS })

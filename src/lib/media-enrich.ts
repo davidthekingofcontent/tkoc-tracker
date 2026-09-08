@@ -34,7 +34,7 @@
 
 import { prisma } from '@/lib/db'
 import { isApifyExhausted, scrapeSinglePost } from '@/lib/apify'
-import { MediaType, Platform, type Prisma } from '@/generated/prisma/client'
+import { MediaType, Platform, Prisma } from '@/generated/prisma/client'
 
 // ============ TYPES ============
 
@@ -51,6 +51,12 @@ export interface EnrichOptions {
   timeBudgetMs?: number
   /** Retry rows attempted recently (ignores RETRY_AFTER_MS). */
   force?: boolean
+  /**
+   * Also re-fetch rows whose stored views are below their likes (a partial or
+   * stale platform figure that metrics.ts treats as "sin dato real"), whatever
+   * their source. Default true.
+   */
+  includeStale?: boolean
 }
 
 export type EnrichStop = 'done' | 'limit' | 'time' | 'apify_exhausted' | 'apify_not_configured'
@@ -94,14 +100,27 @@ function pendingWhere(sel: Selection, withPermalink: boolean): Prisma.MediaWhere
   }
 }
 
-/** Rows still waiting for real views (with a permalink) and the unenrichable ones (without). */
-export async function countPendingMetaReelViews(campaignId?: string): Promise<{ pending: number; withoutPermalink: number }> {
+/** Instagram reels/videos whose stored views are below their likes (partial/stale figure), newest first. */
+async function staleViewIds(campaignId: string | undefined, limit: number): Promise<string[]> {
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT id FROM media
+    WHERE platform = 'INSTAGRAM' AND "mediaType" IN ('REEL', 'VIDEO') AND "isDeleted" = false
+      AND permalink IS NOT NULL AND views > 0 AND views < likes
+      ${campaignId ? Prisma.sql`AND "campaignId" = ${campaignId}` : Prisma.sql`AND "campaignId" IS NOT NULL`}
+    ORDER BY "postedAt" DESC NULLS LAST
+    LIMIT ${limit}`
+  return rows.map(r => r.id)
+}
+
+/** Rows still waiting for real views (with a permalink), the unenrichable ones (without) and the stale ones (views < likes). */
+export async function countPendingMetaReelViews(campaignId?: string): Promise<{ pending: number; withoutPermalink: number; stale: number }> {
   const sel: Selection = { source: 'meta_api', mediaTypes: [MediaType.REEL, MediaType.VIDEO], campaignId }
-  const [pending, withoutPermalink] = await Promise.all([
+  const [pending, withoutPermalink, staleIds] = await Promise.all([
     prisma.media.count({ where: pendingWhere(sel, true) }),
     prisma.media.count({ where: pendingWhere(sel, false) }),
+    staleViewIds(campaignId, 1000),
   ])
-  return { pending, withoutPermalink }
+  return { pending, withoutPermalink, stale: staleIds.length }
 }
 
 // ============ ATTEMPT LOG (Setting) ============
@@ -197,6 +216,21 @@ async function enrichViews(sel: Selection, options: EnrichOptions): Promise<Enri
       influencer: { select: { username: true } },
     },
   })
+  if (options.includeStale !== false) {
+    const staleIds = await staleViewIds(sel.campaignId, limit * 2)
+    const known = new Set(candidates.map(c => c.id))
+    const fresh = staleIds.filter(id => !known.has(id))
+    if (fresh.length > 0) {
+      const stale = await prisma.media.findMany({
+        where: { id: { in: fresh } },
+        select: {
+          id: true, permalink: true, views: true, likes: true, comments: true, campaignId: true, thumbnailUrl: true,
+          influencer: { select: { username: true } },
+        },
+      })
+      candidates.push(...stale)
+    }
+  }
   const rows: typeof candidates = []
   for (const c of candidates) {
     if (rows.length >= limit) break

@@ -92,7 +92,7 @@ export function audienceOf(
 ): AudienceResult {
   if ((m.reach || 0) > 0) return { value: m.reach as number, basis: 'reach', estimated: false }
   if ((m.impressions || 0) > 0) return { value: m.impressions as number, basis: 'impressions', estimated: false }
-  if ((m.views || 0) > 0) return { value: m.views as number, basis: 'views', estimated: false }
+  if (hasPlausibleViews(m)) return { value: m.views as number, basis: 'views', estimated: false }
 
   const followers = ctx.followers || 0
   if (isStoryType(m.mediaType)) {
@@ -201,6 +201,17 @@ export function engagementRateOnViews(base: ViewsBase, options: EngagementRateOp
   return { value: raw, ...out }
 }
 
+/**
+ * A views figure is only usable as REAL data when it is at least the number
+ * of likes: on Instagram/TikTok a like implies a view, so "37 vistas · 354
+ * likes" is a partial or stale platform figure, not a real audience. Such
+ * pieces count as "sin dato real" (and are re-fetched by the enrichment).
+ */
+export function hasPlausibleViews(m: Pick<MetricMedia, 'views' | 'likes'>): boolean {
+  const views = m.views || 0
+  return views > 0 && views >= (m.likes || 0)
+}
+
 /** CPM/ER are only published on a meaningful sample (same rule as the ER). */
 export function viewsBaseReliable(base: ViewsBase, options: EngagementRateOptions = {}): boolean {
   const minPieces = options.minPieces ?? 1
@@ -212,7 +223,7 @@ export function viewsBaseReliable(base: ViewsBase, options: EngagementRateOption
 export function viewsBaseOf(items: Array<Pick<MetricMedia, 'views' | 'likes' | 'comments' | 'shares' | 'saves'>>): ViewsBase {
   let views = 0, pieces = 0, engagements = 0
   for (const m of items) {
-    if ((m.views || 0) > 0) { views += m.views as number; pieces++; engagements += engagementsOf(m) }
+    if (hasPlausibleViews(m)) { views += m.views as number; pieces++; engagements += engagementsOf(m) }
   }
   return { views, pieces, engagements }
 }

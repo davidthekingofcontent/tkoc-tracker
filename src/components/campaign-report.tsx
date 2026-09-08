@@ -2099,7 +2099,7 @@ export function CampaignReport({
             {tr.printReport}
           </Button>
           {/* Server-side PDF (same report, ?print=1 rendered headless) */}
-          <Button as="a" variant="primary" size="sm" href={`${apiBase}/${campaignId}/report/pdf`} target="_blank" rel="noopener noreferrer" title={tr.pdfClientNote}>
+          <Button as="a" variant="primary" size="sm" href={`${apiBase}/${campaignId}/report/pdf?locale=${locale}`} target="_blank" rel="noopener noreferrer" title={tr.pdfClientNote}>
             <FileDown className="h-4 w-4" />
             {tr.downloadPdf}
           </Button>
