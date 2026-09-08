@@ -15,6 +15,13 @@ RUN npm run build
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+# System Chromium for the server-side report PDF (src/lib/report-pdf.ts, driven
+# by puppeteer-core). Fonts: FreeFont (Latin, incl. accents) + Noto emoji.
+RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont font-noto-emoji
+# Alpine <= 3.20 installs /usr/bin/chromium-browser, newer releases /usr/bin/chromium;
+# report-pdf.ts also probes both, so a rename does not break the build.
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public ./public

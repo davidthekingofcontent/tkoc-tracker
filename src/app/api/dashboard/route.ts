@@ -9,6 +9,10 @@
  * duplicates removed is reported in `stats.dedupedPosts`. Cost is per campaign
  * membership (a creator paid in two campaigns has two fees).
  *
+ * ER and CPM follow decision 4B: interacciones ÷ VISTAS reales of the same
+ * pieces (≥ 3 pieces with views, ≥ 500 views, ratio ≤ 100 %); CPM = cost ÷
+ * views × 1000. Impressions are never reported as a metric.
+ *
  * BRAND users never receive fees, cost, CPM or the EMV ratio.
  */
 
@@ -21,10 +25,11 @@ import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import {
   cpmOf,
   emvRatioOf,
-  engagementRateOf,
+  engagementRateOnViews,
   engagementsOf,
   isStoryType,
   sumAudience,
+  viewsBaseOf,
   type AudienceResult,
   type CampaignOverview,
   type PerMediaMetrics,
@@ -132,9 +137,6 @@ export async function GET(request: NextRequest) {
     let emvBasic = 0
     let emvExtended = 0
     let views = 0, likes = 0, comments = 0, shares = 0, saves = 0, engagements = 0
-    // 4A: the ER numerator is the interacciones of the SAME publications that carry a
-    // real audience figure (mirrors isRealIdx in campaign-overview.ts), never the total.
-    let engagementsReal = 0
     let mediaDeleted = 0, stories = 0
     let dedupedPosts = 0
     let uniqueMedia: DashMedia[] = []
@@ -183,7 +185,6 @@ export async function GET(request: NextRequest) {
         emvExtended += pm.emvExtended
         if (pm.isDeleted) mediaDeleted++
         audienceResults.push({ value: pm.audience, basis: pm.audienceBasis, estimated: pm.audienceEstimated })
-        if (!pm.audienceEstimated && pm.audience > 0) engagementsReal += engagementsOf(m)
       }
       cost = Math.round(cost * 100) / 100
       emvBasic = Math.round(emvBasic * 100) / 100
@@ -193,8 +194,8 @@ export async function GET(request: NextRequest) {
     }
 
     const audience = sumAudience(audienceResults)
-    // 4A: ER = interacciones of the real-audience publications ÷ real audience
-    const er = engagementRateOf(engagementsReal, audience, { minPieces: ER_MIN_PIECES_CAMPAIGN })
+    // 4B: ER = interacciones ÷ vistas reales of the SAME (deduplicated) publications
+    const er = engagementRateOnViews(viewsBaseOf(uniqueMedia), { minPieces: ER_MIN_PIECES_CAMPAIGN })
     const media = uniqueMedia.length
 
     // BRAND users never receive fees, cost, CPM or the EMV ratio (decision 9B + portal rule).
@@ -203,8 +204,8 @@ export async function GET(request: NextRequest) {
       membersWithCost = 0
     }
     const emvRatio = isBrand ? null : emvRatioOf(emvExtended, cost)
-    // 4A: CPM on REAL audience only
-    const cpm = isBrand ? null : cpmOf(cost, audience.real)
+    // 4B: CPM = cost ÷ vistas reales × 1000
+    const cpm = isBrand ? null : cpmOf(cost, views)
 
     // Campaigns by status
     const campaignsByStatus = { active: 0, paused: 0, archived: 0 }
@@ -214,7 +215,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Campaigns by type
-    let campaignsByType = { SOCIAL_LISTENING: 0, INFLUENCER_TRACKING: 0, UGC: 0 }
+    const campaignsByType = { SOCIAL_LISTENING: 0, INFLUENCER_TRACKING: 0, UGC: 0 }
     try {
       const typeGroups = await prisma.campaign.groupBy({
         by: ['type'],
@@ -340,7 +341,7 @@ export async function GET(request: NextRequest) {
         /** Media rows removed because the same post lives in several campaigns. */
         dedupedPosts,
 
-        // Interacciones (3A) and audiencia (5)
+        // Interacciones (3A), audiencia (5) and the ER on views (4B)
         views,
         likes,
         comments,
@@ -364,6 +365,7 @@ export async function GET(request: NextRequest) {
         // 4A: headline reach is REAL audience; the estimate travels apart
         totalReach: audience.real,
         totalReachEstimated: audience.estimated,
+        /** Tasa de engagement sobre vistas (4B); null when the real sample is insufficient. */
         engagementRate: er.value,
         avgEngagementRate: er.value ?? 0,
         totalMediaPosts: media,

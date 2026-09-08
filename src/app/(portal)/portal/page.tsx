@@ -48,13 +48,14 @@ interface PortalCampaign {
     engagements?: number
     /** @deprecated alias of engagements kept by the API */
     interactions?: number
+    /** Audiencia real only — estimates never reach the client. */
     audience?: {
-      total?: number
       real?: number
-      estimated?: number
-      estimatedShare?: number
+      realPieces?: number
     }
+    /** Tasa de engagement sobre vistas (4B); null when the real sample is insufficient. */
     engagementRate?: number | null
+    engagementRateReason?: 'no_real_base' | 'insufficient_sample' | 'implausible' | null
   } | null
 }
 

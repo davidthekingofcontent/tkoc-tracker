@@ -19,8 +19,8 @@ import { useIntelligenceText } from '@/components/creator-score-badge'
  * Campaign Intelligence panel (Aprender tab).
  *
  * Figures: each creator is scored from the campaign overview's PerInfluencerMetrics
- * (`perInfluencer` prop — views, audience, interacciones, ER, CPM, cost, EMV over
- * ALL media with the brand's rates), so this table can never disagree with the
+ * (`perInfluencer` prop — views, audience, interacciones, ER and CPM on real views
+ * (4B), cost, EMV over ALL media with the brand's rates), so this table can never disagree with the
  * Resumen / Elegir cards on the same page. The paginated `media` slice is only a
  * fallback for creators the overview does not carry (or when it is null).
  *
@@ -75,8 +75,8 @@ interface CampaignIntelligencePanelProps {
   }
   /**
    * Per-creator figures from the single campaign overview (GET /api/campaigns/[id]).
-   * Authoritative for everything the engine scores: views, audience (the CPM/ER
-   * base), interacciones, ER, CPM, cost and EMV. Null while the overview loads.
+   * Authoritative for everything the engine scores: views (the ER/CPM base, 4B),
+   * audience, interacciones, ER, CPM, cost and EMV. Null while the overview loads.
    */
   perInfluencer?: PerInfluencerMetrics[] | null
   locale: EurLocale
@@ -374,8 +374,8 @@ export function CampaignIntelligencePanel({
                   <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     CPE
                   </th>
-                  <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                    Eng. Rate
+                  <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap" title={t(locale, 'Interacciones ÷ vistas reales', 'Engagements ÷ real views')}>
+                    {t(locale, 'ER (sobre vistas)', 'ER (on views)')}
                   </th>
                   <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     {t(locale, 'Ratio EMV', 'EMV Ratio')}

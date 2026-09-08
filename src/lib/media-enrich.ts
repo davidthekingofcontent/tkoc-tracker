@@ -193,7 +193,7 @@ async function enrichViews(sel: Selection, options: EnrichOptions): Promise<Enri
     orderBy: { postedAt: 'desc' },
     take: options.force ? limit : limit * 4,
     select: {
-      id: true, permalink: true, views: true, likes: true, comments: true, campaignId: true,
+      id: true, permalink: true, views: true, likes: true, comments: true, campaignId: true, thumbnailUrl: true,
       influencer: { select: { username: true } },
     },
   })
@@ -233,11 +233,22 @@ async function enrichViews(sel: Selection, options: EnrichOptions): Promise<Enri
       continue
     }
 
-    // Never lower a stored value.
+    // Never lower a stored value. A fresh thumbnail URL is always welcome (the old one expires).
     const data: Prisma.MediaUpdateInput = {}
     if (post.views > row.views) data.views = post.views
     if (post.likes > row.likes) data.likes = post.likes
     if (post.comments > row.comments) data.comments = post.comments
+    if (post.thumbnailUrl && post.thumbnailUrl !== row.thumbnailUrl) data.thumbnailUrl = post.thumbnailUrl
+    if (data.thumbnailUrl) {
+      try {
+        await prisma.media.update({ where: { id: row.id }, data: { thumbnailUrl: post.thumbnailUrl } })
+        const { cacheMediaThumb } = await import('@/lib/thumb-cache')
+        await cacheMediaThumb(row.id, { refresh: true })
+      } catch (err) {
+        console.error(`[media-enrich] ${row.id} thumb cache failed`, err instanceof Error ? err.message : err)
+      }
+      delete data.thumbnailUrl
+    }
     if (Object.keys(data).length === 0) {
       summary.unchanged++
       console.log(`[media-enrich] ${row.id} ${tag}: fetched but nothing higher (views ${post.views}, likes ${post.likes}, comments ${post.comments})`)

@@ -10,14 +10,14 @@
  * 5. CPM efficiency
  *
  * Definitions (src/lib/metrics.ts): interacciones = likes + comentarios +
- * shares + saves (3A); the ER and the CPM are computed over the REAL audience
- * of the creator's publications as the campaign overview defines it — alcance
- * real → impresiones reales → vistas reales (decision 4A / 5). Estimated
- * audiences NEVER enter the ER or the CPM: the caller feeds
- * perInfluencer.audience.real and the interacciones of those same real-audience
- * publications only, so the radar can never disagree with the campaign page.
- * Views are the base only when a campaign carries no real audience at all
- * (in practice never: real views are themselves a rung of the real audience).
+ * shares + saves (3A); the ER and the CPM are computed over the real VIEWS of
+ * the creator's publications, exactly as the campaign overview defines them
+ * (decision 4B: tasa de engagement = interacciones ÷ vistas reales × 100 of
+ * the same pieces; CPM = coste ÷ vistas × 1000). Estimated audiences NEVER
+ * enter the ER or the CPM: the caller feeds perInfluencer.views and the
+ * interacciones of those same publications with views only, so the radar can
+ * never disagree with the campaign page. Without any real views the ER falls
+ * back to interacciones ÷ seguidores, a profile-style figure, and the CPM is 0.
  *
  * Output: REPEAT (green) / CONSIDER (yellow) / SKIP (red) + reasoning
  */
@@ -39,19 +39,19 @@ export interface RepeatRadarInput {
     agreedFee: number
     /**
      * likes / comments / shares / saves of the creator's publications in this
-     * campaign that carry a REAL audience figure (4A) — the same rows as
-     * `audience`, so Σ of the four equals perInfluencer.er.numerator. Rows with
-     * an estimated or no audience are left out by the caller.
+     * campaign that carry REAL views (4B) — the same rows as `totalViews`, so
+     * Σ of the four equals perInfluencer.er.numerator. Rows without views are
+     * left out by the caller.
      */
     totalLikes: number
     totalComments: number
+    /** Real views of the creator's publications in this campaign (perInfluencer.views). Base of the ER and the CPM. */
     totalViews: number
     /**
-     * REAL audience of the creator's publications in this campaign as the
-     * overview defines it (perInfluencer.audience.real: reach → impressions →
-     * views; estimates excluded, decision 4A). Base of the ER and the CPM.
+     * @deprecated Real audience (reach → impressions → views) of the same
+     * publications; informative only since 4B — the ER and the CPM use views.
      */
-    audience: number
+    audience?: number
     totalShares: number
     totalSaves: number
     mediaPosts: number
@@ -102,7 +102,6 @@ export function analyzeRepeatWorthiness(input: RepeatRadarInput): RepeatRadarRes
   const totalEMV = campaigns.reduce((sum, c) => sum + c.emvGenerated, 0)
   const totalMedia = campaigns.reduce((sum, c) => sum + c.mediaPosts, 0)
   const totalViews = campaigns.reduce((sum, c) => sum + c.totalViews, 0)
-  const totalAudience = campaigns.reduce((sum, c) => sum + (c.audience || 0), 0)
   const totalLikes = campaigns.reduce((sum, c) => sum + c.totalLikes, 0)
   const totalComments = campaigns.reduce((sum, c) => sum + c.totalComments, 0)
   const totalShares = campaigns.reduce((sum, c) => sum + (c.totalShares || 0), 0)
@@ -112,10 +111,10 @@ export function analyzeRepeatWorthiness(input: RepeatRadarInput): RepeatRadarRes
   const deliveredCampaigns = campaigns.filter(c => c.contentDelivered || c.status === 'COMPLETED' || c.status === 'POSTED').length
   const deliveryRate = deliveredCampaigns / totalCampaigns
 
-  // Calculate key ratios — ER and CPM over the REAL audience (decision 4A), the
-  // same base as the campaign page; views only when no campaign has a real audience.
+  // Calculate key ratios — ER and CPM over real VIEWS (decision 4B), the same
+  // base as the campaign page; without views the ER falls back to followers.
   const roiRatio = totalSpent > 0 ? totalEMV / totalSpent : 0
-  const base = totalAudience > 0 ? totalAudience : totalViews
+  const base = totalViews
   const avgCPM = base > 0 ? (totalSpent / base) * 1000 : 0
   const avgEngagementRate = base > 0 ? (totalEngagements / base) * 100 :
                             input.followers > 0 ? (totalEngagements / input.followers) * 100 : 0

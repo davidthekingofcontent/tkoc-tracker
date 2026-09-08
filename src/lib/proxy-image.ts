@@ -2,6 +2,16 @@
  * Routes external CDN image URLs through our server-side proxy
  * to avoid CORS issues and expired tokens from Instagram/TikTok/YouTube CDNs.
  */
+/**
+ * Thumbnail of a captured publication: the durable copy served by
+ * /api/media/[id]/thumb (CDN URLs expire). Falls back to the proxied CDN URL
+ * when the row has no id (e.g. a scraped post not yet stored).
+ */
+export function mediaThumbUrl(media: { id?: string | null; thumbnailUrl?: string | null; mediaUrl?: string | null }): string {
+  if (media.id) return `/api/media/${media.id}/thumb`
+  return proxyImg(media.thumbnailUrl || media.mediaUrl)
+}
+
 export function proxyImg(url: string | null | undefined): string {
   if (!url) return ''
   try {

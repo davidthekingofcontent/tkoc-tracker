@@ -45,7 +45,7 @@ import { SpainFitLink } from '@/components/spain-fit-badge'
 import { calculateCreatorScore } from '@/lib/creator-score'
 import { evaluateFeeClient } from '@/lib/market-benchmark-client'
 import { DEFAULT_BENCHMARKS, mergeBenchmarkConfig, normalizeFormat, normalizePlatform, formatsFor, type BenchmarkConfig, type DealTerms, type FeeFormat } from '@/lib/benchmarks'
-import { proxyImg } from '@/lib/proxy-image'
+import { mediaThumbUrl, proxyImg } from '@/lib/proxy-image'
 import { useRole } from '@/hooks/use-role'
 import {
   ArrowLeft,
@@ -2312,6 +2312,144 @@ export default function CampaignDetailPage() {
   }
 
   /**
+   * Resumen → "Balance de campaña" (agency only): the four labelled dimensions of
+   * overview.balance (Ejecución / Resultados / Eficiencia / Fiabilidad de datos) and the
+   * "Prometido vs entregado" checklist of overview.delivery. Everything is server-computed
+   * from real data (src/lib/campaign-overview.ts): a row is green ONLY when it is true,
+   * otherwise it carries an amber warning with the real counts. Brands never see this card
+   * (efficiency is a cost judgement; the report shows them only the checklist).
+   */
+  function renderBalanceCard() {
+    if (!campaign || isBrand || !overview) return null
+    const balance = overview.balance
+    const delivery = overview.delivery
+    if (!balance || !delivery) return null
+    const d = t.campaignDetail
+    const fmt = (s: string, vars: Record<string, string | number>) =>
+      Object.entries(vars).reduce((acc, [k, v]) => acc.replace(`{${k}}`, typeof v === 'number' ? formatNumber(v, { locale }) : v), s)
+
+    type Tone = 'good' | 'ok' | 'bad' | 'none'
+    const toneClasses: Record<Tone, string> = {
+      good: 'border-green-200 bg-green-50 text-green-700',
+      ok: 'border-amber-200 bg-amber-50 text-amber-700',
+      bad: 'border-red-200 bg-red-50 text-red-700',
+      none: 'border-gray-200 bg-gray-50 text-gray-500',
+    }
+    const dimensions: Array<{ key: string; label: string; value: string; tone: Tone; sub?: string; hint?: string }> = [
+      {
+        key: 'execution',
+        label: d.balanceExecution,
+        value: d[`balanceExec_${balance.execution}` as const],
+        tone: balance.execution === 'complete' ? 'good' : balance.execution === 'issues' ? 'ok' : balance.execution === 'incomplete' ? 'bad' : 'none',
+      },
+      {
+        key: 'results',
+        label: d.balanceResults,
+        value: d[`balanceRes_${balance.results}` as const],
+        tone: balance.results === 'above' ? 'good' : balance.results === 'on_target' ? 'ok' : balance.results === 'below' ? 'bad' : 'none',
+      },
+      {
+        key: 'efficiency',
+        label: d.balanceEfficiency,
+        value: d[`balanceEff_${balance.efficiency}` as const],
+        tone: balance.efficiency === 'better' ? 'good' : balance.efficiency === 'in_range' ? 'ok' : balance.efficiency === 'worse' ? 'bad' : 'none',
+        hint: d.balanceEfficiencyHint,
+      },
+      {
+        key: 'reliability',
+        label: d.balanceReliability,
+        value: d[`balanceRel_${balance.dataReliability}` as const],
+        tone: balance.dataReliability === 'high' ? 'good' : balance.dataReliability === 'medium' ? 'ok' : balance.dataReliability === 'low' ? 'bad' : 'none',
+        sub: fmt(d.balanceRealShare, { pct: formatPercent(balance.realShare * 100, { locale, digits: 0 }) }),
+      },
+    ]
+
+    const missing = delivery.disclosure.missingMediaIds.length
+    const rows: Array<{ key: string; label: string; ok: boolean; detail: string; note?: string }> = [
+      {
+        key: 'creators',
+        label: d.deliveryCreators,
+        ok: delivery.creators.ok,
+        detail: delivery.creators.planned > 0
+          ? fmt(d.deliveryCreatorsDetail, { delivered: delivery.creators.delivered, planned: delivery.creators.planned })
+          : d.deliveryCreatorsNone,
+      },
+      {
+        key: 'pieces',
+        label: d.deliveryPieces,
+        ok: delivery.pieces.ok,
+        detail: delivery.pieces.planned !== null
+          ? fmt(d.deliveryPiecesDetail, { delivered: delivery.pieces.delivered, planned: delivery.pieces.planned })
+          : fmt(d.deliveryPiecesNoPlan, { delivered: delivery.pieces.delivered }),
+      },
+      {
+        key: 'dates',
+        label: d.deliveryDates,
+        ok: delivery.dates.ok,
+        detail: delivery.dates.total > 0
+          ? fmt(d.deliveryDatesDetail, { inWindow: delivery.dates.inWindow, total: delivery.dates.total })
+          : d.deliveryDatesNone,
+      },
+      {
+        key: 'disclosure',
+        label: d.deliveryDisclosure,
+        ok: delivery.disclosure.ok,
+        detail: delivery.disclosure.total > 0
+          ? fmt(d.deliveryDisclosureDetail, { disclosed: delivery.disclosure.disclosed, total: delivery.disclosure.total })
+          : d.deliveryDisclosureNone,
+        note: missing > 0 ? fmt(d.deliveryMissingDisclosure, { n: missing }) : undefined,
+      },
+    ]
+
+    return (
+      <Card>
+        <CardHeader className="flex-wrap gap-2">
+          <CardTitle className="flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-purple-600" />
+            {d.balanceTitle}
+          </CardTitle>
+          <p className="text-xs text-gray-500">{d.balanceIntro}</p>
+        </CardHeader>
+        <CardContent>
+          {/* Four dimensions, never a single score */}
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {dimensions.map(dim => (
+              <div key={dim.key} className={`rounded-lg border px-3 py-2.5 ${toneClasses[dim.tone]}`}>
+                <p className="text-[10px] font-semibold uppercase tracking-wider opacity-80 flex items-center gap-1">
+                  {dim.label}
+                  {dim.hint && <InfoTooltip text={dim.hint} />}
+                </p>
+                <p className="mt-0.5 text-sm font-bold">{dim.value}</p>
+                {dim.sub && <p className="mt-0.5 text-[11px] opacity-80 tabular-nums">{dim.sub}</p>}
+              </div>
+            ))}
+          </div>
+
+          {/* Prometido vs entregado: green check only when true, amber warning otherwise */}
+          <h3 className="mt-5 mb-2 text-sm font-semibold text-gray-700">{d.deliveryTitle}</h3>
+          <ul className="divide-y divide-gray-100 rounded-lg border border-gray-200">
+            {rows.map(r => (
+              <li key={r.key} className="flex items-start gap-3 px-3 py-2.5">
+                {r.ok
+                  ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-600" aria-label="ok" />
+                  : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-label="warning" />}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-gray-900">{r.label}</p>
+                  <p className="text-xs text-gray-500 tabular-nums">{r.detail}</p>
+                  {r.note && <p className="mt-0.5 text-xs text-amber-700">{r.note}</p>}
+                </div>
+              </li>
+            ))}
+          </ul>
+          {!delivery.allOk && canEdit && (
+            <p className="mt-3 text-xs text-gray-400">{d.deliveryHowToGreen}</p>
+          )}
+        </CardContent>
+      </Card>
+    )
+  }
+
+  /**
    * Resumen → "Resultados de negocio (aportados por el cliente)" (decision 14A). The PM types what
    * the client reports; nothing is inferred. Empty → a one-line prompt for editors, nothing for a
    * brand. CPA and ROAS are derived ONLY when their inputs exist and are labelled client-reported.
@@ -2944,8 +3082,8 @@ export default function CampaignDetailPage() {
     const logged = !!m.insightsSource
     const isStory = m.mediaType === 'STORY'
     const figures: Array<{ label: string; value: number }> = []
+    // Impressions are not captured and are never shown as a figure (decision 1); the stored field stays untouched.
     if ((m.reach || 0) > 0) figures.push({ label: t.campaignDetail.insightsRealReach, value: m.reach as number })
-    if ((m.impressions || 0) > 0) figures.push({ label: t.campaignDetail.insightsRealImpressions, value: m.impressions as number })
     if (isStory && (m.views || 0) > 0) figures.push({ label: t.campaignDetail.insightsRealViews, value: m.views as number })
     if (!logged && !canEdit && figures.length === 0) return null
 
@@ -3369,8 +3507,8 @@ export default function CampaignDetailPage() {
         <div className="flex items-center justify-between gap-4 rounded-2xl bg-gradient-to-r from-purple-500 to-pink-500 px-5 py-4 text-white shadow-lg">
           <p className="text-sm font-medium">
             {locale === 'es'
-              ? '🔓 Desbloquea datos reales de Instagram — Conecta tu cuenta Business para capturar métricas verdaderas (reach, impresiones, saves) sin depender de scraping.'
-              : '🔓 Unlock real Instagram data — Connect your Business account to capture true metrics (reach, impressions, saves) without relying on scraping.'}
+              ? '🔓 Desbloquea datos reales de Instagram — Conecta tu cuenta Business para capturar métricas verdaderas (alcance, vistas, saves) sin depender de scraping.'
+              : '🔓 Unlock real Instagram data — Connect your Business account to capture true metrics (reach, views, saves) without relying on scraping.'}
           </p>
           <div className="flex shrink-0 items-center gap-2">
             <Link
@@ -3480,22 +3618,20 @@ export default function CampaignDetailPage() {
                     ) : t.dashboard.media}
                     value={totalMedia}
                   />
-                  {/* Alcance = audience (real → impressions → real views → labelled estimate); never a followers sum */}
+                  {/* Headline = REAL audience only (decision 4). The estimate is an internal, labelled secondary line for the agency; never a headline, never shown to a brand */}
                   <StatCard
                     icon={<Eye className="h-5 w-5" />}
                     label={(
                       <span className="flex flex-col">
-                        <span className="flex items-center gap-1">{t.campaignDetail.audience} <InfoTooltip text={t.campaignDetail.audienceHint} /></span>
-                        {totals && totals.audience.total > 0 && (
+                        <span className="flex items-center gap-1">{t.campaignDetail.audienceRealLabel} <InfoTooltip text={t.campaignDetail.audienceRealHint} /></span>
+                        {!isBrand && totals && totals.audience.estimated > 0 && (
                           <span className="text-xs text-gray-400 tabular-nums">
-                            {formatNumber(totals.audience.real, { locale })} {t.campaignDetail.audienceReal}
-                            {' · '}
-                            {formatNumber(totals.audience.estimated, { locale })} {t.campaignDetail.audienceEstimated} ({formatPercent(totals.audience.estimatedShare * 100, { locale, digits: 0 })})
+                            {t.campaignDetail.audienceEstimatedLine.replace('{n}', formatNumber(totals.audience.estimated, { locale }))}
                           </span>
                         )}
                       </span>
                     )}
-                    value={totals && totals.audience.total > 0 ? formatNumber(totals.audience.total, { locale }) : '—'}
+                    value={totals && totals.audience.real > 0 ? formatNumber(totals.audience.real, { locale }) : '—'}
                   />
                   {/* Interacciones = likes + comentarios + shares + saves (decision 3A) */}
                   <StatCard
@@ -3506,9 +3642,9 @@ export default function CampaignDetailPage() {
                 </div>
               </div>
 
-              {/* Views · ER (real audience only, 4A) · real impressions · creators who posted — same overview */}
+              {/* Views · ER on real views (4B) · creators who posted — same overview. Impressions are not captured and are never shown (decision 1) */}
               {totals && (
-                <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
                   <StatCard
                     icon={<Eye className="h-5 w-5" />}
                     label={t.campaignDetail.views}
@@ -3519,13 +3655,13 @@ export default function CampaignDetailPage() {
                     label={(
                       <span className="flex flex-col">
                         <span className="flex items-center gap-1">
-                          {t.campaignDetail.engagementRate}
+                          {t.campaignDetail.engagementRateOnViews}
                           <InfoTooltip text={t.campaignDetail.erHint} />
                         </span>
-                        {/* 4A: the base is the publications with a real audience figure; estimates never enter */}
+                        {/* 4B: interacciones ÷ vistas reales of the same pieces; published only with ≥ 3 pieces with views */}
                         <span className="text-xs text-gray-400 tabular-nums">
                           {totals.er.value !== null
-                            ? t.campaignDetail.erRealBaseSub.replace('{n}', formatNumber(totals.er.pieces, { locale }))
+                            ? t.campaignDetail.erViewsSub.replace('{n}', formatNumber(totals.er.pieces, { locale }))
                             : (totals.er.reason === 'insufficient_sample' || totals.er.reason === 'implausible')
                               ? t.campaignDetail.erInsufficientHint.replace('{n}', formatNumber(totals.er.pieces, { locale }))
                               : t.campaignDetail.erNoRealHint}
@@ -3539,11 +3675,6 @@ export default function CampaignDetailPage() {
                         : t.campaignDetail.erNoRealData}
                   />
                   <StatCard
-                    icon={<TrendingUp className="h-5 w-5" />}
-                    label={t.campaignDetail.impressions}
-                    value={totals.impressionsReal !== null ? formatNumber(totals.impressionsReal, { locale }) : '—'}
-                  />
-                  <StatCard
                     icon={<Users className="h-5 w-5" />}
                     label={t.campaignDetail.profilesPosted}
                     value={totals.creatorsActive}
@@ -3554,23 +3685,28 @@ export default function CampaignDetailPage() {
               {/* Campaign targets vs results (decision 1B) */}
               {renderTargetsCard()}
 
+              {/* Balance in four dimensions + "Prometido vs entregado" (agency only; server-computed from real data) */}
+              {renderBalanceCard()}
+
               {/* Business results the client reported (decision 14A) */}
               {renderBusinessResultsCard()}
 
-              {/* EMV Section — the client sees ONE EMV (extended) as "Valor mediático equivalente (estimado)" (decision 8A) */}
+              {/* EMV Section — the client sees ONE figure named exactly "EMV" with a "?" explanation (decision 3); "EMV Ampliado" is the internal name */}
               {totals && (totals.emvBasic > 0 || totals.emvExtended > 0) && (
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                   {!isBrand && (
                     <div className="rounded-xl border-2 border-green-200 bg-gradient-to-br from-green-50 to-emerald-50 p-5 shadow-sm">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-green-600 flex items-center gap-1">EMV {locale === 'es' ? 'Básico' : 'Basic'} <InfoTooltip text={locale === 'es' ? 'Valor estimado basado únicamente en el alcance (impresiones / 1.000 × CPM del sector). Cifra interna: el cliente no la ve.' : 'Estimated value based on reach only (impressions / 1,000 × industry CPM). Internal figure: the client never sees it.'} /></p>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-green-600 flex items-center gap-1">EMV {locale === 'es' ? 'Básico' : 'Basic'} <InfoTooltip text={locale === 'es' ? 'Valor basado únicamente en la audiencia (audiencia / 1.000 × CPM del sector). Cifra interna: el cliente no la ve.' : 'Value based on audience only (audience / 1,000 × industry CPM). Internal figure: the client never sees it.'} /></p>
                       <p className="mt-1 text-2xl font-bold text-green-700">{formatEur(totals.emvBasic, { compact: true, locale })}</p>
-                      <p className="mt-1 text-xs text-green-500">{locale === 'es' ? 'Solo alcance · uso interno' : 'Reach only · internal'}</p>
+                      <p className="mt-1 text-xs text-green-500">{locale === 'es' ? 'Solo audiencia · uso interno' : 'Audience only · internal'}</p>
                     </div>
                   )}
                   <div className="rounded-xl border-2 border-purple-200 bg-gradient-to-br from-purple-50 to-indigo-50 p-5 shadow-sm">
                     <p className="text-xs font-semibold uppercase tracking-wider text-purple-600 flex items-center gap-1">
-                      {isBrand ? t.campaignDetail.emvClientLabel : (
-                        <>EMV {locale === 'es' ? 'Ampliado' : 'Extended'} <InfoTooltip text={locale === 'es' ? 'Incluye alcance + clics + engagement (likes, comentarios, shares, saves). Fórmula TKOC personalizada. Es el único EMV que ve el cliente, como "Valor mediático equivalente (estimado)".' : 'Includes reach + clicks + engagement (likes, comments, shares, saves). Custom TKOC formula. The only EMV the client sees, as "Equivalent media value (estimated)".'} /></>
+                      {isBrand ? (
+                        <>{t.campaignDetail.emvClientLabel} <InfoTooltip text={t.campaignDetail.emvClientDefinition} /></>
+                      ) : (
+                        <>EMV {locale === 'es' ? 'Ampliado' : 'Extended'} <InfoTooltip text={locale === 'es' ? 'Incluye audiencia + clics + engagement (likes, comentarios, shares, saves) y las stories valoradas por regla de tier. Fórmula TKOC personalizada. Es el único EMV que ve el cliente, con el nombre "EMV".' : 'Includes audience + clicks + engagement (likes, comments, shares, saves) and the stories valued by the tier rule. Custom TKOC formula. The only EMV the client sees, named "EMV".'} /></>
                       )}
                     </p>
                     <p className="mt-1 text-2xl font-bold text-purple-700">{formatEur(totals.emvExtended, { compact: true, locale })}</p>
@@ -3578,13 +3714,15 @@ export default function CampaignDetailPage() {
                   </div>
                   <div className={`rounded-xl border border-gray-200 bg-white p-5 shadow-sm flex items-center ${isBrand ? 'lg:col-span-2' : ''}`}>
                     <p className="text-xs text-gray-500 leading-relaxed">
-                      {locale === 'es'
-                        ? 'El EMV es una estimación del coste equivalente que habría supuesto obtener un alcance, interacción e intención similares mediante medios pagados. No representa ventas ni retorno: por eso se compara con el coste como "Ratio EMV", nunca como ROI.'
-                        : 'EMV is an estimate of the equivalent cost of achieving similar reach, interaction and intent through paid media. It does not represent sales or return, which is why it is compared with cost as an "EMV ratio", never as ROI.'}
-                      {locale === 'es'
+                      {/* Client-facing sentence: never "estimación" next to the EMV (decision 3); the Ratio EMV remark is agency-only */}
+                      {t.campaignDetail.emvClientDefinition}
+                      {!isBrand && (locale === 'es'
+                        ? ' No representa ventas ni retorno: por eso se compara con el coste como "Ratio EMV", nunca como ROI.'
+                        : ' It does not represent sales or return, which is why it is compared with cost as an "EMV ratio", never as ROI.')}
+                      {!isBrand && (locale === 'es'
                         ? ' CPM EMV: post 10 €, reel 14 €, story 8 € (referencia de medios de pago 8 / 7 / 5 € × prima de contenido de creador).'
-                        : ' EMV CPM: post €10, reel €14, story €8 (paid-media reference €8 / €7 / €5 × creator-content premium).'}
-                      {totals.emvEstimatedStories > 0 && (
+                        : ' EMV CPM: post €10, reel €14, story €8 (paid-media reference €8 / €7 / €5 × creator-content premium).')}
+                      {!isBrand && totals.emvEstimatedStories > 0 && (
                         <span className="mt-1 block text-amber-700 dark:text-amber-400">
                           {locale === 'es'
                             ? `* Incluye ${totals.emvEstimatedStories} ${totals.emvEstimatedStories === 1 ? 'story' : 'stories'} con audiencia estimada (≈ ${formatNumber(totals.emvEstimatedAudience, { locale })} vistas: seguidores × % por tier). Si registras las vistas reales de la creadora, sustituyen la estimación.`
@@ -3598,7 +3736,7 @@ export default function CampaignDetailPage() {
 
               {/* Cost Summary (PAID campaigns; agency only — brands never see fees, cost, CPM or the ratio) */}
               {!isBrand && campaign.paymentType === 'PAID' && influencers.length > 0 && totals && (() => {
-                // Coste = fee acordado, si no coste (decision 6); Ratio EMV = EMV ampliado ÷ coste (9B); CPM sobre la audiencia
+                // Coste = fee acordado, si no coste (decision 6); Ratio EMV = EMV ampliado ÷ coste (9B); CPM sobre vistas reales (4B)
                 const totalCost = totals.cost
                 const emvRatio = totals.emvRatio
                 const emvCoversCost = emvRatio !== null && emvRatio >= 1
@@ -3668,7 +3806,7 @@ export default function CampaignDetailPage() {
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
                         <p className="text-xs font-semibold uppercase tracking-wider text-gray-500 flex items-center gap-1">
-                          {t.campaignDetail.cpm}
+                          {t.campaignDetail.cpmOnViews}
                           <InfoTooltip text={t.campaignDetail.cpmHint} />
                         </p>
                         <p className="mt-1 text-2xl font-bold tabular-nums text-gray-900">
@@ -4386,7 +4524,7 @@ export default function CampaignDetailPage() {
                       {m.thumbnailUrl ? (
                         <>
                           <img
-                            src={proxyImg(m.thumbnailUrl)}
+                            src={mediaThumbUrl(m)}
                             alt={m.caption || 'Media'}
                             className="h-full w-full object-cover"
                             onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; (e.currentTarget.nextElementSibling as HTMLElement)?.classList.remove('hidden') }}
@@ -4569,7 +4707,7 @@ export default function CampaignDetailPage() {
                         <div className="relative aspect-[9/16] overflow-hidden rounded-t-xl bg-gray-100">
                           {story.thumbnailUrl ? (
                             <img
-                              src={proxyImg(story.thumbnailUrl)}
+                              src={mediaThumbUrl(story)}
                               alt="Story"
                               className="h-full w-full object-cover"
                               onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}

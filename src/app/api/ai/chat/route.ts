@@ -85,17 +85,35 @@ function summarizeOverview(ov: CampaignOverview) {
       withoutBase: t.audience.withoutBase,
     },
     reachReal: t.reachReal,
-    impressionsReal: t.impressionsReal,
-    /** ER (%) = interacciones ÷ audiencia × 100; null without audience base. */
+    /**
+     * Tasa de engagement (4B) = interacciones ÷ VISTAS reales × 100 of the same
+     * publications; null (with a reason) when the real sample is insufficient
+     * (< 3 publications with views, < 500 views) or the ratio is implausible.
+     */
+    engagementRate: {
+      pct: t.er.value,
+      basis: 'sobre vistas reales',
+      publicationsWithViews: t.er.pieces,
+      views: t.er.denominator,
+      reason: t.er.reason ?? null,
+    },
+    /** @deprecated same as engagementRate.pct */
     engagementRatePct: t.er.value,
     /** Coste = Σ (fee acordado, si no coste registrado). */
     cost: t.cost,
     membersWithCost: t.membersWithCost,
+    /** The one client-facing value figure, labelled "EMV" (never "estimado"). */
     emvExtended: round2(t.emvExtended),
     emvEstimatedStories: t.emvEstimatedStories,
     /** Ratio EMV = EMV ampliado ÷ coste, shown as "×2,4". Never ROI. */
     emvRatio: t.emvRatio,
+    /** CPM real = coste ÷ vistas reales × 1000 (4B). */
     cpm: t.cpm,
+    cpmBasis: 'sobre vistas reales',
+    /** "Prometido vs entregado" (real data; ok only when it is true). */
+    delivery: ov.delivery,
+    /** Balance in four labelled dimensions (no single score). */
+    balance: ov.balance,
     targets: ov.targets.map(x => ({
       key: x.key,
       target: x.target,
@@ -264,7 +282,7 @@ Cómo respondes:
 - Sé conciso: lo justo para resolver la duda. Sin introducciones ni despedidas de relleno.
 - Usa Markdown ligero (negritas, listas). Nada de tablas enormes.
 - Cuando el usuario diga que "no funciona" algo o "no aparece contenido", guíale por la lista de comprobación de la sección 20 de la guía (Limitaciones conocidas y problemas frecuentes) antes de suponer un fallo.
-- Para preguntas sobre rendimiento, usa los "Datos actuales" adjuntos; cita cifras reales y no inventes datos. Si faltan datos, dilo y explica cómo conseguirlos en la herramienta. Referencias: engagement > 3 % es bueno, > 5 % excelente.
+- Para preguntas sobre rendimiento, usa los "Datos actuales" adjuntos; cita cifras reales y no inventes datos. Si faltan datos, dilo y explica cómo conseguirlos en la herramienta. La tasa de engagement de campaña es siempre "sobre vistas" (interacciones ÷ vistas reales); si es null, di "Muestra real insuficiente" y su motivo. Referencias de engagement de PERFIL: > 3 % es bueno, > 5 % excelente.
 - No puedes ejecutar acciones (crear, editar, borrar, rastrear): explica cómo hacerlas el usuario. Nunca afirmes haber hecho un cambio.
 - Si preguntan por algo que la plataforma no tiene, dilo claramente y sugiere la alternativa más cercana que sí existe. No inventes funcionalidades.
 `.trim()

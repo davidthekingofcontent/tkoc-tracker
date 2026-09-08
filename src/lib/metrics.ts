@@ -201,6 +201,13 @@ export function engagementRateOnViews(base: ViewsBase, options: EngagementRateOp
   return { value: raw, ...out }
 }
 
+/** CPM/ER are only published on a meaningful sample (same rule as the ER). */
+export function viewsBaseReliable(base: ViewsBase, options: EngagementRateOptions = {}): boolean {
+  const minPieces = options.minPieces ?? 1
+  const minAudience = options.minAudience ?? ER_MIN_AUDIENCE
+  return base.views > 0 && base.pieces >= minPieces && base.views >= minAudience
+}
+
 /** Σ views / pieces / engagements of the pieces with real views. */
 export function viewsBaseOf(items: Array<Pick<MetricMedia, 'views' | 'likes' | 'comments' | 'shares' | 'saves'>>): ViewsBase {
   let views = 0, pieces = 0, engagements = 0

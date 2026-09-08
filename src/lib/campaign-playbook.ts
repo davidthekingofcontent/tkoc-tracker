@@ -12,7 +12,9 @@
  * The headline metric is the EMV ratio (EMV / spend) — it is never
  * presented as "ROI" (product decision 9B) and it is written the way the rest
  * of the product writes it: formatRatio → "×2,3" (es) / "2.3×" (en).
- * Interacciones = likes + comentarios + shares + saves (decision 3A).
+ * Interacciones = likes + comentarios + shares + saves (decision 3A). Every CPM
+ * quoted here is fee ÷ real VIEWS × 1000 (decision 4B), the same base as the
+ * campaign page; creators without views get no CPM clause.
  */
 
 import { formatRatio } from '@/lib/utils'

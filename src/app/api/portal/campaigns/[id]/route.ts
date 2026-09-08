@@ -5,7 +5,7 @@ import { resolveBrandScope, sanitizeCampaignForBrand } from '@/lib/brand-scope'
 import { computeCampaignOverview, stripEconomics } from '@/lib/campaign-overview'
 import { buildCampaignLearnings, toClientLearnings } from '@/lib/campaign-learnings'
 import { loadReportConfig, reportConfigForBrand } from '@/lib/report-config'
-import type { CampaignOverview } from '@/lib/metrics'
+import type { AudienceTotals, CampaignOverview } from '@/lib/metrics'
 
 // Brands are not a Prisma model: Setting 'campaign_brand_{campaignId}' holds
 // the brandId, and Setting key=brandId holds JSON { name, logo?, ... } (see
@@ -39,12 +39,23 @@ async function resolveCampaignBrand(
 // that we drop the keys themselves so a brand never even sees the field names:
 // cost, membersWithCost, emvBasic, emvRatio, cpm and the CPM target row.
 // The only EMV a client sees is the extended one (David, decision 9B).
+// Client-facing (David, 2026-09-08): no impressions and no estimated audience
+// either — the same policy as /api/portal/overview. Audience figures are the
+// real ones only (real, realPieces, counts per basis); an estimate never
+// reaches the client. The "Prometido vs entregado" checklist (overview.delivery,
+// real data, unaffected by stripEconomics) does travel; the four-dimension
+// balance is agency-only and stays out.
 // Field names match what GET /api/campaigns/[id] exposes so the shared
 // report component can read both responses with the same code.
 // ---------------------------------------------------------------------------
 
-type PortalTotals = Omit<CampaignOverview['totals'], 'cost' | 'membersWithCost' | 'emvBasic' | 'emvRatio' | 'cpm'>
-type PortalInfluencer = Omit<CampaignOverview['perInfluencer'][number], 'cost' | 'emvBasic' | 'emvRatio' | 'cpm'>
+/** Real audience only: sums and per-basis COUNTS (never an estimated figure). */
+type PortalAudience = Pick<AudienceTotals, 'real' | 'realPieces' | 'withoutBase' | 'countsByBasis'>
+type PortalTotals = Omit<
+  CampaignOverview['totals'],
+  'cost' | 'membersWithCost' | 'emvBasic' | 'emvRatio' | 'cpm' | 'audience' | 'impressionsReal' | 'emvEstimatedStories' | 'emvEstimatedAudience'
+> & { audience: PortalAudience }
+type PortalInfluencer = Omit<CampaignOverview['perInfluencer'][number], 'cost' | 'emvBasic' | 'emvRatio' | 'cpm' | 'audience'> & { audience: PortalAudience }
 type PortalMedia = Omit<CampaignOverview['perMedia'][number], 'emvBasic'>
 
 interface PortalOverview {
@@ -55,22 +66,24 @@ interface PortalOverview {
   timeline: CampaignOverview['timeline']
   targets: CampaignOverview['targets']
   business: CampaignOverview['business']
+  delivery: CampaignOverview['delivery']
   // Legacy keys kept for old portal clients (same values as the totals above).
   totalMedia: number
   totalLikes: number
   totalComments: number
   totalViews: number
-  /** Audiencia total (real + estimada) — what the old client called "reach". */
+  /** Audiencia real — what the old client called "reach". Never includes an estimate. */
   totalReach: number
-  totalImpressions: number | null
   totalEngagements: number
   engagementRate: number
   profilesPosted: number
   mediaCounts: Record<string, number>
   emvExtended: number
-  emvEstimatedStories: number
   emvRealStories: number
-  emvEstimatedAudience: number
+}
+
+function toPortalAudience(a: AudienceTotals): PortalAudience {
+  return { real: a.real, realPieces: a.realPieces, withoutBase: a.withoutBase, countsByBasis: a.countsByBasis }
 }
 
 function toPortalOverview(full: CampaignOverview): PortalOverview {
@@ -88,15 +101,12 @@ function toPortalOverview(full: CampaignOverview): PortalOverview {
     shares: t.shares,
     saves: t.saves,
     engagements: t.engagements,
-    audience: t.audience,
+    audience: toPortalAudience(t.audience),
     reachReal: t.reachReal,
-    impressionsReal: t.impressionsReal,
     er: t.er,
     members: t.members,
     emvExtended: t.emvExtended,
-    emvEstimatedStories: t.emvEstimatedStories,
     emvRealStories: t.emvRealStories,
-    emvEstimatedAudience: t.emvEstimatedAudience,
     mediaCounts: t.mediaCounts,
   }
 
@@ -112,18 +122,21 @@ function toPortalOverview(full: CampaignOverview): PortalOverview {
     deleted: p.deleted,
     views: p.views,
     engagements: p.engagements,
-    audience: p.audience,
+    audience: toPortalAudience(p.audience),
     er: p.er,
     emvExtended: p.emvExtended,
     deliverablesPlanned: p.deliverablesPlanned,
     status: p.status,
     vsBaseline: p.vsBaseline,
   }))
+  // An estimated per-piece audience never leaves the server: the value is
+  // zeroed and the row keeps `audienceEstimated: true` (the report reads it as
+  // "no audience data").
   const perMedia: PortalMedia[] = ov.perMedia.map(m => ({
     id: m.id,
     views: m.views,
     mediaType: m.mediaType,
-    audience: m.audience,
+    audience: m.audienceEstimated ? 0 : m.audience,
     audienceBasis: m.audienceBasis,
     audienceEstimated: m.audienceEstimated,
     engagements: m.engagements,
@@ -140,21 +153,57 @@ function toPortalOverview(full: CampaignOverview): PortalOverview {
     // The CPM target compares against cost: not for brands.
     targets: ov.targets.filter(t => t.key !== 'cpm'),
     business: ov.business,
+    delivery: ov.delivery,
     totalMedia: totals.media,
     totalLikes: totals.likes,
     totalComments: totals.comments,
     totalViews: totals.views,
-    totalReach: totals.audience.total,
-    totalImpressions: totals.impressionsReal,
+    totalReach: totals.audience.real,
     totalEngagements: totals.engagements,
     engagementRate: totals.er.value ?? 0,
     profilesPosted: totals.creatorsActive,
     mediaCounts: totals.mediaCounts,
     emvExtended: totals.emvExtended,
-    emvEstimatedStories: totals.emvEstimatedStories,
     emvRealStories: totals.emvRealStories,
-    emvEstimatedAudience: totals.emvEstimatedAudience,
   }
+}
+
+/**
+ * Sentiment counts of the captured comments of the campaign's media (same
+ * aggregate as the agency report view). Counts only — never the texts. The
+ * report shows the positive share only when ≥ 20 comments were analysed.
+ * Publications / creators the PM hid from the client are excluded, like in
+ * every other figure. Never throws.
+ */
+async function computeCampaignSentiment(
+  campaignId: string,
+  exclude: { mediaIds: string[]; influencerIds: string[] }
+): Promise<{ positive: number; neutral: number; negative: number; total: number }> {
+  const out = { positive: 0, neutral: 0, negative: 0, total: 0 }
+  try {
+    const rows = await prisma.comment.groupBy({
+      by: ['sentiment'],
+      where: {
+        media: {
+          campaignId,
+          ...(exclude.mediaIds.length > 0 ? { id: { notIn: exclude.mediaIds } } : {}),
+          ...(exclude.influencerIds.length > 0 ? { influencerId: { notIn: exclude.influencerIds } } : {}),
+        },
+      },
+      _count: { _all: true },
+    })
+    for (const row of rows) {
+      const n = row._count._all
+      if (row.sentiment === 'positive') out.positive += n
+      else if (row.sentiment === 'negative') out.negative += n
+      else if (row.sentiment === 'neutral') out.neutral += n
+      else continue
+      out.total += n
+    }
+  } catch (err) {
+    console.error('[portal campaign] sentiment aggregate failed:', err instanceof Error ? err.message : err)
+  }
+  return out
 }
 
 // GET /api/portal/campaigns/[id]
@@ -216,7 +265,7 @@ export async function GET(
         }
       : {}
 
-    const [campaign, fullOverview, brand, learningsRows] = await Promise.all([
+    const [campaign, fullOverview, brand, learningsRows, sentiment] = await Promise.all([
       prisma.campaign.findUnique({
         where: { id },
         select: {
@@ -292,7 +341,6 @@ export async function GET(
               saves: true,
               views: true,
               reach: true,
-              impressions: true,
               engagementRate: true,
               source: true,
               postedAt: true,
@@ -322,6 +370,7 @@ export async function GET(
         where: { campaignId: id, ...learningsMediaWhere },
         select: { influencerId: true, likes: true, comments: true, shares: true, saves: true, mediaType: true },
       }),
+      computeCampaignSentiment(id, { mediaIds: hiddenMediaIds, influencerIds: hiddenInfluencerIds }),
     ])
 
     if (!campaign || !fullOverview) {
@@ -347,6 +396,8 @@ export async function GET(
       campaign: { ...campaign, brand },
       overview,
       learnings,
+      // Sentiment counts of the captured comments (report: "Qué dijo la audiencia")
+      sentiment,
       // Client-safe projection of the agency's report configuration (texts, hidden sections/columns)
       reportConfig: reportConfigForBrand(reportConfig),
     }))

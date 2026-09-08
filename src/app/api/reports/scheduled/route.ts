@@ -7,9 +7,12 @@
  * campaign page, the printable report or the portal. Definitions
  * (src/lib/metrics.ts, David 2026-09-05): interacciones = likes + comentarios +
  * shares + saves; audiencia = alcance real → impresiones → vistas → estimación
- * etiquetada; ER = interacciones ÷ audiencia; coste = fee acordado o coste;
- * EMV visible = extended; EMV ÷ coste se llama "Ratio EMV" (×2,4), nunca ROI.
- * Money is EUR, formatted es-ES. BRAND users never receive cost, CPM or ratio.
+ * etiquetada; ER = interacciones ÷ vistas reales (4B); CPM = coste ÷ vistas;
+ * coste = fee acordado o coste; EMV visible = extended, labelled "EMV"; EMV ÷
+ * coste se llama "Ratio EMV" (×2,4), nunca ROI. Money is EUR, formatted es-ES.
+ * BRAND users never receive cost, CPM, ratio, impressions or estimated audiences
+ * (David, 2026-09-08). The delivery checklist and the balance travel with the
+ * agency version.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -68,11 +71,12 @@ function influencerRow(p: PerInfluencerMetrics, showEconomics: boolean) {
       deleted: p.deleted,
       views: p.views,
       engagements: p.engagements,
-      audience: p.audience.total,
       audienceReal: p.audience.real,
-      audienceEstimated: p.audience.estimated,
-      audienceEstimatedShare: p.audience.estimatedShare,
+      /** Tasa de engagement sobre vistas (4B); null when the real sample is insufficient. */
       engagementRate: p.er.value,
+      engagementRateBasis: 'views' as const,
+      engagementRatePieces: p.er.pieces,
+      engagementRateReason: p.er.reason ?? null,
       emvExtended: p.emvExtended,
       emvExtendedFormatted: eur(p.emvExtended),
     },
@@ -82,6 +86,10 @@ function influencerRow(p: PerInfluencerMetrics, showEconomics: boolean) {
     ...base,
     metrics: {
       ...base.metrics,
+      /** Audiencia total y estimada: informativas, solo agencia. */
+      audience: p.audience.total,
+      audienceEstimated: p.audience.estimated,
+      audienceEstimatedShare: p.audience.estimatedShare,
       /** Fee acordado; si no hay, coste (decisión 6). */
       cost: p.cost,
       costFormatted: eur(p.cost),
@@ -115,30 +123,39 @@ function buildOverview(ov: CampaignOverview, showEconomics: boolean) {
     totalViews: t.views,
     /** Interacciones = likes + comentarios + shares + saves (decisión 3A). */
     totalEngagements: t.engagements,
-    /** Audiencia total = real + estimada (decisión 5). */
-    audience: t.audience.total,
+    /** Audiencia real (alcance → impresiones → vistas reales) — the headline audience figure. */
     audienceReal: t.audience.real,
-    audienceEstimated: t.audience.estimated,
-    audienceEstimatedShare: t.audience.estimatedShare,
-    audienceByBasis: byBasis,
-    audienceWithoutBase: t.audience.withoutBase,
+    audienceRealPieces: t.audience.realPieces,
     reachReal: t.reachReal,
-    impressionsReal: t.impressionsReal,
-    /** ER = interacciones ÷ audiencia (real + estimada) × 100 (decisión 4C). */
+    /** Tasa de engagement sobre vistas (4B): interacciones ÷ vistas reales × 100; null when the real sample is insufficient. */
     engagementRate: t.er.value,
-    engagementRateEstimatedShare: t.er.estimatedShare,
-    /** The only EMV shown to clients (decisión 9B). */
+    engagementRateBasis: 'views' as const,
+    engagementRatePieces: t.er.pieces,
+    engagementRateReason: t.er.reason ?? null,
+    /** The only EMV shown to clients, labelled "EMV" (decisión 9B / 8A). */
     emvExtended: t.emvExtended,
     emvExtendedFormatted: eur(t.emvExtended),
-    emvEstimatedStories: t.emvEstimatedStories,
-    emvRealStories: t.emvRealStories,
-    emvEstimatedAudience: t.emvEstimatedAudience,
     targets: ov.targets.filter(tc => showEconomics || tc.key !== 'cpm'),
     business: ov.business,
+    /** "Prometido vs entregado" (real data): creators, pieces, dates, ad identification. */
+    delivery: ov.delivery,
   }
   if (!showEconomics) return base
   return {
     ...base,
+    /** Audiencia total y estimada (decisión 5): informativas, solo agencia. */
+    audience: t.audience.total,
+    audienceEstimated: t.audience.estimated,
+    audienceEstimatedShare: t.audience.estimatedShare,
+    audienceByBasis: byBasis,
+    audienceWithoutBase: t.audience.withoutBase,
+    impressionsReal: t.impressionsReal,
+    engagementRateEstimatedShare: t.er.estimatedShare,
+    emvEstimatedStories: t.emvEstimatedStories,
+    emvRealStories: t.emvRealStories,
+    emvEstimatedAudience: t.emvEstimatedAudience,
+    /** Balance in four dimensions (agency only; efficiency is a cost judgement). */
+    balance: ov.balance,
     totalCost: t.cost,
     totalCostFormatted: eur(t.cost),
     membersWithCost: t.membersWithCost,
@@ -156,17 +173,22 @@ function buildSummary(campaignName: string, ov: CampaignOverview, showEconomics:
   lines.push(`Campaña: ${campaignName}`)
   lines.push(`Publicaciones: ${int(t.media)} (${int(t.stories)} stories, ${int(t.posts)} posts)${t.mediaDeleted > 0 ? ` · ${int(t.mediaDeleted)} borradas por el creador, mantenidas en los totales` : ''}`)
   lines.push(`Creadores con contenido publicado: ${int(t.creatorsActive)} de ${int(t.members)}`)
-  const estPct = Math.round(t.audience.estimatedShare * 100)
-  lines.push(`Audiencia: ${int(t.audience.total)}${t.audience.estimated > 0 ? ` (${int(t.audience.real)} real + ${int(t.audience.estimated)} estimada, ${estPct} % estimado)` : ' (100 % datos reales)'}`)
-  if (t.reachReal > 0) lines.push(`Alcance real: ${int(t.reachReal)}`)
-  lines.push(`Vistas: ${int(t.views)}`)
+  lines.push(`Vistas reales: ${int(t.views)}`)
   lines.push(`Interacciones: ${int(t.engagements)} (${int(t.likes)} me gusta, ${int(t.comments)} comentarios, ${int(t.shares)} compartidos, ${int(t.saves)} guardados)`)
-  lines.push(`Tasa de engagement: ${pct(t.er.value)}${t.er.value !== null && t.er.estimatedShare > 0 ? ` (base ${Math.round(t.er.estimatedShare * 100)} % estimada)` : ''}`)
-  lines.push(`EMV: ${eur(t.emvExtended) ?? '—'}${t.emvEstimatedStories > 0 ? ` (${int(t.emvEstimatedStories)} stories con audiencia estimada)` : ''}`)
+  const erText = t.er.value !== null
+    ? `${pct(t.er.value)} (sobre ${int(t.er.pieces)} publicaciones con vistas reales)`
+    : t.er.reason === 'no_real_base' ? 'sin vistas reales' : 'muestra real insuficiente'
+  lines.push(`Tasa de engagement (sobre vistas): ${erText}`)
+  lines.push(`Audiencia real: ${int(t.audience.real)}${showEconomics && t.audience.estimated > 0 ? ` · estimada aparte (informativa): ${int(t.audience.estimated)}` : ''}`)
+  if (t.reachReal > 0) lines.push(`Alcance real: ${int(t.reachReal)}`)
+  lines.push(`EMV: ${eur(t.emvExtended) ?? '—'}`)
+  const d = ov.delivery
+  const check = (ok: boolean) => (ok ? 'OK' : 'revisar')
+  lines.push(`Prometido vs entregado: creadores ${int(d.creators.delivered)}/${int(d.creators.planned)} (${check(d.creators.ok)}) · piezas ${int(d.pieces.delivered)}${d.pieces.planned !== null ? `/${int(d.pieces.planned)}` : ''} (${check(d.pieces.ok)}) · fechas ${int(d.dates.inWindow)}/${int(d.dates.total)} dentro del periodo (${check(d.dates.ok)}) · identificación legal ${int(d.disclosure.disclosed)}/${int(d.disclosure.total)} (${check(d.disclosure.ok)})`)
   if (showEconomics) {
     lines.push(`Coste: ${eur(t.cost) ?? '—'}${t.membersWithCost < t.members ? ` (${int(t.membersWithCost)} de ${int(t.members)} creadores con coste registrado)` : ''}`)
     lines.push(`Ratio EMV: ${ratio(t.emvRatio) ?? '—'}`)
-    if (t.cpm !== null) lines.push(`CPM real: ${eur(t.cpm)}`)
+    if (t.cpm !== null) lines.push(`CPM real (sobre vistas): ${eur(t.cpm)}`)
   }
   return lines
 }

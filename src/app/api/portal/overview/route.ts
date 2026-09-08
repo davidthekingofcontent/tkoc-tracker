@@ -15,6 +15,8 @@ import type { CampaignOverview } from '@/lib/metrics'
 // (computeCampaignOverview, src/lib/campaign-overview.ts), with each campaign's
 // ReportConfig applied — what the agency hid from this client leaves every
 // figure — and the economics stripped. NO fees, NO budget, NO costs — ever.
+// Client-facing (David, 2026-09-08): no impressions, no estimated audience;
+// the ER is the tasa de engagement sobre vistas (4B).
 // ADMIN may pass ?brandId= to preview the portal as a given brand.
 
 const OVERVIEW_CONCURRENCY = 5
@@ -134,15 +136,15 @@ export async function GET(request: NextRequest) {
                 engagements: t.engagements,
                 /** @deprecated legacy alias of engagements (old clients summed views into it). */
                 interactions: t.engagements,
-                /** Audiencia total (real + estimada) with its estimated share, 0–1. */
+                /** Audiencia real only (alcance → impresiones → vistas reales). Estimates never reach the client. */
                 audience: {
-                  total: t.audience.total,
                   real: t.audience.real,
-                  estimated: t.audience.estimated,
-                  estimatedShare: t.audience.estimatedShare,
+                  /** Publications with a real audience figure behind it. */
+                  realPieces: t.audience.realPieces,
                 },
-                /** ER = interacciones ÷ audiencia × 100; null without audience base. */
+                /** Tasa de engagement sobre vistas (4B): interacciones ÷ vistas reales × 100; null when the real sample is insufficient. */
                 engagementRate: t.er.value,
+                engagementRateReason: t.er.reason ?? null,
               }
             : null,
         }

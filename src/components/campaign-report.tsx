@@ -1,14 +1,13 @@
 'use client'
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { flushSync } from 'react-dom'
 import Link from 'next/link'
-import dynamic from 'next/dynamic'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
 import { cn, formatNumber, formatEur, formatRatio, formatDate } from '@/lib/utils'
-import { proxyImg } from '@/lib/proxy-image'
+import { mediaThumbUrl, proxyImg } from '@/lib/proxy-image'
 import type { BaselineComparison } from '@/lib/creator-baseline'
 // Pure module (no Prisma): the ONE economic-wording test the server projection
 // uses, kept here only as a last-resort print guard (see screenOnly below).
@@ -18,6 +17,8 @@ import type { Locale, TranslationKeys } from '@/i18n/translations'
 // Types only: '@/lib/report-config' imports Prisma and must never be bundled
 // into this client component.
 import type {
+  HighlightedComment,
+  ReportCommentSentiment,
   ReportConfig,
   ReportColumnId,
   ReportSectionId,
@@ -28,11 +29,12 @@ import type {
   AudienceBasis,
   AudienceTotals,
   BusinessResults,
+  CampaignBalance,
+  DeliveryChecklist,
   EngagementRateResult,
   TargetComparison,
   TargetKey,
   TargetVerdict,
-  TimelinePoint,
 } from '@/lib/metrics'
 import {
   ArrowLeft,
@@ -67,6 +69,11 @@ import {
   TriangleAlert,
   ClipboardList,
   Star,
+  CircleCheck,
+  CircleDashed,
+  MessageSquare,
+  Plus,
+  FileDown,
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
@@ -83,17 +90,22 @@ import {
 // Ratio EMV, basic EMV), so every fee-derived column is data-driven AND gated
 // by !isPortal.
 //
-// Decision 4A (David 2026-09-05): REAL data first. Headline numbers are real
-// (views, Σ real audience, interactions, ER on the real base); anything
-// estimated is ONE separate, labelled, hideable line. Never mixed.
+// Decision 4A/4B (David 2026-09-05) and the brand study (2026-09-08): REAL
+// data only. Headline numbers are real (views, real audience, interactions,
+// ER = interactions ÷ real views); impressions and estimated audiences are
+// never shown to the client. ONE EMV figure, labelled "EMV", with a hover
+// explanation on screen and a discreet footnote on paper. A "Prometido vs
+// entregado" checklist and (agency only) the four-dimension balance come
+// straight from overview.delivery / overview.balance. No daily chart.
 //
 // Print: the report is laid out for A4 portrait with 12mm margins (content
 // width ≈ 703px at 96 dpi). Every table is `table-layout: fixed` with widths
-// that sum ≤ 100 %, grids are forced to three columns, thumbnails have explicit
-// pixel boxes, and the daily chart renders with an explicit width because
-// ResponsiveContainer measures 0 px while printing. The body shows up to six
-// pieces with REAL audience (never one without); the complete list is a
-// compact annex. While printing, the learnings render the client projection.
+// that sum ≤ 100 %, grids are forced to three columns and thumbnails have
+// explicit pixel boxes. The body shows up to six pieces with REAL audience
+// (never one without); the complete list is a compact annex. While printing,
+// the learnings render the client projection. `printMode` (?print=1, the
+// server-side PDF renderer) forces that layout on screen, hides the top bar
+// and flags <html data-report-ready="1"> once data and images have settled.
 //
 // The PM can tailor what the client sees (decision 16A): title/subtitle,
 // an intro and a conclusions text, hidden sections/columns/rows. That config
@@ -200,15 +212,18 @@ interface ReportOverviewTotals {
   shares: number
   saves: number
   engagements: number
-  audience: AudienceTotals
+  /** The portal projection only carries the real figures (real, realPieces, counts). */
+  audience: Pick<AudienceTotals, 'real' | 'realPieces'> & Partial<AudienceTotals>
   reachReal: number
-  impressionsReal: number | null
+  /** Agency only (never shown; the portal projection drops it). */
+  impressionsReal?: number | null
   er: EngagementRateResult
   members: number
   emvExtended: number
-  emvEstimatedStories: number
+  /** Agency only (internal breakdown; the portal projection drops them). */
+  emvEstimatedStories?: number
   emvRealStories: number
-  emvEstimatedAudience: number
+  emvEstimatedAudience?: number
   mediaCounts: Record<string, number>
   /** Agency only */
   cost?: number
@@ -230,7 +245,7 @@ interface ReportPerInfluencer {
   deleted: number
   views: number
   engagements: number
-  audience: AudienceTotals
+  audience: Pick<AudienceTotals, 'real' | 'realPieces'> & Partial<AudienceTotals>
   er: EngagementRateResult
   emvExtended: number
   deliverablesPlanned: number | null
@@ -255,10 +270,24 @@ interface ReportOverview {
   totals: ReportOverviewTotals
   perInfluencer: ReportPerInfluencer[]
   perMedia: ReportPerMedia[]
-  timeline: TimelinePoint[]
   targets: TargetComparison[]
   business: BusinessResults | null
+  /** "Prometido vs entregado" (server-computed); null in an older response. */
+  delivery: DeliveryChecklist | null
+  /** Four labelled dimensions (agency only on screen); null in an older response. */
+  balance: CampaignBalance | null
 }
+
+/** Sentiment counts of the captured comments (Comment.sentiment), from the report/portal APIs. */
+interface ReportSentiment {
+  positive: number
+  neutral: number
+  negative: number
+  total: number
+}
+
+/** Real sentiment data is shown only from this many analysed comments. */
+const SENTIMENT_MIN_COMMENTS = 20
 
 // --- Learnings (built server-side by src/lib/campaign-learnings.ts) ----------
 // The agency API sends BOTH projections: `learnings` (full, staff) and
@@ -315,15 +344,28 @@ function normalizeOverview(raw: unknown): ReportOverview | null {
   if (!totals || typeof totals !== 'object' || !totals.audience || typeof totals.audience !== 'object' || !totals.er || typeof totals.er !== 'object') {
     return null
   }
+  const delivery = r.delivery && typeof r.delivery === 'object' ? (r.delivery as DeliveryChecklist) : null
+  const balance = r.balance && typeof r.balance === 'object' ? (r.balance as CampaignBalance) : null
   return {
     definitionsVersion: typeof r.definitionsVersion === 'number' ? r.definitionsVersion : undefined,
     totals,
     perInfluencer: asArray<ReportPerInfluencer>(r.perInfluencer),
     perMedia: asArray<ReportPerMedia>(r.perMedia),
-    timeline: asArray<TimelinePoint>(r.timeline),
     targets: asArray<TargetComparison>(r.targets),
     business: r.business && typeof r.business === 'object' ? (r.business as BusinessResults) : null,
+    delivery: delivery && delivery.creators && delivery.pieces && delivery.dates && delivery.disclosure ? delivery : null,
+    balance: balance && typeof balance.execution === 'string' ? balance : null,
   }
+}
+
+/** Defensive parse of the `sentiment` key; null when absent or empty. */
+function normalizeSentiment(raw: unknown): ReportSentiment | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : 0)
+  const positive = n(r.positive), neutral = n(r.neutral), negative = n(r.negative)
+  const total = typeof r.total === 'number' ? n(r.total) : positive + neutral + negative
+  return total > 0 ? { positive, neutral, negative, total } : null
 }
 
 const INSIGHT_TYPES: ReadonlySet<string> = new Set<LearningInsightType>(['success', 'warning', 'action', 'insight', 'info'])
@@ -397,7 +439,32 @@ const EMPTY_CONFIG: ReportConfig = {
   hiddenColumns: [],
   hiddenMediaIds: [],
   hiddenInfluencerIds: [],
+  highlightedComments: [],
   sentVersions: [],
+}
+
+const COMMENT_SENTIMENTS: ReadonlySet<string> = new Set<ReportCommentSentiment>(['positive', 'neutral', 'negative'])
+
+/** Highlighted comments as the API sends them (already normalised server-side); defensive anyway. */
+function normalizeHighlighted(v: unknown): HighlightedComment[] {
+  if (!Array.isArray(v)) return []
+  return v.flatMap((item, index) => {
+    if (!item || typeof item !== 'object') return []
+    const r = item as Record<string, unknown>
+    const text = typeof r.text === 'string' ? r.text : ''
+    if (!text.trim()) return []
+    return [{
+      id: typeof r.id === 'string' && r.id ? r.id : `c${index + 1}`,
+      text,
+      author: typeof r.author === 'string' ? r.author : '',
+      sentiment: typeof r.sentiment === 'string' && COMMENT_SENTIMENTS.has(r.sentiment) ? (r.sentiment as ReportCommentSentiment) : 'neutral',
+      mediaId: typeof r.mediaId === 'string' ? r.mediaId : null,
+    }]
+  })
+}
+
+function newCommentId(): string {
+  return `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
 }
 
 /**
@@ -420,6 +487,7 @@ function normalizeClientConfig(raw: unknown): ReportConfig {
     hiddenColumns: list(r.hiddenColumns),
     hiddenMediaIds: list(r.hiddenMediaIds),
     hiddenInfluencerIds: list(r.hiddenInfluencerIds),
+    highlightedComments: normalizeHighlighted(r.highlightedComments),
     sentVersions: Array.isArray(r.sentVersions) ? (r.sentVersions as ReportSentVersion[]) : [],
     updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : undefined,
     updatedBy: typeof r.updatedBy === 'string' ? r.updatedBy : undefined,
@@ -450,135 +518,85 @@ function toggleId(list: string[], id: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Recharts (client-side only, same dynamic-import pattern as the detail page)
+// Print layout
 // ---------------------------------------------------------------------------
 
-interface ChartLabels {
-  engagements: string
-  posts: string
-}
-
 /**
- * Print chart box. A4 portrait minus 12mm margins ≈ 703px; the card keeps
- * 12px of padding and a 1px border per side while printing, so 640px always
- * fits without scaling. (ResponsiveContainer measures 0px in print.)
+ * A4 layout rules, emitted twice: under `@media print` (the browser's print
+ * dialog and the PDF renderer's print media) and under
+ * `html[data-report-print]` (the ?print=1 mode, which forces the same layout
+ * on screen so the server-side PDF never depends on media emulation).
  */
-const PRINT_CHART_WIDTH = 640
-const PRINT_CHART_HEIGHT = 220
-
-/** 'YYYY-MM-DD' (Europe/Madrid day key) → local Date on that calendar day. */
-function dayKeyToDate(key: string): Date {
-  const [y, m, d] = key.split('-').map(Number)
-  return new Date(y, (m || 1) - 1, d || 1)
+function printLayoutRules(scope: string): string {
+  const s = scope ? `${scope} ` : ''
+  return `
+    ${s}aside, ${s}header, ${s}.fixed, ${s}.no-print { display: none !important; }
+    ${s}.print-only { display: block !important; }
+    /* Undo the dashboard sidebar offset. The layout token is
+       'lg:ml-[260px]', so the colon must be escaped for the
+       selector to match on landscape / A3 sheets above the lg breakpoint. */
+    ${s}div.ml-\\[260px\\], ${s}div.lg\\:ml-\\[260px\\] { margin-left: 0 !important; }
+    ${s}main { padding: 0 !important; overflow: visible !important; max-width: none !important; }
+    ${scope || 'html'}, ${s}body { background: #ffffff !important; }
+    ${s}#campaign-report { background: #ffffff; width: 100%; max-width: 100%; overflow-x: hidden; }
+    ${s}#campaign-report, ${s}#campaign-report * {
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;
+    }
+    ${s}#campaign-report img { max-width: 100%; }
+    ${s}#campaign-report section { break-inside: auto; }
+    ${s}.print-card { break-inside: avoid; page-break-inside: avoid; box-shadow: none !important; min-width: 0; }
+    /* Cover = page 1: fill the sheet (92vh leaves slack so it never
+       spills into a blank page 2), then force a page break. */
+    ${s}.print-cover {
+      min-height: 92vh;
+      break-after: page;
+      page-break-after: always;
+      border: 0 !important;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+      padding: 0 !important;
+    }
+    ${s}.print-break-before { break-before: page; page-break-before: always; }
+    /* Card grids: always three columns that fit the sheet */
+    ${s}.print-grid-3 { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 8px !important; }
+    ${s}.print-kpi { padding: 10px 12px !important; overflow: hidden; }
+    ${s}.print-kpi .print-kpi-label { font-size: 10px !important; }
+    ${s}.print-kpi .print-kpi-value { font-size: 18px !important; line-height: 1.2 !important; margin-top: 4px !important; }
+    ${s}.print-kpi .print-kpi-sub { font-size: 9px !important; line-height: 1.3 !important; }
+    ${s}.print-pad { padding: 12px !important; }
+    /* Tables: fixed layout so the column widths (≤ 100 %) are honoured,
+       compact type, headers repeated on every page, rows never split. */
+    ${s}.print-table-card { overflow: visible !important; box-shadow: none !important; }
+    ${s}.print-table-wrap { overflow: visible !important; }
+    ${s}.print-table { table-layout: fixed !important; width: 100% !important; font-size: 10px !important; }
+    ${s}.print-table th { white-space: nowrap !important; word-break: keep-all !important; overflow-wrap: normal !important; font-size: 8.5px !important; letter-spacing: 0 !important; }
+    ${s}.print-table th, ${s}.print-table td {
+      padding: 4px 5px !important;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      vertical-align: middle;
+    }
+    ${s}.print-table thead { display: table-header-group; }
+    ${s}.print-table tr { break-inside: avoid; page-break-inside: avoid; }
+    ${s}.print-table .text-xs, ${s}.print-table .text-sm { font-size: 10px !important; }
+    ${s}.print-table .text-\\[11px\\], ${s}.print-table .text-\\[10px\\] { font-size: 9px !important; }
+    ${s}.print-clamp-1 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
+    ${s}.print-text-xs { font-size: 10px !important; line-height: 1.35 !important; }
+  `
 }
 
-const ReportAreaChart = dynamic(
-  () => import('recharts').then(mod => {
-    const { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend } = mod
-    return function ChartWrapper({
-      data,
-      labels,
-      locale,
-      print,
-    }: {
-      data: TimelinePoint[]
-      labels: ChartLabels
-      locale: Locale
-      /** Explicit pixel size instead of ResponsiveContainer (which measures 0 while printing). */
-      print: boolean
-    }) {
-      const body = (
-        <>
-          <defs>
-            <linearGradient id="grad_report_engagement" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#7c3aed" stopOpacity={0.3} />
-              <stop offset="95%" stopColor="#7c3aed" stopOpacity={0} />
-            </linearGradient>
-            <linearGradient id="grad_report_posts" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#a78bfa" stopOpacity={0.3} />
-              <stop offset="95%" stopColor="#a78bfa" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-          <XAxis
-            dataKey="date"
-            tick={{ fontSize: 10, fill: '#9ca3af' }}
-            tickFormatter={(v: string) => {
-              const d = dayKeyToDate(String(v))
-              return `${d.getDate()}/${d.getMonth() + 1}`
-            }}
-          />
-          <YAxis
-            yAxisId="left"
-            tick={{ fontSize: 10, fill: '#9ca3af' }}
-            tickFormatter={(v: number) => formatNumber(v, { locale })}
-          />
-          <YAxis
-            yAxisId="right"
-            orientation="right"
-            allowDecimals={false}
-            tick={{ fontSize: 10, fill: '#9ca3af' }}
-          />
-          {/* The day key is a Europe/Madrid calendar day ('YYYY-MM-DD'): the
-              shared helper renders it in that zone and in the UI locale. A
-              tooltip has no place on paper. */}
-          {!print && (
-            <Tooltip
-              contentStyle={{
-                borderRadius: '8px',
-                border: '1px solid #e5e7eb',
-                boxShadow: '0 4px 6px -1px rgba(0,0,0,.1)',
-                fontSize: '12px',
-              }}
-              labelFormatter={(v) => formatDate(String(v), { locale })}
-              formatter={(value, name) => [formatNumber(Number(value), { locale }), String(name)]}
-            />
-          )}
-          <Legend wrapperStyle={{ fontSize: '11px' }} />
-          <Area
-            yAxisId="left"
-            type="monotone"
-            dataKey="engagements"
-            name={labels.engagements}
-            stroke="#7c3aed"
-            strokeWidth={2}
-            fill="url(#grad_report_engagement)"
-            isAnimationActive={!print}
-          />
-          <Area
-            yAxisId="right"
-            type="monotone"
-            dataKey="posts"
-            name={labels.posts}
-            stroke="#a78bfa"
-            strokeWidth={2}
-            fill="url(#grad_report_posts)"
-            isAnimationActive={!print}
-          />
-        </>
-      )
-      const margin = { top: 5, right: 10, left: 0, bottom: 5 }
-      if (print) {
-        return (
-          <AreaChart data={data} width={PRINT_CHART_WIDTH} height={PRINT_CHART_HEIGHT} margin={margin}>
-            {body}
-          </AreaChart>
-        )
-      }
-      return (
-        <ResponsiveContainer width="100%" height={260}>
-          <AreaChart data={data} margin={margin}>
-            {body}
-          </AreaChart>
-        </ResponsiveContainer>
-      )
-    }
-  }),
-  {
-    ssr: false,
-    loading: () => <div className="h-[260px] animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />,
+const REPORT_PRINT_CSS = `
+  .print-only { display: none; }
+  @media print {
+    ${printLayoutRules('')}
+    @page { size: A4 portrait; margin: 12mm; }
   }
-)
+  ${printLayoutRules('html[data-report-print]')}
+`
+
+/** ?print=1: flag readiness at most this long after the data has loaded, even if an image hangs. */
+const READY_TIMEOUT_MS = 4000
 
 // ---------------------------------------------------------------------------
 // Small presentational helpers
@@ -633,19 +651,48 @@ function HiddenBadge({ label }: { label: string }) {
   )
 }
 
-/** Real / estimated / no-data marker of one publication (decision 4A). */
+/**
+ * Real-data marker of one publication. Only real figures are named (reach
+ * when the creator supplied it, otherwise views); an estimate is never shown
+ * to the client, so anything else reads as "no audience data".
+ */
 function AudienceLabel({ metrics, tr }: { metrics: ReportMediaMetrics | null; tr: ReportStrings }) {
-  if (!metrics || metrics.audienceBasis === 'none' || metrics.audience <= 0) {
+  if (!metrics || metrics.audienceEstimated || metrics.audienceBasis === 'none' || metrics.audience <= 0) {
     return <span className="text-[10px] font-medium text-gray-400 dark:text-gray-500">{tr.labelNoAudience}</span>
   }
-  if (metrics.audienceEstimated) {
-    return <span className="text-[10px] font-medium text-gray-400 dark:text-gray-500">{tr.labelEstimated}</span>
-  }
-  const label =
-    metrics.audienceBasis === 'reach' ? tr.labelRealReach
-      : metrics.audienceBasis === 'impressions' ? tr.labelRealImpressions
-      : tr.labelRealViews
+  const label = metrics.audienceBasis === 'reach'
+    ? tr.labelRealReach
+    : metrics.audienceBasis === 'views'
+      ? tr.labelRealViews
+      : tr.labelRealData
   return <span className="text-[10px] font-medium text-green-700 dark:text-green-400">{label}</span>
+}
+
+/** Small circled "?" that reveals a one-sentence explanation on hover / focus (CSS only). */
+function HelpTip({ text, label }: { text: string; label: string }) {
+  return (
+    <span className="group relative inline-flex no-print print:hidden">
+      <button
+        type="button"
+        aria-label={label}
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-gray-300 text-[10px] font-semibold leading-none text-gray-500 transition-colors hover:border-purple-400 hover:text-purple-600 focus:outline-none focus-visible:border-purple-400 focus-visible:text-purple-600 dark:border-gray-600 dark:text-gray-400"
+      >
+        ?
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-0 top-full z-20 mt-1.5 w-72 max-w-[80vw] rounded-lg border border-gray-200 bg-white px-3 py-2 text-[11px] font-normal normal-case leading-relaxed tracking-normal text-gray-600 opacity-0 shadow-lg transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+      >
+        {text}
+      </span>
+    </span>
+  )
+}
+
+/** Tone dot of a highlighted comment. */
+function ToneDot({ sentiment, label }: { sentiment: ReportCommentSentiment; label: string }) {
+  const color = sentiment === 'positive' ? 'bg-green-500' : sentiment === 'negative' ? 'bg-red-500' : 'bg-gray-400'
+  return <span className={cn('inline-block h-2 w-2 shrink-0 rounded-full', color)} title={label} aria-label={label} />
 }
 
 /** Objective verdict (±10 % tolerance decided server-side). */
@@ -708,9 +755,10 @@ function RowVisibilityToggle({
  * annex), so the size lives on a wrapper with `flex: 0 0 <size>px` and the
  * image fills it.
  */
-function MediaThumb({ src, alt, size = 40 }: { src?: string | null; alt: string; size?: 28 | 40 | 64 }) {
+function MediaThumb({ mediaId, src, alt, size = 40 }: { mediaId?: string | null; src?: string | null; alt: string; size?: 28 | 40 | 64 }) {
   const [error, setError] = useState(false)
-  const url = src ? proxyImg(src) : ''
+  // Durable copy (CDN URLs expire in days); without an id, the proxied CDN URL.
+  const url = mediaId || src ? mediaThumbUrl({ id: mediaId, thumbnailUrl: src }) : ''
   const box = { width: size, height: size, flex: `0 0 ${size}px` } as const
   const radius = size >= 64 ? 'rounded-lg' : 'rounded-md'
   if (!url || error) {
@@ -743,13 +791,29 @@ function FixedAvatar({ src, name }: { src?: string | null; name: string }) {
  * crop with object-fit: cover on a 9:1 box instead of rendering the whole
  * (mostly transparent) square. Served straight from /public — no proxy.
  */
-function TkocLogo({ className = '' }: { className?: string }) {
+/**
+ * The wordmark inside /public/images/tkoc-logo-full.png: a 1838×189 px strip
+ * centred in the 2084×2084 square (rows 947–1136). Sizing the <img> by height
+ * letterboxes the square and leaves a sliver, so the box takes the STRIP's
+ * aspect ratio and object-fit: cover crops the transparent padding away.
+ */
+const TKOC_LOGO_ASPECT = '1838 / 189'
+/** Cover: 56px tall (544px wide) but never past 80 % of the page; running header: 24px tall. */
+const TKOC_LOGO_WIDTH = { cover: 544, small: 233 } as const
+
+function TkocLogo({ className = '', size = 'small' }: { className?: string; size?: 'cover' | 'small' }) {
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
       src="/images/tkoc-logo-full.png"
       alt="The King of Content"
-      className={`block h-8 w-72 max-w-full object-contain object-left ${className}`}
+      style={{
+        width: TKOC_LOGO_WIDTH[size],
+        maxWidth: size === 'cover' ? '80%' : '100%',
+        height: 'auto',
+        aspectRatio: TKOC_LOGO_ASPECT,
+      }}
+      className={`block object-cover object-center ${className}`}
     />
   )
 }
@@ -942,7 +1006,7 @@ function formatSignedPct(value: number, locale: Locale): string {
 function kpiLabel(key: TargetKey, tr: ReportStrings): string {
   switch (key) {
     case 'views': return tr.kpiViews
-    case 'reach': return tr.cardRealReach
+    case 'reach': return tr.cardRealAudience
     case 'engagement': return tr.kpiEngagement
     case 'er': return tr.kpiEr
     case 'cpm': return tr.kpiCpm
@@ -967,13 +1031,13 @@ const ZERO_COUNTS: Record<AudienceBasis, number> = {
 }
 
 /** countsByBasis is new (4A); an older cached response may lack it. */
-function countsOf(a: AudienceTotals): Record<AudienceBasis, number> {
-  const c = (a as Partial<AudienceTotals>).countsByBasis
+function countsOf(a: Partial<AudienceTotals>): Record<AudienceBasis, number> {
+  const c = a.countsByBasis
   return c && typeof c === 'object' ? { ...ZERO_COUNTS, ...c } : ZERO_COUNTS
 }
 
-function realPiecesOf(a: AudienceTotals): number {
-  const n = (a as Partial<AudienceTotals>).realPieces
+function realPiecesOf(a: Partial<AudienceTotals>): number {
+  const n = a.realPieces
   if (typeof n === 'number') return n
   const c = countsOf(a)
   return c.reach + c.impressions + c.views
@@ -1020,9 +1084,9 @@ function ReportEditPanel({
 }) {
   const sections: Array<{ id: ReportSectionId; label: string }> = [
     { id: 'summary', label: tr.sectionSummary },
-    { id: 'timeline', label: tr.sectionTimeline },
     { id: 'content', label: tr.sectionHighlights },
     { id: 'creators', label: tr.sectionCreators },
+    { id: 'sentiment', label: tr.sectionSentiment },
     { id: 'quality', label: tr.sectionQuality },
     { id: 'business', label: tr.sectionBusiness },
     { id: 'learnings', label: tr.sectionLearnings },
@@ -1031,10 +1095,9 @@ function ReportEditPanel({
   ]
   const columns: Array<{ id: ReportColumnId; label: string }> = [
     { id: 'summary.views', label: tr.colSummaryViews },
-    { id: 'summary.reach', label: tr.colSummaryRealReach },
+    { id: 'summary.reach', label: tr.colSummaryRealAudience },
     { id: 'summary.engagement', label: tr.colSummaryEngagement },
     { id: 'summary.er', label: tr.colSummaryEr },
-    { id: 'summary.audience_estimated', label: tr.colSummaryAudienceEstimated },
     { id: 'content.views', label: tr.colContentViews },
     { id: 'content.reach', label: tr.colContentReach },
     { id: 'content.source', label: tr.colContentSource },
@@ -1043,6 +1106,17 @@ function ReportEditPanel({
     { id: 'creators.followers', label: tr.colCreatorsFollowers },
     { id: 'creators.cpm', label: tr.colCreatorsCpm },
   ]
+
+  // "Qué dijo la audiencia": the PM quotes up to 12 comments by hand.
+  const comments = draft.highlightedComments
+  const setComments = (next: HighlightedComment[]) => onChange({ highlightedComments: next })
+  const updateComment = (index: number, patch: Partial<HighlightedComment>) =>
+    setComments(comments.map((c, i) => (i === index ? { ...c, ...patch } : c)))
+  const removeComment = (index: number) => setComments(comments.filter((_, i) => i !== index))
+  const addComment = () => {
+    if (comments.length >= 12) return
+    setComments([...comments, { id: newCommentId(), text: '', author: '', sentiment: 'positive', mediaId: null }])
+  }
 
   const checkbox = (checked: boolean, onToggle: () => void, label: string, key: string) => (
     <label key={key} className="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -1151,6 +1225,70 @@ function ReportEditPanel({
         </div>
       </div>
 
+      {/* Highlighted comments */}
+      <div className="mt-5">
+        <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{tr.commentsLabel}</p>
+        <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">{tr.commentsHint}</p>
+        {comments.length > 0 && (
+          <div className="space-y-2">
+            {comments.map((c, i) => (
+              <div
+                key={c.id}
+                className="grid gap-2 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto_auto] md:items-start"
+              >
+                <input
+                  type="text"
+                  maxLength={80}
+                  value={c.author}
+                  placeholder={tr.commentAuthorPlaceholder}
+                  aria-label={tr.commentAuthorPlaceholder}
+                  onChange={e => updateComment(i, { author: e.target.value })}
+                  className={INPUT_CLASS}
+                />
+                <textarea
+                  rows={2}
+                  maxLength={300}
+                  value={c.text}
+                  placeholder={tr.commentTextPlaceholder}
+                  aria-label={tr.commentTextPlaceholder}
+                  onChange={e => updateComment(i, { text: e.target.value })}
+                  className={TEXTAREA_CLASS}
+                />
+                <select
+                  value={c.sentiment}
+                  aria-label={tr.commentTone}
+                  onChange={e => updateComment(i, { sentiment: e.target.value as ReportCommentSentiment })}
+                  className={INPUT_CLASS}
+                >
+                  <option value="positive">{tr.sentimentPositive}</option>
+                  <option value="neutral">{tr.sentimentNeutral}</option>
+                  <option value="negative">{tr.sentimentNegative}</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => removeComment(i)}
+                  title={tr.removeComment}
+                  aria-label={tr.removeComment}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-gray-200 text-gray-400 transition-colors hover:border-red-300 hover:text-red-600 dark:border-gray-700 dark:hover:text-red-400"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="mt-2">
+          {comments.length < 12 ? (
+            <Button variant="secondary" size="sm" onClick={addComment}>
+              <Plus className="h-4 w-4" />
+              {tr.addComment}
+            </Button>
+          ) : (
+            <p className="text-xs text-gray-500 dark:text-gray-400">{tr.commentsMax}</p>
+          )}
+        </div>
+      </div>
+
       {error && <p className="mt-4 text-sm text-red-600 dark:text-red-400">{error}</p>}
     </div>
   )
@@ -1171,6 +1309,12 @@ export interface CampaignReportProps {
    * and never shows economic columns.
    */
   isPortal?: boolean
+  /**
+   * `?print=1` — the server-side PDF renderer: no top bar, no edit mode, the
+   * print layout forced on screen, and <html data-report-ready="1"> set once
+   * the data and the thumbnails have settled (or READY_TIMEOUT_MS after load).
+   */
+  printMode?: boolean
 }
 
 const PAGE = 100
@@ -1178,8 +1322,6 @@ const PAGE = 100
 const MAX_PAGES = 20
 /** Body: the publications with most real audience; the rest live in the annex. */
 const HIGHLIGHT_COUNT = 6
-/** Fewer dated days than this → a sentence instead of a chart. */
-const MIN_CHART_DAYS = 3
 
 interface MediaItem {
   media: ReportMedia
@@ -1207,6 +1349,7 @@ export function CampaignReport({
   apiBase = '/api/campaigns',
   backHref,
   isPortal = false,
+  printMode = false,
 }: CampaignReportProps) {
   const { t, locale } = useI18n()
   const tr = t.campaignReport
@@ -1220,6 +1363,8 @@ export function CampaignReport({
   // what gets printed.
   const [learnings, setLearnings] = useState<ReportLearnings | null>(null)
   const [learningsClient, setLearningsClient] = useState<ReportLearnings | null>(null)
+  // Sentiment counts of the captured comments (null when none were analysed).
+  const [sentiment, setSentiment] = useState<ReportSentiment | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   // Bumped after a config save so the server recomputes the report figures.
@@ -1227,12 +1372,16 @@ export function CampaignReport({
   // Edit mode only: the unfiltered media/roster (no view=report) so the PM can
   // see and restore rows already hidden in the saved config.
   const [fullData, setFullData] = useState<{ media: ReportMedia[]; influencers: ReportMember[] } | null>(null)
-  // True while the page is being printed (beforeprint / matchMedia('print')):
-  // the chart switches to an explicit pixel size.
-  const [printing, setPrinting] = useState(false)
+  // True while the page is being printed (beforeprint / matchMedia('print')),
+  // and permanently in printMode: the learnings render the client projection
+  // and the agency-only blocks disappear.
+  const [printing, setPrinting] = useState(printMode)
+  const readyFlagged = useRef(false)
 
   // Saved config vs. the draft being edited. `draft !== null` == edit mode.
   const [config, setConfig] = useState<ReportConfig>(EMPTY_CONFIG)
+  // The agency API does not inline the config: ?print=1 must not flag readiness before this fetch settles.
+  const [configSettled, setConfigSettled] = useState(false)
   const [draft, setDraft] = useState<ReportConfig | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -1242,8 +1391,8 @@ export function CampaignReport({
   const [sentError, setSentError] = useState<string | null>(null)
 
   // Brands never write: no edit affordances in portal mode (the API also
-  // rejects BRAND writes with 403).
-  const canEdit = !isPortal
+  // rejects BRAND writes with 403). The PDF renderer never edits either.
+  const canEdit = !isPortal && !printMode
   const editing = canEdit && draft !== null
   // What the report renders: the live draft while editing (preview), else the saved config.
   const view: ReportConfig = draft ?? config
@@ -1266,6 +1415,7 @@ export function CampaignReport({
         let firstOverview: ReportOverview | null = null
         let firstLearnings: ReportLearnings | null = null
         let firstLearningsClient: ReportLearnings | null = null
+        let firstSentiment: ReportSentiment | null = null
         let inlineConfig: unknown = undefined
         let allMedia: ReportMedia[] = []
 
@@ -1280,6 +1430,7 @@ export function CampaignReport({
             firstLearnings = normalizeLearnings(data.learnings)
             // The portal API only sends the client projection (as `learnings`).
             firstLearningsClient = normalizeLearnings(data.learningsClient) ?? (isPortal ? firstLearnings : null)
+            firstSentiment = normalizeSentiment(data.sentiment)
             inlineConfig = data.reportConfig
           }
           const pageMedia: ReportMedia[] = data.campaign.media || []
@@ -1292,6 +1443,7 @@ export function CampaignReport({
           setOverview(firstOverview)
           setLearnings(firstLearnings)
           setLearningsClient(firstLearningsClient)
+          setSentiment(firstSentiment)
           if (inlineConfig && typeof inlineConfig === 'object') {
             const next = normalizeClientConfig(inlineConfig)
             setConfig(prev => mergeConfig(prev, next))
@@ -1313,6 +1465,7 @@ export function CampaignReport({
   // Report config — a failure here must never block the report: fall back to defaults.
   useEffect(() => {
     let cancelled = false
+    setConfigSettled(false)
     fetch(configUrl)
       .then(async res => {
         if (!res.ok) return
@@ -1320,6 +1473,7 @@ export function CampaignReport({
         if (!cancelled && data?.config) setConfig(normalizeClientConfig(data.config))
       })
       .catch(err => console.error('Error fetching report config:', err))
+      .finally(() => { if (!cancelled) setConfigSettled(true) })
     return () => { cancelled = true }
   }, [configUrl])
 
@@ -1376,12 +1530,58 @@ export function CampaignReport({
     }
   }, [])
 
-  // Print mode for the chart. beforeprint fires right before the browser lays
-  // the page out for paper, so the state change is flushed synchronously
-  // (flushSync) — a batched render would land after the pages were captured.
-  // matchMedia('print') covers print preview and headless print emulation,
-  // where beforeprint is not always fired.
+  // ?print=1: force the A4 layout on screen (html[data-report-print] mirrors
+  // the @media print rules), always the light theme, and never a stray dark
+  // class from the theme provider.
   useEffect(() => {
+    if (!printMode) return
+    const root = document.documentElement
+    const hadDark = root.classList.contains('dark')
+    root.setAttribute('data-report-print', '1')
+    root.classList.remove('dark')
+    return () => {
+      root.removeAttribute('data-report-print')
+      root.removeAttribute('data-report-ready')
+      if (hadDark) root.classList.add('dark')
+    }
+  }, [printMode])
+
+  // ?print=1: once the data AND the report config have loaded, wait for the
+  // thumbnails to settle (or READY_TIMEOUT_MS at most) and flag readiness for
+  // the PDF renderer.
+  useEffect(() => {
+    if (!printMode || isLoading || !configSettled || readyFlagged.current) return
+    let cancelled = false
+    const flag = () => {
+      if (cancelled || readyFlagged.current) return
+      readyFlagged.current = true
+      document.documentElement.setAttribute('data-report-ready', '1')
+    }
+    const timer = window.setTimeout(flag, READY_TIMEOUT_MS)
+    const images = Array.from(document.querySelectorAll<HTMLImageElement>('#campaign-report img'))
+    const settled = images.map(img => img.complete
+      ? Promise.resolve()
+      : new Promise<void>(resolve => {
+          img.addEventListener('load', () => resolve(), { once: true })
+          img.addEventListener('error', () => resolve(), { once: true })
+        }))
+    // A short beat after the last image so the layout is final when flagged.
+    let afterImages: number | undefined
+    Promise.all(settled).then(() => { afterImages = window.setTimeout(flag, 150) })
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      if (afterImages !== undefined) window.clearTimeout(afterImages)
+    }
+  }, [printMode, isLoading, configSettled, campaign, overview])
+
+  // Print mode for the screen-only blocks. beforeprint fires right before the
+  // browser lays the page out for paper, so the state change is flushed
+  // synchronously (flushSync) — a batched render would land after the pages
+  // were captured. matchMedia('print') covers print preview and headless print
+  // emulation, where beforeprint is not always fired. ?print=1 is permanent.
+  useEffect(() => {
+    if (printMode) return
     const mq = typeof window.matchMedia === 'function' ? window.matchMedia('print') : null
     const apply = (value: boolean) => { flushSync(() => setPrinting(value)) }
     const onBefore = () => apply(true)
@@ -1396,7 +1596,7 @@ export function CampaignReport({
       window.removeEventListener('afterprint', onAfter)
       mq?.removeEventListener?.('change', onChange)
     }
-  }, [])
+  }, [printMode])
 
   // --- Edit actions -------------------------------------------------------
 
@@ -1432,6 +1632,10 @@ export function CampaignReport({
           hiddenColumns: draft.hiddenColumns,
           hiddenMediaIds: draft.hiddenMediaIds,
           hiddenInfluencerIds: draft.hiddenInfluencerIds,
+          // Empty rows are dropped here; the server trims and caps the rest.
+          highlightedComments: draft.highlightedComments
+            .map(c => ({ ...c, text: c.text.trim(), author: c.author.trim().replace(/^@+/, '') }))
+            .filter(c => c.text.length > 0),
         }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -1586,14 +1790,20 @@ export function CampaignReport({
   // Economic columns: agency only (the portal API never returns them — brands
   // must never see fees/cost/CPM), data-driven, and hideable by the PM before
   // the PDF goes out ('creators.cpm' covers both cost and CPM).
-  const showCostCol = !isPortal && showCol('creators.cpm') && report.creators.some(c => (c.p?.cost ?? 0) > 0)
-  const showCpmCol = !isPortal && showCol('creators.cpm') && report.creators.some(c => typeof c.p?.cpm === 'number')
-  const showCpmTotal = !isPortal && showCol('creators.cpm') && typeof totals?.cpm === 'number'
+  // The printed / server-rendered PDF is ALWAYS the client version: no fee, cost,
+  // CPM or Ratio EMV can leave the agency by accident. On screen the PM keeps them.
+  const clientView = isPortal || printing
+  const showCostCol = !clientView && showCol('creators.cpm') && report.creators.some(c => (c.p?.cost ?? 0) > 0)
+  const showCpmCol = !clientView && showCol('creators.cpm') && report.creators.some(c => typeof c.p?.cpm === 'number')
+  const showCpmTotal = !clientView && showCol('creators.cpm') && typeof totals?.cpm === 'number'
 
   // Rows the client sees (edit mode keeps hidden rows, muted, so they can be restored).
   // The API already excluded them from the figures; this is defense in depth.
   const visibleItems = editing ? report.sortedItems : report.sortedItems.filter(x => !x.hidden)
-  const visibleCreators = editing ? report.creators : report.creators.filter(c => !c.hidden)
+  // Creators without a single publication are a roster fact, not a result: they
+  // never appear in the client's creators table (the campaign page keeps the roster).
+  const publishedCreators = report.creators.filter(c => !c.p || (c.p.posts + c.p.stories) > 0)
+  const visibleCreators = editing ? publishedCreators : publishedCreators.filter(c => !c.hidden)
   // Body highlights: only publications with a REAL audience figure (possibly
   // fewer than HIGHLIGHT_COUNT, or none), and never a row the client will not
   // see, even while editing. The heading states how many there are.
@@ -1637,7 +1847,7 @@ export function CampaignReport({
   // CLIENT projection; the full object is screen only, for staff. The
   // conclusions text becomes "Decisiones acordadas" inside that section;
   // without learnings it keeps its own section.
-  const clientLearningsView = isPortal || printing
+  const clientLearningsView = clientView
   const shownLearnings = clientLearningsView ? (learningsClient ?? learnings) : learnings
   const showLearnings = shownLearnings !== null && showSection('learnings')
   const showDecisions = conclusions.length > 0 && showSection('conclusions')
@@ -1665,41 +1875,139 @@ export function CampaignReport({
   const annexHiddenForClient = !showSection('annex')
   const showAnnex = hasMedia && (!annexHiddenForClient || editing)
 
-  // Audience counts (decision 4A) — labels and counts, never figures
-  const counts = totals ? countsOf(totals.audience) : ZERO_COUNTS
+  // Audience counts — labels and counts, never figures
   const realPieces = totals ? realPiecesOf(totals.audience) : 0
   const withoutRealData = totals ? Math.max(0, totals.media - realPieces) : 0
-  const estimatedPosts = counts.estimated_post + counts.none
-  const showEstimatedLine = !!totals && showCol('summary.audience_estimated') && totals.audience.estimated > 0
-  // Publications with real views, counted from the rows the client sees. Not
-  // countsByBasis.views: that is the number of pieces whose audience BASIS is
-  // views (views but no reach/impressions), so a reel with reach AND views
-  // would be missed. A count, never a figure.
+  // Publications with real views, counted from the rows the client sees. A
+  // count, never a figure.
   const realViewsCount = report.sortedItems.filter(x => !x.hidden && (x.media.views || 0) > 0).length
-  // The audience basis of the real figure, per publication (counts by basis).
-  const basisLine = locale === 'es'
-    ? `Base de la audiencia real por publicación: alcance en ${fmtN(counts.reach)}, impresiones en ${fmtN(counts.impressions)} y solo vistas en ${fmtN(counts.views)}`
-    : `Real audience basis per publication: reach for ${fmtN(counts.reach)}, impressions for ${fmtN(counts.impressions)} and views only for ${fmtN(counts.views)}`
 
-  // Timeline: fewer than MIN_CHART_DAYS dated days → one sentence, no chart
-  const timeline = overview?.timeline ?? []
-  const timelineDates = timeline.map(p => reportDate(p.date, locale)).filter(Boolean)
-  const timelineSentence = timelineDates.length === 0
-    ? tr.timelineNoDates
-    : fill(tr.timelineTooShort, { dates: timelineDates.join(locale === 'es' ? ' y ' : ' and ') })
+  // Tasa de engagement (4B): interacciones ÷ vistas reales. Published only
+  // with a meaningful, plausible sample; otherwise "Muestra real insuficiente".
+  const er = totals?.er ?? null
+  const erPieces = er?.pieces ?? realViewsCount
+  const erNullHint = er?.reason === 'no_real_base'
+    ? tr.erNoViewsHint
+    : er?.reason === 'implausible'
+      ? fill(tr.erImplausibleHint, { n: erPieces })
+      : erPieces === 1 ? tr.erInsufficientHintOne : fill(tr.erInsufficientHint, { n: erPieces })
+
+  // "Prometido vs entregado" — four rows straight from overview.delivery.
+  // Green only when the server says ok; otherwise an amber warning. A zero
+  // denominator (nothing agreed / dated / in the feed yet) is neither: the row
+  // reads as pending, never as "0 de 0 · Revisar".
+  const delivery = overview?.delivery ?? null
+  const deliveryRows = delivery
+    ? [
+        {
+          key: 'creators',
+          label: tr.deliveryCreators,
+          value: delivery.creators.planned > 0
+            ? fill(tr.deliveryRatio, { delivered: fmtN(delivery.creators.delivered), planned: fmtN(delivery.creators.planned) })
+            : tr.deliveryCreatorsNone,
+          sub: undefined as string | undefined,
+          ok: delivery.creators.ok,
+          empty: delivery.creators.planned === 0,
+        },
+        {
+          key: 'pieces',
+          label: tr.deliveryPieces,
+          value: delivery.pieces.planned !== null
+            ? fill(tr.deliveryRatio, { delivered: fmtN(delivery.pieces.delivered), planned: fmtN(delivery.pieces.planned) })
+            : fmtN(delivery.pieces.delivered),
+          sub: delivery.pieces.planned === null ? tr.deliveryNoPlan : undefined,
+          ok: delivery.pieces.ok,
+          empty: false,
+        },
+        {
+          key: 'dates',
+          label: tr.deliveryDates,
+          value: delivery.dates.total > 0
+            ? fill(tr.deliveryRatio, { delivered: fmtN(delivery.dates.inWindow), planned: fmtN(delivery.dates.total) })
+            : tr.deliveryDatesNone,
+          sub: undefined as string | undefined,
+          ok: delivery.dates.ok,
+          empty: delivery.dates.total === 0,
+        },
+        {
+          key: 'disclosure',
+          label: tr.deliveryDisclosure,
+          value: delivery.disclosure.total > 0
+            ? fill(tr.deliveryRatio, { delivered: fmtN(delivery.disclosure.disclosed), planned: fmtN(delivery.disclosure.total) })
+            : tr.deliveryDisclosureNone,
+          sub: tr.deliveryDisclosureSub,
+          ok: delivery.disclosure.ok,
+          empty: delivery.disclosure.total === 0,
+        },
+      ]
+    : []
+  // The client (portal, print, PDF) only sees the rows that are TRUE: an "in
+  // review" row is an internal to-do (fix the roster, the dates or the
+  // #publicidad flag), never a client-facing claim. On screen the PM sees all.
+  const shownDeliveryRows = clientView ? deliveryRows.filter(r => r.ok) : deliveryRows
+  const deliveryRowsHiddenFromClient = deliveryRows.filter(r => !r.ok).length
+
+  // Balance in four labelled dimensions — agency only, on screen only.
+  const balance = overview?.balance ?? null
+  const showBalance = !isPortal && !printing && balance !== null
+  type Tone = 'good' | 'mid' | 'bad' | 'none'
+  const toneClass: Record<Tone, string> = {
+    good: 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-900/30 dark:text-green-400',
+    mid: 'border-purple-200 bg-purple-50 text-purple-700 dark:border-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
+    bad: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-400',
+    none: 'border-gray-200 bg-gray-100 text-gray-600 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300',
+  }
+  const balanceRows: Array<{ key: string; label: string; value: string; tone: Tone }> = balance
+    ? [
+        {
+          key: 'execution',
+          label: tr.balanceExecution,
+          value: balance.execution === 'complete' ? tr.balanceExecComplete : balance.execution === 'issues' ? tr.balanceExecIssues : balance.execution === 'incomplete' ? tr.balanceExecIncomplete : tr.balanceNoData,
+          tone: balance.execution === 'complete' ? 'good' : balance.execution === 'issues' ? 'mid' : balance.execution === 'incomplete' ? 'bad' : 'none',
+        },
+        {
+          key: 'results',
+          label: tr.balanceResults,
+          value: balance.results === 'above' ? tr.balanceResAbove : balance.results === 'on_target' ? tr.balanceResOnTarget : balance.results === 'below' ? tr.balanceResBelow : tr.balanceResNoTargets,
+          tone: balance.results === 'above' ? 'good' : balance.results === 'on_target' ? 'mid' : balance.results === 'below' ? 'bad' : 'none',
+        },
+        {
+          key: 'efficiency',
+          label: tr.balanceEfficiency,
+          value: balance.efficiency === 'better' ? tr.balanceEffBetter : balance.efficiency === 'in_range' ? tr.balanceEffInRange : balance.efficiency === 'worse' ? tr.balanceEffWorse : tr.balanceNoData,
+          tone: balance.efficiency === 'better' ? 'good' : balance.efficiency === 'in_range' ? 'mid' : balance.efficiency === 'worse' ? 'bad' : 'none',
+        },
+        {
+          key: 'reliability',
+          label: tr.balanceReliability,
+          value: balance.dataReliability === 'high' ? tr.balanceRelHigh : balance.dataReliability === 'medium' ? tr.balanceRelMedium : balance.dataReliability === 'low' ? tr.balanceRelLow : tr.balanceNoData,
+          tone: balance.dataReliability === 'high' ? 'good' : balance.dataReliability === 'medium' ? 'mid' : balance.dataReliability === 'low' ? 'bad' : 'none',
+        },
+      ]
+    : []
+
+  // "Qué dijo la audiencia": the PM's highlighted comments, plus the positive
+  // share of the captured comments only with ≥ SENTIMENT_MIN_COMMENTS analysed.
+  const highlightedComments = view.highlightedComments.filter(c => c.text.trim().length > 0)
+  const sentimentShare = sentiment && sentiment.total >= SENTIMENT_MIN_COMMENTS
+    ? Math.round((sentiment.positive / sentiment.total) * 100)
+    : null
+  const showSentiment = showSection('sentiment') && (highlightedComments.length > 0 || sentimentShare !== null)
+  const toneLabel = (t: ReportCommentSentiment) =>
+    t === 'positive' ? tr.sentimentPositive : t === 'negative' ? tr.sentimentNegative : tr.sentimentNeutral
 
   // Fixed-layout column widths (percentages that sum ≤ 100 %)
   const objW = columnWidths([['kpi', 40], ['target', 20], ['actual', 20], ['variation', 20]])
   const creatorsW = columnWidths([
     editing && ['toggle', 4],
     ['creator', 20],
-    ['platform', 12],
+    ['platform', 11],
     showCol('creators.posts') && ['posts', 6],
-    showCol('creators.posts') && ['stories', 6],
-    ['interactions', 9],
-    ['audience', 11],
-    showCol('creators.er') && ['er', 8],
-    showCol('creators.followers') && ['followers', 9],
+    showCol('creators.posts') && ['stories', 7],
+    ['interactions', 12],
+    ['audience', 12],
+    showCol('creators.er') && ['er', 6],
+    showCol('creators.followers') && ['followers', 10],
     report.hasBaseline && ['baseline', 9],
     showCostCol && ['cost', 8],
     showCpmCol && ['cpm', 8],
@@ -1717,77 +2025,21 @@ export function CampaignReport({
     ['link', 4],
   ])
 
-  const thBase = 'px-3 py-2.5 align-bottom whitespace-nowrap'
+  const thBase = 'px-2.5 py-2.5 align-bottom leading-tight'
   const tdNum = 'px-3 py-2.5 text-right tabular-nums'
 
   return (
     <div id="campaign-report" className="space-y-6">
       {/* Print styles: hide app chrome, white page, keep the screen colours
           (print-color-adjust: exact) so the PDF looks like the screen. The
-          light theme is forced by the beforeprint handler above. Layout is
-          A4 portrait, 12mm margins: content ≈ 703px wide, nothing may overflow. */}
-      <style>{`
-        @media print {
-          aside, header, .fixed, .no-print { display: none !important; }
-          /* Undo the dashboard sidebar offset. The layout token is
-             'lg:ml-[260px]', so the colon must be escaped for the
-             selector to match on landscape / A3 sheets above the lg breakpoint. */
-          div.ml-\\[260px\\], div.lg\\:ml-\\[260px\\] { margin-left: 0 !important; }
-          main { padding: 0 !important; overflow: visible !important; max-width: none !important; }
-          html, body { background: #ffffff !important; }
-          #campaign-report { background: #ffffff; width: 100%; max-width: 100%; overflow-x: hidden; }
-          #campaign-report, #campaign-report * {
-            print-color-adjust: exact;
-            -webkit-print-color-adjust: exact;
-          }
-          #campaign-report img { max-width: 100%; }
-          #campaign-report section { break-inside: auto; }
-          .print-card { break-inside: avoid; page-break-inside: avoid; box-shadow: none !important; min-width: 0; }
-          /* Cover = page 1: fill the sheet (92vh leaves slack so it never
-             spills into a blank page 2), then force a page break. */
-          .print-cover {
-            min-height: 92vh;
-            break-after: page;
-            page-break-after: always;
-            border: 0 !important;
-            border-radius: 0 !important;
-            box-shadow: none !important;
-            padding: 0 !important;
-          }
-          .print-break-before { break-before: page; page-break-before: always; }
-          /* Card grids: always three columns that fit the sheet */
-          .print-grid-3 { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 8px !important; }
-          .print-kpi { padding: 10px 12px !important; overflow: hidden; }
-          .print-kpi .print-kpi-label { font-size: 10px !important; }
-          .print-kpi .print-kpi-value { font-size: 18px !important; line-height: 1.2 !important; margin-top: 4px !important; }
-          .print-kpi .print-kpi-sub { font-size: 9px !important; line-height: 1.3 !important; }
-          .print-pad { padding: 12px !important; }
-          /* Tables: fixed layout so the column widths (≤ 100 %) are honoured,
-             compact type, headers repeated on every page, rows never split. */
-          .print-table-card { overflow: visible !important; box-shadow: none !important; }
-          .print-table-wrap { overflow: visible !important; }
-          .print-table { table-layout: fixed !important; width: 100% !important; font-size: 10px !important; }
-          .print-table th, .print-table td {
-            padding: 4px 6px !important;
-            overflow-wrap: anywhere;
-            word-break: break-word;
-            vertical-align: middle;
-          }
-          .print-table thead { display: table-header-group; }
-          .print-table tr { break-inside: avoid; page-break-inside: avoid; }
-          .print-table .text-xs, .print-table .text-sm { font-size: 10px !important; }
-          .print-table .text-\\[11px\\], .print-table .text-\\[10px\\] { font-size: 9px !important; }
-          .print-clamp-1 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
-          .print-text-xs { font-size: 10px !important; line-height: 1.35 !important; }
-          /* Chart: rendered at an explicit ${PRINT_CHART_WIDTH}px; the viewBox lets it shrink if ever needed. */
-          .print-chart { width: 100%; overflow: hidden; }
-          .recharts-wrapper, .recharts-surface { max-width: 100% !important; }
-          .recharts-tooltip-wrapper { display: none !important; }
-          @page { size: A4 portrait; margin: 12mm; }
-        }
-      `}</style>
+          light theme is forced by the beforeprint handler above (and by
+          printMode). Layout is A4 portrait, 12mm margins: content ≈ 703px
+          wide, nothing may overflow. The same rules apply on screen under
+          html[data-report-print] (?print=1). */}
+      <style>{REPORT_PRINT_CSS}</style>
 
-      {/* 0. Actions — screen only, never printed */}
+      {/* 0. Actions — screen only, never printed, absent in the PDF renderer */}
+      {!printMode && (
       <div className="no-print flex flex-wrap items-center justify-between gap-3 print:hidden">
         <div className="min-w-0 text-xs text-gray-500 dark:text-gray-400">
           {canEdit && (
@@ -1815,7 +2067,7 @@ export function CampaignReport({
           <Link href={resolvedBackHref}>
             <Button variant="secondary" size="sm">
               <ArrowLeft className="h-4 w-4" />
-              Volver
+              {tr.backLabel}
             </Button>
           </Link>
           {canEdit && !editing && (
@@ -1842,12 +2094,18 @@ export function CampaignReport({
               </Button>
             </>
           )}
-          <Button variant="primary" size="sm" onClick={() => window.print()}>
+          <Button variant="secondary" size="sm" onClick={() => window.print()}>
             <Printer className="h-4 w-4" />
-            Exportar PDF
+            {tr.printReport}
+          </Button>
+          {/* Server-side PDF (same report, ?print=1 rendered headless) */}
+          <Button as="a" variant="primary" size="sm" href={`${apiBase}/${campaignId}/report/pdf`} target="_blank" rel="noopener noreferrer" title={tr.pdfClientNote}>
+            <FileDown className="h-4 w-4" />
+            {tr.downloadPdf}
           </Button>
         </div>
       </div>
+      )}
 
       {/* 0b. "Mark as sent" inline form — agency only */}
       {canEdit && sentOpen && !editing && (
@@ -1890,12 +2148,12 @@ export function CampaignReport({
         {/* Soft glow — screen only */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -right-24 -top-24 h-80 w-80 rounded-full bg-purple-200/40 blur-3xl print:hidden dark:bg-purple-700/15"
+          className="no-print pointer-events-none absolute -right-24 -top-24 h-80 w-80 rounded-full bg-purple-200/40 blur-3xl print:hidden dark:bg-purple-700/15"
         />
 
-        {/* Top: agency wordmark */}
+        {/* Top: agency wordmark, clearly readable on the cover */}
         <div className="relative">
-          <TkocLogo />
+          <TkocLogo size="cover" />
         </div>
 
         {/* Middle: brand, campaign, report kind, period */}
@@ -1969,6 +2227,9 @@ export function CampaignReport({
             <span>{generatedOnLabel} {formatDate(new Date(), { locale })}</span>
           </div>
         </div>
+        <div className="shrink-0 pt-1">
+          <TkocLogo size="small" />
+        </div>
       </div>
 
       {!totals ? (
@@ -2001,7 +2262,7 @@ export function CampaignReport({
         </div>
       ) : (
         <>
-          {/* 2. Executive summary — REAL data first (decision 4A) */}
+          {/* 2. Executive summary — REAL data only (decisions 4A/4B, brand study) */}
           {showSection('summary') && (
             <section>
               <SectionHeading>{tr.sectionSummary}</SectionHeading>
@@ -2029,7 +2290,7 @@ export function CampaignReport({
                 {showCol('summary.reach') && (
                   <StatCard
                     icon={BarChart3}
-                    label={tr.cardRealReach}
+                    label={tr.cardRealAudience}
                     value={totals.audience.real > 0 ? fmtN(totals.audience.real) : '—'}
                     sub={fill(tr.cardRealReachSub, { n: realPieces, m: totals.media })}
                   />
@@ -2043,61 +2304,49 @@ export function CampaignReport({
                   />
                 )}
                 {showCol('summary.er') && (
-                  totals.er.value !== null ? (
+                  er && er.value !== null ? (
                     <StatCard
                       icon={TrendingUp}
                       label={tr.cardEr}
-                      value={formatPct(totals.er.value, locale)}
-                      sub={fill(tr.erRealBaseSub, { n: totals.er.pieces ?? realPieces })}
+                      value={formatPct(er.value, locale)}
+                      sub={fill(tr.erOnViewsSub, { n: fmtN(erPieces) })}
                     />
                   ) : (
                     <StatCard
                       icon={TrendingUp}
                       label={tr.cardEr}
-                      value={totals.er.reason === 'insufficient_sample' || totals.er.reason === 'implausible' ? tr.erInsufficientSample : tr.erNoRealData}
-                      sub={totals.er.reason === 'insufficient_sample' || totals.er.reason === 'implausible' ? fill(tr.erInsufficientHint, { n: totals.er.pieces ?? realPieces }) : tr.erNoRealHint}
+                      value={tr.erInsufficientSample}
+                      sub={erNullHint}
                       muted
                     />
                   )
                 )}
               </div>
 
-              {/* ONE separate, informative line for the estimates: never mixed into a headline figure. */}
-              {showEstimatedLine && (
-                <div className="print-card print-text-xs mt-3 rounded-lg border border-dashed border-gray-300 bg-gray-50/60 px-4 py-2 text-[11px] leading-relaxed text-gray-500 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-400">
-                  <span className="font-medium text-gray-600 dark:text-gray-300">
-                    {fill(tr.estimatedAudienceLine, { total: `~${fmtN(totals.audience.estimated)}`, stories: counts.estimated_story, posts: estimatedPosts })}
-                  </span>
-                  {' — '}
-                  {tr.estimatedAudienceHint}
-                </div>
-              )}
-
-              {/* Valor mediático equivalente: ONE figure for the client (extended), labelled as
-                  an estimate. Ratio EMV (never "ROI") and the real CPM only in the agency view. */}
+              {/* EMV: ONE figure for the client (the extended one, stories included),
+                  labelled "EMV" with a hover explanation on screen and a footnote on
+                  paper. Ratio EMV (never "ROI") and the real CPM only in the agency view. */}
               {(totals.emvExtended > 0 || showCpmTotal) && (
                 <div className="print-card print-pad mt-4 flex flex-wrap items-start justify-between gap-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900">
                   {totals.emvExtended > 0 && (
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 text-xs font-medium text-gray-500 dark:text-gray-400">
                         <Coins className="h-3.5 w-3.5 shrink-0 text-purple-600 dark:text-purple-400" />
-                        {tr.emvTitle}
+                        <span>{tr.emvLabel}</span>
+                        <HelpTip text={tr.emvTooltip} label={tr.emvHelp} />
                       </div>
                       <p className="mt-2 text-2xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
                         {formatEur(totals.emvExtended, { locale })}
                       </p>
-                      <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-gray-400 dark:text-gray-500">
-                        {tr.emvDefinition}
-                      </p>
                     </div>
                   )}
-                  {!isPortal && totals.emvExtended > 0 && typeof totals.emvRatio === 'number' && (
+                  {!clientView && totals.emvExtended > 0 && typeof totals.emvRatio === 'number' && (
                     <div className="shrink-0 text-right">
                       <p className="text-xs font-medium text-gray-500 dark:text-gray-400">{tr.emvRatioLabel}</p>
                       <p className="mt-2 text-2xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
                         {formatRatio(totals.emvRatio, { locale })}
                       </p>
-                      <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">{tr.emvRatioSub}</p>
+                      <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">{tr.emvRatioOnViewsSub}</p>
                     </div>
                   )}
                   {showCpmTotal && typeof totals.cpm === 'number' && (
@@ -2106,7 +2355,7 @@ export function CampaignReport({
                       <p className="mt-2 text-2xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
                         {formatEur(totals.cpm, { locale, maxFractionDigits: 2 })}
                       </p>
-                      <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">{tr.cpmRealSub}</p>
+                      <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">{tr.cpmOnViewsSub}</p>
                     </div>
                   )}
                 </div>
@@ -2157,33 +2406,78 @@ export function CampaignReport({
                   </p>
                 </div>
               )}
-            </section>
-          )}
 
-          {/* 3. Timeline (Europe/Madrid days, from the overview). In print the
-              chart gets an explicit width; with too few days, one sentence. */}
-          {showSection('timeline') && (
-            <section>
-              <SectionHeading>{tr.sectionTimeline}</SectionHeading>
-              <div className="print-card print-pad rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-                <h3 className="mb-4 text-sm font-semibold text-gray-700 dark:text-gray-300">
-                  {tr.timelineTitle}
-                </h3>
-                {timeline.length >= MIN_CHART_DAYS ? (
-                  <div className="print-chart">
-                    <ReportAreaChart
-                      data={timeline}
-                      labels={{ engagements: tr.chartEngagements, posts: tr.chartPosts }}
-                      locale={locale}
-                      print={printing}
-                    />
+              {/* Prometido vs entregado — four rows from overview.delivery; green only when true */}
+              {shownDeliveryRows.length > 0 && (
+                <div className="print-card mt-4 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-gray-200 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                    <ClipboardList className="h-3.5 w-3.5 shrink-0 text-purple-600 dark:text-purple-400" />
+                    {tr.deliveryTitle}
+                    {!clientView && deliveryRowsHiddenFromClient > 0 && (
+                      <span className="no-print font-normal normal-case tracking-normal text-amber-600 dark:text-amber-400 print:hidden">
+                        — {fill(tr.deliveryClientHint, { n: deliveryRowsHiddenFromClient })}
+                      </span>
+                    )}
                   </div>
-                ) : (
-                  <p className="print-text-xs py-4 text-sm text-gray-500 dark:text-gray-400">
-                    {timelineSentence}
+                  <ul className="divide-y divide-gray-100 dark:divide-gray-800">
+                    {shownDeliveryRows.map(row => (
+                      <li key={row.key} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          {row.ok ? (
+                            <CircleCheck className="h-4 w-4 shrink-0 text-green-600 dark:text-green-400" aria-hidden="true" />
+                          ) : row.empty ? (
+                            <CircleDashed className="h-4 w-4 shrink-0 text-gray-400 dark:text-gray-500" aria-hidden="true" />
+                          ) : (
+                            <TriangleAlert className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+                          )}
+                          <div className="min-w-0">
+                            <p className="print-text-xs font-medium text-gray-900 dark:text-gray-100">{row.label}</p>
+                            {row.sub && <p className="text-[11px] text-gray-400 dark:text-gray-500">{row.sub}</p>}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2 tabular-nums">
+                          <span className="print-text-xs text-gray-700 dark:text-gray-300">{row.value}</span>
+                          <span className={cn('inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium', row.ok ? toneClass.good : row.empty ? toneClass.none : toneClass.bad)}>
+                            {row.ok ? tr.deliveryOk : row.empty ? tr.deliveryPending : tr.deliveryWarn}
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Balance in four dimensions — agency only, screen only (never printed, never in the portal) */}
+              {showBalance && balance && (
+                <div className="no-print mt-4 rounded-xl border border-amber-200 bg-amber-50/40 p-4 print:hidden dark:border-amber-900/60 dark:bg-amber-900/10">
+                  <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                    <EyeOff className="h-3.5 w-3.5 shrink-0" />
+                    {tr.balanceTitle}
+                    <span className="rounded border border-amber-300 px-1.5 py-0.5 text-[10px] font-medium tracking-wide dark:border-amber-700">{screenOnlyLabel}</span>
+                    <span className="font-normal normal-case tracking-normal text-amber-600/80 dark:text-amber-400/80">— {tr.balanceHint}</span>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    {balanceRows.map(row => (
+                      <div key={row.key} className="min-w-0">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{row.label}</p>
+                        <span className={cn('mt-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium', toneClass[row.tone])}>
+                          {row.value}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-[11px] text-gray-500 dark:text-gray-400">
+                    {fill(tr.balanceRealShare, { pct: Math.round((balance.realShare || 0) * 100) })}
                   </p>
-                )}
-              </div>
+                </div>
+              )}
+
+              {/* Paper has no hover: ONE discreet line with the EMV explanation */}
+              {totals.emvExtended > 0 && (
+                <p className="print-only mt-3 text-[10px] leading-snug text-gray-400">
+                  {tr.emvLabel}: {tr.emvTooltip}
+                </p>
+              )}
             </section>
           )}
 
@@ -2192,7 +2486,7 @@ export function CampaignReport({
               None with real data → one disclaimer; the complete list is the annex. */}
           {showSection('content') && (
             <section>
-              <SectionHeading hint={highlightItems.length > 0 ? fill(tr.highlightsSub, { n: highlightItems.length }) : undefined}>
+              <SectionHeading hint={highlightItems.length === 1 ? tr.highlightsSubOne : highlightItems.length > 0 ? fill(tr.highlightsSub, { n: highlightItems.length }) : undefined}>
                 {tr.sectionHighlights}
               </SectionHeading>
               {highlightItems.length === 0 ? (
@@ -2213,7 +2507,7 @@ export function CampaignReport({
                           )}
                         >
                           <div className={cn('shrink-0', deleted && 'opacity-50 grayscale')}>
-                            <MediaThumb src={m.thumbnailUrl} alt={m.caption || 'Contenido'} size={64} />
+                            <MediaThumb mediaId={m.id} src={m.thumbnailUrl} alt={m.caption || 'Contenido'} size={64} />
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -2232,7 +2526,7 @@ export function CampaignReport({
                                   <dd className="font-semibold">{(m.views || 0) > 0 ? fmtN(m.views as number) : '—'}</dd>
                                 </div>
                               )}
-                              {showCol('content.reach') && metrics && !metrics.audienceEstimated && metrics.audience > 0 && metrics.audienceBasis !== 'views' && (
+                              {showCol('content.reach') && metrics && !metrics.audienceEstimated && metrics.audience > 0 && metrics.audienceBasis === 'reach' && (
                                 <div className="flex items-baseline gap-1">
                                   <dt className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">{tr.colRealReach}</dt>
                                   <dd className="font-semibold">{fmtN(metrics.audience)}</dd>
@@ -2276,7 +2570,7 @@ export function CampaignReport({
                         {showCol('creators.posts') && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.posts }}>Posts</th>}
                         {showCol('creators.posts') && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.stories }}>{tr.colStories}</th>}
                         <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.interactions }}>{tr.colInteractions}</th>
-                        <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.audience }}>{tr.colRealReach}</th>
+                        <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.audience }}>{tr.colRealAudience}</th>
                         {showCol('creators.er') && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.er }}>ER</th>}
                         {showCol('creators.followers') && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.followers }}>Seguidores</th>}
                         {report.hasBaseline && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.baseline }}>{tr.colBaseline}</th>}
@@ -2339,27 +2633,7 @@ export function CampaignReport({
                             {showCol('creators.posts') && <td className={num}>{p ? p.posts : '—'}</td>}
                             {showCol('creators.posts') && <td className={num}>{p ? p.stories : '—'}</td>}
                             <td className={num}>{p ? fmtN(p.engagements) : '—'}</td>
-                            <td className={num}>
-                              {p && p.audience.real > 0 ? (
-                                <>
-                                  <span>{fmtN(p.audience.real)}</span>
-                                  {showCol('summary.audience_estimated') && p.audience.estimated > 0 && (
-                                    <span className="block text-[10px] text-gray-400 dark:text-gray-500">
-                                      ~{fmtN(p.audience.estimated)} {tr.basisEstimated}
-                                    </span>
-                                  )}
-                                </>
-                              ) : p && showCol('summary.audience_estimated') && p.audience.estimated > 0 ? (
-                                <>
-                                  <span className="text-gray-400 dark:text-gray-500">—</span>
-                                  <span className="block text-[10px] text-gray-400 dark:text-gray-500">
-                                    ~{fmtN(p.audience.estimated)} {tr.basisEstimated}
-                                  </span>
-                                </>
-                              ) : (
-                                '—'
-                              )}
-                            </td>
+                            <td className={num}>{p && p.audience.real > 0 ? fmtN(p.audience.real) : '—'}</td>
                             {showCol('creators.er') && (
                               <td className={num}>
                                 {p && p.er.value !== null ? formatPct(p.er.value, locale) : '—'}
@@ -2391,16 +2665,62 @@ export function CampaignReport({
                 </div>
               </div>
               <div className="mt-2 space-y-0.5 text-[11px] text-gray-400 dark:text-gray-500">
-                <p>{tr.creatorsFootnote}</p>
+                <p>{tr.creatorsFootnoteViews}</p>
                 {report.hasBaseline && <p>{tr.baselineFootnote}</p>}
-                {(showCostCol || showCpmCol) && <p>{tr.costFootnote}</p>}
+                {(showCostCol || showCpmCol) && <p>{tr.costFootnoteViews}</p>}
               </div>
             </section>
           )}
 
-          {/* 6. Datos: qué es real — counts per audience basis (decision 4A) */}
-          {showSection('quality') && (
+          {/* 5b. Qué dijo la audiencia — the PM's highlighted comments (quote cards)
+              and, only with ≥ 20 analysed comments, the real positive share. Hidden
+              automatically when there is neither. */}
+          {showSentiment && (
             <section>
+              <SectionHeading hint={highlightedComments.length > 0 ? tr.sentimentSub : undefined}>
+                {tr.sectionSentiment}
+              </SectionHeading>
+              {sentimentShare !== null && sentiment && (
+                <div className="print-card print-pad mb-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
+                  <div className="flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-gray-100">
+                    <MessageSquare className="h-4 w-4 shrink-0 text-purple-600 dark:text-purple-400" />
+                    <span className="print-text-xs">{fill(tr.sentimentShareLine, { pct: sentimentShare, total: fmtN(sentiment.total) })}</span>
+                  </div>
+                  <div className="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700" aria-hidden="true">
+                    {sentiment.positive > 0 && <div className="h-full bg-green-500" style={{ width: `${(sentiment.positive / sentiment.total) * 100}%` }} />}
+                    {sentiment.neutral > 0 && <div className="h-full bg-gray-400" style={{ width: `${(sentiment.neutral / sentiment.total) * 100}%` }} />}
+                    {sentiment.negative > 0 && <div className="h-full bg-red-400" style={{ width: `${(sentiment.negative / sentiment.total) * 100}%` }} />}
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                    <span className="inline-flex items-center gap-1.5"><ToneDot sentiment="positive" label={tr.sentimentPositive} />{tr.sentimentPositive} {fmtN(sentiment.positive)}</span>
+                    <span className="inline-flex items-center gap-1.5"><ToneDot sentiment="neutral" label={tr.sentimentNeutral} />{tr.sentimentNeutral} {fmtN(sentiment.neutral)}</span>
+                    <span className="inline-flex items-center gap-1.5"><ToneDot sentiment="negative" label={tr.sentimentNegative} />{tr.sentimentNegative} {fmtN(sentiment.negative)}</span>
+                  </div>
+                </div>
+              )}
+              {highlightedComments.length > 0 && (
+                <div className="print-grid-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {highlightedComments.map(c => (
+                    <figure key={c.id} className="print-card print-pad min-w-0 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
+                      <blockquote className="print-text-xs text-sm leading-relaxed text-gray-700 dark:text-gray-300">
+                        &ldquo;{c.text.trim()}&rdquo;
+                      </blockquote>
+                      <figcaption className="mt-2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                        <ToneDot sentiment={c.sentiment} label={toneLabel(c.sentiment)} />
+                        {c.author.trim() && <span className="truncate font-medium text-purple-600 dark:text-purple-400">@{c.author.trim().replace(/^@+/, '')}</span>}
+                      </figcaption>
+                    </figure>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* 6. Datos: qué es real — counts per audience basis. Agency screen only:
+              the client never sees estimates, so a "92 % sin dato" bar is an
+              internal to-do (capture the creators' statistics), not a result. */}
+          {showSection('quality') && !clientView && (
+            <section className="no-print print:hidden">
               <SectionHeading>{tr.sectionQualityReal}</SectionHeading>
               <div className="print-card print-pad rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900">
                 {(() => {
@@ -2423,8 +2743,7 @@ export function CampaignReport({
                       </div>
                       <ul className="print-text-xs mt-3 space-y-1 text-sm text-gray-600 dark:text-gray-400">
                         <li>{fill(tr.qualityRealViewsLine, { n: fmtN(realViewsCount) })}</li>
-                        <li>{basisLine}</li>
-                        <li>{fill(tr.qualityNoAudienceLine, { n: withoutRealData })}</li>
+                        <li>{fill(tr.qualityNoRealDataLine, { n: fmtN(withoutRealData) })}</li>
                         {report.creatorInsightsCount > 0 && (
                           <li>{fill(tr.qualityCreatorInsightsLine, { n: report.creatorInsightsCount })}</li>
                         )}
@@ -2461,10 +2780,10 @@ export function CampaignReport({
               <StatCard icon={Coins} label={tr.clientRevenue} value={formatEur(biz.clientReportedRevenue, { locale })} />
             )}
             {/* CPA / ROAS derive from cost: agency only, and only when the overview carries them */}
-            {!isPortal && biz.cpa !== null && (
+            {!clientView && biz.cpa !== null && (
               <StatCard icon={Coins} label={tr.cpaLabel} value={formatEur(biz.cpa, { locale, maxFractionDigits: 2 })} sub={tr.cpaSubFull} />
             )}
-            {!isPortal && biz.roas !== null && (
+            {!clientView && biz.roas !== null && (
               <StatCard icon={TrendingUp} label={tr.roasLabel} value={formatRatio(biz.roas, { locale, digits: 2 })} sub={tr.roasSubFull} />
             )}
           </div>
@@ -2529,7 +2848,7 @@ export function CampaignReport({
                 <div className="mt-3 border-t border-gray-100 pt-3 dark:border-gray-800">
                   <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
                     <Star className="h-3 w-3 shrink-0 text-amber-500" />
-                    {tr.learningsTopPerformer}: <span className="normal-case text-gray-700 dark:text-gray-300">@{shownLearnings.topPerformer.username.replace(/^@/, '')}</span>
+                    <span className="shrink-0">{tr.learningsTopPerformer}:</span> <span className="min-w-0 truncate normal-case text-gray-700 dark:text-gray-300">@{shownLearnings.topPerformer.username.replace(/^@/, '')}</span>
                   </p>
                   {shownLearnings.topPerformer.reason && (
                     <p className={cn('print-text-xs mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-400', screenOnly(shownLearnings.topPerformer.reason) && 'no-print print:hidden')}>
@@ -2679,7 +2998,7 @@ export function CampaignReport({
                     <th className={thBase} style={{ width: annexW.type }}>{tr.colType}</th>
                     <th className={thBase} style={{ width: annexW.date }}>{tr.colDate}</th>
                     {showCol('content.views') && <th className={cn(thBase, 'text-right')} style={{ width: annexW.views }}>{tr.colViews}</th>}
-                    {showCol('content.reach') && <th className={cn(thBase, 'text-right')} style={{ width: annexW.reach }}>{tr.colRealReach}</th>}
+                    {showCol('content.reach') && <th className={cn(thBase, 'text-right')} style={{ width: annexW.reach }}>{tr.colRealAudience}</th>}
                     <th className={cn(thBase, 'text-right')} style={{ width: annexW.interactions }}>{tr.colInteractions}</th>
                     {showCol('content.source') && <th className={thBase} style={{ width: annexW.source }}>{tr.colSource}</th>}
                     <th className={cn(thBase, 'no-print print:hidden')} style={{ width: annexW.link }}>Link</th>
@@ -2711,7 +3030,7 @@ export function CampaignReport({
                         )}
                         <td className="px-2 py-2">
                           <div className={cn('flex', deleted && 'opacity-50 grayscale')}>
-                            <MediaThumb src={m.thumbnailUrl} alt={m.caption || 'Contenido'} size={28} />
+                            <MediaThumb mediaId={m.id} src={m.thumbnailUrl} alt={m.caption || 'Contenido'} size={28} />
                           </div>
                         </td>
                         <td className="px-3 py-2">
@@ -2740,16 +3059,9 @@ export function CampaignReport({
                             {real > 0 ? (
                               <>
                                 <span>{fmtN(real)}</span>
-                                {metrics && metrics.audienceBasis !== 'views' && (
-                                  <span className="block text-[10px] text-gray-400 dark:text-gray-500">
-                                    {metrics.audienceBasis === 'impressions' ? tr.basisImpressions : tr.basisReach}
-                                  </span>
+                                {metrics && metrics.audienceBasis === 'reach' && (
+                                  <span className="block text-[10px] text-gray-400 dark:text-gray-500">{tr.basisReach}</span>
                                 )}
-                              </>
-                            ) : metrics && metrics.audienceEstimated && metrics.audience > 0 && showCol('summary.audience_estimated') ? (
-                              <>
-                                <span className="text-gray-400 dark:text-gray-500">—</span>
-                                <span className="block text-[10px] text-gray-400 dark:text-gray-500">~{fmtN(metrics.audience)} {tr.basisEstimated}</span>
                               </>
                             ) : (
                               '—'
@@ -2785,7 +3097,7 @@ export function CampaignReport({
             </div>
           </div>
           <div className="mt-2 space-y-0.5 text-[11px] text-gray-400 dark:text-gray-500">
-            {showCol('content.reach') && <p>{tr.audienceFootnote}</p>}
+            {showCol('content.reach') && <p>{tr.audienceFootnoteReal}</p>}
             {/* Decision 7B: deleted posts stay in the totals, disclosed */}
             {totals && totals.mediaDeleted > 0 && (
               <p>

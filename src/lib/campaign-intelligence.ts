@@ -12,9 +12,10 @@
  * (src/lib/campaign-overview.ts → PerInfluencerMetrics) it hands the engine
  * each creator's precomputed totals — views, audience (alcance → impresiones →
  * vistas → estimaciones etiquetadas, decision 5), the four-term interacciones
- * (3A), ER (4C), CPM, cost (6) and EMV — and the engine scores those as they
- * are, so the Aprender tab can never disagree with Resumen or Elegir. Media
- * rows are only a fallback when no overview is available.
+ * (3A), ER and CPM on real views (4B), cost (6) and EMV — and the engine scores
+ * those as they are, so the Aprender tab can never disagree with Resumen or
+ * Elegir. Media rows are only a fallback when no overview is available; that
+ * fallback also puts the ER and the CPM on views.
  *
  * Wording: EMV ÷ fee is the "Ratio EMV" (×2,4) and is never called ROI; the
  * word ROI is reserved for real client data (decision 9B). Every text carries a
@@ -58,14 +59,14 @@ export interface InfluencerKPIs {
   contentPieces: number
 
   // Calculated KPIs
-  cpm: number | null        // Cost per mille of audience
+  cpm: number | null        // Cost per mille of real views (4B)
   cpv: number | null        // Cost per view
   cpe: number | null        // Cost per engagement
   cpc: number | null        // Cost per click
   cpa: number | null        // Cost per acquisition
   emv: number               // Earned media value
   emvCostRatio: number | null  // EMV / fee — the "Ratio EMV", above 1 = good value
-  engagementRate: number | null // Total engagements / audience, in %
+  engagementRate: number | null // Tasa de engagement sobre vistas (4B): engagements ÷ real views, in %
   costPerContent: number | null // Fee / content pieces
 
   // Intelligence
@@ -94,7 +95,7 @@ export interface CampaignIntelligence {
 // Edit these to tune the intelligence engine
 
 interface ObjectiveThresholds {
-  // CPM thresholds (€ per 1000 of audience)
+  // CPM thresholds (€ per 1000 real views)
   cpmGreen: number
   cpmRed: number
   // CPE thresholds (€ per engagement)
@@ -228,9 +229,9 @@ export interface PrecomputedInfluencerTotals {
   fee: number
   /** EMV extended with the brand's rates (perInfluencer.emvExtended). */
   emv: number
-  /** Engagement rate in %, null without an audience base (perInfluencer.er.value). */
+  /** Tasa de engagement sobre vistas in %, null without a sufficient real sample (perInfluencer.er.value). */
   er: number | null
-  /** € per 1000 of audience, null without cost or base (perInfluencer.cpm). */
+  /** € per 1000 real views, null without cost or views (perInfluencer.cpm). */
   cpm: number | null
 }
 
@@ -307,8 +308,8 @@ function calculateInfluencerKPIs(
   const postsCount = totals ? totals.pieces : media.length
   const contentPieces = totals ? totals.pieces : (data.contentPieces || media.length)
 
-  // Calculate KPIs (null if data insufficient). CPM and ER over the audience (decisions 4C / 5).
-  const cpm = totals ? totals.cpm : cpmOf(fee, totalAudience)
+  // Calculate KPIs (null if data insufficient). CPM and ER over real VIEWS (decision 4B).
+  const cpm = totals ? totals.cpm : cpmOf(fee, totalViews)
   const cpv = (fee > 0 && totalViews > 0) ? fee / totalViews : null
   const cpe = (fee > 0 && totalEngagements > 0) ? fee / totalEngagements : null
   const cpc = (fee > 0 && totalClicks > 0) ? fee / totalClicks : null
@@ -316,7 +317,7 @@ function calculateInfluencerKPIs(
   const emvCostRatio = (fee > 0 && emv > 0) ? emv / fee : null
   const engagementRate = totals
     ? totals.er
-    : (totalAudience > 0 ? Math.round((totalEngagements / totalAudience) * 100 * 100) / 100 : null)
+    : (totalViews > 0 ? Math.round((totalEngagements / totalViews) * 100 * 100) / 100 : null)
   const costPerContent = (fee > 0 && contentPieces > 0) ? fee / contentPieces : null
 
   // Score each KPI

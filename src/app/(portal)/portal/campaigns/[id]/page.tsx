@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
 import { formatNumber, formatEur, formatPercent, cn } from '@/lib/utils'
-import { proxyImg } from '@/lib/proxy-image'
+import { mediaThumbUrl } from '@/lib/proxy-image'
 import {
   Loader2,
   ArrowLeft,
@@ -35,8 +35,11 @@ import {
 // never render fee/budget UI here.
 //
 // The ONE value figure a client sees is the extended EMV (decision 8A), labelled
-// "Valor mediático equivalente (estimado)" with its definition. No basic EMV,
-// no ratio against cost, no "ROI": the EMV is an equivalence estimate, not sales.
+// exactly "EMV" with a small "?" that explains it on hover (David, 2026-09-08:
+// never the word "estimado" next to the figure). No basic EMV, no ratio against
+// cost, no "ROI". The creators' ER is the campaign's tasa de engagement sobre
+// vistas (4B) from the overview, never the profile ER, and impressions and
+// estimated audiences are never shown here.
 // ---------------------------------------------------------------------------
 
 interface PortalInfluencer {
@@ -88,9 +91,17 @@ interface PortalCampaignDetail {
 interface PortalOverview {
   /** Extended EMV in euros — the only EMV the client sees. */
   emvExtended?: number | null
-  /** Stories whose audience had to be estimated (no public views). */
-  emvEstimatedStories?: number | null
+  /** Per-creator figures of the same computation; er = tasa de engagement sobre vistas (4B). */
+  perInfluencer?: Array<{
+    influencerId?: string
+    username?: string | null
+    er?: { value?: number | null; reason?: string | null } | null
+  }> | null
 }
+
+/** One sentence, the same the report prints as a footnote. Never says "estimado". */
+const EMV_EXPLANATION =
+  'Valor equivalente en medios pagados de la audiencia y las interacciones conseguidas, a tarifas de mercado por plataforma y formato; incluye las stories.'
 
 const MEDIA_PAGE = 100
 
@@ -172,9 +183,9 @@ function PlatformIcon({ platform }: { platform?: string | null }) {
   }
 }
 
-function MediaCardThumb({ src, alt }: { src?: string | null; alt: string }) {
+function MediaCardThumb({ mediaId, src, alt }: { mediaId?: string | null; src?: string | null; alt: string }) {
   const [error, setError] = useState(false)
-  const url = src ? proxyImg(src) : ''
+  const url = mediaId || src ? mediaThumbUrl({ id: mediaId, thumbnailUrl: src }) : ''
   if (!url || error) {
     return (
       <div className="flex aspect-square w-full items-center justify-center rounded-t-xl bg-gray-100 dark:bg-gray-800">
@@ -276,7 +287,18 @@ export default function PortalCampaignPage() {
   const team = (campaign.influencers || []).filter(m => m?.influencer)
   // Shown only when there is a value: an EMV of 0 (nothing published yet) is not a datum
   const emvExtended = typeof overview?.emvExtended === 'number' && overview.emvExtended > 0 ? overview.emvExtended : null
-  const emvEstimatedStories = overview?.emvEstimatedStories || 0
+  // Campaign ER per creator (sobre vistas), keyed by influencer id and by username
+  const erByCreator = new Map<string, number | null>()
+  for (const p of overview?.perInfluencer || []) {
+    const value = typeof p?.er?.value === 'number' ? p.er.value : null
+    if (p?.influencerId) erByCreator.set(p.influencerId, value)
+    if (p?.username) erByCreator.set(`@${p.username.toLowerCase()}`, value)
+  }
+  const campaignEr = (inf: PortalInfluencer): number | null => {
+    if (inf.id && erByCreator.has(inf.id)) return erByCreator.get(inf.id) ?? null
+    const byName = inf.username ? erByCreator.get(`@${inf.username.toLowerCase()}`) : undefined
+    return byName ?? null
+  }
 
   return (
     <div className="space-y-8">
@@ -325,25 +347,32 @@ export default function PortalCampaignPage() {
         </Link>
       </div>
 
-      {/* a2. Valor mediático equivalente — the single client-facing EMV (decision 8A) */}
+      {/* a2. EMV — the single client-facing value figure (decision 8A); "?" explains it on hover (CSS only) */}
       {emvExtended !== null && (
         <section>
           <div className="rounded-xl border border-purple-200 bg-gradient-to-br from-purple-50 to-indigo-50 p-5 shadow-sm dark:border-purple-800 dark:from-purple-900/20 dark:to-indigo-900/20">
             <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-purple-700 dark:text-purple-300">
               <Sparkles className="h-4 w-4" />
-              Valor mediático equivalente (estimado)
+              EMV
+              <span className="group relative inline-flex normal-case tracking-normal">
+                <span
+                  tabIndex={0}
+                  aria-label={EMV_EXPLANATION}
+                  className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-purple-400 text-[10px] font-bold leading-none text-purple-600 dark:border-purple-500 dark:text-purple-300"
+                >
+                  ?
+                </span>
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute left-0 top-full z-20 mt-1.5 w-72 rounded-lg border border-gray-200 bg-white p-2.5 text-[11px] font-normal leading-relaxed text-gray-700 opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                >
+                  {EMV_EXPLANATION}
+                </span>
+              </span>
             </p>
             <p className="mt-1 text-3xl font-bold tabular-nums text-purple-800 dark:text-purple-200">
               {formatEur(emvExtended, { locale: 'es' })}
             </p>
-            <p className="mt-2 text-xs leading-relaxed text-purple-700/80 dark:text-purple-300/80">
-              Estimación del coste de una exposición e interacción equivalentes en medios pagados; no representa ventas ni retorno.
-            </p>
-            {emvEstimatedStories > 0 && (
-              <p className="mt-1 text-[11px] text-purple-600/70 dark:text-purple-300/60">
-                Incluye {emvEstimatedStories} {emvEstimatedStories === 1 ? 'story' : 'stories'} con audiencia estimada.
-              </p>
-            )}
           </div>
         </section>
       )}
@@ -370,7 +399,9 @@ export default function PortalCampaignPage() {
                     <th className="px-4 py-3">Creador</th>
                     <th className="px-4 py-3">Plataforma</th>
                     <th className="px-4 py-3 text-right">Seguidores</th>
-                    <th className="px-4 py-3 text-right">ER</th>
+                    <th className="px-4 py-3 text-right" title="Tasa de engagement de esta campaña: interacciones ÷ vistas reales de sus publicaciones">
+                      ER <span className="font-normal normal-case tracking-normal">(sobre vistas)</span>
+                    </th>
                     <th className="px-4 py-3">Estado</th>
                   </tr>
                 </thead>
@@ -416,9 +447,10 @@ export default function PortalCampaignPage() {
                           {typeof inf.followers === 'number' ? formatNumber(inf.followers) : '—'}
                         </td>
                         <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
-                          {typeof inf.engagementRate === 'number' && inf.engagementRate > 0
-                            ? formatPercent(inf.engagementRate, { locale: 'es' })
-                            : '—'}
+                          {(() => {
+                            const er = campaignEr(inf)
+                            return er !== null ? formatPercent(er, { locale: 'es' }) : '—'
+                          })()}
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap items-center gap-1.5">
@@ -473,7 +505,7 @@ export default function PortalCampaignPage() {
                   className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900"
                 >
                   <div className="relative">
-                    <MediaCardThumb src={m.thumbnailUrl} alt={m.caption || 'Contenido'} />
+                    <MediaCardThumb mediaId={m.id} src={m.thumbnailUrl} alt={m.caption || 'Contenido'} />
                     <span className="absolute left-2 top-2 rounded-full bg-black/60 px-2 py-0.5 text-[10px] font-medium text-white">
                       {mediaTypeLabel(m.mediaType)}
                     </span>

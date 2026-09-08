@@ -104,7 +104,10 @@ export async function GET(
         ratioEmv: emvRatioOf(emvExtended, cost),
         media: mine?.media ?? 0,
         engagements: mine?.engagements ?? 0,
+        /** Real views of the creator's publications in this campaign — the base of the ER (4B). */
+        views: mine?.views ?? 0,
         audience: mine?.audience.total ?? 0,
+        /** Tasa de engagement sobre vistas (4B); null when the real sample is insufficient. */
         engagementRate: mine?.er.value ?? null,
       }
     })

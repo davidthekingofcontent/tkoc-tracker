@@ -8,8 +8,8 @@
  *    count ONCE: rows are deduplicated by post before summing.
  *  - Cost is per campaign membership (fee acordado, si no coste — decision 6).
  *  - Audiencia follows decision 5 (alcance real → impresiones → vistas →
- *    estimación etiquetada). The ER follows 4A: interacciones of the
- *    publications WITH a real audience figure ÷ that real audience — estimates
+ *    estimación etiquetada). The ER follows 4B: interacciones ÷ VISTAS reales
+ *    of the same publications (≥ 3 pieces with views, ≥ 500 views) — estimates
  *    are reported apart and never enter the ER.
  *  - EMV ÷ cost is the "Ratio EMV" (×2,4). It is never called ROI (decision 9B).
  *  - Deleted publications stay in the totals and are counted apart (7B).
@@ -24,9 +24,10 @@ import { computeCampaignOverviews } from '@/lib/campaign-overview'
 import { dedupeMediaByPost } from '@/lib/campaign-capture'
 import {
   emvRatioOf,
-  engagementRateOf,
+  engagementRateOnViews,
   engagementsOf,
   sumAudience,
+  viewsBaseOf,
   type AudienceResult,
   type AudienceTotals,
   type PerMediaMetrics,
@@ -49,9 +50,9 @@ interface BrandData {
   totalViews: number
   /** Σ fees acordados of the brand's campaign memberships; 0 for BRAND users. */
   totalCost: number
-  /** Extended EMV — the one EMV the client sees ("Valor mediático equivalente (estimado)"). */
+  /** Extended EMV — the one EMV the client sees (labelled "EMV"). */
   totalEMV: number
-  /** Interacciones of the real-audience publications ÷ audiencia real × 100 (4A); null without a real base. */
+  /** Tasa de engagement sobre vistas (4B): interacciones ÷ vistas reales × 100; null when the real sample is insufficient. */
   engagementRate: number | null
   /** Always 0 since 4A (estimates never enter the ER); kept for old consumers. */
   erEstimatedShare: number
@@ -169,9 +170,6 @@ export async function GET(request: NextRequest) {
       // The same post in the annual and the monthly campaign counts once for the brand.
       const distinct = dedupeMediaByPost(rows)
       let engagements = 0, views = 0, emvExtended = 0, mediaDeleted = 0
-      // 4A: ER numerator = interacciones of the SAME rows that carry a real audience
-      // figure (mirrors isRealIdx in campaign-overview.ts), never the brand total.
-      let engagementsReal = 0
       const audienceResults: AudienceResult[] = []
       for (const m of distinct) {
         views += m.views || 0
@@ -181,11 +179,11 @@ export async function GET(request: NextRequest) {
         emvExtended += pm.emvExtended
         if (pm.isDeleted) mediaDeleted++
         audienceResults.push({ value: pm.audience, basis: pm.audienceBasis, estimated: pm.audienceEstimated })
-        if (!pm.audienceEstimated && pm.audience > 0) engagementsReal += engagementsOf(m)
       }
 
       const audience = sumAudience(audienceResults)
-      const er = engagementRateOf(engagementsReal, audience, { minPieces: ER_MIN_PIECES_CAMPAIGN })
+      // 4B: ER = interacciones ÷ vistas reales of the SAME (deduplicated) publications
+      const er = engagementRateOnViews(viewsBaseOf(distinct), { minPieces: ER_MIN_PIECES_CAMPAIGN })
       cost = isBrand ? 0 : Math.round(cost * 100) / 100
       emvExtended = Math.round(emvExtended * 100) / 100
 

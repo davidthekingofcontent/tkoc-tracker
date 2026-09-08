@@ -19,8 +19,10 @@ import {
  *        brands get a 404 (not 403) so campaign ids never leak.
  * PUT  — ADMIN / EMPLOYEE only.
  *        { title?, subtitle?, intro?, conclusions?, hiddenSections?,
- *          hiddenColumns?, hiddenMediaIds?, hiddenInfluencerIds? }
- *        saves a partial patch (strings ≤ 2000 chars, arrays ≤ 200 strings), or
+ *          hiddenColumns?, hiddenMediaIds?, hiddenInfluencerIds?,
+ *          highlightedComments? }
+ *        saves a partial patch (strings ≤ 2000 chars, arrays ≤ 200 strings,
+ *        ≤ 12 highlighted comments of ≤ 300 chars), or
  *        { markSent: true, note? } appends a sentVersions entry.
  * POST — ADMIN / EMPLOYEE only. { note? } — same as PUT { markSent: true }.
  *
@@ -131,6 +133,11 @@ export async function PUT(
     }
     for (const k of ['hiddenSections', 'hiddenColumns', 'hiddenMediaIds', 'hiddenInfluencerIds'] as const) {
       if (b[k] !== undefined) patch[k] = b[k] as string[]
+    }
+    // "Qué dijo la audiencia": validated above (≤ 12 items, text ≤ 300 chars);
+    // normalizeReportConfig trims, caps and de-duplicates ids on save.
+    if (b.highlightedComments !== undefined) {
+      patch.highlightedComments = (b.highlightedComments === null ? [] : b.highlightedComments) as ReportConfigPatch['highlightedComments']
     }
 
     const config = await saveReportConfig(id, patch, actorLabel(session))

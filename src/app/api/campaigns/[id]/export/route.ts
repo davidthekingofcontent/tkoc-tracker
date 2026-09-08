@@ -11,9 +11,13 @@
  * POST /api/campaigns/[id]/export { format }   (kept for old callers)
  *
  * Definitions (src/lib/metrics.ts): interacciones = likes + comentarios +
- * shares + saves; audiencia = alcance real → impresiones → vistas → estimación
- * etiquetada e informativa; ER y CPM SOLO sobre audiencia real (4A); coste = fee acordado o coste;
- * "Ratio EMV" = EMV ÷ coste. Money is EUR. Dates are Europe/Madrid.
+ * shares + saves; audiencia = alcance real → vistas reales → estimación
+ * etiquetada e informativa; tasa de engagement = interacciones ÷ VISTAS reales
+ * de las mismas piezas (4B, ≥ 3 piezas con vistas); CPM = coste ÷ vistas reales
+ * × 1000; coste = fee acordado o coste; "Ratio EMV" = EMV ÷ coste. Impressions
+ * are not captured and never exported (David, 2026-09-08). The "Prometido vs
+ * entregado" checklist (overview.delivery) and the four-dimension balance
+ * (overview.balance) travel in both formats. Money is EUR. Dates are Europe/Madrid.
  *
  * CSV dialect — Excel es-ES (decision for #28). Every label in the file is
  * Spanish and the person opening it works in Spanish Excel, whose list
@@ -60,7 +64,7 @@ async function loadCampaign(id: string) {
         orderBy: { postedAt: 'desc' },
         select: {
           id: true, externalId: true, platform: true, mediaType: true, caption: true, permalink: true, postedAt: true,
-          likes: true, comments: true, shares: true, saves: true, views: true, reach: true, impressions: true,
+          likes: true, comments: true, shares: true, saves: true, views: true, reach: true,
           source: true, isDeleted: true, contentAngle: true, hook: true, productBenefit: true,
           influencer: { select: { id: true, username: true, platform: true } },
         },
@@ -160,7 +164,7 @@ function dateEs(d: Date | string | null | undefined): string {
 function basisLabel(b: string): string {
   switch (b) {
     case 'reach': return 'alcance real'
-    case 'impressions': return 'impresiones reales'
+    case 'impressions': return 'dato real'
     case 'views': return 'vistas reales'
     case 'estimated_story': return 'estimado (story)'
     case 'estimated_post': return 'estimado (post)'
@@ -212,15 +216,39 @@ function buildCsv(c: LoadedCampaign, o: CampaignOverview): string {
   L.push(row('Audiencia estimada', t.audience.estimated))
   L.push(row('% audiencia estimada', n2(t.audience.estimatedShare * 100)))
   L.push(row('Alcance real (solo alcance)', t.reachReal))
-  L.push(row('Impresiones reales', t.impressionsReal))
-  L.push(row('Tasa de engagement (%)', n2(t.er.value)))
+  L.push(row('Tasa de engagement sobre vistas (%)', n2(t.er.value)))
+  L.push(row('Publicaciones con vistas reales (base de la tasa)', t.er.pieces))
+  L.push(row('Vistas reales de esa base', t.er.denominator))
+  L.push(row('Interacciones de esa base', t.er.numerator))
   L.push(row('Coste total (EUR)', n2(t.cost)))
   L.push(row('Miembros con coste', t.membersWithCost))
-  L.push(row('CPM real sobre audiencia real (EUR)', n2(t.cpm)))
+  L.push(row('CPM sobre vistas (EUR)', n2(t.cpm)))
   L.push(row('EMV (EUR)', n2(t.emvExtended)))
-  L.push(row('EMV solo alcance (EUR)', n2(t.emvBasic)))
+  L.push(row('EMV solo audiencia (EUR)', n2(t.emvBasic)))
   L.push(row('Ratio EMV (EMV / coste)', n2(t.emvRatio)))
   L.push(row('Stories con audiencia estimada', t.emvEstimatedStories))
+  L.push('')
+
+  // Prometido vs entregado (overview.delivery) — real counts, "sí" only when it is true
+  const dl = o.delivery
+  L.push('PROMETIDO VS ENTREGADO')
+  L.push(row('Concepto', 'Entregado', 'Prometido', 'Cumplido'))
+  L.push(row('Creadores (acordados que han publicado)', dl.creators.delivered, dl.creators.planned, dl.creators.ok ? 'sí' : 'no'))
+  L.push(row('Piezas (publicadas / comprometidas)', dl.pieces.delivered, dl.pieces.planned, dl.pieces.ok ? 'sí' : 'no'))
+  L.push(row('Fechas (dentro del periodo / con fecha)', dl.dates.inWindow, dl.dates.total, dl.dates.ok ? 'sí' : 'no'))
+  L.push(row('Identificación legal (#publicidad / colaboración pagada)', dl.disclosure.disclosed, dl.disclosure.total, dl.disclosure.ok ? 'sí' : 'no'))
+  L.push(row('Publicaciones sin identificación legal', dl.disclosure.missingMediaIds.length))
+  L.push(row('Todo cumplido', dl.allOk ? 'sí' : 'no'))
+  L.push('')
+
+  // Balance en cuatro dimensiones (overview.balance); la eficiencia es un juicio de coste (interno)
+  const bl = o.balance
+  L.push('BALANCE DE CAMPAÑA')
+  L.push(row('Ejecución', balanceLabel('execution', bl.execution)))
+  L.push(row('Resultados', balanceLabel('results', bl.results)))
+  L.push(row('Eficiencia', balanceLabel('efficiency', bl.efficiency)))
+  L.push(row('Fiabilidad de datos', balanceLabel('reliability', bl.dataReliability)))
+  L.push(row('% de publicaciones con vistas reales', n2(bl.realShare * 100)))
   L.push('')
 
   if (o.targets.length > 0) {
@@ -249,7 +277,7 @@ function buildCsv(c: LoadedCampaign, o: CampaignOverview): string {
   L.push(row(
     'Usuario', 'Nombre', 'Plataforma', 'Seguidores', 'Estado', 'Formato negociado', 'Coste (EUR)', 'Entregables comprometidos',
     'Publicaciones', 'Stories', 'Eliminadas', 'Vistas', 'Interacciones', 'Audiencia total', 'Audiencia real', 'Audiencia estimada',
-    'Tasa de engagement (%)', 'CPM (EUR)', 'EMV (EUR)', 'Ratio EMV', 'Vs su habitual (x)', 'Línea base n', 'Clics enlace',
+    'Tasa de engagement sobre vistas (%)', 'CPM sobre vistas (EUR)', 'EMV (EUR)', 'Ratio EMV', 'Vs su habitual (x)', 'Línea base n', 'Clics enlace',
   ))
   const byId = new Map(c.influencers.map(ci => [ci.influencerId, ci]))
   for (const p of o.perInfluencer) {
@@ -282,22 +310,38 @@ function buildCsv(c: LoadedCampaign, o: CampaignOverview): string {
   L.push('')
   L.push('DEFINICIONES')
   L.push(row('Interacciones', 'likes + comentarios + shares + saves'))
-  L.push(row('Audiencia real', 'por publicación: alcance real; si no hay, impresiones reales; si no hay, vistas reales (cualquier fuente: API de Meta, Apify, estadísticas del creador registradas por la PM, manual). Es la base de la tasa de engagement, del CPM real y del objetivo de alcance'))
-  L.push(row('Audiencia estimada', 'solo informativa y siempre etiquetada: stories sin vistas (seguidores × % por tier y secuencia) y publicaciones sin alcance, impresiones ni vistas (seguidores × tasa por tier). Nunca entra en la tasa de engagement, el CPM ni los objetivos'))
-  L.push(row('Audiencia total', 'audiencia real + audiencia estimada (cifra informativa; su % estimado se indica aparte)'))
-  L.push(row('Base de audiencia', 'alcance real / impresiones reales / vistas reales = dato real; estimado (story) / estimado (post) = informativo; sin base = sin dato ni seguidores'))
-  L.push(row('Tasa de engagement', 'interacciones de las publicaciones con audiencia real ÷ audiencia real × 100; celda vacía = sin dato real (ninguna publicación con alcance, impresiones o vistas reales), nunca 0'))
-  L.push(row('CPM real', 'coste ÷ audiencia real × 1000; celda vacía = sin coste o sin dato real'))
+  L.push(row('Tasa de engagement', 'interacciones ÷ vistas reales × 100 de las mismas publicaciones (las que tienen vistas). Solo se publica con al menos 3 publicaciones con vistas, 500 vistas y un ratio plausible (≤ 100 %); celda vacía = muestra real insuficiente o sin dato real, nunca 0'))
+  L.push(row('CPM sobre vistas', 'coste ÷ vistas reales × 1000; celda vacía = sin coste o sin vistas reales'))
+  L.push(row('Audiencia real', 'por publicación: alcance real aportado por el creador; si no hay, vistas reales (cualquier fuente: API de Meta, Apify, estadísticas del creador registradas por la PM, manual). Es la base del objetivo de alcance'))
+  L.push(row('Audiencia estimada', 'solo informativa, interna y siempre etiquetada: stories sin vistas (seguidores × % por tier y secuencia) y publicaciones sin alcance ni vistas (seguidores × tasa por tier). Nunca entra en la tasa de engagement, el CPM ni los objetivos, y el cliente nunca la ve'))
+  L.push(row('Audiencia total', 'audiencia real + audiencia estimada (cifra informativa interna; su % estimado se indica aparte)'))
+  L.push(row('Base de audiencia', 'alcance real / vistas reales = dato real; estimado (story) / estimado (post) = informativo; sin base = sin dato ni seguidores'))
   L.push(row('Coste', 'fee acordado; si no hay fee, coste'))
-  L.push(row('EMV', 'valor mediático equivalente estimado (no representa ventas ni retorno)'))
-  L.push(row('Ratio EMV', 'EMV ÷ coste'))
+  L.push(row('EMV', 'valor equivalente en medios pagados de la audiencia y las interacciones conseguidas, a tarifas de mercado por plataforma y formato; incluye las stories. No representa ventas ni retorno'))
+  L.push(row('Ratio EMV', 'EMV ÷ coste, mostrado como multiplicador (nunca ROI)'))
+  L.push(row('Prometido vs entregado', 'creadores en Acordado o superior que han publicado; piezas publicadas frente a los entregables comprometidos por creador; publicaciones dentro del periodo de campaña; publicaciones de feed con #publicidad / colaboración pagada'))
+  L.push(row('Balance', 'cuatro lecturas separadas: ejecución (lista Prometido vs entregado), resultados (objetivos), eficiencia (CPM sobre vistas frente al CPM máximo; interno) y fiabilidad de datos (% de publicaciones con vistas reales: ≥ 80 % alta, ≥ 50 % media)'))
   L.push(row('Vs su habitual', 'mediana por pieza de las publicaciones de la campaña del mismo formato ÷ mediana de las últimas 12 publicaciones del creador antes del acuerdo'))
   return L.join('\n')
+}
+
+/** Spanish label of one balance dimension value (src/lib/metrics.ts CampaignBalance). */
+function balanceLabel(dimension: 'execution' | 'results' | 'efficiency' | 'reliability', value: string): string {
+  const labels: Record<typeof dimension, Record<string, string>> = {
+    execution: { complete: 'completa', issues: 'con incidencias', incomplete: 'incompleta', no_data: 'sin datos' },
+    results: { above: 'por encima del objetivo', on_target: 'en objetivo', below: 'por debajo del objetivo', no_targets: 'sin objetivos' },
+    efficiency: { better: 'mejor que el CPM máximo', in_range: 'dentro del CPM máximo', worse: 'peor que el CPM máximo', no_data: 'sin datos' },
+    reliability: { high: 'alta', medium: 'media', low: 'baja', no_data: 'sin datos' },
+  }
+  return labels[dimension][value] ?? value
 }
 
 function buildJson(c: LoadedCampaign, o: CampaignOverview) {
   const byId = new Map(c.influencers.map(ci => [ci.influencerId, ci]))
   const pm = new Map(o.perMedia.map(m => [m.id, m]))
+  // Impressions are not captured and are never exported (decision 1); the rest of the totals travel verbatim.
+  const { impressionsReal: _impressionsReal, ...totals } = o.totals
+  void _impressionsReal
   return {
     generatedAt: new Date().toISOString(),
     definitionsVersion: o.definitionsVersion,
@@ -309,9 +353,11 @@ function buildJson(c: LoadedCampaign, o: CampaignOverview) {
         views: c.targetViews, reach: c.targetReach, engagement: c.targetEngagement, er: c.targetER, cpmMax: c.targetCpmMax, frozenAt: c.targetsFrozenAt,
       },
     },
-    totals: o.totals,
+    totals,
     targets: o.targets,
     business: o.business,
+    delivery: o.delivery,
+    balance: o.balance,
     timeline: o.timeline,
     influencers: o.perInfluencer.map(p => {
       const ci = byId.get(p.influencerId)
@@ -327,21 +373,23 @@ function buildJson(c: LoadedCampaign, o: CampaignOverview) {
     media: c.media.map(m => ({
       id: m.id, postedAt: m.postedAt, influencer: m.influencer?.username ?? null, platform: m.platform, mediaType: m.mediaType,
       source: m.source, isDeleted: m.isDeleted, likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves, views: m.views,
-      reach: m.reach, impressions: m.impressions, permalink: m.permalink, caption: m.caption,
+      reach: m.reach, permalink: m.permalink, caption: m.caption,
       tags: { contentAngle: m.contentAngle, hook: m.hook, productBenefit: m.productBenefit },
       metrics: pm.get(m.id) ?? null,
     })),
     definitions: {
       engagements: 'likes + comments + shares + saves',
-      audienceReal: 'per publication: real reach → real impressions → real views (any source: Meta API, Apify, creator insights recorded by the PM, manual); the base of the engagement rate, the real CPM and the reach target',
-      audienceEstimated: 'informative only, always labelled: stories without views (followers × tier rate × sequence decay) and publications without reach, impressions or views (followers × tier rate); never enters the engagement rate, the CPM or the targets',
-      audience: 'total = real + estimated (informative; estimatedShare is the estimated part, 0–1)',
-      audienceBasis: 'reach / impressions / views = real; estimated_story / estimated_post = informative estimate; none = no data and no followers',
-      engagementRate: 'engagements of the publications with a real audience ÷ real audience × 100; null = no real data (never 0)',
-      cpm: 'cost ÷ real audience × 1000; null without cost or without real data',
+      engagementRate: 'engagements ÷ real views × 100 over the same publications (those with views); published only with ≥ 3 publications with views, ≥ 500 views and a plausible ratio (≤ 100 %); null = insufficient real sample or no real data (never 0). er.pieces / er.denominator / er.numerator carry the base',
+      cpm: 'cost ÷ real views × 1000; null without cost or without real views',
+      audienceReal: 'per publication: creator-provided real reach → real views (any source: Meta API, Apify, creator insights recorded by the PM, manual); the base of the reach target',
+      audienceEstimated: 'informative and internal only, always labelled: stories without views (followers × tier rate × sequence decay) and publications without reach or views (followers × tier rate); never enters the engagement rate, the CPM or the targets and is never shown to the client',
+      audience: 'total = real + estimated (informative, internal; estimatedShare is the estimated part, 0–1)',
+      audienceBasis: 'reach / views = real; estimated_story / estimated_post = informative estimate; none = no data and no followers',
       cost: 'agreed fee, else cost',
-      emv: 'estimated equivalent media value; not sales nor return',
-      emvRatio: 'EMV ÷ cost',
+      emv: 'equivalent paid-media value of the audience and interactions achieved, at market rates per platform and format; stories included. Not sales nor return',
+      emvRatio: 'EMV ÷ cost, shown as a multiplier (never ROI)',
+      delivery: 'promised vs delivered: creators in Agreed or later that published; pieces published vs committed deliverables per creator (planned null when none set); publications inside the campaign window; feed publications with #ad / paid partnership (missingMediaIds lists the rest)',
+      balance: 'four separate readings, no single score: execution (delivery checklist), results (targets), efficiency (CPM on views vs the max CPM target; internal), dataReliability (realShare = share of publications with real views: ≥ 0.8 high, ≥ 0.5 medium)',
       vsBaseline: 'median of the creator\'s last 12 same-format publications before the deal',
     },
   }

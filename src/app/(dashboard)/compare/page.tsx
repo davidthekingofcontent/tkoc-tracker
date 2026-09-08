@@ -41,9 +41,10 @@ interface ComparisonData {
   influencerCount: number
   mediaCount: number
   totalReach: number
-  totalImpressions: number
   totalEngagements: number
-  engagementRate: number
+  /** Tasa de engagement sobre vistas (4B); null when the real sample is insufficient. */
+  engagementRate: number | null
+  engagementRateReason?: 'no_real_base' | 'insufficient_sample' | 'implausible' | null
   totalViews: number
   totalCost: number
   emvExtended: number
@@ -98,7 +99,7 @@ export default function CompareCampaignsPage() {
     { key: 'mediaCount', label: locale === 'es' ? 'Publicaciones' : 'Posts', icon: BarChart3, format: (v: number) => v.toString() },
     { key: 'totalReach', label: locale === 'es' ? 'Alcance real' : 'Real reach', icon: Eye, format: (v: number) => formatNumber(v, { locale }) },
     { key: 'totalEngagements', label: locale === 'es' ? 'Engagements' : 'Engagements', icon: Heart, format: (v: number) => formatNumber(v, { locale }) },
-    { key: 'engagementRate', label: locale === 'es' ? 'Tasa Engagement' : 'Engagement Rate', icon: TrendingUp, format: (v: number) => formatPercent(v, { locale }) },
+    { key: 'engagementRate', label: locale === 'es' ? 'Tasa de engagement (sobre vistas)' : 'Engagement rate (on views)', icon: TrendingUp, format: (v: number | null) => v !== null && v !== undefined ? formatPercent(v, { locale }) : t.campaignDetail.erInsufficientSample },
     { key: 'totalViews', label: locale === 'es' ? 'Vistas Totales' : 'Total Views', icon: Eye, format: (v: number) => formatNumber(v, { locale }) },
     { key: 'totalCost', label: locale === 'es' ? 'Coste Total' : 'Total Cost', icon: Euro, format: (v: number) => formatEur(v, { locale }) },
     { key: 'emvExtended', label: 'EMV', icon: Zap, format: (v: number) => formatEur(v, { locale }) },
@@ -213,8 +214,8 @@ export default function CompareCampaignsPage() {
                   </thead>
                   <tbody>
                     {metrics.map(({ key, label, icon: Icon, format }) => {
-                      const values = comparisonData.map(c => (c as unknown as Record<string, number>)[key])
-                      const maxVal = Math.max(...values.filter(v => v !== null && v !== undefined))
+                      const values = comparisonData.map(c => (c as unknown as Record<string, number | null>)[key])
+                      const maxVal = Math.max(...values.filter((v): v is number => v !== null && v !== undefined))
                       return (
                         <tr key={key} className="border-b border-gray-100 last:border-0">
                           <td className="py-3 text-sm text-gray-600">
@@ -224,15 +225,15 @@ export default function CompareCampaignsPage() {
                             </div>
                           </td>
                           {comparisonData.map((c, i) => {
-                            const val = (c as unknown as Record<string, number>)[key]
-                            const isMax = val === maxVal && val > 0 && key !== 'totalCost'
-                            const isMinCost = key === 'totalCost' && val > 0 && val === Math.min(...values.filter(v => v > 0))
+                            const val = (c as unknown as Record<string, number | null>)[key]
+                            const isMax = val !== null && val === maxVal && val > 0 && key !== 'totalCost'
+                            const isMinCost = key === 'totalCost' && val !== null && val > 0 && val === Math.min(...values.filter((v): v is number => v !== null && v > 0))
                             return (
                               <td key={c.id} className="py-3 text-center">
                                 <span className={`text-sm font-bold ${
                                   isMax || isMinCost ? 'text-green-600' : 'text-gray-900'
                                 }`}>
-                                  {format(val)}
+                                  {format(val as number)}
                                   {(isMax || isMinCost) && ' ★'}
                                 </span>
                               </td>
@@ -326,21 +327,23 @@ export default function CompareCampaignsPage() {
               </CardContent>
             </Card>
 
-            {/* Engagement Rate */}
+            {/* Tasa de engagement sobre vistas (4B): interacciones ÷ vistas reales; "—" without a sufficient real sample */}
             <Card variant="elevated">
               <CardContent>
                 <h4 className="mb-4 text-sm font-semibold text-gray-700">
-                  {locale === 'es' ? 'Engagement Rate' : 'Engagement Rate'}
+                  {locale === 'es' ? 'Tasa de engagement (sobre vistas)' : 'Engagement rate (on views)'}
                 </h4>
                 <div className="space-y-3">
                   {comparisonData.map((c, i) => {
-                    const maxEng = Math.max(...comparisonData.map(d => d.engagementRate))
-                    const pct = maxEng > 0 ? (c.engagementRate / maxEng) * 100 : 0
+                    const maxEng = Math.max(...comparisonData.map(d => d.engagementRate ?? 0))
+                    const pct = maxEng > 0 && c.engagementRate !== null ? (c.engagementRate / maxEng) * 100 : 0
                     return (
                       <div key={c.id}>
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-xs text-gray-600 truncate max-w-[150px]">{c.name}</span>
-                          <span className="text-xs font-bold text-gray-900">{formatPercent(c.engagementRate, { locale })}</span>
+                          <span className="text-xs font-bold text-gray-900">
+                            {c.engagementRate !== null ? formatPercent(c.engagementRate, { locale }) : t.campaignDetail.erInsufficientSample}
+                          </span>
                         </div>
                         <div className="h-3 w-full rounded-full bg-gray-100">
                           <div className={`h-3 rounded-full ${colors[i]} transition-all`} style={{ width: `${pct}%` }} />

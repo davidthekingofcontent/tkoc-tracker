@@ -2423,8 +2423,8 @@ export default function SettingsPage() {
                       </h4>
                       <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
                         {locale === 'es'
-                          ? 'Solo para publicaciones sin alcance, impresiones ni vistas reales (típicamente fotos capturadas de datos públicos). Se usa en la audiencia y la tasa de engagement, siempre etiquetado como estimado; nunca en el EMV. Los reels usan sus vistas reales.'
-                          : 'Only for posts with no real reach, impressions or views (typically image posts from public data). Used for audience and engagement rate, always labelled as estimated; never for EMV. Reels use their real views.'}
+                          ? 'Solo para publicaciones sin alcance ni vistas reales (típicamente fotos capturadas de datos públicos). Se usa únicamente en la audiencia estimada, informativa y solo de agencia; nunca en la tasa de engagement (sobre vistas), el CPM, los objetivos ni el EMV. Los reels usan sus vistas reales.'
+                          : 'Only for posts with no real reach or views (typically image posts from public data). Used only for the estimated audience, informative and agency-only; never for the engagement rate (on views), the CPM, the targets or the EMV. Reels use their real views.'}
                       </p>
                       <div className="overflow-x-auto">
                         <table className="w-full text-sm">

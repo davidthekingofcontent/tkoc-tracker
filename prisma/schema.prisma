@@ -398,6 +398,22 @@ model Media {
   @@unique([externalId, platform, campaignId])
   @@index([externalId, platform])
   @@map("media")
+  thumb         MediaThumb?
+}
+
+/// Durable copy of a publication's thumbnail. Instagram/TikTok CDN URLs
+/// expire in days; the report and the portal serve this copy instead.
+model MediaThumb {
+  mediaId     String   @id
+  media       Media    @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  data        Bytes
+  contentType String
+  bytes       Int
+  sourceUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("media_thumbs")
 }
 
 // ============ COMMENTS (Sentiment Analysis) ============

@@ -14,9 +14,10 @@ function getInfluencerTier(followers: number): string {
 // GET /api/campaigns/compare?ids=a,b[,c]
 // Every figure comes from computeCampaignOverview (src/lib/campaign-overview.ts,
 // definitions in src/lib/metrics.ts): audience = reach → impressions → views →
-// labelled estimate, ER = interacciones ÷ audiencia, cost = agreedFee (else
-// cost), EMV from the live valuation, Ratio EMV = EMV ÷ coste. Nothing is
-// aggregated here any more. Brands get the economics stripped.
+// labelled estimate, ER = interacciones ÷ vistas reales (4B, null when the real
+// sample is insufficient), cost = agreedFee (else cost), EMV from the live
+// valuation, Ratio EMV = EMV ÷ coste. Nothing is aggregated here any more.
+// Brands get the economics stripped and never receive impressions.
 export async function GET(request: NextRequest) {
   try {
     const session = await getSession(request)
@@ -129,11 +130,16 @@ export async function GET(request: NextRequest) {
         totalReachReal: t.reachReal,
         /** Share (0–1) of the audience that is estimated. */
         audienceEstimatedShare: t.audience.estimatedShare,
-        totalImpressions: t.impressionsReal ?? 0,
+        // Impressions are not a reported metric any more (David, 2026-09-08); agency-only, informative.
+        ...(isBrand ? {} : { totalImpressions: t.impressionsReal ?? 0 }),
         /** Interacciones = likes + comentarios + shares + saves. */
         totalEngagements: t.engagements,
-        /** ER = interacciones ÷ audiencia × 100; 0 when there is no audience base. */
-        engagementRate: t.er.value ?? 0,
+        /** Tasa de engagement sobre vistas (4B); null when the real sample is insufficient. */
+        engagementRate: t.er.value,
+        /** Why engagementRate is null (no_real_base | insufficient_sample | implausible). */
+        engagementRateReason: t.er.reason ?? null,
+        /** Publications with real views behind the ER. */
+        engagementRatePieces: t.er.pieces,
         engagementRateEstimatedShare: t.er.estimatedShare,
         totalViews: t.views,
         /** Coste = fee acordado, si no coste registrado (0 for brands). */

@@ -110,6 +110,52 @@ type MediaRowMetrics = Pick<
   'audience' | 'audienceBasis' | 'audienceEstimated' | 'engagements' | 'emvExtended'
 >
 
+/**
+ * Sentiment of the captured comments (Comment.sentiment) of the campaign's
+ * media — report view only. Counts, never texts: the report shows the
+ * positive share only when at least 20 comments were analysed. Comments of
+ * the publications / creators the PM hid from the report are excluded, like
+ * every other figure of the report view. Never throws (an aggregate failure
+ * must not block the report).
+ */
+export interface CampaignSentiment {
+  positive: number
+  neutral: number
+  negative: number
+  total: number
+}
+
+async function computeCampaignSentiment(
+  campaignId: string,
+  exclude: { mediaIds: string[]; influencerIds: string[] }
+): Promise<CampaignSentiment> {
+  const out: CampaignSentiment = { positive: 0, neutral: 0, negative: 0, total: 0 }
+  try {
+    const rows = await prisma.comment.groupBy({
+      by: ['sentiment'],
+      where: {
+        media: {
+          campaignId,
+          ...(exclude.mediaIds.length > 0 ? { id: { notIn: exclude.mediaIds } } : {}),
+          ...(exclude.influencerIds.length > 0 ? { influencerId: { notIn: exclude.influencerIds } } : {}),
+        },
+      },
+      _count: { _all: true },
+    })
+    for (const row of rows) {
+      const n = row._count._all
+      if (row.sentiment === 'positive') out.positive += n
+      else if (row.sentiment === 'negative') out.negative += n
+      else if (row.sentiment === 'neutral') out.neutral += n
+      else continue // unanalysed comments do not count
+      out.total += n
+    }
+  } catch (err) {
+    console.error('[campaign] sentiment aggregate failed:', err instanceof Error ? err.message : err)
+  }
+  return out
+}
+
 /** Legacy aliases (same values as overview.totals) kept for existing consumers. */
 function legacyOverviewKeys(ov: CampaignOverview) {
   const t = ov.totals
@@ -172,7 +218,7 @@ export async function GET(
     // never a page) are independent: load them together with the brand info.
     // The report also gets the learnings, which need the likes/comments/shares/
     // saves split and the formats of ALL (non-hidden) media — a minimal select.
-    const [campaign, fullOverview, brand, brandId, learningsRows] = await Promise.all([
+    const [campaign, fullOverview, brand, brandId, learningsRows, sentiment] = await Promise.all([
       prisma.campaign.findUnique({
         where: { id },
         include: {
@@ -211,6 +257,10 @@ export async function GET(
             select: { influencerId: true, likes: true, comments: true, shares: true, saves: true, mediaType: true },
           })
         : Promise.resolve<LearningsMediaRow[] | null>(null),
+      // Report view: sentiment counts of the captured comments ("Qué dijo la audiencia").
+      reportView
+        ? computeCampaignSentiment(id, { mediaIds: hiddenMediaIds, influencerIds: hiddenInfluencerIds })
+        : Promise.resolve<CampaignSentiment | null>(null),
     ])
 
     if (!campaign || !fullOverview) {
@@ -270,6 +320,7 @@ export async function GET(
       overview: { ...overview, ...legacyOverviewKeys(overview) },
       timeline: overview.timeline,
       ...(learnings && learningsClient ? { learnings, learningsClient } : {}),
+      ...(sentiment ? { sentiment } : {}),
     }
 
     if (isBrand) {

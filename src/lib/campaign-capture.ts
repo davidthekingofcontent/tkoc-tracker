@@ -541,6 +541,16 @@ async function baselineBeforeInstant(
  * Scrape one campaign member's profile (+ stories on Instagram) and store
  * ONLY the content that passes the campaign rules. Never throws.
  */
+/** Best-effort durable copy of the thumbnails captured for a campaign (URLs expire in days). */
+async function cacheCampaignThumbs(campaignId: string): Promise<void> {
+  try {
+    const { backfillMediaThumbs } = await import('@/lib/thumb-cache')
+    await backfillMediaThumbs({ campaignId, limit: 40, timeBudgetMs: 30_000, refresh: true })
+  } catch (err) {
+    console.error('[campaign-capture] thumb cache failed:', err instanceof Error ? err.message : err)
+  }
+}
+
 export async function captureMemberContent(
   campaignId: string,
   influencerId: string,
@@ -671,6 +681,7 @@ export async function captureMemberContent(
     console.error('[campaign-capture] captureMemberContent failed:', err instanceof Error ? err.message : err)
   }
 
+  if (result.captured > 0) await cacheCampaignThumbs(campaignId)
   return result
 }
 

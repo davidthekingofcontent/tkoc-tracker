@@ -64,7 +64,7 @@ interface DashboardStats {
   totalComments: number
   /** Audiencia real + estimada with the split (decision 5) — summed by the API from the overviews. */
   audience?: AudienceTotals
-  /** Tasa de engagement with the share of its base that is estimated (4C). */
+  /** Tasa de engagement sobre vistas (4B): interacciones ÷ vistas reales; value null when the real sample is insufficient. */
   er?: EngagementRateResult
   /** Ratio EMV = EMV ÷ coste (9B), computed by the API; null without cost and always null for BRAND users. Never ROI. */
   emvRatio?: number | null
@@ -701,8 +701,8 @@ function CreatorDashboard() {
           </h3>
           <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
             {locale === 'es'
-              ? 'Al conectar Instagram o TikTok, obtenemos datos reales de reach e impresiones para darte métricas más precisas.'
-              : 'By connecting Instagram or TikTok, we get real reach and impression data to give you more accurate metrics.'}
+              ? 'Al conectar Instagram o TikTok, obtenemos tus vistas y tu alcance reales para darte métricas más precisas.'
+              : 'By connecting Instagram or TikTok, we get your real views and reach to give you more accurate metrics.'}
           </p>
         </div>
       </div>
@@ -882,7 +882,7 @@ function AdminDashboard({ showEconomics }: { showEconomics: boolean }) {
           />
         )}
         <KPICard
-          label={showEconomics ? 'EMV' : t.campaignReport.emvTitle}
+          label="EMV"
           value={stats?.totalEMV?.extended || 0}
           format="currency"
           icon={<Zap className="h-5 w-5" />}

@@ -25,10 +25,11 @@ import { prisma } from '@/lib/db'
 /** Sections of the report that can be hidden from the client. */
 export const REPORT_SECTION_IDS = [
   'summary',
-  'timeline',
   /** Body: "Contenidos destacados" (the 6 pieces with most real audience). */
   'content',
   'creators',
+  /** "Qué dijo la audiencia": highlighted comments chosen by the PM (+ real sentiment share when ≥ 20 analysed). */
+  'sentiment',
   'quality',
   'business',
   /** "Aprendizajes y próximos pasos" (learnings built server-side). */
@@ -53,8 +54,6 @@ export const REPORT_COLUMN_IDS = [
   'summary.views',
   'summary.engagement',
   'summary.er',
-  /** The separate, informative "Audiencia estimada" line (decision 4A). */
-  'summary.audience_estimated',
 ] as const
 export type ReportColumnId = (typeof REPORT_COLUMN_IDS)[number]
 
@@ -72,6 +71,24 @@ export interface ReportSentVersion {
   note?: string
 }
 
+/** Tone of a highlighted comment, chosen by the PM. */
+export const REPORT_COMMENT_SENTIMENTS = ['positive', 'neutral', 'negative'] as const
+export type ReportCommentSentiment = (typeof REPORT_COMMENT_SENTIMENTS)[number]
+
+/**
+ * A comment the PM quotes in the "Qué dijo la audiencia" section. Captured
+ * comments (Comment rows) are empty in production, so the section is fed by
+ * hand: the PM pastes the text and the author handle and sets the tone.
+ */
+export interface HighlightedComment {
+  id: string
+  text: string
+  author: string
+  sentiment: ReportCommentSentiment
+  /** Optional link to the publication the comment belongs to. */
+  mediaId?: string | null
+}
+
 export interface ReportConfig {
   /** Overrides the campaign name on the cover and the running header */
   title?: string
@@ -85,6 +102,8 @@ export interface ReportConfig {
   hiddenColumns: string[]
   hiddenMediaIds: string[]
   hiddenInfluencerIds: string[]
+  /** "Qué dijo la audiencia": up to REPORT_HIGHLIGHTED_MAX quoted comments. */
+  highlightedComments: HighlightedComment[]
   sentVersions: ReportSentVersion[]
   updatedAt?: string
   updatedBy?: string
@@ -102,6 +121,7 @@ export type ReportConfigPatch = Partial<
     | 'hiddenColumns'
     | 'hiddenMediaIds'
     | 'hiddenInfluencerIds'
+    | 'highlightedComments'
   >
 >
 
@@ -110,12 +130,17 @@ export const REPORT_TEXT_MAX = 2000
 export const REPORT_LIST_MAX = 200
 /** Ids are cuids (25 chars); allow slack for usernames used as fallback keys. */
 export const REPORT_ID_MAX = 200
+/** Highlighted comments: at most 12, text ≤ 300 chars, author ≤ 80 chars. */
+export const REPORT_HIGHLIGHTED_MAX = 12
+export const REPORT_COMMENT_TEXT_MAX = 300
+export const REPORT_COMMENT_AUTHOR_MAX = 80
 
 export const DEFAULT_REPORT_CONFIG: ReportConfig = {
   hiddenSections: [],
   hiddenColumns: [],
   hiddenMediaIds: [],
   hiddenInfluencerIds: [],
+  highlightedComments: [],
   sentVersions: [],
 }
 
@@ -151,6 +176,37 @@ function cleanStringList(v: unknown, allowed?: readonly string[]): string[] {
   return out
 }
 
+/**
+ * Highlighted comments: trimmed, capped (12 × 300 chars), tone restricted to
+ * the three known values, ids de-duplicated (a missing id gets a stable one
+ * derived from its position so the client can key and edit the row).
+ */
+function cleanHighlightedComments(v: unknown): HighlightedComment[] {
+  if (!Array.isArray(v)) return []
+  const out: HighlightedComment[] = []
+  const seen = new Set<string>()
+  v.forEach((item, index) => {
+    if (out.length >= REPORT_HIGHLIGHTED_MAX) return
+    if (!item || typeof item !== 'object') return
+    const r = item as Record<string, unknown>
+    const text = typeof r.text === 'string' ? r.text.trim().slice(0, REPORT_COMMENT_TEXT_MAX) : ''
+    if (!text) return
+    const authorRaw = typeof r.author === 'string' ? r.author.trim().replace(/^@+/, '') : ''
+    const author = authorRaw.slice(0, REPORT_COMMENT_AUTHOR_MAX)
+    const sentiment: ReportCommentSentiment =
+      typeof r.sentiment === 'string' && (REPORT_COMMENT_SENTIMENTS as readonly string[]).includes(r.sentiment)
+        ? (r.sentiment as ReportCommentSentiment)
+        : 'neutral'
+    let id = typeof r.id === 'string' && r.id.trim() && r.id.length <= REPORT_ID_MAX ? r.id.trim() : `c${index + 1}`
+    while (seen.has(id)) id = `${id}_`
+    seen.add(id)
+    const entry: HighlightedComment = { id, text, author, sentiment }
+    if (typeof r.mediaId === 'string' && r.mediaId.trim() && r.mediaId.length <= REPORT_ID_MAX) entry.mediaId = r.mediaId.trim()
+    out.push(entry)
+  })
+  return out
+}
+
 function cleanSentVersions(v: unknown): ReportSentVersion[] {
   if (!Array.isArray(v)) return []
   const out: ReportSentVersion[] = []
@@ -180,6 +236,7 @@ export function normalizeReportConfig(raw: unknown): ReportConfig {
     hiddenColumns: cleanStringList(r.hiddenColumns, REPORT_COLUMN_IDS),
     hiddenMediaIds: cleanStringList(r.hiddenMediaIds),
     hiddenInfluencerIds: cleanStringList(r.hiddenInfluencerIds),
+    highlightedComments: cleanHighlightedComments(r.highlightedComments),
     sentVersions: cleanSentVersions(r.sentVersions),
   }
   const title = cleanText(r.title)
@@ -218,6 +275,25 @@ export function validateReportConfigPatch(body: unknown): string | null {
     if (arr.length > REPORT_LIST_MAX) return `${field} must have at most ${REPORT_LIST_MAX} items`
     if (arr.some(x => typeof x !== 'string' || x.length > REPORT_ID_MAX)) {
       return `${field} must contain only strings of at most ${REPORT_ID_MAX} characters`
+    }
+  }
+  // null clears the section (the route maps it to []), like null on a text field.
+  if (b.highlightedComments !== undefined && b.highlightedComments !== null) {
+    if (!Array.isArray(b.highlightedComments)) return 'highlightedComments must be an array'
+    const arr = b.highlightedComments as unknown[]
+    if (arr.length > REPORT_HIGHLIGHTED_MAX) return `highlightedComments must have at most ${REPORT_HIGHLIGHTED_MAX} items`
+    for (const item of arr) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return 'highlightedComments must contain objects'
+      const r = item as Record<string, unknown>
+      if (typeof r.text !== 'string') return 'highlightedComments[].text must be a string'
+      if (r.text.trim().length > REPORT_COMMENT_TEXT_MAX) return `highlightedComments[].text must be at most ${REPORT_COMMENT_TEXT_MAX} characters`
+      if (r.author !== undefined && r.author !== null && typeof r.author !== 'string') return 'highlightedComments[].author must be a string'
+      if (typeof r.author === 'string' && r.author.trim().length > REPORT_COMMENT_AUTHOR_MAX) return `highlightedComments[].author must be at most ${REPORT_COMMENT_AUTHOR_MAX} characters`
+      if (r.sentiment !== undefined && !(REPORT_COMMENT_SENTIMENTS as readonly string[]).includes(String(r.sentiment))) {
+        return 'highlightedComments[].sentiment must be positive, neutral or negative'
+      }
+      if (r.id !== undefined && r.id !== null && (typeof r.id !== 'string' || r.id.length > REPORT_ID_MAX)) return 'highlightedComments[].id must be a short string'
+      if (r.mediaId !== undefined && r.mediaId !== null && (typeof r.mediaId !== 'string' || r.mediaId.length > REPORT_ID_MAX)) return 'highlightedComments[].mediaId must be a short string'
     }
   }
   return null
@@ -289,7 +365,7 @@ export async function saveReportConfig(
   for (const k of ['title', 'subtitle', 'intro', 'conclusions'] as const) {
     if (has(k)) merged[k] = patch[k] // normalize() drops empty strings
   }
-  for (const k of ['hiddenSections', 'hiddenColumns', 'hiddenMediaIds', 'hiddenInfluencerIds'] as const) {
+  for (const k of ['hiddenSections', 'hiddenColumns', 'hiddenMediaIds', 'hiddenInfluencerIds', 'highlightedComments'] as const) {
     if (has(k)) merged[k] = patch[k]
   }
   merged.updatedAt = new Date().toISOString()

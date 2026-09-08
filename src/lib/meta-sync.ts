@@ -461,6 +461,14 @@ export async function syncMetaConnection(connectionId: string, options: SyncOpti
     }
   }
 
+  // Durable thumbnails for what this sync materialised (CDN URLs expire in days). Never fails the sync.
+  try {
+    const { backfillMediaThumbs } = await import('@/lib/thumb-cache')
+    await backfillMediaThumbs({ limit: 40, timeBudgetMs: 30_000 })
+  } catch (err) {
+    console.error('[meta-sync] thumb cache failed', err instanceof Error ? err.message : err)
+  }
+
   result.success = true
   return result
 }
