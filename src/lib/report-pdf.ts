@@ -4,13 +4,24 @@ import puppeteer, { type Browser } from 'puppeteer-core'
 /**
  * Server-side PDF of the campaign report.
  *
- * The browser "Imprimir → guardar como PDF" output was not good enough, so the
- * report is rendered by a headless Chromium (system package in the Docker
+ * The report is rendered by a headless Chromium (system package in the Docker
  * image, Google Chrome locally) that opens the report page of THIS deployment
- * in print mode (`?print=1`: no top bar, no edit mode, print layout forced) with
- * the caller's own auth cookie, waits for the component to flag
+ * in print mode (`?print=1`: no top bar, no edit mode, agency-only blocks
+ * hidden) with the caller's own auth cookie, waits for the component to flag
  * `document.documentElement[data-report-ready="1"]` (data + thumbnails loaded)
- * and prints it to A4.
+ * and prints it.
+ *
+ * WYSIWYG (David's requirement): the PDF must be a faithful copy of what the
+ * screen shows when he clicks "Informe PDF" — same layout, same cards, same
+ * tables, same fonts and logo placement — minus the agency-only elements. The
+ * component therefore does NOT relayout for paper: its print CSS pins the
+ * report to a fixed width (REPORT_PRINT_WIDTH_PX = 1100, the desktop layout)
+ * and declares `@page { size: 1148px 1624px; margin: 24px }`, i.e. a page with
+ * A4 proportions measured in screen pixels. This renderer only has to honour
+ * that: a viewport wider than the report (so the desktop breakpoints apply),
+ * print media emulation, and `page.pdf` with `preferCSSPageSize` and no
+ * format/margin overrides so the CSS page size wins. Viewers print the
+ * resulting PDF scaled to A4 and it looks like the screen did.
  *
  * Nothing is recomputed here: the figures are whatever the report page shows,
  * so a client PDF from the portal route carries exactly the portal projection.
@@ -192,7 +203,10 @@ export async function renderReportPdf({
     const page = await browser.newPage()
     // The i18n provider reads localStorage('tkoc-locale') and otherwise falls back to navigator.language.
     await page.evaluateOnNewDocument((l: string) => { try { window.localStorage.setItem('tkoc-locale', l) } catch { /* private mode */ } }, locale)
-    await page.setViewport({ width: 1240, height: 1754, deviceScaleFactor: 1 })
+    // The viewport must be at least as wide as the pinned report width
+    // (REPORT_PRINT_WIDTH_PX = 1100) so Tailwind's desktop breakpoints apply and
+    // the layout that prints is the one David sees on screen.
+    await page.setViewport({ width: 1200, height: 1700, deviceScaleFactor: 1 })
     await page.emulateMediaType('print')
     await page.goto(url, { waitUntil: 'networkidle0', timeout: NAVIGATION_TIMEOUT_MS })
     throwIfAborted()
@@ -211,11 +225,13 @@ export async function renderReportPdf({
     }
 
     throwIfAborted()
+    // No `format` and no `margin`: the component's `@page { size; margin }`
+    // (A4-proportioned at screen pixels) is the single source of truth, and
+    // scale 1 keeps CSS pixels 1:1 so the page renders exactly like the screen.
     const pdf = await page.pdf({
-      format: 'A4',
       printBackground: true,
       preferCSSPageSize: true,
-      margin: { top: '12mm', right: '12mm', bottom: '14mm', left: '12mm' },
+      scale: 1,
     })
     return Buffer.from(pdf)
   } catch (error) {

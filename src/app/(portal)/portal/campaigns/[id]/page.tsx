@@ -95,6 +95,9 @@ interface PortalOverview {
   perInfluencer?: Array<{
     influencerId?: string
     username?: string | null
+    /** Real views of the creator's publications in this campaign (David 2026-09-08: "vistas por creador"). */
+    views?: number | null
+    media?: number | null
     er?: { value?: number | null; reason?: string | null } | null
   }> | null
 }
@@ -287,18 +290,29 @@ export default function PortalCampaignPage() {
   const team = (campaign.influencers || []).filter(m => m?.influencer)
   // Shown only when there is a value: an EMV of 0 (nothing published yet) is not a datum
   const emvExtended = typeof overview?.emvExtended === 'number' && overview.emvExtended > 0 ? overview.emvExtended : null
-  // Campaign ER per creator (sobre vistas), keyed by influencer id and by username
+  // Campaign ER and real views per creator, keyed by influencer id and by username
   const erByCreator = new Map<string, number | null>()
+  const viewsByCreator = new Map<string, number | null>()
   for (const p of overview?.perInfluencer || []) {
     const value = typeof p?.er?.value === 'number' ? p.er.value : null
-    if (p?.influencerId) erByCreator.set(p.influencerId, value)
-    if (p?.username) erByCreator.set(`@${p.username.toLowerCase()}`, value)
+    // Views are a datum only once the creator has published something (0 pieces → "—", never "0")
+    const views = typeof p?.views === 'number' && (typeof p.media !== 'number' || p.media > 0) ? p.views : null
+    if (p?.influencerId) {
+      erByCreator.set(p.influencerId, value)
+      viewsByCreator.set(p.influencerId, views)
+    }
+    if (p?.username) {
+      erByCreator.set(`@${p.username.toLowerCase()}`, value)
+      viewsByCreator.set(`@${p.username.toLowerCase()}`, views)
+    }
   }
-  const campaignEr = (inf: PortalInfluencer): number | null => {
-    if (inf.id && erByCreator.has(inf.id)) return erByCreator.get(inf.id) ?? null
-    const byName = inf.username ? erByCreator.get(`@${inf.username.toLowerCase()}`) : undefined
+  const lookupCreator = (map: Map<string, number | null>, inf: PortalInfluencer): number | null => {
+    if (inf.id && map.has(inf.id)) return map.get(inf.id) ?? null
+    const byName = inf.username ? map.get(`@${inf.username.toLowerCase()}`) : undefined
     return byName ?? null
   }
+  const campaignEr = (inf: PortalInfluencer): number | null => lookupCreator(erByCreator, inf)
+  const campaignViews = (inf: PortalInfluencer): number | null => lookupCreator(viewsByCreator, inf)
 
   return (
     <div className="space-y-8">
@@ -399,6 +413,7 @@ export default function PortalCampaignPage() {
                     <th className="px-4 py-3">Creador</th>
                     <th className="px-4 py-3">Plataforma</th>
                     <th className="px-4 py-3 text-right">Seguidores</th>
+                    <th className="px-4 py-3 text-right" title="Vistas reales de sus publicaciones en esta campaña">Vistas</th>
                     <th className="px-4 py-3 text-right" title="Tasa de engagement de esta campaña: interacciones ÷ vistas reales de sus publicaciones">
                       ER <span className="font-normal normal-case tracking-normal">(sobre vistas)</span>
                     </th>
@@ -445,6 +460,12 @@ export default function PortalCampaignPage() {
                         </td>
                         <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
                           {typeof inf.followers === 'number' ? formatNumber(inf.followers) : '—'}
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">
+                          {(() => {
+                            const views = campaignViews(inf)
+                            return views !== null ? formatNumber(views) : '—'
+                          })()}
                         </td>
                         <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
                           {(() => {

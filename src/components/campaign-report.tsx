@@ -17,10 +17,14 @@ import type { Locale, TranslationKeys } from '@/i18n/translations'
 // Types only: '@/lib/report-config' imports Prisma and must never be bundled
 // into this client component.
 import type {
+  DeliveryExtraRow,
+  DeliveryOverride,
+  DeliveryRowKey,
   HighlightedComment,
   ReportCommentSentiment,
   ReportConfig,
   ReportColumnId,
+  ReportDeliveryConfig,
   ReportSectionId,
   ReportSentVersion,
 } from '@/lib/report-config'
@@ -98,14 +102,17 @@ import {
 // entregado" checklist and (agency only) the four-dimension balance come
 // straight from overview.delivery / overview.balance. No daily chart.
 //
-// Print: the report is laid out for A4 portrait with 12mm margins (content
-// width ≈ 703px at 96 dpi). Every table is `table-layout: fixed` with widths
-// that sum ≤ 100 %, grids are forced to three columns and thumbnails have
-// explicit pixel boxes. The body shows up to six pieces with REAL audience
-// (never one without); the complete list is a compact annex. While printing,
-// the learnings render the client projection. `printMode` (?print=1, the
-// server-side PDF renderer) forces that layout on screen, hides the top bar
-// and flags <html data-report-ready="1"> once data and images have settled.
+// Print (David 2026-09-08, WYSIWYG): the printed page and the server PDF are
+// the SAME visual as the screen report — same layout, cards, tables, fonts and
+// logo placement — minus the agency-only elements. There is NO paper relayout:
+// the print CSS only hides the app chrome, forces the light theme, pins the
+// report to REPORT_PRINT_WIDTH_PX (the desktop layout) on an A4-proportioned
+// page measured in screen pixels, and adds page-break hygiene. The body shows
+// up to six pieces with REAL audience (never one without); the complete list
+// is the annex. While printing, the learnings render the client projection.
+// `printMode` (?print=1, the server-side PDF renderer) applies the same rules
+// on screen, hides the top bar and flags <html data-report-ready="1"> once
+// data and images have settled.
 //
 // The PM can tailor what the client sees (decision 16A): title/subtitle,
 // an intro and a conclusions text, hidden sections/columns/rows. That config
@@ -434,16 +441,81 @@ function clientLearningTexts(client: ReportLearnings | null): Set<string> | null
 // Report config (client side)
 // ---------------------------------------------------------------------------
 
+/**
+ * Mirrors of DELIVERY_ROW_KEYS / REPORT_DELIVERY_EXTRA_MAX from
+ * src/lib/report-config.ts. That module imports Prisma, so a client component
+ * may only import its TYPES; the values are repeated here and typed against
+ * the contract so a drift fails to compile.
+ */
+const DELIVERY_ROW_KEYS: readonly DeliveryRowKey[] = ['creators', 'pieces', 'dates', 'disclosure']
+const DELIVERY_EXTRA_MAX = 4
+const DELIVERY_LABEL_MAX = 80
+const DELIVERY_VALUE_MAX = 40
+const DELIVERY_NOTE_MAX = 120
+/** Mirror of REPORT_DELIVERY_COUNT_MAX: the server rejects (400) counts above it. */
+const DELIVERY_COUNT_MAX = 1_000_000
+
+function emptyDelivery(): ReportDeliveryConfig {
+  return { overrides: {}, extraRows: [] }
+}
+
 const EMPTY_CONFIG: ReportConfig = {
   hiddenSections: [],
   hiddenColumns: [],
   hiddenMediaIds: [],
   hiddenInfluencerIds: [],
   highlightedComments: [],
+  delivery: emptyDelivery(),
   sentVersions: [],
 }
 
 const COMMENT_SENTIMENTS: ReadonlySet<string> = new Set<ReportCommentSentiment>(['positive', 'neutral', 'negative'])
+
+/** Non-negative integer or null (a blank / invalid field keeps the computed value). */
+function intOrNull(v: unknown): number | null {
+  if (typeof v === 'string' && v.trim() !== '') v = Number(v)
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : null
+}
+
+/** "Prometido vs entregado" edits as the API sends them (normalised server-side); defensive anyway. */
+function normalizeDelivery(v: unknown): ReportDeliveryConfig {
+  const out = emptyDelivery()
+  if (!v || typeof v !== 'object') return out
+  const d = v as Record<string, unknown>
+  const rawOverrides = d.overrides && typeof d.overrides === 'object' ? (d.overrides as Record<string, unknown>) : {}
+  for (const key of DELIVERY_ROW_KEYS) {
+    const item = rawOverrides[key]
+    if (!item || typeof item !== 'object') continue
+    const r = item as Record<string, unknown>
+    const entry: DeliveryOverride = {
+      planned: intOrNull(r.planned),
+      delivered: intOrNull(r.delivered),
+      ok: typeof r.ok === 'boolean' ? r.ok : null,
+      note: typeof r.note === 'string' && r.note.trim() ? r.note : null,
+    }
+    if (entry.planned !== null || entry.delivered !== null || entry.ok !== null || entry.note) out.overrides[key] = entry
+  }
+  if (Array.isArray(d.extraRows)) {
+    d.extraRows.forEach((item, index) => {
+      if (out.extraRows.length >= DELIVERY_EXTRA_MAX) return
+      if (!item || typeof item !== 'object') return
+      const r = item as Record<string, unknown>
+      const label = typeof r.label === 'string' ? r.label : ''
+      if (!label.trim()) return
+      out.extraRows.push({
+        id: typeof r.id === 'string' && r.id ? r.id : `d${index + 1}`,
+        label,
+        value: typeof r.value === 'string' ? r.value : null,
+        ok: r.ok === true,
+      })
+    })
+  }
+  return out
+}
+
+function newExtraRowId(): string {
+  return `d_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+}
 
 /** Highlighted comments as the API sends them (already normalised server-side); defensive anyway. */
 function normalizeHighlighted(v: unknown): HighlightedComment[] {
@@ -488,6 +560,7 @@ function normalizeClientConfig(raw: unknown): ReportConfig {
     hiddenMediaIds: list(r.hiddenMediaIds),
     hiddenInfluencerIds: list(r.hiddenInfluencerIds),
     highlightedComments: normalizeHighlighted(r.highlightedComments),
+    delivery: normalizeDelivery(r.delivery),
     sentVersions: Array.isArray(r.sentVersions) ? (r.sentVersions as ReportSentVersion[]) : [],
     updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : undefined,
     updatedBy: typeof r.updatedBy === 'string' ? r.updatedBy : undefined,
@@ -522,67 +595,80 @@ function toggleId(list: string[], id: string): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * A4 layout rules, emitted twice: under `@media print` (the browser's print
- * dialog and the PDF renderer's print media) and under
- * `html[data-report-print]` (the ?print=1 mode, which forces the same layout
+ * Width the report is pinned to on paper. 1100px is the desktop layout (above
+ * Tailwind's lg breakpoint, 1024px, and the widest breakpoint the report uses),
+ * so every responsive grid prints its desktop variant — exactly what the PM
+ * sees on screen. The server-side renderer opens the page in a 1200px viewport
+ * for the same reason (src/lib/report-pdf.ts).
+ */
+const REPORT_PRINT_WIDTH_PX = 1100
+/**
+ * Page box: A4 proportions (210 × 297 mm ≈ 0.707) measured in screen pixels,
+ * with 24px margins on every side, so the printable width is exactly
+ * REPORT_PRINT_WIDTH_PX. Both the browser's print dialog and the server PDF
+ * (`preferCSSPageSize`) use it; viewers print the result scaled to A4.
+ */
+const REPORT_PAGE_WIDTH_PX = REPORT_PRINT_WIDTH_PX + 2 * 24
+const REPORT_PAGE_HEIGHT_PX = 1624
+
+/**
+ * Screen-identical print rules (WYSIWYG), emitted twice: under `@media print`
+ * (the browser's print dialog and the PDF renderer's print media) and under
+ * `html[data-report-print]` (the ?print=1 mode, which applies the same rules
  * on screen so the server-side PDF never depends on media emulation).
+ *
+ * Nothing here changes a size, a grid, a font or a width of the report: the
+ * screen classes stay untouched. The rules only (a) hide the app chrome and
+ * undo the dashboard sidebar offset, (b) force a white page with the screen
+ * colours kept, (c) pin the report width so paper reflow cannot change the
+ * layout, and (d) add page-break hygiene (cover on page 1, cards / rows /
+ * list items never split, headings never orphaned, table headers repeated).
  */
 function printLayoutRules(scope: string): string {
   const s = scope ? `${scope} ` : ''
   return `
+    /* (a) App chrome: sidebar, headers, floating widgets and screen-only bits. */
     ${s}aside, ${s}header, ${s}.fixed, ${s}.no-print { display: none !important; }
     ${s}.print-only { display: block !important; }
     /* Undo the dashboard sidebar offset. The layout token is
-       'lg:ml-[260px]', so the colon must be escaped for the
-       selector to match on landscape / A3 sheets above the lg breakpoint. */
+       'lg:ml-[260px]', so the colon must be escaped for the selector to
+       match above the lg breakpoint (the print page IS above it). */
     ${s}div.ml-\\[260px\\], ${s}div.lg\\:ml-\\[260px\\] { margin-left: 0 !important; }
+    /* main is a scroll container (overflow-y-auto): scroll containers are
+       monolithic when paginating, so it must become visible or the whole
+       report would be clipped to one page. Padding off so the pinned width
+       is the only horizontal metric. */
     ${s}main { padding: 0 !important; overflow: visible !important; max-width: none !important; }
-    ${scope || 'html'}, ${s}body { background: #ffffff !important; }
-    ${s}#campaign-report { background: #ffffff; width: 100%; max-width: 100%; overflow-x: hidden; }
+    /* (b) White page, light theme (the dark class is dropped by the print
+       handlers), screen colours kept on paper. */
+    ${scope || 'html'}, ${s}body, ${s}main, ${s}div.ml-\\[260px\\], ${s}div.lg\\:ml-\\[260px\\], ${s}body > div { background: #ffffff !important; }
     ${s}#campaign-report, ${s}#campaign-report * {
       print-color-adjust: exact;
       -webkit-print-color-adjust: exact;
     }
-    ${s}#campaign-report img { max-width: 100%; }
-    ${s}#campaign-report section { break-inside: auto; }
-    ${s}.print-card { break-inside: avoid; page-break-inside: avoid; box-shadow: none !important; min-width: 0; }
-    /* Cover = page 1: fill the sheet (92vh leaves slack so it never
-       spills into a blank page 2), then force a page break. */
-    ${s}.print-cover {
-      min-height: 92vh;
-      break-after: page;
-      page-break-after: always;
-      border: 0 !important;
-      border-radius: 0 !important;
-      box-shadow: none !important;
-      padding: 0 !important;
-    }
+    /* (c) Fixed report width = the printable width of the page box. */
+    ${s}#campaign-report { width: ${REPORT_PRINT_WIDTH_PX}px; max-width: none; margin: 0 auto; background: #ffffff; }
+    /* (d) Page-break hygiene. The cover is page 1; the annex starts a page. */
+    ${s}.print-cover { break-after: page; page-break-after: always; }
     ${s}.print-break-before { break-before: page; page-break-before: always; }
-    /* Card grids: always three columns that fit the sheet */
-    ${s}.print-grid-3 { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 8px !important; }
-    ${s}.print-kpi { padding: 10px 12px !important; overflow: hidden; }
-    ${s}.print-kpi .print-kpi-label { font-size: 10px !important; }
-    ${s}.print-kpi .print-kpi-value { font-size: 18px !important; line-height: 1.2 !important; margin-top: 4px !important; }
-    ${s}.print-kpi .print-kpi-sub { font-size: 9px !important; line-height: 1.3 !important; }
-    ${s}.print-pad { padding: 12px !important; }
-    /* Tables: fixed layout so the column widths (≤ 100 %) are honoured,
-       compact type, headers repeated on every page, rows never split. */
-    ${s}.print-table-card { overflow: visible !important; box-shadow: none !important; }
-    ${s}.print-table-wrap { overflow: visible !important; }
-    ${s}.print-table { table-layout: fixed !important; width: 100% !important; font-size: 10px !important; }
-    ${s}.print-table th { white-space: nowrap !important; word-break: keep-all !important; overflow-wrap: normal !important; font-size: 8.5px !important; letter-spacing: 0 !important; }
-    ${s}.print-table th, ${s}.print-table td {
-      padding: 4px 5px !important;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-      vertical-align: middle;
-    }
-    ${s}.print-table thead { display: table-header-group; }
-    ${s}.print-table tr { break-inside: avoid; page-break-inside: avoid; }
-    ${s}.print-table .text-xs, ${s}.print-table .text-sm { font-size: 10px !important; }
-    ${s}.print-table .text-\\[11px\\], ${s}.print-table .text-\\[10px\\] { font-size: 9px !important; }
-    ${s}.print-clamp-1 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
-    ${s}.print-text-xs { font-size: 10px !important; line-height: 1.35 !important; }
+    /* Cards (.print-card: every rounded card of the summary, highlights,
+       learnings and sentiment sections), table rows and list items never
+       split across pages. Table cards are NOT .print-card: a long table must
+       paginate row by row instead of being pushed whole to the next page. */
+    ${s}.print-card,
+    ${s}#campaign-report tr,
+    ${s}#campaign-report li { break-inside: avoid; page-break-inside: avoid; }
+    /* Table cards are overflow-hidden / overflow-x-auto on screen (rounded
+       corners, horizontal scroll on narrow screens). Those are scroll
+       containers, i.e. monolithic on paper: a long table would be clipped to
+       one page. Visible overflow lets the rows paginate; at the pinned width
+       the tables fit, so nothing else changes. */
+    ${s}.print-table-card, ${s}.print-table-wrap { overflow: visible !important; }
+    /* Section headings keep with the content that follows. SectionHeading
+       wraps the h2 and its hint in .print-heading: the avoid must sit on that
+       wrapper, otherwise (with a hint) it only binds the h2 to its hint <p>. */
+    ${s}#campaign-report h2, ${s}.print-heading { break-after: avoid; page-break-after: avoid; }
+    ${s}#campaign-report thead { display: table-header-group; }
   `
 }
 
@@ -590,7 +676,7 @@ const REPORT_PRINT_CSS = `
   .print-only { display: none; }
   @media print {
     ${printLayoutRules('')}
-    @page { size: A4 portrait; margin: 12mm; }
+    @page { size: ${REPORT_PAGE_WIDTH_PX}px ${REPORT_PAGE_HEIGHT_PX}px; margin: 24px; }
   }
   ${printLayoutRules('html[data-report-print]')}
 `
@@ -854,27 +940,27 @@ function StatCard({
   muted?: boolean
 }) {
   return (
-    <div className="print-card print-kpi min-w-0 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-      <div className="print-kpi-label flex items-center gap-2 text-xs font-medium text-gray-500 dark:text-gray-400">
+    <div className="print-card min-w-0 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
+      <div className="flex items-center gap-2 text-xs font-medium text-gray-500 dark:text-gray-400">
         <Icon className="h-3.5 w-3.5 shrink-0 text-purple-600 dark:text-purple-400" />
         <span className="min-w-0">{label}</span>
       </div>
       <p
         className={cn(
-          'print-kpi-value mt-2 break-words font-bold tabular-nums',
+          'mt-2 break-words font-bold tabular-nums',
           muted ? 'text-lg text-gray-500 dark:text-gray-400' : 'text-2xl text-gray-900 dark:text-gray-100'
         )}
       >
         {value}
       </p>
-      {sub && <p className="print-kpi-sub mt-0.5 text-[11px] text-gray-400 dark:text-gray-500">{sub}</p>}
+      {sub && <p className="mt-0.5 text-[11px] text-gray-400 dark:text-gray-500">{sub}</p>}
     </div>
   )
 }
 
 function SectionHeading({ children, hint }: { children: React.ReactNode; hint?: string }) {
   return (
-    <div className="mb-3">
+    <div className="mb-3 print-heading">
       <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
         {children}
       </h2>
@@ -1049,11 +1135,11 @@ function realAudienceOf(metrics: ReportMediaMetrics | null): number {
 }
 
 /**
- * Column widths for `table-layout: fixed`. Weights of the visible columns are
- * normalised to percentages that sum to ≤ 100 %, so the table can never grow
- * past its container (the production defect: 1.100px tables in a 792px page).
- * Screen-only columns count too: in print they disappear and the remaining
- * columns share the freed width.
+ * Column width hints (inline `width` on each <th>, identical on screen and on
+ * paper). Weights of the visible columns are normalised to percentages that
+ * sum to ≤ 100 %, so the table can never grow past its container. Screen-only
+ * columns count too: in print they disappear and the remaining columns share
+ * the freed width.
  */
 function columnWidths(entries: Array<readonly [string, number] | false | null | undefined>): Record<string, string> {
   const list = entries.filter((e): e is readonly [string, number] => Array.isArray(e))
@@ -1071,15 +1157,48 @@ const TEXTAREA_CLASS =
   'block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 transition-colors focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-white dark:placeholder-gray-500'
 const INPUT_CLASS = `${TEXTAREA_CLASS} py-2`
 
+/**
+ * One computed row of "Prometido vs entregado" (from overview.delivery), the
+ * base a manual override is applied to and the placeholder the edit form shows.
+ */
+interface DeliveryComputedRow {
+  key: DeliveryRowKey
+  label: string
+  /** null = no denominator known (pieces without a recorded commitment, or no overview.delivery yet) */
+  planned: number | null
+  delivered: number | null
+  ok: boolean
+  /** Zero denominator: the row reads as pending, never as "0 de 0 · Revisar". */
+  empty: boolean
+  /** Formatted value as the report shows it ("3 de 5", "sin compromiso…"). */
+  value: string
+  sub?: string
+}
+
+/** A row as rendered: a computed row with its override applied, or an extra row. */
+interface DeliveryDisplayRow {
+  key: string
+  label: string
+  value: string
+  sub?: string
+  ok: boolean
+  empty: boolean
+  /** Set by the PM (manual override or extra row): the agency screen marks it. */
+  manual: boolean
+}
+
 function ReportEditPanel({
   draft,
   tr,
   error,
+  deliveryComputed,
   onChange,
 }: {
   draft: ReportConfig
   tr: ReportStrings
   error: string | null
+  /** The four system rows, so the form can show what the system says as placeholders. */
+  deliveryComputed: DeliveryComputedRow[]
   onChange: (patch: Partial<ReportConfig>) => void
 }) {
   const sections: Array<{ id: ReportSectionId; label: string }> = [
@@ -1102,6 +1221,7 @@ function ReportEditPanel({
     { id: 'content.reach', label: tr.colContentReach },
     { id: 'content.source', label: tr.colContentSource },
     { id: 'creators.posts', label: tr.colCreatorsPosts },
+    { id: 'creators.views', label: tr.colCreatorsViews },
     { id: 'creators.er', label: tr.colCreatorsEr },
     { id: 'creators.followers', label: tr.colCreatorsFollowers },
     { id: 'creators.cpm', label: tr.colCreatorsCpm },
@@ -1117,6 +1237,36 @@ function ReportEditPanel({
     if (comments.length >= 12) return
     setComments([...comments, { id: newCommentId(), text: '', author: '', sentiment: 'positive', mediaId: null }])
   }
+
+  // "Prometido vs entregado": each system row is Automático (computed) or
+  // Manual (the PM sets promised / delivered / state / note; a blank field keeps
+  // the computed value), plus up to DELIVERY_EXTRA_MAX rows of her own.
+  const delivery = draft.delivery
+  const setDelivery = (next: ReportDeliveryConfig) => onChange({ delivery: next })
+  const setOverride = (key: DeliveryRowKey, override: DeliveryOverride | null) => {
+    const overrides = { ...delivery.overrides }
+    if (override) overrides[key] = override
+    else delete overrides[key]
+    setDelivery({ ...delivery, overrides })
+  }
+  const patchOverride = (key: DeliveryRowKey, patch: DeliveryOverride) =>
+    setOverride(key, { planned: null, delivered: null, ok: null, note: null, ...delivery.overrides[key], ...patch })
+  const extraRows = delivery.extraRows
+  const setExtraRows = (next: DeliveryExtraRow[]) => setDelivery({ ...delivery, extraRows: next })
+  const updateExtraRow = (index: number, patch: Partial<DeliveryExtraRow>) =>
+    setExtraRows(extraRows.map((r, i) => (i === index ? { ...r, ...patch } : r)))
+  const removeExtraRow = (index: number) => setExtraRows(extraRows.filter((_, i) => i !== index))
+  const addExtraRow = () => {
+    if (extraRows.length >= DELIVERY_EXTRA_MAX) return
+    setExtraRows([...extraRows, { id: newExtraRowId(), label: '', value: '', ok: true }])
+  }
+  /** Number input → integer ≥ 0, or null when blank / invalid (keeps the computed figure). */
+  const countValue = (raw: string): number | null => {
+    if (raw.trim() === '') return null
+    const n = intOrNull(raw)
+    return n === null ? null : Math.min(n, DELIVERY_COUNT_MAX)
+  }
+  const stateLabel = (ok: boolean, empty: boolean) => (ok ? tr.deliveryOk : empty ? tr.deliveryPending : tr.deliveryStateReview)
 
   const checkbox = (checked: boolean, onToggle: () => void, label: string, key: string) => (
     <label key={key} className="flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -1289,6 +1439,159 @@ function ReportEditPanel({
         </div>
       </div>
 
+      {/* Prometido vs entregado: the PM completes the checklist */}
+      <div className="mt-5">
+        <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{tr.deliveryTitle}</p>
+        <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">{tr.deliveryEditHint}</p>
+        <div className="space-y-2">
+          {deliveryComputed.map(row => {
+            const override = delivery.overrides[row.key]
+            const manual = override !== undefined
+            const computedState = stateLabel(row.ok, row.empty)
+            return (
+              <div key={row.key} className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{row.label}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      {fill(tr.deliverySystemSays, { value: row.value, state: computedState })}
+                    </p>
+                  </div>
+                  <select
+                    value={manual ? 'manual' : 'auto'}
+                    aria-label={`${row.label} · ${tr.deliveryModeLabel}`}
+                    onChange={e => setOverride(row.key, e.target.value === 'manual' ? { planned: null, delivered: null, ok: null, note: null } : null)}
+                    className={cn(INPUT_CLASS, 'w-auto')}
+                  >
+                    <option value="auto">{tr.deliveryModeAuto}</option>
+                    <option value="manual">{tr.deliveryModeManual}</option>
+                  </select>
+                </div>
+                {manual && override && (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,2fr)]">
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium text-gray-500 dark:text-gray-400">{tr.deliveryPlannedLabel}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        inputMode="numeric"
+                        value={override.planned ?? ''}
+                        placeholder={row.planned !== null ? String(row.planned) : '—'}
+                        onChange={e => patchOverride(row.key, { planned: countValue(e.target.value) })}
+                        className={INPUT_CLASS}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium text-gray-500 dark:text-gray-400">{tr.deliveryDeliveredLabel}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        inputMode="numeric"
+                        value={override.delivered ?? ''}
+                        placeholder={row.delivered !== null ? String(row.delivered) : '—'}
+                        onChange={e => patchOverride(row.key, { delivered: countValue(e.target.value) })}
+                        className={INPUT_CLASS}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium text-gray-500 dark:text-gray-400">{tr.deliveryStateLabel}</span>
+                      <select
+                        value={override.ok === true ? 'ok' : override.ok === false ? 'review' : 'auto'}
+                        onChange={e => patchOverride(row.key, { ok: e.target.value === 'ok' ? true : e.target.value === 'review' ? false : null })}
+                        className={INPUT_CLASS}
+                      >
+                        <option value="auto">{fill(tr.deliveryStateAuto, { state: computedState })}</option>
+                        <option value="ok">{tr.deliveryOk}</option>
+                        <option value="review">{tr.deliveryStateReview}</option>
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium text-gray-500 dark:text-gray-400">{tr.deliveryNoteLabel}</span>
+                      <input
+                        type="text"
+                        maxLength={DELIVERY_NOTE_MAX}
+                        value={override.note ?? ''}
+                        placeholder={row.sub || tr.deliveryNotePlaceholder}
+                        onChange={e => patchOverride(row.key, { note: e.target.value })}
+                        className={INPUT_CLASS}
+                      />
+                    </label>
+                  </div>
+                )}
+                {manual && override && override.planned == null && override.delivered == null && override.ok == null && !override.note && (
+                  // The server drops an override with nothing set (same as Automático), so
+                  // an empty Manual row would silently revert after saving. Say so.
+                  <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">{tr.deliveryManualEmptyHint}</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Extra promises */}
+        <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{tr.deliveryExtraLabel}</p>
+        <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">{tr.deliveryExtraHint}</p>
+        {extraRows.length > 0 && (
+          <div className="space-y-2">
+            {extraRows.map((r, i) => (
+              <div
+                key={r.id}
+                className="grid gap-2 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto_auto] md:items-center"
+              >
+                <input
+                  type="text"
+                  maxLength={DELIVERY_LABEL_MAX}
+                  value={r.label}
+                  placeholder={tr.deliveryExtraLabelPlaceholder}
+                  aria-label={tr.deliveryExtraLabelPlaceholder}
+                  onChange={e => updateExtraRow(i, { label: e.target.value })}
+                  className={INPUT_CLASS}
+                />
+                <input
+                  type="text"
+                  maxLength={DELIVERY_VALUE_MAX}
+                  value={r.value ?? ''}
+                  placeholder={tr.deliveryExtraValuePlaceholder}
+                  aria-label={tr.deliveryExtraValuePlaceholder}
+                  onChange={e => updateExtraRow(i, { value: e.target.value })}
+                  className={INPUT_CLASS}
+                />
+                <select
+                  value={r.ok ? 'ok' : 'review'}
+                  aria-label={tr.deliveryStateLabel}
+                  onChange={e => updateExtraRow(i, { ok: e.target.value === 'ok' })}
+                  className={INPUT_CLASS}
+                >
+                  <option value="ok">{tr.deliveryOk}</option>
+                  <option value="review">{tr.deliveryStateReview}</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => removeExtraRow(i)}
+                  title={tr.removeDeliveryRow}
+                  aria-label={tr.removeDeliveryRow}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-gray-200 text-gray-400 transition-colors hover:border-red-300 hover:text-red-600 dark:border-gray-700 dark:hover:text-red-400"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="mt-2">
+          {extraRows.length < DELIVERY_EXTRA_MAX ? (
+            <Button variant="secondary" size="sm" onClick={addExtraRow}>
+              <Plus className="h-4 w-4" />
+              {tr.addDeliveryRow}
+            </Button>
+          ) : (
+            <p className="text-xs text-gray-500 dark:text-gray-400">{tr.deliveryExtraMax}</p>
+          )}
+        </div>
+      </div>
+
       {error && <p className="mt-4 text-sm text-red-600 dark:text-red-400">{error}</p>}
     </div>
   )
@@ -1311,7 +1614,7 @@ export interface CampaignReportProps {
   isPortal?: boolean
   /**
    * `?print=1` — the server-side PDF renderer: no top bar, no edit mode, the
-   * print layout forced on screen, and <html data-report-ready="1"> set once
+   * print rules applied on screen, and <html data-report-ready="1"> set once
    * the data and the thumbnails have settled (or READY_TIMEOUT_MS after load).
    */
   printMode?: boolean
@@ -1530,9 +1833,9 @@ export function CampaignReport({
     }
   }, [])
 
-  // ?print=1: force the A4 layout on screen (html[data-report-print] mirrors
-  // the @media print rules), always the light theme, and never a stray dark
-  // class from the theme provider.
+  // ?print=1: apply the print rules on screen (html[data-report-print] mirrors
+  // the @media print rules: chrome hidden, report pinned to its print width),
+  // always the light theme, and never a stray dark class from the theme provider.
   useEffect(() => {
     if (!printMode) return
     const root = document.documentElement
@@ -1636,6 +1939,15 @@ export function CampaignReport({
           highlightedComments: draft.highlightedComments
             .map(c => ({ ...c, text: c.text.trim(), author: c.author.trim().replace(/^@+/, '') }))
             .filter(c => c.text.length > 0),
+          // "Prometido vs entregado": overrides as edited (a null field keeps the
+          // computed value; the server drops an override with nothing set) and
+          // the extra rows with a label. The server trims and caps the rest.
+          delivery: {
+            overrides: draft.delivery.overrides,
+            extraRows: draft.delivery.extraRows
+              .map(r => ({ ...r, label: r.label.trim(), value: (r.value ?? '').trim() || null }))
+              .filter(r => r.label.length > 0),
+          },
         }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -1892,55 +2204,95 @@ export function CampaignReport({
       ? fill(tr.erImplausibleHint, { n: erPieces })
       : erPieces === 1 ? tr.erInsufficientHintOne : fill(tr.erInsufficientHint, { n: erPieces })
 
-  // "Prometido vs entregado" — four rows straight from overview.delivery.
+  // "Prometido vs entregado" — four rows computed by the server (overview.delivery).
   // Green only when the server says ok; otherwise an amber warning. A zero
   // denominator (nothing agreed / dated / in the feed yet) is neither: the row
-  // reads as pending, never as "0 de 0 · Revisar".
+  // reads as pending, never as "0 de 0 · Revisar". Without an overview.delivery
+  // (older response) the rows exist with no figures, so a manual override can
+  // still fill them in.
   const delivery = overview?.delivery ?? null
-  const deliveryRows = delivery
-    ? [
-        {
-          key: 'creators',
-          label: tr.deliveryCreators,
-          value: delivery.creators.planned > 0
-            ? fill(tr.deliveryRatio, { delivered: fmtN(delivery.creators.delivered), planned: fmtN(delivery.creators.planned) })
-            : tr.deliveryCreatorsNone,
-          sub: undefined as string | undefined,
-          ok: delivery.creators.ok,
-          empty: delivery.creators.planned === 0,
-        },
-        {
-          key: 'pieces',
-          label: tr.deliveryPieces,
-          value: delivery.pieces.planned !== null
-            ? fill(tr.deliveryRatio, { delivered: fmtN(delivery.pieces.delivered), planned: fmtN(delivery.pieces.planned) })
-            : fmtN(delivery.pieces.delivered),
-          sub: delivery.pieces.planned === null ? tr.deliveryNoPlan : undefined,
-          ok: delivery.pieces.ok,
-          empty: false,
-        },
-        {
-          key: 'dates',
-          label: tr.deliveryDates,
-          value: delivery.dates.total > 0
-            ? fill(tr.deliveryRatio, { delivered: fmtN(delivery.dates.inWindow), planned: fmtN(delivery.dates.total) })
-            : tr.deliveryDatesNone,
-          sub: undefined as string | undefined,
-          ok: delivery.dates.ok,
-          empty: delivery.dates.total === 0,
-        },
-        {
-          key: 'disclosure',
-          label: tr.deliveryDisclosure,
-          value: delivery.disclosure.total > 0
-            ? fill(tr.deliveryRatio, { delivered: fmtN(delivery.disclosure.disclosed), planned: fmtN(delivery.disclosure.total) })
-            : tr.deliveryDisclosureNone,
-          sub: tr.deliveryDisclosureSub,
-          ok: delivery.disclosure.ok,
-          empty: delivery.disclosure.total === 0,
-        },
-      ]
-    : []
+  const ratio = (delivered: number, planned: number) =>
+    fill(tr.deliveryRatio, { delivered: fmtN(delivered), planned: fmtN(planned) })
+  const computedDeliveryRows: DeliveryComputedRow[] = [
+    {
+      key: 'creators',
+      label: tr.deliveryCreators,
+      planned: delivery ? delivery.creators.planned : null,
+      delivered: delivery ? delivery.creators.delivered : null,
+      ok: delivery?.creators.ok ?? false,
+      empty: !delivery || delivery.creators.planned === 0,
+      value: delivery && delivery.creators.planned > 0 ? ratio(delivery.creators.delivered, delivery.creators.planned) : tr.deliveryCreatorsNone,
+    },
+    {
+      key: 'pieces',
+      label: tr.deliveryPieces,
+      planned: delivery ? delivery.pieces.planned : null,
+      delivered: delivery ? delivery.pieces.delivered : null,
+      ok: delivery?.pieces.ok ?? false,
+      empty: !delivery,
+      value: delivery
+        ? (delivery.pieces.planned !== null ? ratio(delivery.pieces.delivered, delivery.pieces.planned) : fmtN(delivery.pieces.delivered))
+        : '—',
+      sub: !delivery || delivery.pieces.planned === null ? tr.deliveryNoPlan : undefined,
+    },
+    {
+      key: 'dates',
+      label: tr.deliveryDates,
+      planned: delivery ? delivery.dates.total : null,
+      delivered: delivery ? delivery.dates.inWindow : null,
+      ok: delivery?.dates.ok ?? false,
+      empty: !delivery || delivery.dates.total === 0,
+      value: delivery && delivery.dates.total > 0 ? ratio(delivery.dates.inWindow, delivery.dates.total) : tr.deliveryDatesNone,
+    },
+    {
+      key: 'disclosure',
+      label: tr.deliveryDisclosure,
+      planned: delivery ? delivery.disclosure.total : null,
+      delivered: delivery ? delivery.disclosure.disclosed : null,
+      ok: delivery?.disclosure.ok ?? false,
+      empty: !delivery || delivery.disclosure.total === 0,
+      value: delivery && delivery.disclosure.total > 0 ? ratio(delivery.disclosure.disclosed, delivery.disclosure.total) : tr.deliveryDisclosureNone,
+      sub: tr.deliveryDisclosureSub,
+    },
+  ]
+  // The PM's edits (saved config, or the live draft while editing): a manual
+  // override replaces the computed planned / delivered / ok / sub-line of its
+  // row (a null field keeps the computed one); her extra promises are appended.
+  const deliveryConfig = view.delivery
+  const deliveryRows: DeliveryDisplayRow[] = computedDeliveryRows
+    .filter(row => delivery !== null || deliveryConfig.overrides[row.key] !== undefined)
+    .map(row => {
+      const o = deliveryConfig.overrides[row.key]
+      if (!o) return { key: row.key, label: row.label, value: row.value, sub: row.sub, ok: row.ok, empty: row.empty, manual: false }
+      const planned = o.planned ?? row.planned
+      const delivered = o.delivered ?? row.delivered
+      const ok = o.ok ?? row.ok
+      const note = o.note?.trim() || undefined
+      const hasFigures = o.planned != null || o.delivered != null
+      // An unknown delivered figure (no overview.delivery, only "Prometido" set
+      // by hand) reads as "— de N": an unknown is never presented as zero.
+      const value = planned !== null && planned > 0
+        ? (delivered !== null ? ratio(delivered, planned) : fill(tr.deliveryRatio, { delivered: '—', planned: fmtN(planned) }))
+        : delivered !== null ? fmtN(delivered) : row.value
+      // A note replaces the computed sub-line. The pieces row's "no commitment
+      // recorded" hint follows the EFFECTIVE denominator (a manual one removes it).
+      const computedSub = row.key === 'pieces' ? (planned === null ? tr.deliveryNoPlan : undefined) : row.sub
+      return {
+        key: row.key,
+        label: row.label,
+        value,
+        sub: note ?? computedSub,
+        ok,
+        // A row the PM has resolved (state or figures set) is no longer pending.
+        empty: row.empty && o.ok == null && !hasFigures,
+        manual: true,
+      }
+    })
+  for (const extra of deliveryConfig.extraRows) {
+    const label = extra.label.trim()
+    if (!label) continue
+    deliveryRows.push({ key: `extra:${extra.id}`, label, value: (extra.value ?? '').trim(), ok: extra.ok, empty: false, manual: true })
+  }
   // The client (portal, print, PDF) only sees the rows that are TRUE: an "in
   // review" row is an internal to-do (fix the roster, the dates or the
   // #publicidad flag), never a client-facing claim. On screen the PM sees all.
@@ -2004,6 +2356,7 @@ export function CampaignReport({
     ['platform', 11],
     showCol('creators.posts') && ['posts', 6],
     showCol('creators.posts') && ['stories', 7],
+    showCol('creators.views') && ['views', 10],
     ['interactions', 12],
     ['audience', 12],
     showCol('creators.er') && ['er', 6],
@@ -2030,11 +2383,11 @@ export function CampaignReport({
 
   return (
     <div id="campaign-report" className="space-y-6">
-      {/* Print styles: hide app chrome, white page, keep the screen colours
-          (print-color-adjust: exact) so the PDF looks like the screen. The
-          light theme is forced by the beforeprint handler above (and by
-          printMode). Layout is A4 portrait, 12mm margins: content ≈ 703px
-          wide, nothing may overflow. The same rules apply on screen under
+      {/* Print styles (WYSIWYG): hide app chrome, white page, keep the screen
+          colours (print-color-adjust: exact), pin the report to its desktop
+          width on an A4-proportioned page — no relayout, so paper looks like
+          the screen. The light theme is forced by the beforeprint handler
+          above (and by printMode). The same rules apply on screen under
           html[data-report-print] (?print=1). */}
       <style>{REPORT_PRINT_CSS}</style>
 
@@ -2131,7 +2484,7 @@ export function CampaignReport({
 
       {/* 0c. Edit panel — agency only */}
       {editing && draft && (
-        <ReportEditPanel draft={draft} tr={tr} error={saveError} onChange={patchDraft} />
+        <ReportEditPanel draft={draft} tr={tr} error={saveError} deliveryComputed={computedDeliveryRows} onChange={patchDraft} />
       )}
 
       {/* 1. Cover — TKOC standard: page 1 of the PDF, tall hero on screen.
@@ -2267,11 +2620,11 @@ export function CampaignReport({
             <section>
               <SectionHeading>{tr.sectionSummary}</SectionHeading>
               {intro && (
-                <p className="print-card print-text-xs mb-4 whitespace-pre-line text-sm leading-relaxed text-gray-700 dark:text-gray-300">
+                <p className="print-card mb-4 whitespace-pre-line text-sm leading-relaxed text-gray-700 dark:text-gray-300">
                   {intro}
                 </p>
               )}
-              <div className="print-grid-3 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
                 <StatCard icon={Users} label={tr.cardCreators} value={fmtN(totals.creatorsActive)} />
                 <StatCard
                   icon={ImageIcon}
@@ -2327,7 +2680,7 @@ export function CampaignReport({
                   labelled "EMV" with a hover explanation on screen and a footnote on
                   paper. Ratio EMV (never "ROI") and the real CPM only in the agency view. */}
               {(totals.emvExtended > 0 || showCpmTotal) && (
-                <div className="print-card print-pad mt-4 flex flex-wrap items-start justify-between gap-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900">
+                <div className="print-card mt-4 flex flex-wrap items-start justify-between gap-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900">
                   {totals.emvExtended > 0 && (
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 text-xs font-medium text-gray-500 dark:text-gray-400">
@@ -2369,7 +2722,7 @@ export function CampaignReport({
                     {tr.objectivesTitle}
                   </div>
                   <div className="print-table-wrap overflow-x-auto">
-                    <table className="print-table w-full text-sm">
+                    <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-gray-200 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
                           <th className={thBase} style={{ width: objW.kpi }}>{tr.objKpi}</th>
@@ -2431,12 +2784,20 @@ export function CampaignReport({
                             <TriangleAlert className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
                           )}
                           <div className="min-w-0">
-                            <p className="print-text-xs font-medium text-gray-900 dark:text-gray-100">{row.label}</p>
+                            <p className="font-medium text-gray-900 dark:text-gray-100">
+                              {row.label}
+                              {/* Agency screen only: this row (or part of it) was set by the PM */}
+                              {!clientView && row.manual && (
+                                <span className="no-print ml-2 text-[10px] font-medium uppercase tracking-wide text-purple-500 print:hidden dark:text-purple-400">
+                                  {tr.deliveryManualMark}
+                                </span>
+                              )}
+                            </p>
                             {row.sub && <p className="text-[11px] text-gray-400 dark:text-gray-500">{row.sub}</p>}
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-2 tabular-nums">
-                          <span className="print-text-xs text-gray-700 dark:text-gray-300">{row.value}</span>
+                          {row.value && <span className="text-gray-700 dark:text-gray-300">{row.value}</span>}
                           <span className={cn('inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium', row.ok ? toneClass.good : row.empty ? toneClass.none : toneClass.bad)}>
                             {row.ok ? tr.deliveryOk : row.empty ? tr.deliveryPending : tr.deliveryWarn}
                           </span>
@@ -2495,7 +2856,7 @@ export function CampaignReport({
                 </p>
               ) : (
                 <>
-                  <div className="print-grid-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     {highlightItems.map(({ media: m, metrics }) => {
                       const deleted = m.isDeleted === true || metrics?.isDeleted === true
                       return (
@@ -2516,7 +2877,7 @@ export function CampaignReport({
                               </p>
                               <Badge variant="default" className="px-2 py-0 text-[10px]">{mediaTypeLabel(m.mediaType)}</Badge>
                             </div>
-                            <p className={cn('print-clamp-1 mt-0.5 line-clamp-1 text-[11px]', deleted ? 'text-gray-400 dark:text-gray-500' : 'text-gray-600 dark:text-gray-300')}>
+                            <p className={cn('mt-0.5 line-clamp-1 text-[11px]', deleted ? 'text-gray-400 dark:text-gray-500' : 'text-gray-600 dark:text-gray-300')}>
                               {m.caption || 'Sin descripción'}
                             </p>
                             <dl className={cn('mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs tabular-nums', deleted ? 'text-gray-400 dark:text-gray-500' : 'text-gray-700 dark:text-gray-300')}>
@@ -2557,7 +2918,7 @@ export function CampaignReport({
               <SectionHeading>{tr.sectionCreators}</SectionHeading>
               <div className="print-table-card overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
                 <div className="print-table-wrap overflow-x-auto">
-                  <table className="print-table w-full text-sm">
+                  <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-200 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
                         {editing && (
@@ -2569,6 +2930,7 @@ export function CampaignReport({
                         <th className={thBase} style={{ width: creatorsW.platform }}>{locale === 'es' ? 'Red' : 'Network'}</th>
                         {showCol('creators.posts') && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.posts }}>Posts</th>}
                         {showCol('creators.posts') && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.stories }}>{tr.colStories}</th>}
+                        {showCol('creators.views') && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.views }}>{tr.colViews}</th>}
                         <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.interactions }}>{tr.colInteractions}</th>
                         <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.audience }}>{tr.colRealAudience}</th>
                         {showCol('creators.er') && <th className={cn(thBase, 'text-right')} style={{ width: creatorsW.er }}>ER</th>}
@@ -2632,10 +2994,13 @@ export function CampaignReport({
                             </td>
                             {showCol('creators.posts') && <td className={num}>{p ? p.posts : '—'}</td>}
                             {showCol('creators.posts') && <td className={num}>{p ? p.stories : '—'}</td>}
+                            {showCol('creators.views') && (
+                              <td className={num}>{p && p.views > 0 ? fmtN(p.views) : '—'}</td>
+                            )}
                             <td className={num}>{p ? fmtN(p.engagements) : '—'}</td>
                             <td className={num}>{p && p.audience.real > 0 ? fmtN(p.audience.real) : '—'}</td>
                             {showCol('creators.er') && (
-                              <td className={num}>
+                              <td className={cn(num, 'whitespace-nowrap')}>
                                 {p && p.er.value !== null ? formatPct(p.er.value, locale) : '—'}
                               </td>
                             )}
@@ -2681,10 +3046,10 @@ export function CampaignReport({
                 {tr.sectionSentiment}
               </SectionHeading>
               {sentimentShare !== null && sentiment && (
-                <div className="print-card print-pad mb-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
+                <div className="print-card mb-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
                   <div className="flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-gray-100">
                     <MessageSquare className="h-4 w-4 shrink-0 text-purple-600 dark:text-purple-400" />
-                    <span className="print-text-xs">{fill(tr.sentimentShareLine, { pct: sentimentShare, total: fmtN(sentiment.total) })}</span>
+                    <span>{fill(tr.sentimentShareLine, { pct: sentimentShare, total: fmtN(sentiment.total) })}</span>
                   </div>
                   <div className="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700" aria-hidden="true">
                     {sentiment.positive > 0 && <div className="h-full bg-green-500" style={{ width: `${(sentiment.positive / sentiment.total) * 100}%` }} />}
@@ -2699,10 +3064,10 @@ export function CampaignReport({
                 </div>
               )}
               {highlightedComments.length > 0 && (
-                <div className="print-grid-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   {highlightedComments.map(c => (
-                    <figure key={c.id} className="print-card print-pad min-w-0 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-                      <blockquote className="print-text-xs text-sm leading-relaxed text-gray-700 dark:text-gray-300">
+                    <figure key={c.id} className="print-card min-w-0 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
+                      <blockquote className="text-sm leading-relaxed text-gray-700 dark:text-gray-300">
                         &ldquo;{c.text.trim()}&rdquo;
                       </blockquote>
                       <figcaption className="mt-2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
@@ -2722,7 +3087,7 @@ export function CampaignReport({
           {showSection('quality') && !clientView && (
             <section className="no-print print:hidden">
               <SectionHeading>{tr.sectionQualityReal}</SectionHeading>
-              <div className="print-card print-pad rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900">
+              <div className="print-card rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900">
                 {(() => {
                   const total = totals.media
                   const realPct = total > 0 ? Math.round((realPieces / total) * 100) : 0
@@ -2741,7 +3106,7 @@ export function CampaignReport({
                         {realPct > 0 && <div className="h-full bg-green-500" style={{ width: `${realPct}%` }} />}
                         {noRealPct > 0 && <div className="h-full bg-gray-400 dark:bg-gray-500" style={{ width: `${noRealPct}%` }} />}
                       </div>
-                      <ul className="print-text-xs mt-3 space-y-1 text-sm text-gray-600 dark:text-gray-400">
+                      <ul className="mt-3 space-y-1 text-sm text-gray-600 dark:text-gray-400">
                         <li>{fill(tr.qualityRealViewsLine, { n: fmtN(realViewsCount) })}</li>
                         <li>{fill(tr.qualityNoRealDataLine, { n: fmtN(withoutRealData) })}</li>
                         {report.creatorInsightsCount > 0 && (
@@ -2763,7 +3128,7 @@ export function CampaignReport({
       {showBusiness && biz && (
         <section>
           <SectionHeading>{tr.businessTitle}</SectionHeading>
-          <div className="print-grid-3 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
             {biz.promoCode && (
               <StatCard icon={Tag} label={tr.promoCode} value={biz.promoCode} />
             )}
@@ -2812,12 +3177,12 @@ export function CampaignReport({
           </SectionHeading>
 
           {shownLearnings.insights.length > 0 && (
-            <LearningCard icon={Lightbulb} title={tr.learningsInsightsTitle} className="print-pad mb-4">
+            <LearningCard icon={Lightbulb} title={tr.learningsInsightsTitle} className="mb-4">
               <ul className="space-y-2">
                 {shownLearnings.insights.map((ins, i) => {
                   const internal = screenOnly(ins.text)
                   return (
-                    <li key={i} className={cn('flex items-start gap-2 text-sm leading-relaxed text-gray-700 dark:text-gray-300 print-text-xs', internal && 'no-print print:hidden')}>
+                    <li key={i} className={cn('flex items-start gap-2 text-sm leading-relaxed text-gray-700 dark:text-gray-300', internal && 'no-print print:hidden')}>
                       <InsightIcon type={ins.type} />
                       <span className="min-w-0">
                         {ins.text}
@@ -2830,9 +3195,9 @@ export function CampaignReport({
             </LearningCard>
           )}
 
-          <div className="print-grid-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {/* Qué repetir */}
-            <LearningCard icon={Repeat} title={tr.learningsRepeatTitle} className="print-pad">
+            <LearningCard icon={Repeat} title={tr.learningsRepeatTitle}>
               {shownLearnings.repeatList.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
                   {shownLearnings.repeatList.map(u => (
@@ -2842,7 +3207,7 @@ export function CampaignReport({
                   ))}
                 </div>
               ) : (
-                <p className="text-sm text-gray-500 dark:text-gray-400 print-text-xs">{tr.learningsRepeatEmpty}</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400">{tr.learningsRepeatEmpty}</p>
               )}
               {shownLearnings.topPerformer && (
                 <div className="mt-3 border-t border-gray-100 pt-3 dark:border-gray-800">
@@ -2851,7 +3216,7 @@ export function CampaignReport({
                     <span className="shrink-0">{tr.learningsTopPerformer}:</span> <span className="min-w-0 truncate normal-case text-gray-700 dark:text-gray-300">@{shownLearnings.topPerformer.username.replace(/^@/, '')}</span>
                   </p>
                   {shownLearnings.topPerformer.reason && (
-                    <p className={cn('print-text-xs mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-400', screenOnly(shownLearnings.topPerformer.reason) && 'no-print print:hidden')}>
+                    <p className={cn('mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-400', screenOnly(shownLearnings.topPerformer.reason) && 'no-print print:hidden')}>
                       {shownLearnings.topPerformer.reason}
                       {screenOnly(shownLearnings.topPerformer.reason) && <ScreenOnlyBadge label={screenOnlyLabel} />}
                     </p>
@@ -2861,18 +3226,18 @@ export function CampaignReport({
             </LearningCard>
 
             {/* Formato ganador */}
-            <LearningCard icon={Film} title={tr.learningsFormatTitle} className="print-pad">
+            <LearningCard icon={Film} title={tr.learningsFormatTitle}>
               {shownLearnings.bestFormat ? (
                 <>
                   <p className="text-lg font-bold text-gray-900 dark:text-gray-100">{mediaTypeLabel(shownLearnings.bestFormat.format)}</p>
                   {shownLearnings.bestFormat.reason && (
-                    <p className={cn('print-text-xs mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-400', screenOnly(shownLearnings.bestFormat.reason) && 'no-print print:hidden')}>
+                    <p className={cn('mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-400', screenOnly(shownLearnings.bestFormat.reason) && 'no-print print:hidden')}>
                       {shownLearnings.bestFormat.reason}
                       {screenOnly(shownLearnings.bestFormat.reason) && <ScreenOnlyBadge label={screenOnlyLabel} />}
                     </p>
                   )}
                   {shownLearnings.worstFormat && (
-                    <p className={cn('print-text-xs mt-3 border-t border-gray-100 pt-3 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400', screenOnly(shownLearnings.worstFormat.reason) && 'no-print print:hidden')}>
+                    <p className={cn('mt-3 border-t border-gray-100 pt-3 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400', screenOnly(shownLearnings.worstFormat.reason) && 'no-print print:hidden')}>
                       <span className="font-semibold text-gray-600 dark:text-gray-300">{tr.learningsWorstFormat}: {mediaTypeLabel(shownLearnings.worstFormat.format)}.</span>{' '}
                       {shownLearnings.worstFormat.reason}
                       {screenOnly(shownLearnings.worstFormat.reason) && <ScreenOnlyBadge label={screenOnlyLabel} />}
@@ -2880,19 +3245,19 @@ export function CampaignReport({
                   )}
                 </>
               ) : (
-                <p className="text-sm text-gray-500 dark:text-gray-400 print-text-xs">{tr.learningsFormatEmpty}</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400">{tr.learningsFormatEmpty}</p>
               )}
             </LearningCard>
 
             {/* Siguiente oleada. The staff text is rewritten for the client
                 (no budget / fee wording): on screen the PM sees both. */}
-            <LearningCard icon={ArrowRight} title={tr.learningsNextTitle} className="print-pad">
-              <p className={cn('print-text-xs text-sm leading-relaxed text-gray-700 dark:text-gray-300', screenOnly(shownLearnings.nextCampaignRec) && 'no-print print:hidden')}>
+            <LearningCard icon={ArrowRight} title={tr.learningsNextTitle}>
+              <p className={cn('text-sm leading-relaxed text-gray-700 dark:text-gray-300', screenOnly(shownLearnings.nextCampaignRec) && 'no-print print:hidden')}>
                 {shownLearnings.nextCampaignRec || '—'}
                 {screenOnly(shownLearnings.nextCampaignRec) && <ScreenOnlyBadge label={screenOnlyLabel} />}
               </p>
               {screenOnly(shownLearnings.nextCampaignRec) && learningsClient?.nextCampaignRec && (
-                <p className="print-text-xs mt-2 border-t border-gray-100 pt-2 text-xs leading-relaxed text-gray-500 dark:border-gray-800 dark:text-gray-400">
+                <p className="mt-2 border-t border-gray-100 pt-2 text-xs leading-relaxed text-gray-500 dark:border-gray-800 dark:text-gray-400">
                   <span className="font-semibold text-gray-600 dark:text-gray-300">{locale === 'es' ? 'En el informe del cliente' : 'In the client report'}:</span>{' '}
                   {learningsClient.nextCampaignRec}
                 </p>
@@ -2953,8 +3318,8 @@ export function CampaignReport({
 
           {/* Decisiones acordadas — the PM's editable conclusions text */}
           {showDecisions && (
-            <LearningCard icon={ClipboardList} title={tr.learningsDecisionsTitle} className="print-pad mt-4">
-              <p className="print-text-xs whitespace-pre-line text-sm leading-relaxed text-gray-700 dark:text-gray-300">
+            <LearningCard icon={ClipboardList} title={tr.learningsDecisionsTitle} className="mt-4">
+              <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700 dark:text-gray-300">
                 {conclusions}
               </p>
             </LearningCard>
@@ -2966,8 +3331,8 @@ export function CampaignReport({
       {showStandaloneConclusions && (
         <section>
           <SectionHeading>{tr.conclusionsTitle}</SectionHeading>
-          <div className="print-card print-pad rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-            <p className="print-text-xs whitespace-pre-line text-sm leading-relaxed text-gray-700 dark:text-gray-300">
+          <div className="print-card rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900">
+            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700 dark:text-gray-300">
               {conclusions}
             </p>
           </div>
@@ -2985,7 +3350,7 @@ export function CampaignReport({
           )}
           <div className="print-table-card overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
             <div className="print-table-wrap overflow-x-auto">
-              <table className="print-table w-full text-sm">
+              <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-200 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
                     {editing && (
@@ -3038,7 +3403,7 @@ export function CampaignReport({
                             <p className={cn('truncate text-xs font-medium', deleted ? 'text-gray-400 dark:text-gray-500' : 'text-purple-600 dark:text-purple-400')}>
                               @{m.influencer?.username || 'desconocido'}
                             </p>
-                            <p className={cn('print-clamp-1 line-clamp-1 text-[11px]', deleted ? 'text-gray-400 dark:text-gray-500' : 'text-gray-600 dark:text-gray-300')}>
+                            <p className={cn('line-clamp-1 text-[11px]', deleted ? 'text-gray-400 dark:text-gray-500' : 'text-gray-600 dark:text-gray-300')}>
                               {m.caption || 'Sin descripción'}
                             </p>
                             {(deleted || hidden) && (

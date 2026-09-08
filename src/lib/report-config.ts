@@ -17,6 +17,7 @@
  */
 
 import { prisma } from '@/lib/db'
+import type { DeliveryChecklist } from '@/lib/metrics'
 
 // ---------------------------------------------------------------------------
 // Ids the report understands
@@ -47,6 +48,8 @@ export const REPORT_COLUMN_IDS = [
   'content.reach',
   'content.source',
   'creators.followers',
+  /** "Vistas" per creator (overview.perInfluencer[].views), right before Interacciones. */
+  'creators.views',
   'creators.er',
   'creators.cpm',
   'creators.posts',
@@ -89,6 +92,38 @@ export interface HighlightedComment {
   mediaId?: string | null
 }
 
+// --- "Prometido vs entregado" (David 2026-09-08: the PM must be able to complete it) ---
+
+/** The four rows the system computes from overview.delivery. */
+export const DELIVERY_ROW_KEYS = ['creators', 'pieces', 'dates', 'disclosure'] as const
+export type DeliveryRowKey = (typeof DELIVERY_ROW_KEYS)[number]
+
+/**
+ * Manual override of ONE computed row. A field left null/undefined keeps the
+ * computed value; a set field replaces it (planned/delivered → the numbers,
+ * ok → Cumplido / En revisión, note → the row's sub-line).
+ */
+export interface DeliveryOverride {
+  planned?: number | null
+  delivered?: number | null
+  ok?: boolean | null
+  note?: string | null
+}
+
+/** A promise the PM adds by hand (e.g. "Exclusividad" · "12 meses" · Cumplido). */
+export interface DeliveryExtraRow {
+  id: string
+  label: string
+  /** Free short text such as "12 meses" or "Sí". */
+  value?: string | null
+  ok: boolean
+}
+
+export interface ReportDeliveryConfig {
+  overrides: Partial<Record<DeliveryRowKey, DeliveryOverride>>
+  extraRows: DeliveryExtraRow[]
+}
+
 export interface ReportConfig {
   /** Overrides the campaign name on the cover and the running header */
   title?: string
@@ -104,6 +139,12 @@ export interface ReportConfig {
   hiddenInfluencerIds: string[]
   /** "Qué dijo la audiencia": up to REPORT_HIGHLIGHTED_MAX quoted comments. */
   highlightedComments: HighlightedComment[]
+  /**
+   * "Prometido vs entregado" edits by the PM. Always present after
+   * normalisation (configs saved before this field load with the default).
+   * The client (portal, print, PDF) only ever sees rows with ok === true.
+   */
+  delivery: ReportDeliveryConfig
   sentVersions: ReportSentVersion[]
   updatedAt?: string
   updatedBy?: string
@@ -122,6 +163,7 @@ export type ReportConfigPatch = Partial<
     | 'hiddenMediaIds'
     | 'hiddenInfluencerIds'
     | 'highlightedComments'
+    | 'delivery'
   >
 >
 
@@ -134,6 +176,17 @@ export const REPORT_ID_MAX = 200
 export const REPORT_HIGHLIGHTED_MAX = 12
 export const REPORT_COMMENT_TEXT_MAX = 300
 export const REPORT_COMMENT_AUTHOR_MAX = 80
+/** "Prometido vs entregado": ≤ 4 extra rows; label ≤ 80, value ≤ 40, note ≤ 120 chars; counts 0–1,000,000. */
+export const REPORT_DELIVERY_EXTRA_MAX = 4
+export const REPORT_DELIVERY_LABEL_MAX = 80
+export const REPORT_DELIVERY_VALUE_MAX = 40
+export const REPORT_DELIVERY_NOTE_MAX = 120
+export const REPORT_DELIVERY_COUNT_MAX = 1_000_000
+
+/** Fresh default delivery config (a new object every time: it is mutated by spreads). */
+export function defaultReportDelivery(): ReportDeliveryConfig {
+  return { overrides: {}, extraRows: [] }
+}
 
 export const DEFAULT_REPORT_CONFIG: ReportConfig = {
   hiddenSections: [],
@@ -141,7 +194,13 @@ export const DEFAULT_REPORT_CONFIG: ReportConfig = {
   hiddenMediaIds: [],
   hiddenInfluencerIds: [],
   highlightedComments: [],
+  delivery: { overrides: {}, extraRows: [] },
   sentVersions: [],
+}
+
+/** A fresh copy of the defaults (no shared nested objects). */
+function freshDefaultReportConfig(): ReportConfig {
+  return { ...DEFAULT_REPORT_CONFIG, delivery: defaultReportDelivery() }
 }
 
 export function reportConfigKey(campaignId: string): string {
@@ -207,6 +266,73 @@ function cleanHighlightedComments(v: unknown): HighlightedComment[] {
   return out
 }
 
+/** Integer 0–REPORT_DELIVERY_COUNT_MAX or undefined (strings, NaN, negatives, huge values are dropped). */
+function cleanCount(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return undefined
+  const n = Math.trunc(v)
+  if (n < 0 || n > REPORT_DELIVERY_COUNT_MAX) return undefined
+  return n
+}
+
+/** Trimmed string capped at `max`, or undefined when empty / not a string. */
+function cleanShortText(v: unknown, max: number): string | undefined {
+  if (typeof v !== 'string') return undefined
+  const s = v.trim()
+  return s ? s.slice(0, max) : undefined
+}
+
+/**
+ * "Prometido vs entregado" edits. Unknown row keys are dropped; an override
+ * with nothing set is dropped too (it is the same as "Automático"); counts
+ * are integers 0–1,000,000; ok is boolean|null for overrides and boolean for
+ * extra rows; extra rows are capped at 4 with non-empty de-duplicated ids and
+ * a non-empty label. Never throws: any hostile shape becomes the default.
+ */
+function cleanDelivery(v: unknown): ReportDeliveryConfig {
+  const out = defaultReportDelivery()
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out
+  const d = v as Record<string, unknown>
+
+  const overridesRaw = d.overrides
+  if (overridesRaw && typeof overridesRaw === 'object' && !Array.isArray(overridesRaw)) {
+    const o = overridesRaw as Record<string, unknown>
+    for (const key of DELIVERY_ROW_KEYS) {
+      const item = o[key]
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const r = item as Record<string, unknown>
+      const entry: DeliveryOverride = {}
+      const planned = cleanCount(r.planned)
+      const delivered = cleanCount(r.delivered)
+      const note = cleanShortText(r.note, REPORT_DELIVERY_NOTE_MAX)
+      if (planned !== undefined) entry.planned = planned
+      if (delivered !== undefined) entry.delivered = delivered
+      if (typeof r.ok === 'boolean') entry.ok = r.ok
+      if (note) entry.note = note
+      if (Object.keys(entry).length > 0) out.overrides[key] = entry
+    }
+  }
+
+  const rowsRaw = d.extraRows
+  if (Array.isArray(rowsRaw)) {
+    const seen = new Set<string>()
+    rowsRaw.forEach((item, index) => {
+      if (out.extraRows.length >= REPORT_DELIVERY_EXTRA_MAX) return
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return
+      const r = item as Record<string, unknown>
+      const label = cleanShortText(r.label, REPORT_DELIVERY_LABEL_MAX)
+      if (!label) return
+      let id = typeof r.id === 'string' && r.id.trim() && r.id.length <= REPORT_ID_MAX ? r.id.trim() : `d${index + 1}`
+      while (seen.has(id)) id = `${id}_`
+      seen.add(id)
+      const row: DeliveryExtraRow = { id, label, ok: r.ok === true }
+      const value = cleanShortText(r.value, REPORT_DELIVERY_VALUE_MAX)
+      if (value) row.value = value
+      out.extraRows.push(row)
+    })
+  }
+  return out
+}
+
 function cleanSentVersions(v: unknown): ReportSentVersion[] {
   if (!Array.isArray(v)) return []
   const out: ReportSentVersion[] = []
@@ -237,6 +363,8 @@ export function normalizeReportConfig(raw: unknown): ReportConfig {
     hiddenMediaIds: cleanStringList(r.hiddenMediaIds),
     hiddenInfluencerIds: cleanStringList(r.hiddenInfluencerIds),
     highlightedComments: cleanHighlightedComments(r.highlightedComments),
+    // Backwards compatible: configs saved before "delivery" existed load with the default.
+    delivery: cleanDelivery(r.delivery),
     sentVersions: cleanSentVersions(r.sentVersions),
   }
   const title = cleanText(r.title)
@@ -296,6 +424,57 @@ export function validateReportConfigPatch(body: unknown): string | null {
       if (r.mediaId !== undefined && r.mediaId !== null && (typeof r.mediaId !== 'string' || r.mediaId.length > REPORT_ID_MAX)) return 'highlightedComments[].mediaId must be a short string'
     }
   }
+  // "Prometido vs entregado": null resets to Automático everywhere (the route maps it to the default).
+  if (b.delivery !== undefined && b.delivery !== null) {
+    const err = validateDeliveryPatch(b.delivery)
+    if (err) return err
+  }
+  return null
+}
+
+function isCountOrNull(v: unknown): boolean {
+  if (v === undefined || v === null) return true
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= REPORT_DELIVERY_COUNT_MAX
+}
+
+/** Strict shape check of a `delivery` patch (returns a 400 message or null). */
+function validateDeliveryPatch(v: unknown): string | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return 'delivery must be an object'
+  const d = v as Record<string, unknown>
+  if (d.overrides !== undefined && d.overrides !== null) {
+    if (typeof d.overrides !== 'object' || Array.isArray(d.overrides)) return 'delivery.overrides must be an object'
+    const o = d.overrides as Record<string, unknown>
+    for (const key of Object.keys(o)) {
+      if (!(DELIVERY_ROW_KEYS as readonly string[]).includes(key)) return `delivery.overrides.${key} is not a known row`
+      const item = o[key]
+      if (item === undefined || item === null) continue
+      if (typeof item !== 'object' || Array.isArray(item)) return `delivery.overrides.${key} must be an object`
+      const r = item as Record<string, unknown>
+      if (!isCountOrNull(r.planned)) return `delivery.overrides.${key}.planned must be an integer between 0 and ${REPORT_DELIVERY_COUNT_MAX}`
+      if (!isCountOrNull(r.delivered)) return `delivery.overrides.${key}.delivered must be an integer between 0 and ${REPORT_DELIVERY_COUNT_MAX}`
+      if (r.ok !== undefined && r.ok !== null && typeof r.ok !== 'boolean') return `delivery.overrides.${key}.ok must be a boolean`
+      if (r.note !== undefined && r.note !== null) {
+        if (typeof r.note !== 'string') return `delivery.overrides.${key}.note must be a string`
+        if (r.note.trim().length > REPORT_DELIVERY_NOTE_MAX) return `delivery.overrides.${key}.note must be at most ${REPORT_DELIVERY_NOTE_MAX} characters`
+      }
+    }
+  }
+  if (d.extraRows !== undefined && d.extraRows !== null) {
+    if (!Array.isArray(d.extraRows)) return 'delivery.extraRows must be an array'
+    if (d.extraRows.length > REPORT_DELIVERY_EXTRA_MAX) return `delivery.extraRows must have at most ${REPORT_DELIVERY_EXTRA_MAX} items`
+    for (const item of d.extraRows as unknown[]) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return 'delivery.extraRows must contain objects'
+      const r = item as Record<string, unknown>
+      if (typeof r.label !== 'string') return 'delivery.extraRows[].label must be a string'
+      if (r.label.trim().length > REPORT_DELIVERY_LABEL_MAX) return `delivery.extraRows[].label must be at most ${REPORT_DELIVERY_LABEL_MAX} characters`
+      if (r.value !== undefined && r.value !== null) {
+        if (typeof r.value !== 'string') return 'delivery.extraRows[].value must be a string'
+        if (r.value.trim().length > REPORT_DELIVERY_VALUE_MAX) return `delivery.extraRows[].value must be at most ${REPORT_DELIVERY_VALUE_MAX} characters`
+      }
+      if (r.ok !== undefined && r.ok !== null && typeof r.ok !== 'boolean') return 'delivery.extraRows[].ok must be a boolean'
+      if (r.id !== undefined && r.id !== null && (typeof r.id !== 'string' || r.id.length > REPORT_ID_MAX)) return 'delivery.extraRows[].id must be a short string'
+    }
+  }
   return null
 }
 
@@ -303,10 +482,63 @@ export function validateReportConfigPatch(body: unknown): string | null {
  * Portal projection: the brand only needs what changes the rendering. The
  * audit trail (who sent what, when, who edited) is agency-internal.
  */
-export function reportConfigForBrand(cfg: ReportConfig): Omit<ReportConfig, 'sentVersions' | 'updatedAt' | 'updatedBy'> {
+export function reportConfigForBrand(
+  cfg: ReportConfig,
+  computedOk: DeliveryComputedState = {}
+): Omit<ReportConfig, 'sentVersions' | 'updatedAt' | 'updatedBy'> {
   const { sentVersions: _sent, updatedAt: _at, updatedBy: _by, ...rest } = cfg
   void _sent; void _at; void _by
-  return rest
+  return { ...rest, delivery: deliveryForBrand(cfg.delivery, computedOk) }
+}
+
+/** System state (ok) of the four computed rows, from overview.delivery. */
+export type DeliveryComputedState = Partial<Record<DeliveryRowKey, boolean>>
+
+/** The ok flags of overview.delivery as a DeliveryComputedState ({} when there is no overview). */
+export function deliveryComputedState(delivery: DeliveryChecklist | null | undefined): DeliveryComputedState {
+  if (!delivery) return {}
+  return {
+    creators: delivery.creators.ok,
+    pieces: delivery.pieces.ok,
+    dates: delivery.dates.ok,
+    disclosure: delivery.disclosure.ok,
+  }
+}
+
+/** True when an override left in Automático (ok null) carries figures or a note, i.e. the projection needs the system state. */
+export function deliveryNeedsComputedState(delivery: ReportDeliveryConfig | undefined): boolean {
+  if (!delivery) return false
+  return DELIVERY_ROW_KEYS.some(key => {
+    const ov = delivery.overrides[key]
+    return ov !== undefined && ov.ok == null
+  })
+}
+
+/**
+ * The client only ever sees checklist rows with ok === true (the report hides
+ * the rest). Defense in depth: extra rows that are not ok never travel, and an
+ * override the PM marked "En revisión" travels as { ok: false } only — its
+ * numbers and note are agency-internal until the promise is met. An override
+ * left in Automático (ok null) is shown or hidden by the SYSTEM state of its
+ * row, so its figures and note travel only when that state is ok; when it is
+ * not ok — or unknown to the caller — nothing travels (the row renders from
+ * the computed values, and a computed not-ok row is hidden anyway).
+ */
+function deliveryForBrand(
+  delivery: ReportDeliveryConfig | undefined,
+  computedOk: DeliveryComputedState
+): ReportDeliveryConfig {
+  const src = delivery ?? defaultReportDelivery()
+  const out = defaultReportDelivery()
+  for (const key of DELIVERY_ROW_KEYS) {
+    const ov = src.overrides[key]
+    if (!ov) continue
+    if (ov.ok === true) out.overrides[key] = { ...ov }
+    else if (ov.ok === false) out.overrides[key] = { ok: false }
+    else if (computedOk[key] === true) out.overrides[key] = { ...ov }
+  }
+  out.extraRows = src.extraRows.filter(row => row.ok === true).map(row => ({ ...row }))
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -323,7 +555,7 @@ export function reportConfigForBrand(cfg: ReportConfig): Omit<ReportConfig, 'sen
  */
 export async function loadReportConfigStrict(campaignId: string): Promise<ReportConfig> {
   const row = await prisma.setting.findUnique({ where: { key: reportConfigKey(campaignId) } })
-  if (!row?.value) return { ...DEFAULT_REPORT_CONFIG }
+  if (!row?.value) return freshDefaultReportConfig()
   return normalizeReportConfig(JSON.parse(row.value))
 }
 
@@ -337,7 +569,7 @@ export async function loadReportConfig(campaignId: string): Promise<ReportConfig
     return await loadReportConfigStrict(campaignId)
   } catch (err) {
     console.error('[report-config] load failed, using defaults:', err instanceof Error ? err.message : err)
-    return { ...DEFAULT_REPORT_CONFIG }
+    return freshDefaultReportConfig()
   }
 }
 
@@ -365,8 +597,8 @@ export async function saveReportConfig(
   for (const k of ['title', 'subtitle', 'intro', 'conclusions'] as const) {
     if (has(k)) merged[k] = patch[k] // normalize() drops empty strings
   }
-  for (const k of ['hiddenSections', 'hiddenColumns', 'hiddenMediaIds', 'hiddenInfluencerIds', 'highlightedComments'] as const) {
-    if (has(k)) merged[k] = patch[k]
+  for (const k of ['hiddenSections', 'hiddenColumns', 'hiddenMediaIds', 'hiddenInfluencerIds', 'highlightedComments', 'delivery'] as const) {
+    if (has(k)) merged[k] = patch[k] // delivery: the patch replaces the whole block (normalize() cleans it)
   }
   merged.updatedAt = new Date().toISOString()
   merged.updatedBy = by

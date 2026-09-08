@@ -276,7 +276,7 @@ export default function MethodologyPage() {
             es ? "Tipo de creador" : "Creator Type",
           ]}
           rows={[
-            [es ? "Conocimiento" : "Awareness", es ? "Lanzamientos, branding" : "Launches, branding", es ? "Alcance, Impresiones" : "Reach, Impressions", "Macro / Mega"],
+            [es ? "Conocimiento" : "Awareness", es ? "Lanzamientos, branding" : "Launches, branding", es ? "Vistas, Alcance real" : "Views, Real reach", "Macro / Mega"],
             ["Engagement", es ? "Comunidad, UGC" : "Community, UGC", es ? "Likes, Comentarios, Saves" : "Likes, Comments, Saves", "Nano / Micro"],
             [es ? "Trafico" : "Traffic", es ? "Ventas online, apps" : "Online sales, apps", es ? "Clicks, CTR" : "Clicks, CTR", "Micro / Mid"],
             [es ? "Conversion" : "Conversion", "E-commerce, DTC", es ? "Ventas, Codigos" : "Sales, Promo Codes", "Micro / Mid"],
@@ -443,8 +443,8 @@ export default function MethodologyPage() {
         </TipBox>
         <TipBox>
           {es
-            ? "Importante: este ER se calcula sobre seguidores (formula de perfil). En campana, el engagement rate se calcula sobre views o reach, lo que da numeros diferentes. TKOC Intelligence usa automaticamente la formula correcta segun el contexto."
-            : "Important: this ER is calculated on followers (profile formula). In campaigns, engagement rate is calculated on views or reach, which gives different numbers. TKOC Intelligence automatically uses the correct formula based on context."}
+            ? "Importante: este ER se calcula sobre seguidores (formula de perfil). En campana, la tasa de engagement es interacciones (likes + comentarios + shares + saves) ÷ vistas reales de las mismas publicaciones, y solo se publica con al menos 3 publicaciones con vistas reales, 500 vistas y un ratio plausible (≤ 100 %); si no, el informe dice 'Muestra real insuficiente'. Regla de datos reales: si una publicacion tiene menos vistas que likes, esas vistas no son un dato real (cifra parcial o antigua de la plataforma) y la publicacion queda 'sin dato real' hasta volver a consultarla. Nada estimado entra en la tasa de engagement, el CPM ni los objetivos."
+            : "Important: this ER is calculated on followers (profile formula). In campaigns, the engagement rate is interactions (likes + comments + shares + saves) ÷ real views of the same publications, published only with at least 3 publications with real views, 500 views and a plausible ratio (≤ 100 %); otherwise the report says 'Insufficient real sample'. Real-data rule: a publication with fewer views than likes has no real views (a partial or stale platform figure) and counts as 'no real data' until it is fetched again. Nothing estimated enters the engagement rate, the CPM or the targets."}
         </TipBox>
 
         <H3>
@@ -534,8 +534,8 @@ export default function MethodologyPage() {
         </H3>
         <P>
           {es
-            ? "CPM (Coste por Mil impresiones) es la metrica universal para comparar precios. Divide lo que pagas entre las views esperadas (mediana) y multiplica por 1,000. Esto normaliza creadores de todos los tamanos."
-            : "CPM (Cost per Mille / thousand impressions) is the universal metric to compare pricing. Divide what you pay by the expected views (median) and multiply by 1,000. This normalizes creators of all sizes."}
+            ? "CPM (coste por mil vistas) es la metrica universal para comparar precios. Antes de contratar, divide lo que pagas entre las vistas esperadas (mediana del creador) y multiplica por 1.000; despues de la campana, TKOC Intelligence calcula el CPM real como coste ÷ vistas reales × 1.000, y solo lo publica con una muestra suficiente (al menos 3 publicaciones con vistas reales y 500 vistas). Esto normaliza creadores de todos los tamanos. No usamos impresiones: no las capturamos."
+            : "CPM (cost per thousand views) is the universal metric to compare pricing. Before hiring, divide what you pay by the expected views (the creator's median) and multiply by 1,000; after the campaign, TKOC Intelligence computes the real CPM as cost ÷ real views × 1,000 and only publishes it on a sufficient sample (at least 3 publications with real views and 500 views). This normalizes creators of all sizes. We do not use impressions: we do not capture them."}
         </P>
         <TipBox>
           {es
@@ -887,8 +887,8 @@ export default function MethodologyPage() {
         </H3>
         <P>
           {es
-            ? "EMV (Earned Media Value) estima cuanto habria costado obtener el mismo alcance/engagement a traves de publicidad pagada. Es una metrica de referencia, no de ROI real."
-            : "EMV (Earned Media Value) estimates how much it would have cost to achieve the same reach/engagement through paid advertising. It's a reference metric, not a real ROI metric."}
+            ? "EMV (Earned Media Value): lo que habria costado en medios pagados la audiencia y las interacciones conseguidas, a tarifas de mercado por plataforma y formato. Es una metrica de referencia, no de ROI real. El cliente ve un solo dato llamado EMV, con un '?' que lo explica; la palabra 'estimado' no aparece a su lado."
+            : "EMV (Earned Media Value): what the audience and interactions obtained would have cost as paid media, at market rates per platform and format. It is a reference metric, not real ROI. The client sees one figure named EMV with a '?' that explains it; the word 'estimated' never appears next to it."}
         </P>
         <BulletList
           items={
@@ -896,14 +896,16 @@ export default function MethodologyPage() {
               ? [
                   "EMV es util para: comparar campanas entre si, justificar inversion vs paid media, benchmarking.",
                   "EMV NO es: dinero real ganado, una garantia de ventas, ni un calculo exacto.",
-                  "TKOC Intelligence calcula EMV usando CPMs de referencia de paid media: Instagram EUR 8, TikTok EUR 6, YouTube EUR 12. Estos son CPMs de publicidad pagada, no de influencer marketing. Se usan como comparativa: si el EMV supera tu inversion, significa que el alcance organico del influencer te ha salido mas barato que comprarlo via ads.",
-                  "Un EMV Ratio (EMV/Inversion) de 2x o superior se considera buen resultado.",
+                  "Como lo calcula TKOC Intelligence (Ajustes → Benchmarks → Tasas EMV): audiencia real ÷ 1.000 × CPM del formato (Instagram: post 10 EUR, reel 14 EUR, story 8 EUR; TikTok video 8 EUR; YouTube video 15 EUR, short 8 EUR), mas cada interaccion valorada (like, comentario, compartido, guardado, con valores por plataforma) y los clics si los hay. Reels y videos usan sus vistas reales (y, si en Ajustes se fija un 'valor por vista', se valoran vistas × valor en lugar de vistas ÷ 1.000 × CPM); las stories, sin vistas publicas, se valoran con un porcentaje de los seguidores por tier (15/10/7/5/4 %) y un 15 % menos por cada story consecutiva.",
+                  "Esos CPM son la referencia de medios de pago en Espana multiplicada por una prima de creador (contenido nativo, confianza, permanencia): por eso el EMV vale mas que el mismo alcance en Meta Ads.",
+                  "Ratio EMV = EMV ÷ coste (fees acordados), mostrado como multiplicador (×2,4). Es interno: el cliente nunca lo ve y NUNCA se llama ROI; un ratio de 2x o superior se considera buen resultado.",
                 ]
               : [
                   "EMV is useful for: comparing campaigns, justifying investment vs paid media, benchmarking.",
                   "EMV is NOT: real money earned, a guarantee of sales, or an exact calculation.",
-                  "TKOC Intelligence calculates EMV using paid media reference CPMs: Instagram $8, TikTok $6, YouTube $12. These are paid advertising CPMs, not influencer marketing CPMs. They are used as a benchmark: if the EMV exceeds your investment, it means the influencer's organic reach cost you less than buying it through ads.",
-                  "An EMV Ratio (EMV/Investment) of 2x or higher is considered a good result.",
+                  "How TKOC Intelligence computes it (Settings → Benchmarks → EMV rates): real audience ÷ 1,000 × the format's CPM (Instagram: post EUR 10, reel EUR 14, story EUR 8; TikTok video EUR 8; YouTube video EUR 15, short EUR 8), plus every interaction valued (like, comment, share, save, per platform) and clicks when available. Reels and videos use their real views (and, when a 'value per view' is set in Settings, they are valued views × value instead of views ÷ 1,000 × CPM); stories, with no public views, are valued at a share of followers by tier (15/10/7/5/4 %) minus 15 % per consecutive story.",
+                  "Those CPMs are the Spanish paid-media reference multiplied by a creator premium (native content, trust, permanence): that is why the EMV is worth more than the same reach on Meta Ads.",
+                  "EMV ratio = EMV ÷ cost (agreed fees), shown as a multiplier (×2.4). Internal only: the client never sees it and it is NEVER called ROI; 2x or higher is considered a good result.",
                 ]
           }
         />
@@ -931,20 +933,20 @@ export default function MethodologyPage() {
           items={
             es
               ? [
-                  "Resumen ejecutivo: objetivo, inversion, resultado principal.",
-                  "KPIs vs objetivos: que se logro vs que se busco.",
-                  "Top performers: que creadores funcionaron mejor y por que.",
-                  "Metricas clave: views, engagement, CPM, EMV, EMV Ratio.",
-                  "Aprendizajes: que funciono, que no, y recomendaciones para la siguiente.",
-                  "Contenido destacado: los mejores posts/videos de la campana.",
+                  "Resumen ejecutivo: vistas reales, interacciones, tasa de engagement (sobre vistas), audiencia real, creadores, publicaciones y EMV. Solo datos reales; ninguna estimacion llega al cliente.",
+                  "Objetivos vs resultado: la tabla Objetivo · Resultado · Variacion de los objetivos numericos fijados al arrancar.",
+                  "Prometido vs entregado: creadores, piezas, fechas e identificacion legal (#publicidad). Cada fila sale al cliente solo cuando es cierta; la PM puede completarla desde Editar informe.",
+                  "Contenidos destacados y rendimiento por creador (vistas, interacciones, audiencia real, ER, seguidores). Coste, CPM y Ratio EMV son internos: nunca en el PDF ni en el portal.",
+                  "Que dijo la audiencia: comentarios destacados elegidos por la PM (y el reparto de sentimiento cuando hay al menos 20 comentarios analizados).",
+                  "Aprendizajes y proximos pasos: que funciono, que no, y que repetir. El PDF se genera en el servidor y es identico a lo que ves en pantalla, sin los bloques de solo agencia.",
                 ]
               : [
-                  "Executive summary: objective, investment, main result.",
-                  "KPIs vs goals: what was achieved vs what was targeted.",
-                  "Top performers: which creators performed best and why.",
-                  "Key metrics: views, engagement, CPM, EMV, EMV Ratio.",
-                  "Learnings: what worked, what didn't, and recommendations for next time.",
-                  "Highlighted content: best posts/videos from the campaign.",
+                  "Executive summary: real views, interactions, engagement rate (on views), real audience, creators, publications and EMV. Real data only; no estimate reaches the client.",
+                  "Targets vs results: the Target · Result · Variation table of the numeric targets set at kickoff.",
+                  "Promised vs delivered: creators, pieces, dates and legal disclosure (#ad). A row reaches the client only when it is true; the PM can complete it from Edit report.",
+                  "Highlighted content and performance per creator (views, interactions, real audience, ER, followers). Cost, CPM and EMV ratio are internal: never in the PDF or the portal.",
+                  "What the audience said: highlighted comments chosen by the PM (and the sentiment split when at least 20 comments were analysed).",
+                  "Learnings and next steps: what worked, what did not, what to repeat. The PDF is rendered on the server and is identical to the screen, without the agency-only blocks.",
                 ]
           }
         />
@@ -992,11 +994,11 @@ export default function MethodologyPage() {
           <MetricCard
             icon={DollarSign}
             name="CPM"
-            formula={es ? "CPM = (Coste / Impresiones) x 1,000" : "CPM = (Cost / Impressions) x 1,000"}
+            formula={es ? "CPM = (Coste / Vistas reales) x 1.000" : "CPM = (Cost / Real views) x 1,000"}
             description={
               es
-                ? "Coste por mil impresiones. La metrica estandar para comparar eficiencia de costes entre creadores y plataformas."
-                : "Cost per thousand impressions. The standard metric to compare cost efficiency across creators and platforms."
+                ? "Coste por mil vistas reales. La metrica estandar para comparar eficiencia de costes entre creadores y plataformas; interna, solo con muestra suficiente."
+                : "Cost per thousand real views. The standard metric to compare cost efficiency across creators and platforms; internal, only on a sufficient sample."
             }
             good={es ? "< 10 EUR (IG), < 8 EUR (TT)" : "< $10 (IG), < $8 (TT)"}
             bad={es ? "> 25 EUR" : "> $25"}
@@ -1034,8 +1036,8 @@ export default function MethodologyPage() {
                 ? "Earned Media Value. Valor estimado del alcance obtenido si se hubiera pagado como publicidad. Metrica de referencia, no de ROI."
                 : "Earned Media Value. Estimated value of reach obtained if it had been paid for as advertising. Reference metric, not ROI."
             }
-            good={es ? "EMV Ratio > 2x" : "EMV Ratio > 2x"}
-            bad={es ? "EMV Ratio < 1x" : "EMV Ratio < 1x"}
+            good={es ? "Ratio EMV > 2x" : "EMV ratio > 2x"}
+            bad={es ? "Ratio EMV < 1x" : "EMV ratio < 1x"}
           />
           <MetricCard
             icon={TrendingUp}
@@ -1051,12 +1053,12 @@ export default function MethodologyPage() {
           />
           <MetricCard
             icon={BarChart3}
-            name={es ? "EMV Ratio" : "EMV Ratio"}
-            formula={es ? "EMV Ratio = EMV / Inversion total" : "EMV Ratio = EMV / Total Investment"}
+            name={es ? "Ratio EMV" : "EMV ratio"}
+            formula={es ? "Ratio EMV = EMV / Coste (fees acordados)" : "EMV ratio = EMV / Cost (agreed fees)"}
             description={
               es
-                ? "Cuantos euros de valor mediatico obtienes por cada euro invertido. El KPI principal para evaluar eficiencia de una campana."
-                : "How many dollars of media value you get for every dollar invested. The primary KPI to evaluate campaign efficiency."
+                ? "Euros de EMV por cada euro invertido (fees acordados). KPI interno de eficiencia: el cliente nunca lo ve y nunca se llama ROI."
+                : "Euros of equivalent media value per euro invested (agreed fees). Internal efficiency KPI, never shown to the client and never called ROI."
             }
             good="> 2x"
             bad="< 1x"

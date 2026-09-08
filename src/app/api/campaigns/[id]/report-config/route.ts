@@ -2,12 +2,16 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { resolveBrandScope } from '@/lib/brand-scope'
+import { computeCampaignOverview } from '@/lib/campaign-overview'
 import {
+  deliveryComputedState,
+  deliveryNeedsComputedState,
   loadReportConfig,
   saveReportConfig,
   markReportSent,
   validateReportConfigPatch,
   reportConfigForBrand,
+  defaultReportDelivery,
   type ReportConfigPatch,
 } from '@/lib/report-config'
 
@@ -20,9 +24,11 @@ import {
  * PUT  — ADMIN / EMPLOYEE only.
  *        { title?, subtitle?, intro?, conclusions?, hiddenSections?,
  *          hiddenColumns?, hiddenMediaIds?, hiddenInfluencerIds?,
- *          highlightedComments? }
+ *          highlightedComments?, delivery? }
  *        saves a partial patch (strings ≤ 2000 chars, arrays ≤ 200 strings,
- *        ≤ 12 highlighted comments of ≤ 300 chars), or
+ *        ≤ 12 highlighted comments of ≤ 300 chars; delivery = the PM's
+ *        "Prometido vs entregado" edits { overrides, extraRows } — replaced
+ *        as a whole, `null` resets every row to Automático), or
  *        { markSent: true, note? } appends a sentVersions entry.
  * POST — ADMIN / EMPLOYEE only. { note? } — same as PUT { markSent: true }.
  *
@@ -59,7 +65,14 @@ export async function GET(
         return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
       }
       const config = await loadReportConfig(id)
-      return NextResponse.json({ config: reportConfigForBrand(config) })
+      // Same projection as GET /api/portal/campaigns/[id]/report-config: an
+      // Automático override travels only when the SYSTEM state of its row is ok.
+      const overview = deliveryNeedsComputedState(config.delivery)
+        ? await computeCampaignOverview(id, {
+            exclude: { mediaIds: config.hiddenMediaIds, influencerIds: config.hiddenInfluencerIds },
+          })
+        : null
+      return NextResponse.json({ config: reportConfigForBrand(config, deliveryComputedState(overview?.delivery)) })
     }
 
     if (!STAFF_ROLES.includes(session.role)) {
@@ -138,6 +151,12 @@ export async function PUT(
     // normalizeReportConfig trims, caps and de-duplicates ids on save.
     if (b.highlightedComments !== undefined) {
       patch.highlightedComments = (b.highlightedComments === null ? [] : b.highlightedComments) as ReportConfigPatch['highlightedComments']
+    }
+    // "Prometido vs entregado": validated above (known row keys, integer counts
+    // 0–1,000,000, ≤ 4 extra rows); null resets to Automático. normalizeReportConfig
+    // trims, caps and de-duplicates ids on save.
+    if (b.delivery !== undefined) {
+      patch.delivery = (b.delivery === null ? defaultReportDelivery() : b.delivery) as ReportConfigPatch['delivery']
     }
 
     const config = await saveReportConfig(id, patch, actorLabel(session))

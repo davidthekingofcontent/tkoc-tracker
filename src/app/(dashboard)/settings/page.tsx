@@ -307,6 +307,8 @@ export default function SettingsPage() {
     storySequenceDecay?: number
     /** Alcance estimado de publicaciones sin datos reales (% de seguidores por tier). */
     postReachRates?: Record<string, number>
+    /** € por vista real de vídeo (0 = usar el CPM). */
+    viewValues?: Record<string, Record<string, number>>
   }
   const [benchmarkFeeRanges, setBenchmarkFeeRanges] = useState<FeeRangesData | null>(null)
   const [benchmarkCpmRates, setBenchmarkCpmRates] = useState<CpmThreshold[] | null>(null)
@@ -661,6 +663,17 @@ export default function SettingsPage() {
           ...prev.cpmRates,
           [platform]: { ...prev.cpmRates[platform], [format]: value },
         },
+      }
+    })
+  }
+
+  function updateEmvViewValue(platform: string, format: string, value: number) {
+    setBenchmarkEmvRates(prev => {
+      if (!prev) return prev
+      const current = prev.viewValues || { INSTAGRAM: { reel: 0 }, TIKTOK: { video: 0 }, YOUTUBE: { video: 0, short: 0 } }
+      return {
+        ...prev,
+        viewValues: { ...current, [platform]: { ...(current[platform] || {}), [format]: value } },
       }
     })
   }
@@ -2454,6 +2467,48 @@ export default function SettingsPage() {
                                 </td>
                               ))}
                             </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Valor por vista (vídeo) — David 2026-09-08 */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                        {locale === 'es' ? 'Valor por vista (reels y vídeos)' : 'Value per view (reels and videos)'}
+                      </h4>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                        {locale === 'es'
+                          ? 'Euros por cada vista real de un reel o vídeo. Con 0 se usa el CPM de arriba (vistas ÷ 1.000 × CPM). Si fijas un valor, cada reel o vídeo con vistas reales se valora vistas × valor; las interacciones se suman igual. Referencia: 14 € de CPM equivalen a 0,014 € por vista.'
+                          : 'Euros per real view of a reel or video. With 0 the CPM above is used (views ÷ 1,000 × CPM). When set, every reel or video with real views is valued views × value; interactions are added as before. Reference: a 14 € CPM equals 0.014 € per view.'}
+                      </p>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-gray-200 dark:border-gray-700">
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.platform}</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{t.settings.format}</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{locale === 'es' ? '€ por vista' : '€ per view'}</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                            {([['INSTAGRAM', 'reel'], ['TIKTOK', 'video'], ['YOUTUBE', 'video'], ['YOUTUBE', 'short']] as const).map(([platform, format]) => (
+                              <tr key={`vv-${platform}-${format}`} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                <td className="px-3 py-1.5 font-medium text-gray-900 dark:text-white">{platform}</td>
+                                <td className="px-3 py-1.5 text-gray-600 dark:text-gray-300">{format}</td>
+                                <td className="px-3 py-1.5">
+                                  <Input
+                                    type="number"
+                                    step="0.005"
+                                    min="0"
+                                    max="5"
+                                    value={benchmarkEmvRates.viewValues?.[platform]?.[format] ?? 0}
+                                    onChange={e => updateEmvViewValue(platform, format, Number(e.target.value))}
+                                    className="w-28 h-8 text-sm"
+                                  />
+                                </td>
+                              </tr>
+                            ))}
                           </tbody>
                         </table>
                       </div>

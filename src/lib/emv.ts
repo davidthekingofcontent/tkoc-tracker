@@ -57,6 +57,18 @@ export interface EmvRates {
     YOUTUBE: { video: number; short: number }
   }
   cpc: number
+  /**
+   * Value of ONE real view of a video piece (reel / TikTok / YouTube), in €.
+   * 0 = off: the piece is valued as views ÷ 1.000 × CPM like everything else.
+   * When set, reels and videos with plausible real views are valued
+   * views × viewValue instead (David 2026-09-08: "las vistas hay que valorarlas
+   * alto"); interactions are added on top exactly as before.
+   */
+  viewValues: {
+    INSTAGRAM: { reel: number }
+    TIKTOK: { video: number }
+    YOUTUBE: { video: number; short: number }
+  }
   engagementValues: {
     INSTAGRAM: { like: number; comment: number; share: number; save: number }
     TIKTOK: { like: number; comment: number; share: number; save: number }
@@ -89,6 +101,11 @@ export const DEFAULT_EMV_RATES: EmvRates = {
     YOUTUBE: { video: 15.0, short: 8.0 },
   },
   cpc: 0.5,
+  viewValues: {
+    INSTAGRAM: { reel: 0 },
+    TIKTOK: { video: 0 },
+    YOUTUBE: { video: 0, short: 0 },
+  },
   engagementValues: {
     INSTAGRAM: { like: 0.10, comment: 0.80, share: 1.50, save: 1.20 },
     TIKTOK: { like: 0.06, comment: 0.60, share: 1.20, save: 0.90 },
@@ -120,6 +137,15 @@ export function mergeEmvRates(partial: unknown): EmvRates {
   const eng = (p.engagementValues || {}) as Partial<EmvRates['engagementValues']>
   const reach = (p.storyReachRates || {}) as Partial<Record<FollowerTier, number>>
   const postReach = (p.postReachRates || {}) as Partial<Record<FollowerTier, number>>
+  const vv = (p.viewValues || {}) as Partial<Record<PlatformKey, Record<string, unknown>>>
+  const validViewValues = <T extends Record<string, number>>(defaults: T, src: Record<string, unknown> | undefined): T => {
+    const out = { ...defaults }
+    for (const k of Object.keys(defaults)) {
+      const v = src?.[k]
+      if (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 5) (out as Record<string, number>)[k] = v
+    }
+    return out
+  }
   const validRates = (src: Partial<Record<FollowerTier, number>>): Partial<Record<FollowerTier, number>> => {
     const out: Partial<Record<FollowerTier, number>> = {}
     for (const [k, v] of Object.entries(src)) {
@@ -134,6 +160,11 @@ export function mergeEmvRates(partial: unknown): EmvRates {
       YOUTUBE: { ...DEFAULT_EMV_RATES.cpmRates.YOUTUBE, ...(cpm.YOUTUBE || {}) },
     },
     cpc: typeof p.cpc === 'number' ? p.cpc : DEFAULT_EMV_RATES.cpc,
+    viewValues: {
+      INSTAGRAM: validViewValues(DEFAULT_EMV_RATES.viewValues.INSTAGRAM, vv.INSTAGRAM),
+      TIKTOK: validViewValues(DEFAULT_EMV_RATES.viewValues.TIKTOK, vv.TIKTOK),
+      YOUTUBE: validViewValues(DEFAULT_EMV_RATES.viewValues.YOUTUBE, vv.YOUTUBE),
+    },
     engagementValues: {
       INSTAGRAM: { ...DEFAULT_EMV_RATES.engagementValues.INSTAGRAM, ...(eng.INSTAGRAM || {}) },
       TIKTOK: { ...DEFAULT_EMV_RATES.engagementValues.TIKTOK, ...(eng.TIKTOK || {}) },
@@ -156,6 +187,16 @@ function platformKeyOf(platform: string): PlatformKey {
 }
 
 /** CPM for a platform + content type. */
+/** € per real view of a video piece, or 0 when the lever is off / the piece is not a video. */
+export function viewValueFor(platform: string, mediaType: MediaKind | null | undefined, rates: EmvRates = DEFAULT_EMV_RATES): number {
+  const key = platformKeyOf(platform)
+  const type = (mediaType || '').toUpperCase()
+  const vv = rates.viewValues ?? DEFAULT_EMV_RATES.viewValues
+  if (key === 'TIKTOK') return type === 'VIDEO' || type === 'REEL' ? vv.TIKTOK.video : 0
+  if (key === 'YOUTUBE') return type === 'SHORT' ? vv.YOUTUBE.short : type === 'VIDEO' ? vv.YOUTUBE.video : 0
+  return type === 'REEL' || type === 'VIDEO' ? vv.INSTAGRAM.reel : 0
+}
+
 export function cpmFor(platform: string, mediaType: MediaKind | null | undefined, rates: EmvRates = DEFAULT_EMV_RATES): number {
   const key = platformKeyOf(platform)
   const type = (mediaType || '').toUpperCase()
@@ -170,8 +211,10 @@ export function calculateEMV(input: EMVInput, rates: EmvRates = DEFAULT_EMV_RATE
   const platformKey = platformKeyOf(input.platform)
   const isStory = (input.mediaType || '').toUpperCase() === 'STORY'
 
-  // Real data first: impressions > reach > views
-  const realViews = input.impressions || input.reach || input.views || 0
+  // Real data first: impressions > reach > views. Views below the piece's likes
+  // are a partial/stale platform figure, not real data (same rule as metrics.ts).
+  const plausibleViews = (input.views || 0) > 0 && (input.views || 0) >= (input.likes || 0) ? (input.views as number) : 0
+  const realViews = input.impressions || input.reach || plausibleViews || 0
 
   // Stories: no public view counts → estimate from followers (tier rate or the
   // creator's own real rate), decaying along a consecutive sequence.
@@ -189,8 +232,12 @@ export function calculateEMV(input: EMVInput, rates: EmvRates = DEFAULT_EMV_RATE
 
   const cpmRate = cpmFor(input.platform, input.mediaType, rates)
 
-  // 1. Reach component: (audience / 1000) × CPM
-  const reachComponent = (audience / 1000) * cpmRate
+  // 1. Audience component: (audience / 1000) × CPM — or, for a video with real
+  //    views and the "valor por vista" lever on, views × value per view.
+  const viewValue = viewValueFor(input.platform, input.mediaType, rates)
+  const reachComponent = viewValue > 0 && plausibleViews > 0
+    ? plausibleViews * viewValue
+    : (audience / 1000) * cpmRate
 
   // 2. Clicks component: clicks × CPC
   const clicksComponent = input.clicks * rates.cpc

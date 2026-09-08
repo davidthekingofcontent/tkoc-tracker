@@ -4,7 +4,7 @@ import { getSession } from '@/lib/auth'
 import { resolveBrandScope, sanitizeCampaignForBrand } from '@/lib/brand-scope'
 import { computeCampaignOverview, stripEconomics } from '@/lib/campaign-overview'
 import { buildCampaignLearnings, toClientLearnings } from '@/lib/campaign-learnings'
-import { loadReportConfig, reportConfigForBrand } from '@/lib/report-config'
+import { deliveryComputedState, loadReportConfig, reportConfigForBrand } from '@/lib/report-config'
 import type { AudienceTotals, CampaignOverview } from '@/lib/metrics'
 
 // Brands are not a Prisma model: Setting 'campaign_brand_{campaignId}' holds
@@ -398,8 +398,10 @@ export async function GET(
       learnings,
       // Sentiment counts of the captured comments (report: "Qué dijo la audiencia")
       sentiment,
-      // Client-safe projection of the agency's report configuration (texts, hidden sections/columns)
-      reportConfig: reportConfigForBrand(reportConfig),
+      // Client-safe projection of the agency's report configuration (texts, hidden
+      // sections/columns). The system state of the checklist decides which
+      // Automático overrides may travel (see deliveryForBrand).
+      reportConfig: reportConfigForBrand(reportConfig, deliveryComputedState(fullOverview.delivery)),
     }))
   } catch (error) {
     console.error('Portal campaign error:', error)
