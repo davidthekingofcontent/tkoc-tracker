@@ -927,6 +927,15 @@ export default function CampaignDetailPage() {
   const [shippingModal, setShippingModal] = useState<string | null>(null) // influencerId
   const [shippingForm, setShippingForm] = useState<Record<string, string>>({})
   const [isSavingShipping, setIsSavingShipping] = useState(false)
+  // Address prefilled from Contacts (David 2026-09-08): { updatedAt, source } when
+  // the modal was opened for a member without a shipping address and Contacts had one.
+  const [shippingPrefill, setShippingPrefill] = useState<{ updatedAt: string | null; source: string | null } | null>(null)
+  // Mirrors of the modal state for the async Contacts prefill: the fetch callback
+  // must know which member the modal shows NOW and whether the PM already typed.
+  const shippingModalRef = useRef<string | null>(null)
+  const shippingFormRef = useRef<Record<string, string>>({})
+  useEffect(() => { shippingModalRef.current = shippingModal }, [shippingModal])
+  useEffect(() => { shippingFormRef.current = shippingForm }, [shippingForm])
 
   // "Exportar" menu in the header (CSV / JSON built on the same overview as this page)
   const [showExportMenu, setShowExportMenu] = useState(false)
@@ -1977,7 +1986,7 @@ export default function CampaignDetailPage() {
   }
 
   function openShippingModal(ci: CampaignInfluencer) {
-    setShippingForm({
+    const form: Record<string, string> = {
       shippingName: ci.shippingName || ci.influencer.displayName || ci.influencer.username || '',
       shippingAddress1: ci.shippingAddress1 || '',
       shippingAddress2: ci.shippingAddress2 || '',
@@ -1989,8 +1998,44 @@ export default function CampaignDetailPage() {
       shippingProduct: ci.shippingProduct || '',
       shippingQty: ci.shippingQty?.toString() || '1',
       shippingComments: ci.shippingComments || '',
-    })
+    }
+    setShippingForm(form)
+    shippingFormRef.current = form
+    setShippingPrefill(null)
     setShippingModal(ci.influencer.id)
+    shippingModalRef.current = ci.influencer.id
+
+    // No address typed for this campaign yet → offer the one saved in Contacts
+    // (from a previous campaign). The PM can still edit before saving.
+    if (!ci.shippingAddress1 || !ci.shippingAddress1.trim()) {
+      const influencerId = ci.influencer.id
+      fetch(`/api/contacts/address?influencerId=${encodeURIComponent(influencerId)}`)
+        .then(r => (r.ok ? r.json() : null))
+        .then((data: { address?: Record<string, string | null> | null; updatedAt?: string | null; source?: string | null } | null) => {
+          const a = data?.address
+          if (!a || !a.address1) return
+          // The PM may have closed the modal, switched member or started typing
+          // meanwhile: never write one creator's address into another's form, and
+          // only show the "saved in Contacts" line when the address was applied.
+          if (shippingModalRef.current !== influencerId || shippingFormRef.current.shippingAddress1) return
+          setShippingForm(prev => {
+            if (prev.shippingAddress1) return prev
+            return {
+              ...prev,
+              shippingName: a.name || prev.shippingName || '',
+              shippingAddress1: a.address1 || '',
+              shippingAddress2: a.address2 || '',
+              shippingCity: a.city || '',
+              shippingPostCode: a.postCode || '',
+              shippingCountry: a.country || '',
+              shippingPhone: a.phone || prev.shippingPhone || '',
+              shippingEmail: a.email || prev.shippingEmail || '',
+            }
+          })
+          setShippingPrefill({ updatedAt: data?.updatedAt ?? null, source: data?.source ?? null })
+        })
+        .catch(() => {})
+    }
   }
 
   function openTemplateModal() {
@@ -6750,6 +6795,17 @@ export default function CampaignDetailPage() {
                 ? 'Rellena los datos necesarios para el envío. No todos los campos son obligatorios.'
                 : 'Fill in the data needed for shipping. Not all fields are required.'}
             </p>
+            {shippingPrefill && (
+              <p className="mb-4 text-xs text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-3 py-2">
+                {t.contacts.addressSavedOn.replace(
+                  '{date}',
+                  shippingPrefill.updatedAt
+                    ? new Date(shippingPrefill.updatedAt).toLocaleDateString(locale === 'es' ? 'es-ES' : 'en-GB', { day: 'numeric', month: 'numeric', year: 'numeric', timeZone: 'Europe/Madrid' })
+                    : '—'
+                )}
+                {shippingPrefill.source === 'manual' ? ` (${t.contacts.addressSourceManual})` : ''}
+              </p>
+            )}
             <div className="space-y-3">
               {[
                 { key: 'shippingName', label: locale === 'es' ? 'Nombre destinatario' : 'Recipient Name', placeholder: 'Carmen Otero' },

@@ -492,6 +492,19 @@ model Contact {
   notes         String?
   tags          String[]
 
+  // Postal address (David 2026-09-08): once a shipping address is typed for a
+  // campaign member it is copied here so the next campaign can reuse it.
+  addressName      String?
+  address1         String?
+  address2         String?
+  city             String?
+  postCode         String?
+  country          String?
+  phone            String?
+  email            String?
+  addressUpdatedAt DateTime?
+  addressSource    String?   // 'shipping' | 'manual'
+
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

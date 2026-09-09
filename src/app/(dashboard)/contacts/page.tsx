@@ -3,18 +3,21 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
   Search,
-  Plus,
-  MoreHorizontal,
   Instagram,
   Youtube,
   Loader2,
   Users,
+  MapPin,
+  Pencil,
+  Save,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
 import { StatCard } from '@/components/ui/stat-card'
+import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
+import { useRole } from '@/hooks/use-role'
 import {
   Table,
   TableHeader,
@@ -31,6 +34,17 @@ interface ContactData {
   status: string
   notes: string | null
   createdAt: string
+  // Postal address (David 2026-09-08) — copied from the shipping modal or edited here
+  addressName: string | null
+  address1: string | null
+  address2: string | null
+  city: string | null
+  postCode: string | null
+  country: string | null
+  phone: string | null
+  email: string | null
+  addressUpdatedAt: string | null
+  addressSource: string | null
   influencer: {
     id: string
     username: string
@@ -62,6 +76,37 @@ const platformBadge = (platform: string) => {
   }
 }
 
+type AddressField = 'addressName' | 'address1' | 'address2' | 'city' | 'postCode' | 'country' | 'phone' | 'email'
+type AddressForm = Record<AddressField, string>
+
+function addressFormFrom(c: ContactData): AddressForm {
+  return {
+    addressName: c.addressName || '',
+    address1: c.address1 || '',
+    address2: c.address2 || '',
+    city: c.city || '',
+    postCode: c.postCode || '',
+    country: c.country || '',
+    phone: c.phone || '',
+    email: c.email || '',
+  }
+}
+
+/** Full postal address on one line, for the hover title. */
+function fullAddress(c: ContactData): string {
+  return [
+    c.addressName,
+    c.address1,
+    c.address2,
+    [c.postCode, c.city].filter(Boolean).join(' '),
+    c.country,
+    c.phone,
+    c.email,
+  ]
+    .filter((x) => x && x.trim())
+    .join(' · ')
+}
+
 function getContactValue(obj: ContactData, field: string): number {
   switch (field) {
     case 'followers': return obj.influencer.followers || 0
@@ -77,6 +122,61 @@ export default function ContactsPage() {
   const [search, setSearch] = useState('')
   const [sortField, setSortField] = useState<string>('followers')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const { canEdit } = useRole()
+
+  // Address editing (David 2026-09-08)
+  const [editing, setEditing] = useState<ContactData | null>(null)
+  const [addressForm, setAddressForm] = useState<AddressForm | null>(null)
+  const [isSavingAddress, setIsSavingAddress] = useState(false)
+  const [addressError, setAddressError] = useState<string | null>(null)
+
+  function openAddressEditor(c: ContactData) {
+    setEditing(c)
+    setAddressForm(addressFormFrom(c))
+    setAddressError(null)
+  }
+
+  function closeAddressEditor() {
+    setEditing(null)
+    setAddressForm(null)
+    setAddressError(null)
+  }
+
+  async function saveAddress() {
+    if (!editing || !addressForm) return
+    // The server treats an empty street as "clear the whole address": never let
+    // typed lines vanish silently. Emptying every field is the way to remove it.
+    const otherLinesTyped = (Object.keys(addressForm) as AddressField[]).some(
+      (key) => key !== 'address1' && addressForm[key].trim()
+    )
+    if (!addressForm.address1.trim() && otherLinesTyped) {
+      setAddressError(t.contacts.addressStreetRequired)
+      return
+    }
+    setIsSavingAddress(true)
+    setAddressError(null)
+    try {
+      const res = await fetch('/api/contacts', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: editing.id, ...addressForm }),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok) {
+        setAddressError(data?.error || t.contacts.addressSaveError)
+        return
+      }
+      const updated = data?.contact as ContactData | undefined
+      if (updated) {
+        setContacts((prev) => prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c)))
+      }
+      closeAddressEditor()
+    } catch {
+      setAddressError(t.contacts.addressSaveError)
+    } finally {
+      setIsSavingAddress(false)
+    }
+  }
 
   function toggleSort(field: string) {
     if (sortField === field) {
@@ -185,6 +285,7 @@ export default function ContactsPage() {
                 <TableHead><SortHeader label={t.campaigns.engagement} field="engagementRate" /></TableHead>
                 <TableHead>{t.common.email}</TableHead>
                 <TableHead>{t.contacts.phone}</TableHead>
+                <TableHead>{t.contacts.address}</TableHead>
                 <TableHead>{t.common.status}</TableHead>
                 <TableHead>{t.contacts.added}</TableHead>
               </TableRow>
@@ -192,7 +293,7 @@ export default function ContactsPage() {
             <TableBody>
               {sortedFiltered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-12 text-center text-gray-500">
+                  <TableCell colSpan={9} className="py-12 text-center text-gray-500">
                     {contacts.length === 0
                       ? t.contacts.noContactsDesc
                       : t.common.noResults}
@@ -227,6 +328,31 @@ export default function ContactsPage() {
                       <span className="text-xs text-gray-400">{contact.influencer.phone || '—'}</span>
                     </TableCell>
                     <TableCell>
+                      <div className="flex items-center gap-1.5" title={contact.address1 ? fullAddress(contact) : undefined}>
+                        {contact.address1 ? (
+                          <>
+                            <MapPin className="h-3.5 w-3.5 shrink-0 text-purple-500" />
+                            <span className="text-xs text-gray-700 dark:text-gray-300 max-w-[12rem] truncate">
+                              {[contact.city, contact.country].filter(Boolean).join(' · ') || contact.address1}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-xs text-gray-400">{t.contacts.noAddress}</span>
+                        )}
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={() => openAddressEditor(contact)}
+                            className="ml-1 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-purple-600 dark:hover:bg-gray-700"
+                            title={t.contacts.editAddress}
+                            aria-label={t.contacts.editAddress}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
                       <Badge variant={contact.status === 'new' ? 'default' : contact.status === 'contacted' ? 'active' : 'paused'}>
                         {contact.status}
                       </Badge>
@@ -239,6 +365,61 @@ export default function ContactsPage() {
           </Table>
         </div>
       )}
+
+      {/* Address editor */}
+      <Modal open={!!editing && !!addressForm} onClose={closeAddressEditor}>
+        <ModalHeader onClose={closeAddressEditor}>
+          <span className="flex items-center gap-2">
+            <MapPin className="h-5 w-5 text-purple-600" />
+            {t.contacts.editAddress}
+            {editing && <span className="text-sm font-normal text-gray-500">@{editing.influencer.username}</span>}
+          </span>
+        </ModalHeader>
+        <ModalBody>
+          {editing?.addressUpdatedAt && (
+            <p className="mb-3 text-xs text-gray-500">
+              {t.contacts.addressSavedOn.replace('{date}', formatDate(editing.addressUpdatedAt, { locale }))}
+              {editing.addressSource === 'shipping' ? ` (${t.contacts.addressSourceShipping})` : ''}
+              {editing.addressSource === 'manual' ? ` (${t.contacts.addressSourceManual})` : ''}
+            </p>
+          )}
+          {addressForm && (
+            <div className="space-y-3">
+              {(
+                [
+                  ['addressName', t.contacts.addressName],
+                  ['address1', t.contacts.address1],
+                  ['address2', t.contacts.address2],
+                  ['city', t.contacts.city],
+                  ['postCode', t.contacts.postCode],
+                  ['country', t.contacts.country],
+                  ['phone', t.contacts.addressPhone],
+                  ['email', t.contacts.addressEmail],
+                ] as [AddressField, string][]
+              ).map(([key, label]) => (
+                <div key={key}>
+                  <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">{label}</label>
+                  <input
+                    type={key === 'email' ? 'email' : 'text'}
+                    value={addressForm[key]}
+                    maxLength={key === 'phone' ? 40 : 200}
+                    onChange={(e) => setAddressForm((prev) => (prev ? { ...prev, [key]: e.target.value } : prev))}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                  />
+                </div>
+              ))}
+              {addressError && <p className="text-xs text-red-600">{addressError}</p>}
+            </div>
+          )}
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="ghost" onClick={closeAddressEditor}>{t.common.cancel}</Button>
+          <Button variant="primary" onClick={saveAddress} disabled={isSavingAddress}>
+            {isSavingAddress ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            {t.common.save}
+          </Button>
+        </ModalFooter>
+      </Modal>
     </div>
   )
 }

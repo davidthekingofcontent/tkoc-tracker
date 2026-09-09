@@ -287,12 +287,13 @@ export async function GET(
     let learnings: CampaignLearnings | undefined
     let learningsClient: CampaignLearnings | undefined
     if (reportView && learningsRows) {
+      const learningsLocale = request.nextUrl.searchParams.get('locale') === 'en' ? 'en' : 'es'
       const full = buildCampaignLearnings({
         overview: fullOverview,
         campaignName: campaign.name,
         objective: campaign.objective,
         media: learningsRows,
-        locale: 'es',
+        locale: learningsLocale,
       })
       learningsClient = toClientLearnings(full)
       learnings = isBrand ? learningsClient : full

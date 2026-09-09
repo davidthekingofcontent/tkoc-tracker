@@ -2,13 +2,19 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
-import { Loader2, TrendingUp, Zap, Target, AlertTriangle, ChevronRight, Repeat, XCircle } from 'lucide-react'
+import { Loader2, TrendingUp, Zap, Target, AlertTriangle, ChevronRight, Repeat, XCircle, HelpCircle } from 'lucide-react'
 import { useI18n } from '@/i18n/context'
 import { formatRatio } from '@/lib/utils'
 
 /**
  * Campaign Playbook™ Panel — Post-campaign intelligence.
  * Shows actionable insights about what to do NEXT.
+ *
+ * Every figure and verdict is generated server-side from the campaign overview
+ * (POST /api/intelligence { type: 'playbook' } → buildPlaybookInput →
+ * generatePlaybook), the same projection the report's "Aprendizajes" uses. A
+ * brand session receives the client audience (no grade, ratio, budget, skip
+ * list), so those blocks hide themselves when empty.
  *
  * i18n: the panel chrome comes from `t.playbook.*`; the generated texts
  * (verdict, insights, reasons, advice) are localized server-side, so the
@@ -18,8 +24,8 @@ import { formatRatio } from '@/lib/utils'
 
 interface PlaybookData {
   campaignGrade: string
-  roiRatio: number            // EMV ratio (EMV / spend) — never presented as ROI
-  roiVerdict: string
+  roiRatio: number | null     // EMV ratio (EMV / spend), never presented as ROI; null without cost or content
+  roiVerdict: string          // '' for a brand (client audience)
   insights: Array<{
     type: 'success' | 'warning' | 'action' | 'insight' | 'info'
     icon: string
@@ -29,6 +35,8 @@ interface PlaybookData {
   worstPerformer: { username: string; reason: string } | null
   repeatList: string[]
   skipList: string[]
+  /** Creators with content but no real views to judge them. */
+  noDataList?: string[]
   bestFormat: { format: string; formatLabel: string; reason: string } | null
   worstFormat: { format: string; formatLabel: string; reason: string } | null
   budgetAdvice: string
@@ -114,20 +122,23 @@ export function CampaignPlaybookPanel({ campaignId }: CampaignPlaybookPanelProps
 
   return (
     <div className="space-y-6">
-      {/* Header: Grade + EMV ratio */}
-      <div className="flex items-center gap-6">
-        <div className="flex items-center gap-3">
-          <div className={`flex h-16 w-16 items-center justify-center rounded-2xl text-2xl font-black ${GRADE_COLORS[data.campaignGrade] || GRADE_COLORS['C']}`}>
-            {data.campaignGrade}
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-gray-900 dark:text-white">{tp.campaignGrade}</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              {data.roiVerdict} ({tp.emvRatio} {formatRatio(data.roiRatio, { locale })})
-            </p>
+      {/* Header: Grade + EMV ratio (agency only; the ratio is hidden when there is none to show) */}
+      {data.roiVerdict && (
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-3">
+            <div className={`flex h-16 w-16 items-center justify-center rounded-2xl text-2xl font-black ${GRADE_COLORS[data.campaignGrade] || 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`}>
+              {data.campaignGrade}
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-gray-900 dark:text-white">{tp.campaignGrade}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                {data.roiVerdict}
+                {data.roiRatio !== null && ` (${tp.emvRatio} ${formatRatio(data.roiRatio, { locale })})`}
+              </p>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Key Insights */}
       {data.insights.length > 0 && (
@@ -213,6 +224,27 @@ export function CampaignPlaybookPanel({ campaignId }: CampaignPlaybookPanelProps
         </Card>
       </div>
 
+      {/* Creators the data cannot judge yet ("sin dato real") */}
+      {(data.noDataList?.length ?? 0) > 0 && (
+        <Card variant="elevated">
+          <CardContent>
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-2">
+              <HelpCircle className="h-4 w-4 text-gray-400" />
+              {tp.noRealData}
+            </h4>
+            <div className="flex flex-wrap gap-2">
+              {(data.noDataList ?? []).map(username => (
+                <span key={username} className="inline-flex items-center gap-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300">
+                  <span className="h-2 w-2 rounded-full bg-gray-400" />
+                  @{username}
+                </span>
+              ))}
+            </div>
+            <p className="mt-2 text-[11px] text-gray-400">{tp.noRealDataHint}</p>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Format Analysis */}
       {data.bestFormat && (
         <Card variant="elevated">
@@ -241,17 +273,19 @@ export function CampaignPlaybookPanel({ campaignId }: CampaignPlaybookPanelProps
         </Card>
       )}
 
-      {/* Budget & Next Campaign */}
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Card variant="elevated">
-          <CardContent>
-            <h4 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-2">
-              <TrendingUp className="h-4 w-4 text-purple-600" />
-              {tp.budgetAdvice}
-            </h4>
-            <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">{data.budgetAdvice}</p>
-          </CardContent>
-        </Card>
+      {/* Budget (agency only) & Next Campaign */}
+      <div className={`grid gap-4 ${data.budgetAdvice ? 'sm:grid-cols-2' : ''}`}>
+        {data.budgetAdvice && (
+          <Card variant="elevated">
+            <CardContent>
+              <h4 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-2">
+                <TrendingUp className="h-4 w-4 text-purple-600" />
+                {tp.budgetAdvice}
+              </h4>
+              <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">{data.budgetAdvice}</p>
+            </CardContent>
+          </Card>
+        )}
 
         <Card variant="elevated">
           <CardContent>

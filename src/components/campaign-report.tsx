@@ -1713,7 +1713,7 @@ export function CampaignReport({
       try {
         // The API caps mediaLimit at 100, so paginate the media list until
         // exhausted. The overview (over ALL media) travels with page 0.
-        const viewParam = isPortal ? '' : '&view=report'
+        const viewParam = isPortal ? '' : `&view=report&locale=${locale}`
         let base: ReportCampaign | null = null
         let firstOverview: ReportOverview | null = null
         let firstLearnings: ReportLearnings | null = null

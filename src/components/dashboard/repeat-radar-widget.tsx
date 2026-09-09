@@ -32,8 +32,9 @@ interface RepeatResult {
   totalSpent: number
   totalEMV: number
   /** Ratio EMV = EMV ÷ spent. The API field keeps its historical name. */
-  roiRatio: number
-  avgCPM: number
+  /** Ratio EMV; null without cost (never 0 standing for "unknown"). */
+  roiRatio: number | null
+  avgCPM: number | null
   deliveryRate: number
   totalMedia: number
 }
@@ -92,6 +93,26 @@ const REASON_TEXT: Record<string, { es: string; en: string }> = {
     es: 'Sin historial de campañas: no se puede evaluar. Considerar para una primera colaboración.',
     en: 'No campaign history — cannot evaluate. Consider for a first collaboration.',
   },
+  repeat_no_content: {
+    es: 'Sin publicaciones registradas todavía: no se puede evaluar.',
+    en: 'No publications tracked yet: cannot evaluate.',
+  },
+  repeat_no_real_data: {
+    es: 'Sin vistas reales en sus publicaciones: no se puede evaluar. Pide sus estadísticas.',
+    en: 'No real views on the publications: cannot evaluate. Ask for their insights.',
+  },
+  repeat_strong_no_cost: {
+    es: 'Engagement fuerte sobre vistas reales en sus campañas. Sin coste registrado para valorar la eficiencia.',
+    en: 'Strong engagement on real views across campaigns. No cost recorded to judge value.',
+  },
+  repeat_consider_no_cost: {
+    es: 'Engagement medio sobre vistas reales. Sin coste registrado para valorar la eficiencia.',
+    en: 'Average engagement on real views. No cost recorded to judge value.',
+  },
+  repeat_consider_partial_data: {
+    es: 'Datos reales parciales (faltan vistas o coste). Complétalos antes de decidir.',
+    en: 'Partial real data (views or cost missing). Complete it before deciding.',
+  },
 }
 
 export function RepeatRadarWidget() {
@@ -135,7 +156,7 @@ export function RepeatRadarWidget() {
 
   function reasonFor(r: RepeatResult): string {
     const text = r.reasonKey ? REASON_TEXT[r.reasonKey]?.[locale] : undefined
-    return (text ?? r.reason).replace('{ratio}', formatRatio(r.roiRatio, { locale }))
+    return (text ?? r.reason).replace('{ratio}', r.roiRatio !== null ? formatRatio(r.roiRatio, { locale }) : '—')
   }
 
   // Show top 6 (mix of repeat and skip to be useful)
@@ -208,14 +229,15 @@ export function RepeatRadarWidget() {
                   {/* Key metric: Ratio EMV (EMV ÷ fees), shown as a multiple */}
                   <div className="text-right flex-shrink-0" title={es ? 'Ratio EMV: EMV generado ÷ fees pagados' : 'EMV ratio: EMV generated ÷ fees paid'}>
                     <div className="flex items-center justify-end gap-1">
-                      {r.roiRatio >= 1.5 ? (
+                      {r.roiRatio !== null && r.roiRatio >= 1.5 ? (
                         <TrendingUp className="h-3 w-3 text-emerald-500" />
-                      ) : r.roiRatio < 0.8 ? (
+                      ) : r.roiRatio !== null && r.roiRatio < 0.8 ? (
                         <TrendingDown className="h-3 w-3 text-red-500" />
                       ) : (
                         <Minus className="h-3 w-3 text-gray-400" />
                       )}
-                      <span className="text-xs font-bold tabular-nums text-gray-700 dark:text-gray-200">{formatRatio(r.roiRatio, { locale })}</span>
+                      {/* "—" = no cost recorded: there is no ratio to show, never "×0,0" */}
+                      <span className="text-xs font-bold tabular-nums text-gray-700 dark:text-gray-200">{r.roiRatio !== null ? formatRatio(r.roiRatio, { locale }) : '—'}</span>
                     </div>
                     <span className="block text-[9px] uppercase tracking-wide text-gray-400">{es ? 'Ratio EMV' : 'EMV ratio'}</span>
                     <span className="block text-[9px] text-gray-400">{r.totalCampaigns} {es ? 'camp.' : 'camp.'}</span>

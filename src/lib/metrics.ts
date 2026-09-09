@@ -354,6 +354,14 @@ export interface PerMediaMetrics {
   emvBasic: number
   emvExtended: number
   isDeleted: boolean
+  /** Creator of the piece (so consumers can group per creator without the rows). */
+  influencerId?: string
+  /**
+   * true when `views` is usable as REAL data (hasPlausibleViews: views > 0 and
+   * views ≥ likes). false = "sin dato real": no views, or a partial platform
+   * figure below the likes. Optional only for old serialized overviews.
+   */
+  viewsPlausible?: boolean
 }
 
 export interface PerInfluencerMetrics {
@@ -377,6 +385,8 @@ export interface PerInfluencerMetrics {
   cpm: number | null
   deliverablesPlanned: number | null
   status: string
+  /** Clicks on the creator's tracked link (CampaignInfluencer.trackedClicks; manual or integration). */
+  trackedClicks?: number | null
   /**
    * "×1,37 sobre su habitual": the creator's frozen baseline (median per piece)
    * compared with the MEDIAN per piece of the same format family published in

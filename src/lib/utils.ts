@@ -45,6 +45,21 @@ export function formatNumber(num: number, opts: FormatNumberOptions = {}): strin
   return n.toLocaleString(tag, { maximumFractionDigits: 2 })
 }
 
+/**
+ * Integer with thousands separators ALWAYS, for figures inside prose
+ * ("1.059 interacciones", "8.500 vistas"). Plain toLocaleString('es-ES') keeps
+ * 4-digit numbers ungrouped ("1059") because ICU's minimumGroupingDigits is 2
+ * for Spanish; the learnings, the playbook and every sentence that quotes a
+ * count use this helper instead. Compact "1,1K" stays for KPI tiles (formatNumber).
+ *   formatInt(1059)                    → "1.059"
+ *   formatInt(1059, { locale: 'en' })  → "1,059"
+ */
+export function formatInt(value: number, opts: { locale?: EurLocale } = {}): string {
+  const { locale = 'es' } = opts
+  const n = Number.isFinite(value) ? Math.round(value) : 0
+  return new Intl.NumberFormat(intlTag(locale), { useGrouping: 'always', maximumFractionDigits: 0 }).format(n)
+}
+
 // ============ EUROS & RATIOS (decision 9B) ============
 // The platform has ONE currency, the euro. Nothing is ever shown in dollars.
 

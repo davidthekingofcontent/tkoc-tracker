@@ -238,6 +238,7 @@ export const translations = {
       addressSourceShipping: 'from a shipment',
       addressSourceManual: 'edited by hand',
       addressSaveError: 'Could not save the address',
+      addressStreetRequired: 'Street is required to save an address (clear every field to remove it)',
     },
 
     // Analyze
@@ -1590,6 +1591,7 @@ export const translations = {
       addressSourceShipping: 'de un envío',
       addressSourceManual: 'editada a mano',
       addressSaveError: 'No se pudo guardar la dirección',
+      addressStreetRequired: 'La calle es obligatoria para guardar la dirección (vacía todos los campos para borrarla)',
     },
 
     // Analyze

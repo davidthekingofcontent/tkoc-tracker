@@ -14,15 +14,23 @@ import { calculateCampaignEMV } from '@/lib/emv'
 import type { PerInfluencerMetrics } from '@/lib/metrics'
 import { formatEur, formatNumber, formatPercent, formatRatio, type EurLocale } from '@/lib/utils'
 import { useIntelligenceText } from '@/components/creator-score-badge'
+import { useRole } from '@/hooks/use-role'
+import { hasEconomicWording } from '@/lib/campaign-learnings'
 
 /**
  * Campaign Intelligence panel (Aprender tab).
  *
  * Figures: each creator is scored from the campaign overview's PerInfluencerMetrics
- * (`perInfluencer` prop — views, audience, interacciones, ER and CPM on real views
- * (4B), cost, EMV over ALL media with the brand's rates), so this table can never disagree with the
- * Resumen / Elegir cards on the same page. The paginated `media` slice is only a
- * fallback for creators the overview does not carry (or when it is null).
+ * (`perInfluencer` prop — REAL views (er.denominator, plausible only), REAL
+ * audience (audience.real, never an estimate), interacciones, ER and CPM on real
+ * views (4B), cost, EMV over ALL media with the brand's rates), so this table can
+ * never disagree with the Resumen / Elegir cards on the same page. The paginated
+ * `media` slice is only a fallback for creators the overview does not carry (or
+ * when it is null).
+ *
+ * BRAND users: every economic column and card (Fee, CPM, CPE, Ratio EMV,
+ * Inversión) is hidden, and a recommendation that carries a cost judgement is
+ * replaced by a dash (the overview they receive has no cost anyway).
  *
  * Formatting: every figure goes through src/lib/utils with the UI locale
  * (formatEur / formatPercent / formatRatio / formatNumber). Recommendation texts
@@ -131,6 +139,7 @@ export function CampaignIntelligencePanel({
   onSetObjective,
 }: CampaignIntelligencePanelProps) {
   const text = useIntelligenceText()
+  const { isBrand } = useRole()
   const perInfluencerById = useMemo(() => new Map((perInfluencer ?? []).map(p => [p.influencerId, p])), [perInfluencer])
   // Which objective chip is being persisted right now (empty state only)
   const [settingObjective, setSettingObjective] = useState<string | null>(null)
@@ -170,8 +179,10 @@ export function CampaignIntelligencePanel({
           fee: authoritative.cost,
           emv: authoritative.emvExtended,
           totals: {
-            views: authoritative.views,
-            audience: authoritative.audience.total,
+            // Real, plausible views only (the base of the published ER); raw Σ views never enter
+            views: authoritative.er.denominator,
+            // Real audience only (reach → impressions → views); estimates never enter
+            audience: authoritative.audience.real,
             engagements: authoritative.engagements,
             pieces: authoritative.media,
             fee: authoritative.cost,
@@ -323,24 +334,28 @@ export function CampaignIntelligencePanel({
         </p>
       </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <SummaryCard
-          label={t(locale, 'Inversión total', 'Total Investment')}
-          value={eur(intelligence.totalInvestment)}
-          icon="💶"
-        />
+      {/* Summary cards (economic ones are agency-only) */}
+      <div className={`grid grid-cols-2 gap-4 ${isBrand ? 'lg:grid-cols-2' : 'lg:grid-cols-4'}`}>
+        {!isBrand && (
+          <SummaryCard
+            label={t(locale, 'Inversión total', 'Total Investment')}
+            value={eur(intelligence.totalInvestment)}
+            icon="💶"
+          />
+        )}
         <SummaryCard
           label={t(locale, 'EMV total', 'Total EMV')}
           value={eur(intelligence.totalEMV)}
           icon="📈"
         />
-        <SummaryCard
-          label={t(locale, 'Ratio EMV', 'EMV Ratio')}
-          value={intelligence.emvRatio !== null ? formatRatio(intelligence.emvRatio, { locale }) : DASH}
-          icon="⚡"
-          highlight={intelligence.emvRatio !== null && intelligence.emvRatio >= 2}
-        />
+        {!isBrand && (
+          <SummaryCard
+            label={t(locale, 'Ratio EMV', 'EMV Ratio')}
+            value={intelligence.emvRatio !== null ? formatRatio(intelligence.emvRatio, { locale }) : DASH}
+            icon="⚡"
+            highlight={intelligence.emvRatio !== null && intelligence.emvRatio >= 2}
+          />
+        )}
         <SummaryCard
           label={t(locale, 'Puntuación general', 'Overall Score')}
           value={intelligence.overallSignal === 'gray' ? DASH : `${intelligence.overallScore}/100`}
@@ -362,24 +377,32 @@ export function CampaignIntelligencePanel({
                   <th className="text-left px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     {t(locale, 'Plataforma', 'Platform')}
                   </th>
-                  <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                    Fee
+                  {!isBrand && (
+                    <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                      Fee
+                    </th>
+                  )}
+                  <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap" title={t(locale, 'Vistas reales: solo publicaciones cuyas vistas son al menos sus likes', 'Real views: only publications whose views are at least their likes')}>
+                    {t(locale, 'Vistas reales', 'Real views')}
                   </th>
-                  <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                    Views
-                  </th>
-                  <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                    CPM
-                  </th>
-                  <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                    CPE
-                  </th>
+                  {!isBrand && (
+                    <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                      CPM
+                    </th>
+                  )}
+                  {!isBrand && (
+                    <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                      CPE
+                    </th>
+                  )}
                   <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap" title={t(locale, 'Interacciones ÷ vistas reales', 'Engagements ÷ real views')}>
                     {t(locale, 'ER (sobre vistas)', 'ER (on views)')}
                   </th>
-                  <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                    {t(locale, 'Ratio EMV', 'EMV Ratio')}
-                  </th>
+                  {!isBrand && (
+                    <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                      {t(locale, 'Ratio EMV', 'EMV Ratio')}
+                    </th>
+                  )}
                   <th className="text-right px-3 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     Score
                   </th>
@@ -391,7 +414,9 @@ export function CampaignIntelligencePanel({
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                 {intelligence.influencers.map((inf) => {
                   const signalConfig = getSignalConfig(inf.signal)
-                  const recommendation = text(inf.recommendationKey, undefined, inf.recommendation)
+                  const recommendationText = text(inf.recommendationKey, undefined, inf.recommendation)
+                  // A cost judgement never reaches a brand user
+                  const recommendation = isBrand && hasEconomicWording(recommendationText) ? DASH : recommendationText
                   return (
                     <tr
                       key={inf.influencerId}
@@ -413,30 +438,38 @@ export function CampaignIntelligencePanel({
                       <td className="px-3 py-3">
                         <PlatformBadge platform={inf.platform} />
                       </td>
-                      {/* Fee */}
-                      <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                        {inf.fee > 0 ? eur(inf.fee) : DASH}
-                      </td>
-                      {/* Views */}
+                      {/* Fee (agency) */}
+                      {!isBrand && (
+                        <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                          {inf.fee > 0 ? eur(inf.fee) : DASH}
+                        </td>
+                      )}
+                      {/* Real views ("—" = sin dato real) */}
                       <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
                         {inf.totalViews > 0 ? formatNumber(inf.totalViews, { locale }) : DASH}
                       </td>
-                      {/* CPM */}
-                      <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                        {inf.cpm !== null ? eur(inf.cpm) : DASH}
-                      </td>
-                      {/* CPE */}
-                      <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                        {inf.cpe !== null ? eur(inf.cpe) : DASH}
-                      </td>
+                      {/* CPM (agency) */}
+                      {!isBrand && (
+                        <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                          {inf.cpm !== null ? eur(inf.cpm) : DASH}
+                        </td>
+                      )}
+                      {/* CPE (agency) */}
+                      {!isBrand && (
+                        <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                          {inf.cpe !== null ? eur(inf.cpe) : DASH}
+                        </td>
+                      )}
                       {/* Engagement Rate */}
                       <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
                         {formatPercent(inf.engagementRate, { locale })}
                       </td>
-                      {/* Ratio EMV */}
-                      <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                        {inf.emvCostRatio !== null ? formatRatio(inf.emvCostRatio, { locale }) : DASH}
-                      </td>
+                      {/* Ratio EMV (agency) */}
+                      {!isBrand && (
+                        <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                          {inf.emvCostRatio !== null ? formatRatio(inf.emvCostRatio, { locale }) : DASH}
+                        </td>
+                      )}
                       {/* Score — unscored creators (gray signal) show a dash, not a misleading number */}
                       <td className="px-3 py-3 text-right font-semibold text-gray-900 dark:text-white whitespace-nowrap">
                         {inf.signal === 'gray' ? (

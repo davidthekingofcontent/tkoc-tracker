@@ -12,13 +12,16 @@ import { calculateCreatorScore, type CreatorScoreInput } from '@/lib/creator-sco
 import { analyzeDeal, type DealAdvisorInput } from '@/lib/deal-advisor'
 import { assessRisks, type RiskAssessmentInput } from '@/lib/risk-signals'
 import { analyzeRepeatBatch, type RepeatRadarInput } from '@/lib/repeat-radar'
-import { generatePlaybook, type PlaybookInput } from '@/lib/campaign-playbook'
+import { generatePlaybook } from '@/lib/campaign-playbook'
+import { buildPlaybookInput } from '@/lib/aprender-input'
 import { getMarketBenchmark, evaluateFeeBlended, type BenchmarkQuery } from '@/lib/market-benchmark'
 import { loadBenchmarkConfig, loadInternalStats } from '@/lib/benchmarks-server'
 import { detectTier, getCpmThreshold, normalizeFormat, normalizePlatform } from '@/lib/benchmarks'
 import { prisma } from '@/lib/db'
 import { computeCampaignOverview } from '@/lib/campaign-overview'
 import { memberCost, type CampaignOverview, type PerInfluencerMetrics } from '@/lib/metrics'
+
+type SessionUser = NonNullable<Awaited<ReturnType<typeof getSession>>>
 
 export async function POST(request: NextRequest) {
   try {
@@ -44,7 +47,7 @@ export async function POST(request: NextRequest) {
         return handleRepeatRadar(data as { campaignId?: string })
 
       case 'playbook':
-        return handlePlaybook(data as unknown as PlaybookRequest)
+        return handlePlaybook(data as unknown as PlaybookRequest, session)
 
       case 'benchmark':
         return handleBenchmark(data as unknown as BenchmarkQuery)
@@ -106,32 +109,18 @@ async function computeOverviews(ids: string[]): Promise<Map<string, CampaignOver
   return out
 }
 
-/** likes / comments / shares / saves split per creator (the overview only carries their sum). */
-interface EngagementPieces { likes: number; comments: number; shares: number; saves: number }
-
-function addPieces(acc: EngagementPieces | undefined, m: { likes: number; comments: number; shares: number; saves: number }): EngagementPieces {
-  const a = acc || { likes: 0, comments: 0, shares: 0, saves: 0 }
-  a.likes += m.likes || 0
-  a.comments += m.comments || 0
-  a.shares += m.shares || 0
-  a.saves += m.saves || 0
-  return a
-}
-
 /**
  * Repeat Radar: every (creator, campaign) figure comes from that campaign's
  * overview — EMV = perInfluencer.emvExtended, cost = fee acordado si no coste
- * (memberCost), views / audience / posts = the overview's — so the radar can
- * never disagree with the campaign page.
+ * (perInfluencer.cost, memberCost as fallback), posts = perInfluencer.media —
+ * so the radar can never disagree with the campaign page.
  *
- * Decision 4B: the radar's ER and CPM are computed over real VIEWS only
- * (perInfluencer.views), like the campaign page. Its numerator must be the
- * interacciones of the SAME publications that carry views, so the
- * likes/comments/shares/saves split — read from the media rows once for all
- * campaigns involved — is restricted to the rows the overview reports with
- * views > 0 (perMedia.views), mirroring viewsBaseOf in metrics.ts. Σ of that
- * split per (campaign, creator) equals the overview's perInfluencer.er.numerator.
- * Estimates never enter the radar.
+ * Decision 4B: the radar's ER and CPM stand on REAL views only. The caller
+ * hands over perInfluencer.er.{numerator, denominator, pieces} of each campaign
+ * (interacciones and plausible views of the SAME pieces, as the overview
+ * published them); the radar aggregates those and applies the same publication
+ * rules (≥ 1 piece, ≥ 500 views, ≤ 100 %). Estimates, raw views and profile
+ * ERs never enter the radar.
  */
 async function handleRepeatRadar(data: { campaignId?: string }) {
   try {
@@ -154,34 +143,12 @@ async function handleRepeatRadar(data: { campaignId?: string }) {
     })
 
     const campaignIds = Array.from(new Set(influencers.flatMap(inf => inf.campaigns.map(ci => ci.campaignId))))
-    const influencerIds = influencers.map(inf => inf.id)
-
-    const [overviews, mediaRows] = await Promise.all([
-      computeOverviews(campaignIds),
-      campaignIds.length > 0
-        ? prisma.media.findMany({
-            where: { campaignId: { in: campaignIds }, influencerId: { in: influencerIds } },
-            select: { id: true, campaignId: true, influencerId: true, likes: true, comments: true, shares: true, saves: true },
-          })
-        : Promise.resolve([]),
-    ])
+    const overviews = await computeOverviews(campaignIds)
 
     // perInfluencer of every campaign, keyed campaignId → influencerId
     const perInfluencerByCampaign = new Map<string, Map<string, PerInfluencerMetrics>>()
-    // Media rows with REAL views (4B) — the only rows whose interacciones may enter the ER
-    const viewedMediaIds = new Set<string>()
     for (const [cid, ov] of overviews) {
       perInfluencerByCampaign.set(cid, new Map(ov.perInfluencer.map(p => [p.influencerId, p])))
-      for (const pm of ov.perMedia) if (pm.views > 0) viewedMediaIds.add(pm.id)
-    }
-
-    // Engagement split per (campaign, creator) — the same rows with views the
-    // overview's ER numerator is built on (never rows without real views)
-    const pieces = new Map<string, EngagementPieces>()
-    for (const m of mediaRows) {
-      if (!viewedMediaIds.has(m.id)) continue
-      const key = `${m.campaignId ?? ''}|${m.influencerId}`
-      pieces.set(key, addPieces(pieces.get(key), m))
     }
 
     const inputs: RepeatRadarInput[] = influencers.map(inf => ({
@@ -193,18 +160,15 @@ async function handleRepeatRadar(data: { campaignId?: string }) {
       followers: inf.followers,
       campaigns: inf.campaigns.map(ci => {
         const p = perInfluencerByCampaign.get(ci.campaignId)?.get(inf.id)
-        const e = pieces.get(`${ci.campaignId}|${inf.id}`)
         return {
           campaignId: ci.campaignId,
           campaignName: ci.campaign.name,
           agreedFee: p?.cost ?? memberCost(ci),
-          totalLikes: e?.likes ?? 0,
-          totalComments: e?.comments ?? 0,
-          // 4B: real views are the base of the radar's ER and CPM — estimates never enter
-          totalViews: p?.views ?? 0,
-          audience: p?.audience.real ?? 0,
-          totalShares: e?.shares ?? 0,
-          totalSaves: e?.saves ?? 0,
+          // 4B: the overview's real-views base of this creator in this campaign
+          realViews: p?.er.denominator ?? 0,
+          realViewsPieces: p?.er.pieces ?? 0,
+          engagementsOnViews: p?.er.numerator ?? 0,
+          engagements: p?.engagements ?? 0,
           mediaPosts: p?.media ?? 0,
           status: ci.status,
           contentDelivered: ci.contentDelivered,
@@ -228,59 +192,39 @@ interface PlaybookRequest {
   locale?: 'es' | 'en'
 }
 
-async function handlePlaybook(data: PlaybookRequest) {
+/**
+ * Campaign Playbook (Aprender tab). Built from the SAME projection of the
+ * overview the report learnings use (buildPlaybookInput → generatePlaybook), so
+ * the tab and the report never name different creators. A BRAND session only
+ * gets the client audience (no cost, CPM, Ratio EMV, budget, skip list) and
+ * only for its own campaigns.
+ */
+async function handlePlaybook(data: PlaybookRequest, session: SessionUser) {
   try {
     // Spanish is the product default; English only when the client explicitly asks for it.
     const locale: 'es' | 'en' = data.locale === 'en' ? 'en' : 'es'
+    if (!data.campaignId || typeof data.campaignId !== 'string') {
+      return NextResponse.json({ error: 'campaignId is required' }, { status: 400 })
+    }
 
-    // The overview is the one source of truth: cost (fee acordado si no coste),
-    // EMV extended with the brand's rates, views and publications per creator.
-    const [campaign, overview, mediaRows] = await Promise.all([
-      prisma.campaign.findUnique({ where: { id: data.campaignId }, select: { name: true, objective: true } }),
+    const [campaign, overview] = await Promise.all([
+      prisma.campaign.findUnique({ where: { id: data.campaignId }, select: { name: true, objective: true, userId: true } }),
       computeCampaignOverview(data.campaignId),
-      prisma.media.findMany({
-        where: { campaignId: data.campaignId },
-        select: { influencerId: true, likes: true, comments: true, shares: true, saves: true, mediaType: true },
-      }),
     ])
 
     if (!campaign || !overview) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
     }
-
-    // Only the likes/comments/shares/saves split and the formats come from the rows
-    const pieces = new Map<string, EngagementPieces>()
-    const formats = new Map<string, Set<string>>()
-    for (const m of mediaRows) {
-      pieces.set(m.influencerId, addPieces(pieces.get(m.influencerId), m))
-      const f = formats.get(m.influencerId) || new Set<string>()
-      f.add(m.mediaType)
-      formats.set(m.influencerId, f)
+    const isBrand = session.role === 'BRAND'
+    if (isBrand && campaign.userId !== session.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    const influencerData = overview.perInfluencer.map(p => {
-      const e = pieces.get(p.influencerId)
-      return {
-        username: p.username,
-        platform: p.platform,
-        agreedFee: p.cost,
-        totalLikes: e?.likes ?? 0,
-        totalComments: e?.comments ?? 0,
-        totalViews: p.views,
-        totalShares: e?.shares ?? 0,
-        totalSaves: e?.saves ?? 0,
-        mediaPosts: p.media,
-        mediaTypes: Array.from(formats.get(p.influencerId) ?? []),
-      }
-    })
-
-    const playbook = generatePlaybook({
-      campaignName: campaign.name,
-      objective: campaign.objective || 'awareness',
-      totalSpent: overview.totals.cost,
-      totalEMV: overview.totals.emvExtended,
-      influencers: influencerData,
-    }, locale)
+    const playbook = generatePlaybook(
+      buildPlaybookInput({ overview, campaignName: campaign.name, objective: campaign.objective }),
+      locale,
+      { audience: isBrand ? 'client' : 'agency' }
+    )
 
     return NextResponse.json(playbook)
   } catch (error) {

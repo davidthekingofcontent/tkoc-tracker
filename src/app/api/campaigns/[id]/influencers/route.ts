@@ -3,7 +3,7 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { InfluencerStatus, Prisma } from '@/generated/prisma/client'
 import { notifyAllTeam } from '@/lib/notifications'
-import { ensureContact } from '@/lib/contacts'
+import { ensureContact, saveContactAddress } from '@/lib/contacts'
 import { captureMemberContent } from '@/lib/campaign-capture'
 import { familyOf, manualBaseline, parseBaseline } from '@/lib/creator-baseline'
 
@@ -361,6 +361,49 @@ export async function PATCH(
       },
       include: { influencer: true },
     })
+
+    // Contacts: a typed shipping address is remembered on the Contact so the next
+    // campaign can prefill it (David 2026-09-08). Must never fail the request.
+    // Only when some address field actually changed: the modal always sends the
+    // whole address, and re-stamping an unchanged one would overwrite a newer
+    // manual correction made in Contacts.
+    const norm = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
+    const addressChanged = (
+      [
+        [shippingName, existing.shippingName],
+        [shippingAddress1, existing.shippingAddress1],
+        [shippingAddress2, existing.shippingAddress2],
+        [shippingCity, existing.shippingCity],
+        [shippingPostCode, existing.shippingPostCode],
+        [shippingCountry, existing.shippingCountry],
+        [shippingPhone, existing.shippingPhone],
+        [shippingEmail, existing.shippingEmail],
+      ] as [unknown, string | null][]
+    ).some(([incoming, stored]) => incoming !== undefined && norm(incoming) !== norm(stored))
+    if (typeof shippingAddress1 === 'string' && shippingAddress1.trim() && addressChanged) {
+      try {
+        // The modal sends the complete address, so it replaces the Contact's block
+        // (a field emptied on purpose must not survive from the previous address).
+        await saveContactAddress(
+          influencerId,
+          session.id,
+          {
+            name: typeof shippingName === 'string' ? shippingName : null,
+            address1: shippingAddress1,
+            address2: typeof shippingAddress2 === 'string' ? shippingAddress2 : null,
+            city: typeof shippingCity === 'string' ? shippingCity : null,
+            postCode: typeof shippingPostCode === 'string' ? shippingPostCode : null,
+            country: typeof shippingCountry === 'string' ? shippingCountry : null,
+            phone: typeof shippingPhone === 'string' ? shippingPhone : null,
+            email: typeof shippingEmail === 'string' ? shippingEmail : null,
+          },
+          'shipping',
+          'replace'
+        )
+      } catch (err) {
+        console.error('[Campaign/Influencers] saveContactAddress failed:', err instanceof Error ? err.message : err)
+      }
+    }
 
     // Confirmed-or-later status → capture the member's content (fire-and-forget).
     // Only on an actual transition, so re-saving the same status doesn't re-scrape.

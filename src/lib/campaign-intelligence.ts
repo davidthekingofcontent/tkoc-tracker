@@ -10,12 +10,14 @@
  *
  * Figures: whenever the caller has the campaign overview
  * (src/lib/campaign-overview.ts → PerInfluencerMetrics) it hands the engine
- * each creator's precomputed totals — views, audience (alcance → impresiones →
- * vistas → estimaciones etiquetadas, decision 5), the four-term interacciones
+ * each creator's precomputed totals — REAL views (plausible: views ≥ likes,
+ * perInfluencer.er.denominator), REAL audience (reach → impressions → views,
+ * never an estimate, perInfluencer.audience.real), the four-term interacciones
  * (3A), ER and CPM on real views (4B), cost (6) and EMV — and the engine scores
  * those as they are, so the Aprender tab can never disagree with Resumen or
  * Elegir. Media rows are only a fallback when no overview is available; that
- * fallback also puts the ER and the CPM on views.
+ * fallback applies the same metrics.ts rules (viewsBaseOf, engagementRateOnViews,
+ * viewsBaseReliable) instead of raw sums.
  *
  * Wording: EMV ÷ fee is the "Ratio EMV" (×2,4) and is never called ROI; the
  * word ROI is reserved for real client data (decision 9B). Every text carries a
@@ -23,7 +25,7 @@
  * in translations.*.intelligence; the Spanish string here is the fallback.
  */
 
-import { audienceOf, cpmOf } from '@/lib/metrics'
+import { audienceOf, cpmOf, engagementRateOnViews, viewsBaseOf, viewsBaseReliable } from '@/lib/metrics'
 import { formatEur, formatNumber, formatPercent, formatRatio } from '@/lib/utils'
 
 // ============ TYPES ============
@@ -40,8 +42,9 @@ export interface InfluencerKPIs {
 
   // Raw data
   fee: number
+  /** REAL views (plausible, views ≥ likes) of the creator's publications; 0 = "sin dato real". */
   totalViews: number
-  /** Audience base of the CPM and the ER: reach → impressions → views → labelled estimates (decision 5). */
+  /** REAL audience only: reach → impressions → views (decision 5); estimates never enter. */
   totalAudience: number
   /** Split figures below are 0 when the creator was scored from precomputed totals (the overview carries only their sums). */
   totalReach: number
@@ -217,9 +220,9 @@ function scoreToSignal(score: number): Signal {
  * numbers as the Resumen and Elegir cards.
  */
 export interface PrecomputedInfluencerTotals {
-  /** Real views of the creator's publications (perInfluencer.views). */
+  /** REAL (plausible) views of the creator's publications: perInfluencer.er.denominator, never the raw Σ views. */
   views: number
-  /** Audience base — reach → impressions → views → labelled estimates (perInfluencer.audience.total). */
+  /** REAL audience only — reach → impressions → views (perInfluencer.audience.real); estimates never enter. */
   audience: number
   /** Interacciones: likes + comments + shares + saves (perInfluencer.engagements). */
   engagements: number
@@ -279,13 +282,14 @@ function calculateInfluencerKPIs(
   let totalLikes = 0, totalComments = 0, totalShares = 0, totalSaves = 0
   let totalEngagements = 0
 
+  // Fallback base (no overview): the pieces with plausible views, as metrics.ts defines them
+  let fallbackBase = { views: 0, pieces: 0, engagements: 0 }
   if (totals) {
     totalViews = totals.views
     totalAudience = totals.audience
     totalEngagements = totals.engagements
   } else {
     for (const m of media) {
-      totalViews += m.views || 0
       totalReach += m.reach || 0
       totalImpressions += m.impressions || 0
       totalLikes += m.likes || 0
@@ -294,10 +298,14 @@ function calculateInfluencerKPIs(
       totalSaves += m.saves || 0
       // Audience per publication (decision 5) — real bases only: the fallback has
       // no follower / EMV context to label estimates, so a row without data adds 0.
-      totalAudience += audienceOf({ id: '', ...m }, {}).value
+      const a = audienceOf({ id: '', ...m }, {})
+      if (!a.estimated) totalAudience += a.value
     }
     // Interacciones (decision 3A)
     totalEngagements = totalLikes + totalComments + totalShares + totalSaves
+    // Real views (4B): plausible pieces only (views ≥ likes)
+    fallbackBase = viewsBaseOf(media)
+    totalViews = fallbackBase.views
   }
 
   const fee = totals ? totals.fee : data.fee
@@ -308,16 +316,17 @@ function calculateInfluencerKPIs(
   const postsCount = totals ? totals.pieces : media.length
   const contentPieces = totals ? totals.pieces : (data.contentPieces || media.length)
 
-  // Calculate KPIs (null if data insufficient). CPM and ER over real VIEWS (decision 4B).
-  const cpm = totals ? totals.cpm : cpmOf(fee, totalViews)
-  const cpv = (fee > 0 && totalViews > 0) ? fee / totalViews : null
+  // Calculate KPIs (null if data insufficient). CPM and ER over real VIEWS (decision 4B),
+  // published only on a reliable base (≥ 1 piece, ≥ 500 views) like the campaign page.
+  const cpm = totals ? totals.cpm : (viewsBaseReliable(fallbackBase) ? cpmOf(fee, totalViews) : null)
+  const cpv = (cpm !== null && fee > 0 && totalViews > 0) ? fee / totalViews : null
   const cpe = (fee > 0 && totalEngagements > 0) ? fee / totalEngagements : null
   const cpc = (fee > 0 && totalClicks > 0) ? fee / totalClicks : null
   const cpa = (fee > 0 && totalLeads > 0) ? fee / totalLeads : null
   const emvCostRatio = (fee > 0 && emv > 0) ? emv / fee : null
   const engagementRate = totals
     ? totals.er
-    : (totalViews > 0 ? Math.round((totalEngagements / totalViews) * 100 * 100) / 100 : null)
+    : engagementRateOnViews(fallbackBase).value
   const costPerContent = (fee > 0 && contentPieces > 0) ? fee / contentPieces : null
 
   // Score each KPI
@@ -330,7 +339,7 @@ function calculateInfluencerKPIs(
     { metric: 'engRate', score: scoreHigherIsBetter(engagementRate, thresholds.engRateGreen, thresholds.engRateRed), weight: thresholds.weights.engRate },
   ]
 
-  // Volume score (audience): >500K = 100, <10K = 0
+  // Volume score (REAL audience only): >500K = 100, <10K = 0; no real audience → unscored
   const volumeScore = totalAudience > 0
     ? Math.min(100, Math.round((totalAudience / 500000) * 100))
     : null
@@ -360,7 +369,7 @@ function calculateInfluencerKPIs(
   if (cpm !== null && cpm >= thresholds.cpmRed) highlights.push(`CPM alto: ${formatEur(cpm, { maxFractionDigits: 2 })}`)
   if (engagementRate !== null && engagementRate >= thresholds.engRateGreen) highlights.push(`Gran engagement: ${formatPercent(engagementRate)}`)
   if (emvCostRatio !== null && emvCostRatio >= thresholds.emvRatioGreen) highlights.push(`Ratio EMV: ${formatRatio(emvCostRatio)}`)
-  if (totalAudience >= 100000) highlights.push(`Alto alcance: ${formatNumber(totalAudience)}`)
+  if (totalAudience >= 100000) highlights.push(`Alto alcance real: ${formatNumber(totalAudience)}`)
 
   // Generate recommendation
   const { recommendation, recommendationKey } = generateRecommendation(
@@ -413,7 +422,7 @@ interface RecommendationContext {
   emvCostRatio: number | null
   engagementRate: number | null
   fee: number
-  /** Audience base (reach → impressions → views → estimates). */
+  /** REAL audience (reach → impressions → views); never an estimate. */
   audience: number
   totalEngagements: number
   contentPieces: number

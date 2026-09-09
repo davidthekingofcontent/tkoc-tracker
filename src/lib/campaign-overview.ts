@@ -77,7 +77,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
       influencers: {
         select: {
           influencerId: true, agreedFee: true, cost: true, status: true, deliverablesPlanned: true,
-          negotiatedFormat: true, baselineSnapshot: true,
+          negotiatedFormat: true, baselineSnapshot: true, trackedClicks: true,
           influencer: { select: { id: true, username: true, platform: true, displayName: true, followers: true } },
         },
       },
@@ -132,6 +132,8 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
       emvBasic: emv.items[i]?.basic ?? 0,
       emvExtended: emv.items[i]?.extended ?? 0,
       isDeleted: !!m.isDeleted,
+      influencerId: m.influencerId,
+      viewsPlausible: hasPlausibleViews(m),
     })
   })
 
@@ -221,6 +223,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
         cpm: viewsBaseReliable(ownViewsBase) ? cpmOf(c, ownViewsBase.views) : null,
         deliverablesPlanned: ci.deliverablesPlanned ?? null,
         status: ci.status,
+        trackedClicks: ci.trackedClicks ?? null,
         vsBaseline,
       }
     })
