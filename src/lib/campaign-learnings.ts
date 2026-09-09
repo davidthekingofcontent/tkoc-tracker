@@ -201,8 +201,8 @@ const DELIVERY_AGENCY_KEYS = new Set([
 
 function neutralPerformerReason(locale: LearningsLocale): string {
   return locale === 'es'
-    ? 'El creador con mejor tasa de engagement sobre vistas reales de la campaña.'
-    : 'The creator with the best engagement rate on real views in the campaign.'
+    ? 'Uno de los creadores con mejor resultado de la campaña sobre vistas reales.'
+    : 'One of the best-performing creators of the campaign on real views.'
 }
 
 function neutralNextRec(locale: LearningsLocale): string {

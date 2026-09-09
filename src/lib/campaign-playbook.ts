@@ -477,6 +477,25 @@ function topPerformerReason(c: PlaybookCreator, ranking: CreatorRanking, input: 
   )
   const engPart = f.L(`${f.int(c.engagements)} interacciones`, `${f.int(c.engagements)} interactions`)
 
+  if (audience === 'client') {
+    // The client never reads cost or CPM. The ranking is the agency's (views per
+    // euro for cost creators), so the closing claims only what is TRUE for the
+    // client's numbers: most real views, or best ER, or nothing superlative.
+    parts.push(viewsPart)
+    parts.push(f.L(`ER ${f.pct(c.er.value)}`, `ER ${f.pct(c.er.value)}`))
+    if (objective === 'engagement') parts.push(engPart)
+    const base0 = baselineClause(c, f)
+    if (base0) parts.push(base0)
+    const maxViews = Math.max(...ranking.ranked.map(r => r.realViews))
+    const maxEr = Math.max(...ranking.ranked.map(r => r.er.value as number))
+    const closingClient = c.realViews >= maxViews
+      ? f.L('el creador con más vistas reales de la campaña', 'the creator with the most real views in the campaign')
+      : (c.er.value as number) >= maxEr
+        ? f.L('la mejor tasa de engagement sobre vistas reales de la campaña', 'the best engagement rate on real views in the campaign')
+        : f.L('uno de los creadores con mejor resultado de la campaña', 'one of the best-performing creators of the campaign')
+    return `${parts.join(', ')}: ${closingClient}.`
+  }
+
   if (basis === 'views_per_euro') {
     parts.push(f.L(
       `${f.views(c.realViews)} vistas reales por ${f.eur(c.cost)} (CPM ${f.eur(c.cpm as number, 2)})`,
