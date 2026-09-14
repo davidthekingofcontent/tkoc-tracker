@@ -104,12 +104,13 @@ export function itemReferencesBrand(
   campaign: Pick<CampaignRules, 'targetAccounts' | 'targetHashtags'>,
   item: Pick<RuleItem, 'caption' | 'hashtags' | 'mentions'>
 ): boolean {
-  const targetAccounts = new Set(
-    (campaign.targetAccounts || []).map(a => normalizeBrandToken(stripSigil(a))).filter(Boolean)
-  )
-  const targetHashtags = new Set(
-    (campaign.targetHashtags || []).map(h => normalizeBrandToken(stripSigil(h))).filter(Boolean)
-  )
+  // A target field may hold several tokens typed together ("#vileda #viledaturbo"):
+  // split on whitespace/commas so each one counts (2026-09-14: that field made
+  // every hashtag match fail silently).
+  const splitTargets = (values: string[] | null | undefined): string[] =>
+    (values || []).flatMap(v => String(v).split(/[\s,]+/)).map(v => normalizeBrandToken(stripSigil(v))).filter(Boolean)
+  const targetAccounts = new Set(splitTargets(campaign.targetAccounts))
+  const targetHashtags = new Set(splitTargets(campaign.targetHashtags))
   if (targetAccounts.size === 0 && targetHashtags.size === 0) return false
 
   const mentions = (item.mentions || []).map(m => normalizeBrandToken(stripSigil(m))).filter(Boolean)
