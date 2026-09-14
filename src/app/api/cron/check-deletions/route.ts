@@ -3,13 +3,20 @@ import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 import { prisma } from '@/lib/db'
 import { notifyAllTeam } from '@/lib/notifications'
 import { mediaPostKey } from '@/lib/campaign-capture'
+import { checkInstagramPostsExist, type PostExistence } from '@/lib/thumb-cache'
 
-const BATCH_SIZE = 50
-const DELAY_MS = 2000
 
 /**
- * Cron job: Detect deleted posts from influencers in active campaigns.
- * Makes HEAD requests to post permalinks to check if they still exist.
+ * Cron job: detect posts deleted by their creators (active campaigns).
+ *
+ * Instagram: the public embed page rendered in headless Chromium (see
+ * checkInstagramPostsExist) — the cover image proves the post exists; a 404
+ * or an explicit "not available" page says it is gone. A post is marked
+ * deleted ONLY after two "missing" verdicts at least 20 h apart (Setting
+ * deletion_suspects), never on a login redirect, timeout or empty shell
+ * (that heuristic wrongly flagged 74 live posts on 2026-09-12). Posts already
+ * marked deleted are re-checked and restored when they turn out to exist.
+ * TikTok/YouTube: only an HTTP 404 on the permalink counts as missing.
  *
  * GET /api/cron/check-deletions
  * Authorization: Bearer <CRON_SECRET or JWT_SECRET>
@@ -31,142 +38,128 @@ export async function GET(request: NextRequest) {
     if (!gate.allowed) return NextResponse.json(cronSkipped('check-deletions', gate))
     await markCronRun('check-deletions')
 
-    // Get all non-deleted media with permalinks from active campaigns
+    const startedAt = Date.now()
+    const TIME_BUDGET_MS = 270_000
+    const MAX_POSTS = Number(process.env.CHECK_DELETIONS_MAX_POSTS || 80)
+    const RECHECK_HOURS = 20
+
     const allMedia = await prisma.media.findMany({
-      where: {
-        isDeleted: false,
-        permalink: { not: null },
-        campaign: {
-          status: 'ACTIVE',
-        },
-      },
+      where: { permalink: { not: null }, campaign: { status: 'ACTIVE' } },
       include: {
-        influencer: {
-          select: { id: true, username: true, platform: true },
-        },
-        campaign: {
-          select: { id: true, name: true },
-        },
+        influencer: { select: { id: true, username: true, platform: true } },
+        campaign: { select: { id: true, name: true } },
       },
+      orderBy: { postedAt: 'desc' },
     })
+    if (allMedia.length === 0) return NextResponse.json({ message: 'No media to check', checked: 0, deleted: 0, restored: 0 })
 
-    if (allMedia.length === 0) {
-      return NextResponse.json({ message: 'No media to check', checked: 0, deleted: 0 })
-    }
-
-    // One Media row per (post, campaign): check each POST once, then mark every
-    // copy and send a single notification listing the affected campaigns.
+    // One check per post (a post can live in several campaigns)
     const groups = new Map<string, typeof allMedia>()
     for (const m of allMedia) {
       const k = mediaPostKey(m)
       const g = groups.get(k)
       if (g) g.push(m); else groups.set(k, [m])
     }
-    const posts = Array.from(groups.values())
-    console.log(`[Cron/CheckDeletions] Checking ${posts.length} posts (${allMedia.length} rows)...`)
 
-    let totalChecked = 0
-    let totalDeleted = 0
-    const errors: string[] = []
+    const checkedLog = await loadMap('deletion_checked')
+    const suspects = await loadMap('deletion_suspects')
+    const now = Date.now()
+    const recheckMs = RECHECK_HOURS * 3_600_000
 
-    for (let i = 0; i < posts.length; i += BATCH_SIZE) {
-      const batch = posts.slice(i, i + BATCH_SIZE)
+    // Never-checked first, then the oldest checks; live posts before deleted ones (the latter only to self-heal)
+    const candidates = Array.from(groups.values())
+      .filter(copies => copies[0].permalink)
+      .filter(copies => { const t = Date.parse(checkedLog[copies[0].permalink as string] || ''); return !Number.isFinite(t) || now - t >= recheckMs })
+      .sort((a, b) => Number(a.some(c => c.isDeleted)) - Number(b.some(c => c.isDeleted)))
+      .slice(0, MAX_POSTS)
 
-      for (const copies of batch) {
-        const media = copies[0]
-        if (!media.permalink) continue
+    const ig = candidates.filter(c => c[0].platform === 'INSTAGRAM')
+    const other = candidates.filter(c => c[0].platform !== 'INSTAGRAM')
 
-        try {
-          const isDeleted = await checkIfDeleted(media.permalink)
-
-          if (isDeleted) {
-            await prisma.media.updateMany({
-              where: { id: { in: copies.map(c => c.id) } },
-              data: { isDeleted: true, deletedAt: new Date() },
-            })
-            totalDeleted++
-
-            const username = media.influencer?.username || 'Unknown'
-            const campaignNames = Array.from(new Set(copies.map(c => c.campaign?.name).filter(Boolean))) as string[]
-            const campaignId = media.campaign?.id
-            notifyAllTeam({
-              type: 'post_deleted',
-              title: `Post eliminado detectado`,
-              message: `⚠️ El influencer @${username} ha eliminado un post de ${campaignNames.length > 1 ? 'las campañas' : 'la campaña'} ${campaignNames.join(', ') || 'Unknown'}`,
-              link: campaignId ? `/campaigns/${campaignId}` : undefined,
-            }).catch(() => {})
-
-            console.log(`[Cron/CheckDeletions] Detected deleted post: ${media.permalink} by @${username} (${copies.length} row(s))`)
-          }
-
-          totalChecked++
-          await new Promise(r => setTimeout(r, DELAY_MS))
-        } catch (err) {
-          const errMsg = `Error checking ${media.permalink}: ${err}`
-          console.error(`[Cron/CheckDeletions] ${errMsg}`)
-          errors.push(errMsg)
-        }
-      }
+    const verdicts = new Map<string, PostExistence>()
+    if (ig.length > 0) {
+      const res = await checkInstagramPostsExist(ig.map(c => c[0].permalink as string), { timeBudgetMs: TIME_BUDGET_MS - (Date.now() - startedAt) })
+      for (const [k, v] of res) verdicts.set(k, v)
+    }
+    for (const copies of other) {
+      if (Date.now() - startedAt > TIME_BUDGET_MS) break
+      verdicts.set(copies[0].permalink as string, await headExists(copies[0].permalink as string))
     }
 
-    console.log(`[Cron/CheckDeletions] Done. Checked: ${totalChecked}, Deleted: ${totalDeleted}, Errors: ${errors.length}`)
+    let checked = 0, deleted = 0, restored = 0, suspected = 0
+    const nowIso = new Date().toISOString()
+    for (const copies of candidates) {
+      const permalink = copies[0].permalink as string
+      const verdict = verdicts.get(permalink)
+      if (!verdict || verdict === 'unknown') continue
+      checked++
+      checkedLog[permalink] = nowIso
+      const wasDeleted = copies.some(c => c.isDeleted)
+      if (verdict === 'exists') {
+        delete suspects[permalink]
+        if (wasDeleted) {
+          await prisma.media.updateMany({ where: { id: { in: copies.map(c => c.id) } }, data: { isDeleted: false, deletedAt: null } })
+          restored++
+          console.log(`[Cron/CheckDeletions] Restored (exists): ${permalink}`)
+        }
+        continue
+      }
+      if (wasDeleted) continue
+      const firstSeen = Date.parse(suspects[permalink] || '')
+      if (!Number.isFinite(firstSeen)) { suspects[permalink] = nowIso; suspected++; continue }
+      if (now - firstSeen < recheckMs) { suspected++; continue }
+      await prisma.media.updateMany({ where: { id: { in: copies.map(c => c.id) } }, data: { isDeleted: true, deletedAt: new Date() } })
+      delete suspects[permalink]
+      deleted++
+      const username = copies[0].influencer?.username || 'Unknown'
+      const campaignNames = Array.from(new Set(copies.map(c => c.campaign?.name).filter(Boolean))) as string[]
+      notifyAllTeam({
+        type: 'post_deleted',
+        title: 'Post eliminado detectado',
+        message: `⚠️ El influencer @${username} ha eliminado un post de ${campaignNames.length > 1 ? 'las campañas' : 'la campaña'} ${campaignNames.join(', ') || 'Unknown'}`,
+        link: copies[0].campaign?.id ? `/campaigns/${copies[0].campaign.id}` : undefined,
+      }).catch(() => {})
+      console.log(`[Cron/CheckDeletions] Deleted (missing twice): ${permalink} by @${username}`)
+    }
+    await saveMap('deletion_checked', prune(checkedLog, 7))
+    await saveMap('deletion_suspects', prune(suspects, 14))
 
-    return NextResponse.json({
-      success: true,
-      checked: totalChecked,
-      deleted: totalDeleted,
-      errors: errors.length > 0 ? errors : undefined,
-    })
+    const summary = { success: true, candidates: candidates.length, checked, deleted, restored, suspected, unknown: candidates.length - checked, durationMs: Date.now() - startedAt }
+    console.log('[Cron/CheckDeletions]', JSON.stringify(summary))
+    return NextResponse.json(summary)
   } catch (error) {
     console.error('[Cron/CheckDeletions] Error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
-/**
- * Check if a post has been deleted by making a HEAD request to its permalink.
- * - 200 = still exists
- * - 404 / redirect to login = deleted
- */
-async function checkIfDeleted(permalink: string): Promise<boolean> {
+export const maxDuration = 300
+
+type IsoMap = Record<string, string>
+async function loadMap(key: string): Promise<IsoMap> {
   try {
-    const response = await fetch(permalink, {
-      method: 'HEAD',
-      redirect: 'manual', // Don't follow redirects
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; TKOCBot/1.0)',
-      },
-    })
+    const row = await prisma.setting.findUnique({ where: { key } })
+    const parsed = row?.value ? JSON.parse(row.value) as unknown : null
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as IsoMap) : {}
+  } catch { return {} }
+}
+async function saveMap(key: string, map: IsoMap): Promise<void> {
+  const value = JSON.stringify(map)
+  await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } }).catch(() => {})
+}
+function prune(map: IsoMap, days: number): IsoMap {
+  const cutoff = Date.now() - days * 86_400_000
+  return Object.fromEntries(Object.entries(map).filter(([, iso]) => { const t = Date.parse(iso); return Number.isFinite(t) && t >= cutoff }))
+}
 
-    const status = response.status
-
-    // 200 = exists
-    if (status === 200) {
-      return false
-    }
-
-    // 404 = clearly deleted
-    if (status === 404) {
-      return true
-    }
-
-    // 301/302 redirects - check if redirecting to login (Instagram pattern)
-    if (status === 301 || status === 302) {
-      const location = response.headers.get('location') || ''
-      // Instagram redirects deleted posts to login page
-      if (
-        location.includes('/accounts/login') ||
-        location.includes('/login') ||
-        location.includes('instagram.com/accounts/')
-      ) {
-        return true
-      }
-    }
-
-    // Other statuses (403, 5xx, etc.) - don't mark as deleted, could be temporary
-    return false
+/** TikTok / YouTube: only a hard 404 counts; redirects and errors are unknown. */
+async function headExists(permalink: string): Promise<PostExistence> {
+  try {
+    const response = await fetch(permalink, { method: 'HEAD', redirect: 'manual', headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TKOCBot/1.0)' } })
+    if (response.status === 200) return 'exists'
+    if (response.status === 404) return 'missing'
+    return 'unknown'
   } catch {
-    // Network errors - don't mark as deleted
-    return false
+    return 'unknown'
   }
 }

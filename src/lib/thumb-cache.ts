@@ -325,6 +325,70 @@ async function recoverRowViaEmbed(page: Page, row: { id: string; permalink: stri
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
+// ============ EXISTENCE CHECK (deleted posts) ============
+
+export type PostExistence = 'exists' | 'missing' | 'unknown'
+
+const NOT_AVAILABLE_MARKERS = [
+  "page isn't available", 'page is not available', 'no está disponible', 'no esta disponible',
+  'esta página no está disponible', 'link you followed may be broken', 'enlace que has seguido',
+  'sorry, this page', 'lo sentimos, esta página',
+]
+
+/**
+ * Does the post still exist? Rendered through the public embed page (the only
+ * signal Instagram gives a server without login): the cover image present →
+ * exists; a 404 or an explicit "not available" page → missing; anything else
+ * (timeouts, login walls, empty shells) → unknown, never "deleted".
+ * 2026-09-12 lesson: a HEAD request that gets redirected to /accounts/login
+ * is NOT a deleted post — that heuristic marked 74 live posts as deleted.
+ */
+export async function checkInstagramPostsExist(
+  permalinks: string[],
+  options: { timeBudgetMs?: number } = {}
+): Promise<Map<string, PostExistence>> {
+  const out = new Map<string, PostExistence>()
+  const executablePath = resolveChromiumExecutable()
+  if (!executablePath) { for (const p of permalinks) out.set(p, 'unknown'); return out }
+  const started = Date.now()
+  const budget = Math.max(10_000, options.timeBudgetMs ?? 240_000)
+  const { browser, close } = await launchEmbedBrowser(executablePath)
+  try {
+    const page = await newEmbedPage(browser)
+    for (const permalink of permalinks) {
+      if (Date.now() - started > budget) { out.set(permalink, 'unknown'); continue }
+      const embedUrl = instagramEmbedUrl(permalink)
+      if (!embedUrl) { out.set(permalink, 'unknown'); continue }
+      try {
+        let status: number | null = null
+        try {
+          const res = await page.goto(embedUrl, { waitUntil: 'networkidle2', timeout: EMBED_NAV_TIMEOUT_MS })
+          status = res ? res.status() : null
+        } catch (err) {
+          if (!(err instanceof Error) || !/timeout/i.test(err.message)) throw err
+        }
+        if (status === 404) { out.set(permalink, 'missing'); continue }
+        await page.waitForSelector('img.EmbeddedMediaImage', { timeout: 2_000 }).catch(() => {})
+        const probe = await page.evaluate(() => {
+          const img = document.querySelector<HTMLImageElement>('img.EmbeddedMediaImage')
+          const anyCdn = Array.from(document.querySelectorAll<HTMLImageElement>('img')).some(i => /cdninstagram/i.test(i.currentSrc || i.src || '') && i.naturalWidth >= 100)
+          return { hasImage: !!(img && (img.currentSrc || img.src)) || anyCdn, text: (document.body?.innerText || '').slice(0, 4000).toLowerCase() }
+        })
+        if (probe.hasImage) out.set(permalink, 'exists')
+        else if (status === 200 && NOT_AVAILABLE_MARKERS.some(m => probe.text.includes(m))) out.set(permalink, 'missing')
+        else out.set(permalink, 'unknown')
+      } catch (err) {
+        console.warn('[post-exists]', permalink, err instanceof Error ? err.message : err)
+        out.set(permalink, 'unknown')
+      }
+      await sleep(EMBED_PAUSE_BETWEEN_POSTS_MS)
+    }
+  } finally {
+    await close()
+  }
+  return out
+}
+
 export interface EmbedRecoverySummary {
   scanned: number
   recovered: number
