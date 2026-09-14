@@ -69,6 +69,13 @@ export interface EmvRates {
     TIKTOK: { video: number }
     YOUTUBE: { video: number; short: number }
   }
+  /**
+   * "Multiplicador de confianza" (industry practice: 1,5×–3× on the final EMV,
+   * because a creator's recommendation converts far better than a paid ad).
+   * 1 = off. Applied to the whole EMV (audience + clicks + interactions) and
+   * disclosed in the client's "?" explanation and the methodology page.
+   */
+  trustMultiplier: number
   engagementValues: {
     INSTAGRAM: { like: number; comment: number; share: number; save: number }
     TIKTOK: { like: number; comment: number; share: number; save: number }
@@ -106,6 +113,7 @@ export const DEFAULT_EMV_RATES: EmvRates = {
     TIKTOK: { video: 0 },
     YOUTUBE: { video: 0, short: 0 },
   },
+  trustMultiplier: 1,
   engagementValues: {
     INSTAGRAM: { like: 0.10, comment: 0.80, share: 1.50, save: 1.20 },
     TIKTOK: { like: 0.06, comment: 0.60, share: 1.20, save: 0.90 },
@@ -165,6 +173,9 @@ export function mergeEmvRates(partial: unknown): EmvRates {
       TIKTOK: validViewValues(DEFAULT_EMV_RATES.viewValues.TIKTOK, vv.TIKTOK),
       YOUTUBE: validViewValues(DEFAULT_EMV_RATES.viewValues.YOUTUBE, vv.YOUTUBE),
     },
+    trustMultiplier: typeof p.trustMultiplier === 'number' && Number.isFinite(p.trustMultiplier) && p.trustMultiplier >= 1 && p.trustMultiplier <= 3
+      ? p.trustMultiplier
+      : DEFAULT_EMV_RATES.trustMultiplier,
     engagementValues: {
       INSTAGRAM: { ...DEFAULT_EMV_RATES.engagementValues.INSTAGRAM, ...(eng.INSTAGRAM || {}) },
       TIKTOK: { ...DEFAULT_EMV_RATES.engagementValues.TIKTOK, ...(eng.TIKTOK || {}) },
@@ -250,8 +261,9 @@ export function calculateEMV(input: EMVInput, rates: EmvRates = DEFAULT_EMV_RATE
     (input.shares * engValues.share) +
     (input.saves * engValues.save)
 
-  const basic = Math.round(reachComponent * 100) / 100
-  const extended = Math.round((reachComponent + clicksComponent + engagementComponent) * 100) / 100
+  const trust = rates.trustMultiplier && rates.trustMultiplier > 1 ? rates.trustMultiplier : 1
+  const basic = Math.round(reachComponent * trust * 100) / 100
+  const extended = Math.round((reachComponent + clicksComponent + engagementComponent) * trust * 100) / 100
 
   return {
     basic,

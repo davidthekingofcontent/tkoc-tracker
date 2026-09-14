@@ -494,6 +494,8 @@ export interface CampaignOverview {
     emvEstimatedStories: number
     emvRealStories: number
     emvEstimatedAudience: number
+    /** EMV trust multiplier in force (1 = none); disclosed next to the client's EMV when > 1. */
+    emvTrustMultiplier?: number
     emvRatio: number | null
     cpm: number | null
     mediaCounts: Record<string, number>

@@ -309,6 +309,8 @@ export default function SettingsPage() {
     postReachRates?: Record<string, number>
     /** € por vista real de vídeo (0 = usar el CPM). */
     viewValues?: Record<string, Record<string, number>>
+    /** Multiplicador de confianza sobre el EMV final (1 = sin multiplicador; estándar 1,5–3). */
+    trustMultiplier?: number
   }
   const [benchmarkFeeRanges, setBenchmarkFeeRanges] = useState<FeeRangesData | null>(null)
   const [benchmarkCpmRates, setBenchmarkCpmRates] = useState<CpmThreshold[] | null>(null)
@@ -2511,6 +2513,30 @@ export default function SettingsPage() {
                             ))}
                           </tbody>
                         </table>
+                      </div>
+                    </div>
+
+                    {/* Multiplicador de confianza (estándar de la industria 1,5×–3×) */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                        {locale === 'es' ? 'Multiplicador de confianza' : 'Trust multiplier'}
+                      </h4>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                        {locale === 'es'
+                          ? 'Se aplica al EMV final (audiencia + clics + interacciones). Estándar de la industria: entre 1,5 y 3, porque la recomendación de un creador convierte más que un anuncio. Con 1 no se aplica. Si está activo, el cliente lo ve indicado en la explicación del "?" del EMV.'
+                          : 'Applied to the final EMV (audience + clicks + interactions). Industry standard: 1.5 to 3, because a creator recommendation converts better than an ad. 1 = off. When active, the client sees it disclosed in the EMV "?" explanation.'}
+                      </p>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm text-gray-600 dark:text-gray-400">×</span>
+                        <Input
+                          type="number"
+                          step="0.1"
+                          min="1"
+                          max="3"
+                          value={benchmarkEmvRates.trustMultiplier ?? 1}
+                          onChange={e => setBenchmarkEmvRates(prev => prev ? { ...prev, trustMultiplier: Number(e.target.value) } : prev)}
+                          className="w-28 h-8 text-sm"
+                        />
                       </div>
                     </div>
 

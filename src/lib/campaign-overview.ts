@@ -327,6 +327,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
       emvRealStories: emv.realStories,
       emvEstimatedAudience: emv.estimatedAudience,
       emvRatio: emvRatioOf(emv.extended, cost.total),
+      emvTrustMultiplier: rates.trustMultiplier > 1 ? rates.trustMultiplier : 1,
       cpm,
       mediaCounts,
     },

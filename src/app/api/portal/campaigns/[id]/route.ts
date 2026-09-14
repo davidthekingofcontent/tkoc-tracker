@@ -79,6 +79,7 @@ interface PortalOverview {
   profilesPosted: number
   mediaCounts: Record<string, number>
   emvExtended: number
+  emvTrustMultiplier?: number
   emvRealStories: number
 }
 
@@ -106,6 +107,7 @@ function toPortalOverview(full: CampaignOverview): PortalOverview {
     er: t.er,
     members: t.members,
     emvExtended: t.emvExtended,
+    emvTrustMultiplier: t.emvTrustMultiplier,
     emvRealStories: t.emvRealStories,
     mediaCounts: t.mediaCounts,
   }

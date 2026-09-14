@@ -91,6 +91,7 @@ interface PortalCampaignDetail {
 interface PortalOverview {
   /** Extended EMV in euros — the only EMV the client sees. */
   emvExtended?: number | null
+  emvTrustMultiplier?: number
   /** Per-creator figures of the same computation; er = tasa de engagement sobre vistas (4B). */
   perInfluencer?: Array<{
     influencerId?: string
@@ -103,6 +104,11 @@ interface PortalOverview {
 }
 
 /** One sentence, the same the report prints as a footnote. Never says "estimado". */
+function emvExplanationFor(mult: number | null | undefined): string {
+  const n = mult && mult > 1 ? mult : null
+  return n ? `${EMV_EXPLANATION} Incluye un multiplicador de confianza ×${n.toLocaleString('es-ES', { maximumFractionDigits: 1 })} por tratarse de recomendación de creador y no de publicidad.` : EMV_EXPLANATION
+}
+
 const EMV_EXPLANATION =
   'Valor equivalente en medios pagados de la audiencia y las interacciones conseguidas, a tarifas de mercado por plataforma y formato; incluye las stories.'
 
@@ -290,6 +296,7 @@ export default function PortalCampaignPage() {
   const team = (campaign.influencers || []).filter(m => m?.influencer)
   // Shown only when there is a value: an EMV of 0 (nothing published yet) is not a datum
   const emvExtended = typeof overview?.emvExtended === 'number' && overview.emvExtended > 0 ? overview.emvExtended : null
+  const emvExplanation = emvExplanationFor(overview?.emvTrustMultiplier)
   // Campaign ER and real views per creator, keyed by influencer id and by username
   const erByCreator = new Map<string, number | null>()
   const viewsByCreator = new Map<string, number | null>()
@@ -371,7 +378,7 @@ export default function PortalCampaignPage() {
               <span className="group relative inline-flex normal-case tracking-normal">
                 <span
                   tabIndex={0}
-                  aria-label={EMV_EXPLANATION}
+                  aria-label={emvExplanation}
                   className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-purple-400 text-[10px] font-bold leading-none text-purple-600 dark:border-purple-500 dark:text-purple-300"
                 >
                   ?
@@ -380,7 +387,7 @@ export default function PortalCampaignPage() {
                   role="tooltip"
                   className="pointer-events-none absolute left-0 top-full z-20 mt-1.5 w-72 rounded-lg border border-gray-200 bg-white p-2.5 text-[11px] font-normal leading-relaxed text-gray-700 opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
                 >
-                  {EMV_EXPLANATION}
+                  {emvExplanation}
                 </span>
               </span>
             </p>

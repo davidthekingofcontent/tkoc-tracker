@@ -227,6 +227,7 @@ interface ReportOverviewTotals {
   er: EngagementRateResult
   members: number
   emvExtended: number
+  emvTrustMultiplier?: number
   /** Agency only (internal breakdown; the portal projection drops them). */
   emvEstimatedStories?: number
   emvRealStories: number
@@ -2105,6 +2106,9 @@ export function CampaignReport({
   // The printed / server-rendered PDF is ALWAYS the client version: no fee, cost,
   // CPM or Ratio EMV can leave the agency by accident. On screen the PM keeps them.
   const clientView = isPortal || printing
+  // EMV "?" text: the market-rate definition plus, when Ajustes applies a trust multiplier, its disclosure
+  const trustMult = totals?.emvTrustMultiplier && totals.emvTrustMultiplier > 1 ? totals.emvTrustMultiplier : null
+  const emvExplanation = trustMult ? `${tr.emvTooltip} ${fill(tr.emvTrustNote, { n: formatRatio(trustMult, { locale }) })}` : tr.emvTooltip
   const showCostCol = !clientView && showCol('creators.cpm') && report.creators.some(c => (c.p?.cost ?? 0) > 0)
   const showCpmCol = !clientView && showCol('creators.cpm') && report.creators.some(c => typeof c.p?.cpm === 'number')
   const showCpmTotal = !clientView && showCol('creators.cpm') && typeof totals?.cpm === 'number'
@@ -2686,7 +2690,7 @@ export function CampaignReport({
                       <div className="flex items-center gap-2 text-xs font-medium text-gray-500 dark:text-gray-400">
                         <Coins className="h-3.5 w-3.5 shrink-0 text-purple-600 dark:text-purple-400" />
                         <span>{tr.emvLabel}</span>
-                        <HelpTip text={tr.emvTooltip} label={tr.emvHelp} />
+                        <HelpTip text={emvExplanation} label={tr.emvHelp} />
                       </div>
                       <p className="mt-2 text-2xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
                         {formatEur(totals.emvExtended, { locale })}
@@ -2836,7 +2840,7 @@ export function CampaignReport({
               {/* Paper has no hover: ONE discreet line with the EMV explanation */}
               {totals.emvExtended > 0 && (
                 <p className="print-only mt-3 text-[10px] leading-snug text-gray-400">
-                  {tr.emvLabel}: {tr.emvTooltip}
+                  {tr.emvLabel}: {emvExplanation}
                 </p>
               )}
             </section>
