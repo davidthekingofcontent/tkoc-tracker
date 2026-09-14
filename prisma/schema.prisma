@@ -231,12 +231,29 @@ model Influencer {
   listItems     ListItem[]
   contactInfo   Contact[]
   socialTokens  SocialToken[]
+  avatar        InfluencerAvatar?
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   @@unique([username, platform])
   @@map("influencers")
+}
+
+/// Durable copy of the profile picture (Instagram/TikTok CDN URLs in
+/// Influencer.avatarUrl expire within days). Served by
+/// /api/influencers/[id]/avatar; filled by src/lib/thumb-cache.ts.
+model InfluencerAvatar {
+  influencerId String     @id
+  influencer   Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  data         Bytes
+  contentType  String
+  bytes        Int
+  sourceUrl    String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@map("influencer_avatars")
 }
 
 enum InfluencerStatus {
@@ -939,6 +956,17 @@ model SpainCategory {
   brandsEs        String[]  // Spanish brands in this sector
 
   @@map("spain_categories")
+}
+
+// ============ DISCOVER: 7-day cache of paid hashtag searches ============
+// One row per (platform:hashtag:limit). Discover serves a hit within 7 days
+// with cost 0 instead of re-running apify~instagram-hashtag-scraper.
+model HashtagSearchCache {
+  key       String   @id      // "INSTAGRAM:limpieza:60" — see buildHashtagCacheKey()
+  payload   Json               // HashtagResult[] as returned by scrapeHashtag()
+  fetchedAt DateTime @default(now())
+
+  @@map("hashtag_search_cache")
 }
 
 // ============ CLIENT-CREATOR MATCHING (Warm Opportunities) ============

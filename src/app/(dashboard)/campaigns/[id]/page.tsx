@@ -45,7 +45,7 @@ import { SpainFitLink } from '@/components/spain-fit-badge'
 import { calculateCreatorScore } from '@/lib/creator-score'
 import { evaluateFeeClient } from '@/lib/market-benchmark-client'
 import { DEFAULT_BENCHMARKS, mergeBenchmarkConfig, normalizeFormat, normalizePlatform, formatsFor, type BenchmarkConfig, type DealTerms, type FeeFormat } from '@/lib/benchmarks'
-import { mediaThumbUrl, proxyImg } from '@/lib/proxy-image'
+import { avatarSrcOf, mediaThumbUrl, proxyImg } from '@/lib/proxy-image'
 import { useRole } from '@/hooks/use-role'
 import {
   ArrowLeft,
@@ -4217,7 +4217,7 @@ export default function CampaignDetailPage() {
                           <TableRow key={ci.id}>
                             <TableCell>
                               <div className="flex items-center gap-3">
-                                <Avatar name={ci.influencer.displayName || ci.influencer.username} size="sm" src={ci.influencer.avatarUrl || undefined} />
+                                <Avatar name={ci.influencer.displayName || ci.influencer.username} size="sm" src={avatarSrcOf(ci.influencer)} />
                                 <div>
                                   <p className="font-medium text-gray-900">
                                     {ci.influencer.displayName || ci.influencer.username}
@@ -4610,7 +4610,7 @@ export default function CampaignDetailPage() {
                     </div>
                     <div className="p-4">
                       <div className="flex items-center gap-2">
-                        <Avatar name={m.influencer?.displayName || m.influencer?.username || '?'} size="sm" src={m.influencer?.avatarUrl || undefined} />
+                        <Avatar name={m.influencer?.displayName || m.influencer?.username || '?'} size="sm" src={avatarSrcOf(m.influencer)} />
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
                             {m.influencer?.displayName || m.influencer?.username || 'Unknown'}
@@ -4782,7 +4782,7 @@ export default function CampaignDetailPage() {
                         {/* Creator info */}
                         <div className="p-3">
                           <div className="flex items-center gap-2">
-                            <Avatar name={story.influencer?.displayName || story.influencer?.username || '?'} size="sm" src={story.influencer?.avatarUrl || undefined} />
+                            <Avatar name={story.influencer?.displayName || story.influencer?.username || '?'} size="sm" src={avatarSrcOf(story.influencer)} />
                             <div className="min-w-0">
                               <p className="truncate text-xs font-medium text-gray-900">
                                 @{story.influencer?.username || 'unknown'}
@@ -4927,7 +4927,7 @@ export default function CampaignDetailPage() {
                           >
                             <div className="flex items-center gap-2.5">
                               <Avatar
-                                src={ci.influencer.avatarUrl || undefined}
+                                src={avatarSrcOf(ci.influencer)}
                                 name={ci.influencer.displayName || ci.influencer.username}
                                 size="sm"
                               />
@@ -5038,7 +5038,7 @@ export default function CampaignDetailPage() {
                     {influencers.filter(ci => ci.influencer && (ci.status === 'SHIPPING' || ci.shippingAddress1)).map(ci => (
                       <div key={ci.id} className="flex items-center justify-between rounded-lg border border-gray-100 p-3">
                         <div className="flex items-center gap-3">
-                          <Avatar name={ci.influencer.displayName || ci.influencer.username} size="sm" src={ci.influencer.avatarUrl || undefined} />
+                          <Avatar name={ci.influencer.displayName || ci.influencer.username} size="sm" src={avatarSrcOf(ci.influencer)} />
                           <div>
                             <p className="text-sm font-medium text-gray-900">@{ci.influencer.username}</p>
                             <p className="text-xs text-gray-500">
@@ -5536,7 +5536,7 @@ export default function CampaignDetailPage() {
                           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
                             {/* Profile */}
                             <div className="flex flex-wrap items-center gap-3 min-w-0 sm:min-w-[200px]">
-                              <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={ci.influencer.avatarUrl || undefined} />
+                              <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={avatarSrcOf(ci.influencer)} />
                               <div>
                                 <p className="font-semibold text-gray-900">{ci.influencer.displayName || ci.influencer.username}</p>
                                 <p className="text-xs text-gray-500">@{ci.influencer.username}</p>
@@ -6106,7 +6106,7 @@ export default function CampaignDetailPage() {
                           <div className="flex items-start gap-4">
                             {/* Profile */}
                             <div className="flex items-center gap-3 min-w-[200px]">
-                              <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={ci.influencer.avatarUrl || undefined} />
+                              <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={avatarSrcOf(ci.influencer)} />
                               <div>
                                 <p className="font-semibold text-gray-900">{ci.influencer.displayName || ci.influencer.username}</p>
                                 <p className="text-xs text-gray-500">@{ci.influencer.username}</p>
@@ -6310,7 +6310,7 @@ export default function CampaignDetailPage() {
                       <div key={ci.id} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-4">
                         <div className="flex items-center gap-4">
                           {/* Profile */}
-                          <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={ci.influencer.avatarUrl || undefined} />
+                          <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={avatarSrcOf(ci.influencer)} />
                           <div className="flex-1 min-w-0">
                             <p className="font-semibold text-gray-900 dark:text-white">@{ci.influencer.username}</p>
                             <div className="flex items-center gap-2 text-xs text-gray-500">
@@ -6924,7 +6924,7 @@ export default function CampaignDetailPage() {
         {insightsFor && (
           <ModalBody className="max-h-[70vh] space-y-4 overflow-y-auto">
             <div className="flex items-center gap-2 text-xs text-gray-500">
-              <Avatar name={insightsFor.influencer?.displayName || insightsFor.influencer?.username || '?'} size="sm" src={insightsFor.influencer?.avatarUrl || undefined} />
+              <Avatar name={insightsFor.influencer?.displayName || insightsFor.influencer?.username || '?'} size="sm" src={avatarSrcOf(insightsFor.influencer)} />
               <span className="font-medium text-gray-800">@{insightsFor.influencer?.username || 'unknown'}</span>
               <span>· {insightsFor.mediaType}</span>
               {insightsFor.postedAt && <span>· {formatDate(insightsFor.postedAt, { locale })}</span>}

@@ -231,6 +231,7 @@ export async function GET(request: NextRequest) {
 
     // Top 5 influencers by interacciones (likes + comentarios + shares + saves) — from the deduplicated posts
     let topInfluencers: Array<{
+      id: string
       username: string
       platform: string
       followers: number
@@ -263,6 +264,7 @@ export async function GET(request: NextRequest) {
             const details = detailsMap.get(id)
             if (!details) return null
             return {
+              id: details.id,
               username: details.username,
               platform: details.platform,
               followers: details.followers,

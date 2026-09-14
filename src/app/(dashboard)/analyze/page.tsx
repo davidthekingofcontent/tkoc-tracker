@@ -54,7 +54,7 @@ import { calculateCPM, type CPMInput, type CPMResult, type Platform as CPMPlatfo
 import { DEFAULT_BENCHMARKS, mergeBenchmarkConfig, normalizeFormat, normalizePlatform, type BenchmarkConfig } from '@/lib/benchmarks'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 
-import { proxyImg } from '@/lib/proxy-image'
+import { avatarSrcOf, proxyImg } from '@/lib/proxy-image'
 
 interface AnalyzedProfile {
   id: string
@@ -558,7 +558,7 @@ export default function AnalyzePage() {
                     <Avatar
                       name={profile.displayName || profile.username}
                       size="lg"
-                      src={profile.avatarUrl || undefined}
+                      src={avatarSrcOf(profile)}
                     />
                     <div>
                       <div className="flex items-center gap-2">
@@ -1275,7 +1275,7 @@ export default function AnalyzePage() {
                           <Avatar
                             name={item.displayName || item.username}
                             size="sm"
-                            src={item.avatarUrl || undefined}
+                            src={avatarSrcOf(item.id.startsWith('ext_') ? { avatarUrl: item.avatarUrl } : item)}
                           />
                           <div className="text-left">
                             <div className="flex items-center gap-1.5">
@@ -1392,7 +1392,7 @@ export default function AnalyzePage() {
                             <Avatar
                               name={item.displayName || item.username}
                               size="sm"
-                              src={item.avatarUrl || undefined}
+                              src={avatarSrcOf(item)}
                             />
                             <div className="text-left">
                               <div className="flex items-center gap-1.5">
@@ -1500,7 +1500,7 @@ export default function AnalyzePage() {
                               <Avatar
                                 name={item.displayName || item.username}
                                 size="sm"
-                                src={item.avatarUrl || undefined}
+                                src={avatarSrcOf(item)}
                               />
                               <div className="text-left">
                                 <div className="flex items-center gap-1.5">

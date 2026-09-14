@@ -5,7 +5,7 @@ import { Repeat, TrendingUp, TrendingDown, Minus, Loader2, RefreshCw } from 'luc
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Avatar } from '@/components/ui/avatar'
 import { formatRatio } from '@/lib/utils'
-import { proxyImg } from '@/lib/proxy-image'
+import { avatarSrcOf } from '@/lib/proxy-image'
 import { useI18n } from '@/i18n/context'
 
 /**
@@ -216,7 +216,7 @@ export function RepeatRadarWidget() {
                   <Avatar
                     name={r.displayName || r.username}
                     size="sm"
-                    src={r.avatarUrl ? proxyImg(r.avatarUrl) : undefined}
+                    src={avatarSrcOf({ id: r.influencerId, avatarUrl: r.avatarUrl })}
                   />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">

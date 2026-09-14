@@ -154,6 +154,89 @@ export async function countMissingThumbs(campaignId?: string): Promise<{ missing
 }
 
 
+// ============ Durable creator avatars (influencer_avatars) ============
+//
+// Same problem, same cure: Influencer.avatarUrl is a signed Instagram/TikTok
+// CDN URL that dies within days (87 % of the stored ones answered 403 on
+// 2026-09-14), so the UI fell back to initials and /api/proxy/image failed
+// ~140 times per page view. We copy the picture once while the URL is fresh
+// (right after every profile upsert) and serve it from
+// /api/influencers/[id]/avatar for ever. Best effort, never blocks a scrape.
+
+export type CacheAvatarResult = 'cached' | 'kept' | 'no_url' | 'fetch_failed'
+
+/**
+ * Copy the profile picture of one influencer. `url` overrides the stored
+ * avatarUrl (the caller just scraped it). Keeps an existing copy unless the
+ * source URL changed and `refresh` is set, or `force`.
+ */
+export async function cacheInfluencerAvatar(
+  influencerId: string,
+  url?: string | null,
+  options: { force?: boolean; refresh?: boolean } = {}
+): Promise<CacheAvatarResult> {
+  const row = await prisma.influencer.findUnique({
+    where: { id: influencerId },
+    select: { avatarUrl: true, avatar: { select: { sourceUrl: true } } },
+  })
+  if (!row) return 'no_url'
+  const source = url || row.avatarUrl
+  if (!source) return 'no_url'
+  if (row.avatar && !options.force && !(options.refresh && row.avatar.sourceUrl !== source)) return 'kept'
+  const img = await fetchImage(source)
+  if (!img) return 'fetch_failed'
+  await prisma.influencerAvatar.upsert({
+    where: { influencerId },
+    create: { influencerId, data: img.data, contentType: img.contentType, bytes: img.data.length, sourceUrl: source },
+    update: { data: img.data, contentType: img.contentType, bytes: img.data.length, sourceUrl: source },
+  })
+  return 'cached'
+}
+
+/**
+ * Copy the avatars that are still missing (or, with `refresh`, whose source
+ * URL changed), most recently scraped first — those are the URLs still alive —
+ * within a row limit and a wall-clock budget. Plain downloads, no Apify.
+ */
+export async function backfillInfluencerAvatars(options: { limit?: number; timeBudgetMs?: number; refresh?: boolean } = {}): Promise<BackfillSummary> {
+  const limit = Math.min(Math.max(Math.round(options.limit ?? 100), 1), 500)
+  const budget = Math.max(1_000, options.timeBudgetMs ?? 60_000)
+  const started = Date.now()
+  const summary: BackfillSummary = { scanned: 0, cached: 0, failed: 0, kept: 0, stop: 'done' }
+  const rows = await prisma.influencer.findMany({
+    where: { avatarUrl: { not: null }, ...(options.refresh ? {} : { avatar: null }) },
+    select: { id: true },
+    orderBy: [{ lastScraped: { sort: 'desc', nulls: 'last' } }, { updatedAt: 'desc' }],
+    take: limit + 1,
+  })
+  if (rows.length > limit) summary.stop = 'limit'
+  for (const row of rows.slice(0, limit)) {
+    if (Date.now() - started > budget) { summary.stop = 'time'; break }
+    summary.scanned++
+    try {
+      const r = await cacheInfluencerAvatar(row.id, null, { refresh: options.refresh })
+      if (r === 'cached') summary.cached++
+      else if (r === 'kept') summary.kept++
+      else summary.failed++
+    } catch (err) {
+      summary.failed++
+      console.error(`[avatar-cache] ${row.id}:`, err instanceof Error ? err.message : err)
+    }
+  }
+  if (summary.scanned > 0) console.log(`[avatar-cache] backfill: ${summary.cached} cached, ${summary.kept} kept, ${summary.failed} failed (${summary.stop})`)
+  return summary
+}
+
+/** Backlog: influencers with an avatarUrl but no durable copy yet, and how many already have one. */
+export async function countMissingAvatars(): Promise<{ missing: number; cached: number }> {
+  const [missing, cached] = await Promise.all([
+    prisma.influencer.count({ where: { avatarUrl: { not: null }, avatar: null } }),
+    prisma.influencer.count({ where: { avatar: { isNot: null } } }),
+  ])
+  return { missing, cached }
+}
+
+
 // ============ Free recovery of expired thumbnails via the Instagram embed page ============
 
 const EMBED_NAV_TIMEOUT_MS = 15_000

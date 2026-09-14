@@ -5,7 +5,7 @@ import { Platform } from '@/generated/prisma/client'
 import { scrapeProfile, scrapeStories, isApifyConfigured, isApifyExhausted } from '@/lib/apify'
 import { parseCreatorHandle } from '@/lib/handles'
 import { ensureContact } from '@/lib/contacts'
-import { scrapedProfileHasData, scrapedProfileUpdate } from '@/lib/influencer-upsert'
+import { afterInfluencerUpsert, scrapedProfileHasData, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 import {
   captureMemberContent,
   campaignHasTargets,
@@ -141,6 +141,7 @@ async function processHandle(
         update: scrapedProfileUpdate(scraped),
         select: { id: true, username: true },
       })
+      afterInfluencerUpsert(influencer.id, scraped.avatarUrl)
       created = true
     }
 

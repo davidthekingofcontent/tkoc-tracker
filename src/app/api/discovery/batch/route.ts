@@ -5,6 +5,7 @@ import { Platform } from '@/generated/prisma/client'
 import { scrapeProfile, isApifyExhausted, getApifyResumeDate, type ScrapedProfile } from '@/lib/apify'
 import { enrichCreatorFull } from '@/lib/creator-enrichment'
 import { ensureContact } from '@/lib/contacts'
+import { afterInfluencerUpsert } from '@/lib/influencer-upsert'
 
 /**
  * Discovery only writes CreatorProfile/CreatorPlatformProfile rows, but Contacts
@@ -96,6 +97,9 @@ async function materializeInfluencerAndContact(opts: {
       })
       influencerId = created.id
     }
+
+    // Durable copy of the profile picture while the CDN URL is fresh (fire-and-forget)
+    afterInfluencerUpsert(influencerId, opts.avatarUrl)
 
     // Keep the CreatorPlatformProfile → Influencer link in sync
     if (platformProfileId) {

@@ -31,7 +31,7 @@ import {
 import { Avatar } from '@/components/ui/avatar'
 import { useI18n } from '@/i18n/context'
 import { formatNumber, formatDate, formatPercent } from '@/lib/utils'
-import { proxyImg } from '@/lib/proxy-image'
+import { avatarSrcOf, proxyImg } from '@/lib/proxy-image'
 
 // ============ TYPES ============
 
@@ -323,7 +323,7 @@ export default function CreatorProfilePage() {
             name={creator.displayName || primaryProfile?.username || '?'}
             size="lg"
             className="!h-20 !w-20 !text-2xl"
-            src={primaryProfile?.avatarUrl ? proxyImg(primaryProfile.avatarUrl) : undefined}
+            src={avatarSrcOf({ avatarUrl: primaryProfile?.avatarUrl })}
           />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 mb-2">

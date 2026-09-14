@@ -6,7 +6,7 @@ import { isApifyConfiguredAsync } from '@/lib/apify'
 import { fetchProfile } from '@/lib/platform-client'
 import { isYouTubeApiConfigured } from '@/lib/youtube-api'
 import { notifyAllTeam } from '@/lib/notifications'
-import { scrapedProfileUpdate } from '@/lib/influencer-upsert'
+import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 import type { ScrapedProfile } from '@/lib/apify'
 
 /** Ad disclosure markers to detect paid partnership disclosures */
@@ -226,6 +226,7 @@ export async function GET(request: NextRequest) {
           where: { id: inf.id },
           data: { ...scrapedProfileUpdate(profile as unknown as ScrapedProfile), dataSource },
         })
+        afterInfluencerUpsert(inf.id, (profile as unknown as ScrapedProfile).avatarUrl)
 
         // Small delay between profiles to respect rate limits
         await new Promise(r => setTimeout(r, 2000))

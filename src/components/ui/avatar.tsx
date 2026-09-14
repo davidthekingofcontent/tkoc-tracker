@@ -55,9 +55,11 @@ function getProxiedUrl(url: string): string {
 
 const Avatar = React.forwardRef<HTMLDivElement, AvatarProps>(
   ({ src, alt, name, size = 'md', className, ...props }, ref) => {
-    const [imgError, setImgError] = useState(false)
+    // The src that failed to load; a new src (another creator in a reused
+    // row, a refreshed profile) gets a new chance without an effect.
+    const [failedSrc, setFailedSrc] = useState<string | null>(null)
     const proxiedSrc = src ? getProxiedUrl(src) : null
-    const showImage = proxiedSrc && !imgError
+    const showImage = proxiedSrc && failedSrc !== proxiedSrc
     const initials = name ? getInitials(name) : '?'
 
     return (
@@ -75,7 +77,7 @@ const Avatar = React.forwardRef<HTMLDivElement, AvatarProps>(
             src={proxiedSrc}
             alt={alt || name || 'Avatar'}
             className="h-full w-full object-cover"
-            onError={() => setImgError(true)}
+            onError={() => setFailedSrc(proxiedSrc)}
           />
         ) : (
           <span>{initials}</span>

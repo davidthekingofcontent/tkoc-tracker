@@ -6,6 +6,7 @@ import { cn, formatNumber, formatEur, formatRatio, formatPercent } from "@/lib/u
 import type { AudienceTotals, EngagementRateResult } from '@/lib/metrics'
 import { useI18n } from '@/i18n/context'
 import { Avatar } from '@/components/ui/avatar'
+import { avatarSrcOf } from '@/lib/proxy-image'
 import { useRole } from '@/hooks/use-role'
 import { CreatorScoreBadge, useIntelligenceText } from '@/components/creator-score-badge'
 import { getQuickBenchmark } from '@/lib/market-benchmark-client'
@@ -81,6 +82,8 @@ interface RecentCampaign {
 }
 
 interface TopInfluencer {
+  /** Influencer id (durable avatar); older API payloads may omit it. */
+  id?: string | null
   username: string
   platform: string
   followers: number
@@ -334,7 +337,7 @@ function CreatorDashboard() {
       <div className="flex flex-col sm:flex-row sm:items-center gap-4">
         <div className="flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-purple-500 to-blue-500 text-white text-xl font-bold shrink-0">
           {profile?.avatarUrl ? (
-            <img src={profile.avatarUrl} alt="" className="h-14 w-14 rounded-full object-cover" />
+            <Avatar src={avatarSrcOf(profile)} name={firstName || 'C'} size="lg" className="bg-transparent text-white" />
           ) : (
             firstName[0]?.toUpperCase() || 'C'
           )}
@@ -1022,7 +1025,7 @@ function AdminDashboard({ showEconomics }: { showEconomics: boolean }) {
                 <div key={inf.username + inf.platform} className="flex items-center gap-3 px-5 py-3">
                   <span className="text-xs font-bold text-gray-300 w-4">{i + 1}</span>
                   <Avatar
-                    src={inf.avatarUrl}
+                    src={avatarSrcOf(inf)}
                     name={inf.username}
                     size="sm"
                   />

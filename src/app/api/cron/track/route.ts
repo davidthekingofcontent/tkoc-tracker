@@ -10,6 +10,7 @@ import {
   upsertCampaignPost,
 } from '@/lib/campaign-capture'
 import type { Platform } from '@/generated/prisma/client'
+import { afterInfluencerUpsert } from '@/lib/influencer-upsert'
 
 function formatFollowers(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
@@ -214,6 +215,8 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
             ...(result.authorFollowers > 0 && { followers: result.authorFollowers }),
           },
         })
+        // Durable copy of the profile picture while the CDN URL is fresh (fire-and-forget)
+        afterInfluencerUpsert(influencer.id, result.authorAvatarUrl)
 
         // Country filtering
         if (campaign.country) {

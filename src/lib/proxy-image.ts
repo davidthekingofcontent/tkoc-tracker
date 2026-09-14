@@ -12,6 +12,19 @@ export function mediaThumbUrl(media: { id?: string | null; thumbnailUrl?: string
   return proxyImg(media.thumbnailUrl || media.mediaUrl)
 }
 
+/**
+ * Profile picture of a creator: the durable copy served by
+ * /api/influencers/[id]/avatar (influencer_avatars; CDN URLs expire within
+ * days). Falls back to the proxied CDN URL when there is no Influencer id
+ * (a scraped profile not stored yet, a CreatorPlatformProfile row) and to ''
+ * when there is nothing at all (the Avatar component then shows initials).
+ */
+export function avatarSrcOf(inf: { id?: string | null; avatarUrl?: string | null } | null | undefined): string {
+  if (!inf) return ''
+  if (inf.id) return `/api/influencers/${inf.id}/avatar`
+  return proxyImg(inf.avatarUrl)
+}
+
 export function proxyImg(url: string | null | undefined): string {
   if (!url) return ''
   try {

@@ -85,3 +85,18 @@ export function scrapedProfileUpdate(
 
   return data
 }
+
+/**
+ * Post-upsert hook for every code path that writes a scraped profile: copies
+ * the profile picture into influencer_avatars while the CDN URL is still
+ * alive (see src/lib/thumb-cache.ts). Fire-and-forget: the caller never
+ * waits and a failed copy never fails the scrape. `refresh` is on, so a new
+ * URL (every scrape signs a new one) replaces the stored copy; an unchanged
+ * URL keeps it (no download).
+ */
+export function afterInfluencerUpsert(influencerId: string, avatarUrl?: string | null): void {
+  if (!influencerId) return
+  void import('@/lib/thumb-cache')
+    .then(({ cacheInfluencerAvatar }) => cacheInfluencerAvatar(influencerId, avatarUrl, { refresh: true }))
+    .catch(err => console.error(`[avatar-cache] ${influencerId}:`, err instanceof Error ? err.message : err))
+}

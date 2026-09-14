@@ -19,6 +19,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
+import { avatarSrcOf } from '@/lib/proxy-image'
 import { StatCard } from '@/components/ui/stat-card'
 import {
   Table,
@@ -361,7 +362,7 @@ export default function ListDetailPage() {
                 <TableRow key={item.id}>
                   <TableCell>
                     <div className="flex items-center gap-3">
-                      <Avatar name={item.influencer.displayName || item.influencer.username} size="sm" src={item.influencer.avatarUrl || undefined} />
+                      <Avatar name={item.influencer.displayName || item.influencer.username} size="sm" src={avatarSrcOf(item.influencer)} />
                       <div>
                         <p className="font-medium text-gray-900 dark:text-gray-100">
                           @{item.influencer.username}

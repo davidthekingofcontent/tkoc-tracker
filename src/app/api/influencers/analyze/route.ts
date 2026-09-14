@@ -4,7 +4,7 @@ import { getSession } from '@/lib/auth'
 import { Platform } from '@/generated/prisma/client'
 import { scrapeProfile, isApifyConfigured, isApifyExhausted, getApifyResumeDate } from '@/lib/apify'
 import { ensureContact } from '@/lib/contacts'
-import { scrapedProfileHasData, scrapedProfileUpdate } from '@/lib/influencer-upsert'
+import { afterInfluencerUpsert, scrapedProfileHasData, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 
 export async function POST(request: NextRequest) {
   try {
@@ -106,6 +106,8 @@ export async function POST(request: NextRequest) {
               _count: { select: { campaigns: true, media: true } },
             },
           })
+          // Durable copy of the profile picture while the CDN URL is fresh (fire-and-forget)
+          afterInfluencerUpsert(influencer.id, scraped.avatarUrl)
 
           // Every analyzed influencer becomes a Contact of the user who analyzed it
           await ensureContact(influencer.id, session.id)

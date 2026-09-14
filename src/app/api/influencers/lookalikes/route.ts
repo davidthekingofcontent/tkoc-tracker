@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { isApifyConfigured, scrapeProfile, searchInstagramAccounts, scrapeInstagramSimilarAccounts } from '@/lib/apify'
-import { scrapedProfileUpdate } from '@/lib/influencer-upsert'
+import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 
 function calculateMatchScore(
   source: { followers: number; engagementRate: number; platform: string },
@@ -89,6 +89,7 @@ export async function GET(request: NextRequest) {
             // Empty scrapes never zero out real metrics
             update: scrapedProfileUpdate(scraped),
           })
+          afterInfluencerUpsert(source.id, scraped.avatarUrl)
         }
       } catch (err) {
         console.error('Failed to scrape source profile:', err)

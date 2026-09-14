@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Loader2, Eye, MessageCircle, Radio, Clock, Plus, X } from 'lucide-react'
 import { formatNumber } from '@/lib/utils'
-import { mediaThumbUrl } from '@/lib/proxy-image'
+import { avatarSrcOf, mediaThumbUrl } from '@/lib/proxy-image'
+import { Avatar } from '@/components/ui/avatar'
 
 interface StoryData {
   id: string
@@ -276,17 +277,11 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
               {/* Influencer Header */}
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
-                  {group.influencer.avatarUrl ? (
-                    <img
-                      src={`/api/proxy/image?url=${encodeURIComponent(group.influencer.avatarUrl)}`}
-                      alt=""
-                      className="h-8 w-8 rounded-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-purple-100 text-xs font-bold text-purple-600">
-                      {group.influencer.username.slice(0, 2).toUpperCase()}
-                    </div>
-                  )}
+                  <Avatar
+                    src={avatarSrcOf(group.influencer)}
+                    name={group.influencer.displayName || group.influencer.username}
+                    size="sm"
+                  />
                   <div>
                     <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                       @{group.influencer.username}

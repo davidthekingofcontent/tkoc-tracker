@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
 import { cn, formatNumber, formatEur, formatRatio, formatDate } from '@/lib/utils'
-import { mediaThumbUrl, proxyImg } from '@/lib/proxy-image'
+import { avatarSrcOf, mediaThumbUrl, proxyImg } from '@/lib/proxy-image'
 import type { BaselineComparison } from '@/lib/creator-baseline'
 // Pure module (no Prisma): the ONE economic-wording test the server projection
 // uses, kept here only as a last-resort print guard (see screenOnly below).
@@ -2969,7 +2969,7 @@ export function CampaignReport({
                             )}
                             <td className="px-3 py-2.5">
                               <div className="flex min-w-0 items-center gap-2.5">
-                                <FixedAvatar src={c.inf.avatarUrl} name={c.inf.displayName || c.inf.username || '?'} />
+                                <FixedAvatar src={avatarSrcOf(c.inf)} name={c.inf.displayName || c.inf.username || '?'} />
                                 <div className="min-w-0">
                                   <p className="truncate font-medium text-gray-900 dark:text-gray-100">
                                     @{c.inf.username || '—'}

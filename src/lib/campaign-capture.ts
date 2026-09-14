@@ -3,7 +3,7 @@ import { scrapeProfile, scrapeStories, isApifyExhausted } from '@/lib/apify'
 import type { ScrapedPost, ScrapedStory } from '@/lib/apify'
 import type { MediaType, Platform } from '@/generated/prisma/client'
 import { computeBaseline } from '@/lib/creator-baseline'
-import { scrapedProfileUpdate } from '@/lib/influencer-upsert'
+import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 
 /**
  * PRECISE CONTENT CAPTURE — the single source of truth for "does this piece
@@ -636,6 +636,7 @@ export async function captureMemberContent(
           where: { id: influencer.id },
           data: scrapedProfileUpdate(scraped),
         })
+        afterInfluencerUpsert(influencer.id, scraped.avatarUrl)
       } catch (err) {
         console.error(`[campaign-capture] influencer refresh failed for @${influencer.username}:`, err instanceof Error ? err.message : err)
       }

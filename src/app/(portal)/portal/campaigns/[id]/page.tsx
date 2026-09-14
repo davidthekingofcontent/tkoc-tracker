@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
 import { formatNumber, formatEur, formatPercent, cn } from '@/lib/utils'
-import { mediaThumbUrl } from '@/lib/proxy-image'
+import { avatarSrcOf, mediaThumbUrl } from '@/lib/proxy-image'
 import {
   Loader2,
   ArrowLeft,
@@ -71,6 +71,7 @@ interface PortalMedia {
   source?: string | null
   postedAt?: string | null
   influencer?: {
+    id?: string | null
     username?: string | null
     avatarUrl?: string | null
   } | null
@@ -439,7 +440,7 @@ export default function PortalCampaignPage() {
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
                             <Avatar
-                              src={inf.avatarUrl}
+                              src={avatarSrcOf(inf)}
                               name={inf.displayName || inf.username || '?'}
                               size="sm"
                             />
@@ -548,7 +549,7 @@ export default function PortalCampaignPage() {
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex min-w-0 items-center gap-2">
                         <Avatar
-                          src={m.influencer?.avatarUrl}
+                          src={avatarSrcOf(m.influencer)}
                           name={m.influencer?.username || '?'}
                           size="sm"
                           className="h-6 w-6 text-[10px]"

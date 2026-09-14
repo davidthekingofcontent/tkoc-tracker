@@ -18,7 +18,7 @@ import {
 } from 'lucide-react'
 import { useI18n } from '@/i18n/context'
 import { Avatar } from '@/components/ui/avatar'
-import { proxyImg } from '@/lib/proxy-image'
+import { avatarSrcOf } from '@/lib/proxy-image'
 import { formatNumber } from '@/lib/utils'
 import { parseCreatorHandle } from '@/lib/handles'
 
@@ -498,7 +498,7 @@ function LookalikesContent() {
             </div>
             <div className="flex items-center gap-4">
               <Avatar
-                src={proxyImg(source.avatarUrl)}
+                src={avatarSrcOf(source.origin === 'influencer' ? source : { avatarUrl: source.avatarUrl })}
                 name={source.displayName || source.username}
                 size="lg"
               />
@@ -570,7 +570,7 @@ function LookalikesContent() {
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3 min-w-0">
                       <Avatar
-                        src={proxyImg(item.avatarUrl)}
+                        src={avatarSrcOf(item.source === 'influencer' ? item : { avatarUrl: item.avatarUrl })}
                         name={item.displayName || item.username}
                         size="md"
                       />

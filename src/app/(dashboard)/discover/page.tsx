@@ -27,12 +27,16 @@ import { Avatar } from '@/components/ui/avatar'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { useI18n } from '@/i18n/context'
 import { formatNumber } from '@/lib/utils'
-import { proxyImg } from '@/lib/proxy-image'
+import { avatarSrcOf } from '@/lib/proxy-image'
 import Link from 'next/link'
 
 // ============ TYPES ============
 
+type ResultSource = 'apify' | 'database' | 'apify-cache'
+
 interface DiscoverResult {
+  /** Legacy Influencer id when the creator has a row (durable avatar copy). */
+  influencerId?: string
   username: string
   displayName: string | null
   avatarUrl: string | null
@@ -43,11 +47,43 @@ interface DiscoverResult {
   avgViews: number
   email: string | null
   platform: string
-  source: 'apify' | 'database'
+  source: ResultSource
   enriched?: boolean
   bio?: string | null
   country?: string | null
   city?: string | null
+  categories?: string[]
+  matchReason?: string
+}
+
+/** Metadata returned by /api/influencers/discover in category mode. */
+interface CategoryMeta {
+  category: { slug: string; nameEs: string; nameEn: string } | null
+  hashtag: string
+  /** Platform the free search was run on — the paid run must match it. */
+  platform: string
+  apifyLimit: number
+  estimatedApifyCostUsd: number
+  apifyAvailable: boolean
+  apifyUnavailableReason: 'not_configured' | 'exhausted' | 'soft_limit' | 'no_hashtag' | 'cached' | null
+  apifyUsage: { usd: number | null; softLimit: number } | null
+  cached: boolean
+  cacheFetchedAt: string | null
+  /** The paid run could not be stored in the 7-day cache: repeating it costs again. */
+  cacheWriteFailed: boolean
+  dbCount: number
+  apifyCount: number
+}
+
+type SearchError =
+  | { type: 'soft_limit'; usd: number | null; softLimit: number | null }
+  | { type: 'exhausted' }
+  | { type: 'not_configured' }
+  | { type: 'confirm_mismatch' }
+  | { type: 'generic' }
+
+function fill(template: string, vars: Record<string, string | number>): string {
+  return Object.entries(vars).reduce((acc, [k, v]) => acc.split(`{${k}}`).join(String(v)), template)
 }
 
 interface DbCreatorResult {
@@ -308,7 +344,11 @@ export default function DiscoverPage() {
   const [searching, setSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
   const [total, setTotal] = useState(0)
-  const [source, setSource] = useState<'apify' | 'database'>('database')
+  const [source, setSource] = useState<ResultSource | 'mixed'>('database')
+  const [categoryMeta, setCategoryMeta] = useState<CategoryMeta | null>(null)
+  const [searchError, setSearchError] = useState<SearchError | null>(null)
+  const [confirmPaidOpen, setConfirmPaidOpen] = useState(false)
+  const [searchingMore, setSearchingMore] = useState(false)
   const [sortField, setSortField] = useState<string>('followers')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -451,12 +491,18 @@ export default function DiscoverPage() {
         default: return 0
       }
     }
+    // Category mode: our own database always comes first, then Apify results.
+    const rank = (r: DiscoverResult) => (r.source === 'database' ? 0 : 1)
     return [...results].sort((a, b) => {
+      if (searchMode === 'category') {
+        const d = rank(a) - rank(b)
+        if (d !== 0) return d
+      }
       const aVal = getValue(a, sortField)
       const bVal = getValue(b, sortField)
       return sortDir === 'asc' ? aVal - bVal : bVal - aVal
     })
-  }, [results, sortField, sortDir])
+  }, [results, sortField, sortDir, searchMode])
 
   const filteredResults = useMemo(() => {
     let filtered = sortedResults
@@ -517,7 +563,12 @@ export default function DiscoverPage() {
     setHasSearched(false)
     setResults([])
     setVisibleCount(50)
+    setCategoryMeta(null)
+    setSearchError(null)
+    setConfirmPaidOpen(false)
   }
+
+  const formatUsd = (n: number) => (isEs ? `${n.toFixed(2).replace('.', ',')} $` : `$${n.toFixed(2)}`)
 
   const handleAddToList = async (listId: string) => {
     if (!addToListModal) return
@@ -555,12 +606,23 @@ export default function DiscoverPage() {
     }
   }
 
-  const handleSearch = async () => {
+  // confirmPaid=true is the ONLY way a category search spends Apify credit:
+  // the first call is free (our DB + 7-day cache) and returns the estimate.
+  const handleSearch = async (confirmPaid = false) => {
     if (!searchInput.trim()) return
-    setSearching(true)
-    setHasSearched(true)
-    setResults([])
-    setVisibleCount(50)
+    if (confirmPaid && !categoryMeta) return
+    setSearchError(null)
+    setConfirmPaidOpen(false)
+    const requestPlatform = platform || 'instagram'
+    if (confirmPaid) {
+      setSearchingMore(true)
+    } else {
+      setSearching(true)
+      setHasSearched(true)
+      setResults([])
+      setVisibleCount(50)
+      setCategoryMeta(null)
+    }
 
     try {
       const res = await fetch('/api/influencers/discover', {
@@ -568,29 +630,99 @@ export default function DiscoverPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: searchInput,
-          platform: platform || 'instagram',
+          platform: requestPlatform,
           mode: searchMode,
           minFollowers: followersMin ? parseInt(followersMin, 10) : undefined,
           maxFollowers: followersMax ? parseInt(followersMax, 10) : undefined,
+          // The server refuses the paid run unless it is exactly the one shown in the confirmation.
+          ...(confirmPaid && categoryMeta
+            ? { confirmPaid: true, confirmed: { hashtag: categoryMeta.hashtag, platform: categoryMeta.platform, limit: categoryMeta.apifyLimit } }
+            : {}),
         }),
       })
+      const data = await res.json().catch(() => null)
 
-      if (res.ok) {
-        const data = await res.json()
+      if (res.ok && data) {
         const items: DiscoverResult[] = data.results || []
         setResults(items)
         setTotal(items.length)
         setSource(data.source || 'database')
+        if (searchMode === 'category') {
+          setCategoryMeta({
+            category: data.category ?? null,
+            hashtag: data.hashtag ?? '',
+            platform: requestPlatform,
+            apifyLimit: data.apifyLimit ?? 0,
+            estimatedApifyCostUsd: data.estimatedApifyCostUsd ?? 0,
+            apifyAvailable: data.apifyAvailable === true,
+            apifyUnavailableReason: data.apifyUnavailableReason ?? null,
+            apifyUsage: data.apifyUsage ?? null,
+            cached: data.cached === true,
+            cacheFetchedAt: data.cacheFetchedAt ?? null,
+            cacheWriteFailed: data.cacheWriteFailed === true,
+            dbCount: data.dbCount ?? items.filter(i => i.source === 'database').length,
+            apifyCount: data.apifyCount ?? items.filter(i => i.source !== 'database').length,
+          })
+        }
       } else {
+        let blocked: 'soft_limit' | 'not_configured' | 'exhausted' | null = null
+        if (res.status === 402 && data?.error === 'apify_soft_limit') {
+          blocked = 'soft_limit'
+          setSearchError({ type: 'soft_limit', usd: data.usd ?? null, softLimit: data.softLimit ?? null })
+        } else if (res.status === 503 && data?.error === 'not_configured') {
+          blocked = 'not_configured'
+          setSearchError({ type: 'not_configured' })
+        } else if (res.status === 503) {
+          blocked = 'exhausted'
+          setSearchError({ type: 'exhausted' })
+        } else if (res.status === 409 && data?.error === 'confirm_mismatch') {
+          setSearchError({ type: 'confirm_mismatch' })
+        } else {
+          setSearchError({ type: 'generic' })
+        }
+        // A blocked paid run: stop offering the button until the next free search.
+        if (confirmPaid && blocked) {
+          const reason = blocked
+          setCategoryMeta(prev => prev ? { ...prev, apifyAvailable: false, apifyUnavailableReason: reason } : prev)
+        }
+        if (!confirmPaid) {
+          setResults([])
+          setTotal(0)
+        }
+      }
+    } catch {
+      setSearchError({ type: 'generic' })
+      if (!confirmPaid) {
         setResults([])
         setTotal(0)
       }
-    } catch {
-      setResults([])
-      setTotal(0)
     } finally {
       setSearching(false)
+      setSearchingMore(false)
     }
+  }
+
+  // The confirmation quotes the hashtag/platform of the last free search; a
+  // changed input or platform means a different run, so close it.
+  useEffect(() => { setConfirmPaidOpen(false) }, [searchInput, platform])
+
+  const paidOfferVisible =
+    searchMode === 'category' && hasSearched && !searching && categoryMeta !== null &&
+    (categoryMeta.apifyAvailable || categoryMeta.apifyUnavailableReason === 'soft_limit' || categoryMeta.apifyUnavailableReason === 'exhausted')
+
+  const sourceBadge = (src: ResultSource) => {
+    const cls = src === 'database'
+      ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
+      : src === 'apify-cache'
+        ? 'bg-sky-50 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300'
+        : 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
+    const label = src === 'database' ? t.discover.sourceDatabase : src === 'apify-cache' ? t.discover.sourceApifyCache : t.discover.sourceApify
+    const Icon = src === 'database' ? Database : Radio
+    return (
+      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${cls}`}>
+        <Icon className="h-3 w-3" />{label}
+      </span>
+    )
   }
 
   // ============ RENDER ============
@@ -1048,7 +1180,7 @@ export default function DiscoverPage() {
                           <Avatar
                             name={item.displayName || item.username}
                             size="lg"
-                            src={item.avatarUrl ? proxyImg(item.avatarUrl) : undefined}
+                            src={avatarSrcOf({ avatarUrl: item.avatarUrl })}
                           />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
@@ -1241,7 +1373,7 @@ export default function DiscoverPage() {
                     type="text"
                     value={searchInput}
                     onChange={(e) => setSearchInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    onKeyDown={(e) => e.key === 'Enter' && !searching && !searchingMore && handleSearch()}
                     placeholder={
                       searchMode === 'username'
                         ? (isEs ? '@usuario o URL de perfil' : '@username or profile URL')
@@ -1253,7 +1385,7 @@ export default function DiscoverPage() {
                 <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-500">
                   {searchMode === 'username'
                     ? (isEs ? 'Resultado inmediato (~10s)' : 'Instant result (~10s)')
-                    : (isEs ? 'Busca creadores por hashtag (~1-2 min)' : 'Finds creators by hashtag (~1-2 min)')
+                    : t.discover.categoryHint
                   }
                 </p>
               </div>
@@ -1294,7 +1426,7 @@ export default function DiscoverPage() {
 
               {/* Action Buttons */}
               <div className="flex flex-col gap-2 border-t border-gray-200 dark:border-gray-600 pt-5">
-                <button type="button" onClick={handleSearch} disabled={searching || !searchInput.trim()}
+                <button type="button" onClick={() => handleSearch()} disabled={searching || searchingMore || !searchInput.trim()}
                   className="w-full flex items-center justify-center gap-2 rounded-xl bg-purple-600 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-purple-500/25 hover:bg-purple-700 active:bg-purple-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
                   {searching ? (
                     <><Loader2 className="h-5 w-5 animate-spin" />{isEs ? 'Buscando...' : 'Searching...'}</>
@@ -1318,13 +1450,13 @@ export default function DiscoverPage() {
                   <p className="text-base font-semibold text-gray-700 dark:text-gray-200">
                     {searchMode === 'username'
                       ? (isEs ? `Buscando @${searchInput.replace(/^@/, '')}...` : `Looking up @${searchInput.replace(/^@/, '')}...`)
-                      : (isEs ? `Buscando creadores de "${searchInput}"...` : `Searching "${searchInput}" creators...`)
+                      : t.discover.searchingDb
                     }
                   </p>
                   <p className="text-sm text-gray-400 mt-2 max-w-sm text-center">
                     {searchMode === 'username'
                       ? (isEs ? 'Esto tarda unos 10 segundos.' : 'This takes about 10 seconds.')
-                      : (isEs ? 'Esto puede tardar 1-2 minutos.' : 'This may take 1-2 minutes.')}
+                      : t.discover.searchingDbNote}
                   </p>
                   <div className="mt-4 flex items-center gap-2">
                     <div className="h-2 w-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -1351,6 +1483,94 @@ export default function DiscoverPage() {
                 </div>
               )}
 
+              {/* Category mode: what we found for free + the paid offer (explicit, with estimate) */}
+              {searchMode === 'category' && hasSearched && !searching && categoryMeta && (
+                <div className="mb-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-4 space-y-3">
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <Tag className="h-4 w-4 text-purple-500" />
+                    <span className="text-gray-500 dark:text-gray-400">{t.discover.detectedCategory}:</span>
+                    <span className="font-semibold text-gray-900 dark:text-gray-100">
+                      {categoryMeta.category ? (isEs ? categoryMeta.category.nameEs : categoryMeta.category.nameEn) : `#${categoryMeta.hashtag}`}
+                    </span>
+                    {categoryMeta.category && categoryMeta.hashtag && (
+                      <span className="text-xs text-gray-400">#{categoryMeta.hashtag}</span>
+                    )}
+                    <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-50 dark:bg-emerald-900/30 px-2.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                      <Database className="h-3 w-3" />{categoryMeta.dbCount} · {t.discover.fromDatabase}
+                    </span>
+                    {categoryMeta.apifyCount > 0 && (
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${categoryMeta.cached ? 'bg-sky-50 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300' : 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'}`}>
+                        <Radio className="h-3 w-3" />{fill(t.discover.newFromApify, { n: categoryMeta.apifyCount })}
+                      </span>
+                    )}
+                  </div>
+
+                  {categoryMeta.cached && categoryMeta.cacheFetchedAt && (
+                    <p className="text-xs text-sky-700 dark:text-sky-300">
+                      {fill(t.discover.cachedNote, { date: new Date(categoryMeta.cacheFetchedAt).toLocaleDateString(isEs ? 'es-ES' : 'en-GB', { day: '2-digit', month: '2-digit' }) })}
+                    </p>
+                  )}
+
+                  {searchError?.type === 'soft_limit' && (
+                    <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                      {fill(t.discover.softLimitReached, { usd: searchError.usd !== null ? formatUsd(searchError.usd) : '?', limit: searchError.softLimit !== null ? formatUsd(searchError.softLimit) : '?' })}
+                    </p>
+                  )}
+                  {searchError?.type === 'exhausted' && (
+                    <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">{t.discover.apifyExhausted}</p>
+                  )}
+                  {searchError?.type === 'not_configured' && (
+                    <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">{t.discover.apifyNotConfigured}</p>
+                  )}
+                  {searchError?.type === 'confirm_mismatch' && (
+                    <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">{t.discover.confirmMismatch}</p>
+                  )}
+                  {searchError?.type === 'generic' && (
+                    <p className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">{t.discover.searchError}</p>
+                  )}
+                  {categoryMeta.cacheWriteFailed && (
+                    <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">{t.discover.cacheWriteFailed}</p>
+                  )}
+                  {!searchError && categoryMeta.apifyUnavailableReason === 'soft_limit' && (
+                    <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                      {fill(t.discover.softLimitReached, { usd: categoryMeta.apifyUsage?.usd != null ? formatUsd(categoryMeta.apifyUsage.usd) : '?', limit: categoryMeta.apifyUsage ? formatUsd(categoryMeta.apifyUsage.softLimit) : '?' })}
+                    </p>
+                  )}
+                  {!searchError && categoryMeta.apifyUnavailableReason === 'exhausted' && (
+                    <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">{t.discover.apifyExhausted}</p>
+                  )}
+
+                  {paidOfferVisible && categoryMeta.apifyAvailable && !confirmPaidOpen && (
+                    <button type="button" onClick={() => setConfirmPaidOpen(true)} disabled={searchingMore}
+                      className="inline-flex items-center gap-2 rounded-lg border-2 border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50 transition-all">
+                      {searchingMore
+                        ? <><Loader2 className="h-4 w-4 animate-spin" />{t.discover.searchingApify}</>
+                        : <><Radio className="h-4 w-4" />{fill(t.discover.searchMoreApify, { cost: formatUsd(categoryMeta.estimatedApifyCostUsd) })}</>}
+                    </button>
+                  )}
+
+                  {confirmPaidOpen && categoryMeta.apifyAvailable && (
+                    <div className="rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 p-3">
+                      <p className="text-sm font-semibold text-purple-800 dark:text-purple-200">{t.discover.paidConfirmTitle}</p>
+                      <p className="mt-1 text-xs text-purple-700 dark:text-purple-300">
+                        {fill(t.discover.paidConfirmBody, { hashtag: categoryMeta.hashtag, limit: categoryMeta.apifyLimit, cost: formatUsd(categoryMeta.estimatedApifyCostUsd) })}
+                      </p>
+                      <div className="mt-3 flex gap-2">
+                        <button type="button" onClick={() => handleSearch(true)} disabled={searchingMore}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-purple-600 px-3 py-2 text-xs font-semibold text-white hover:bg-purple-700 disabled:opacity-50 transition-colors">
+                          {searchingMore ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                          {t.discover.paidConfirmYes}
+                        </button>
+                        <button type="button" onClick={() => setConfirmPaidOpen(false)} disabled={searchingMore}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                          <X className="h-3.5 w-3.5" />{t.discover.paidConfirmNo}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* No results */}
               {hasSearched && !searching && results.length === 0 && (
                 <div className="flex flex-col items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm py-20 px-8">
@@ -1358,6 +1578,9 @@ export default function DiscoverPage() {
                     <Search className="h-7 w-7" />
                   </div>
                   <p className="text-base font-semibold text-gray-700 dark:text-gray-200">{t.common.noResults}</p>
+                  {searchMode === 'category' && categoryMeta && (
+                    <p className="mt-2 text-sm text-gray-400 dark:text-gray-500 text-center">{t.discover.noDbResults}</p>
+                  )}
                 </div>
               )}
 
@@ -1370,7 +1593,7 @@ export default function DiscoverPage() {
                     </p>
                     <div className="flex items-center gap-3">
                       <span className="inline-flex items-center rounded-full bg-purple-50 dark:bg-purple-900/30 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300">
-                        {source === 'apify' ? t.discover.externalSearch : t.discover.internalDatabase}
+                        {source === 'apify' ? t.discover.externalSearch : source === 'database' ? t.discover.internalDatabase : source === 'apify-cache' ? t.discover.fromApifyCache : `${t.discover.internalDatabase} + Apify`}
                       </span>
                       <div className="flex items-center gap-1">
                         <span className="text-xs text-gray-400">{isEs ? 'Ordenar:' : 'Sort:'}</span>
@@ -1394,7 +1617,7 @@ export default function DiscoverPage() {
                       <div key={`${item.platform}-${item.username}`}
                         className="group rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm hover:shadow-md hover:border-purple-300 dark:hover:border-purple-700 transition-all p-5">
                         <div className="flex items-start gap-3 mb-4">
-                          <Avatar name={item.displayName || item.username} size="lg" src={item.avatarUrl ? proxyImg(item.avatarUrl) : undefined} />
+                          <Avatar name={item.displayName || item.username} size="lg" src={avatarSrcOf({ id: item.influencerId, avatarUrl: item.avatarUrl })} />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
                               <span className="font-semibold text-gray-900 dark:text-gray-100 truncate">@{item.username}</span>
@@ -1402,6 +1625,9 @@ export default function DiscoverPage() {
                             </div>
                             {item.displayName && item.displayName !== item.username && (
                               <p className="text-xs text-gray-400 dark:text-gray-500 truncate">{item.displayName}</p>
+                            )}
+                            {searchMode === 'category' && (
+                              <div className="mt-1">{sourceBadge(item.source)}</div>
                             )}
                           </div>
                         </div>

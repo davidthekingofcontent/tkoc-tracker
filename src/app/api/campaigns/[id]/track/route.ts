@@ -16,6 +16,7 @@ import {
   normalizeTargets,
 } from '@/lib/campaign-capture'
 import { Platform } from '@/generated/prisma/client'
+import { afterInfluencerUpsert } from '@/lib/influencer-upsert'
 
 export async function POST(
   request: NextRequest,
@@ -198,6 +199,8 @@ export async function POST(
                   ...(result.authorFollowers > 0 && { followers: result.authorFollowers }),
                 },
               })
+              // Durable copy of the profile picture while the CDN URL is fresh (fire-and-forget)
+              afterInfluencerUpsert(influencer.id, result.authorAvatarUrl)
 
               // Country filtering: if campaign has a country set, check influencer's country
               if (campaign.country) {
@@ -374,6 +377,8 @@ export async function POST(
                   ...(result.authorFollowers > 0 && { followers: result.authorFollowers }),
                 },
               })
+              // Durable copy of the profile picture while the CDN URL is fresh (fire-and-forget)
+              afterInfluencerUpsert(influencer.id, result.authorAvatarUrl)
 
               // Country filtering
               if (campaign.country) {

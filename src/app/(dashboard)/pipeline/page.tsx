@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useI18n } from '@/i18n/context'
 import { Avatar } from '@/components/ui/avatar'
+import { avatarSrcOf } from '@/lib/proxy-image'
 import { Badge } from '@/components/ui/badge'
 import { formatNumber } from '@/lib/utils'
 import {
@@ -199,7 +200,7 @@ export default function PipelinePage() {
 
                         {/* Profile */}
                         <div className="flex items-center gap-3">
-                          <Avatar name={item.influencer.displayName || item.influencer.username} size="sm" src={item.influencer.avatarUrl || undefined} />
+                          <Avatar name={item.influencer.displayName || item.influencer.username} size="sm" src={avatarSrcOf(item.influencer)} />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
                               {item.influencer.displayName || item.influencer.username}

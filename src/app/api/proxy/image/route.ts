@@ -5,8 +5,18 @@ import { NextRequest, NextResponse } from 'next/server'
  * Solves CORS issues and expired CDN tokens for Instagram/TikTok/YouTube avatars.
  *
  * Usage: /api/proxy/image?url=ENCODED_URL
- * Cache: 7 days browser cache, 1 day stale-while-revalidate
+ * Cache: 7 days browser cache, 1 day stale-while-revalidate.
+ * A dead URL (expired CDN token → 401/403, removed → 404/410) is answered
+ * with the same status and a 6 h public cache: it is asked once per browser,
+ * not on every page view (creator avatars go through
+ * /api/influencers/[id]/avatar and their durable copy instead). Transient
+ * failures (429 throttling, 5xx, network errors) are NOT cached — the URL
+ * is still alive and the next view may succeed.
  */
+
+const NEGATIVE_CACHE_HEADERS = { 'Cache-Control': 'public, max-age=21600' }
+const NO_STORE_HEADERS = { 'Cache-Control': 'no-store' }
+const DEAD_URL_STATUSES = new Set([401, 403, 404, 410])
 export async function GET(request: NextRequest) {
   const url = request.nextUrl.searchParams.get('url')
 
@@ -56,7 +66,8 @@ export async function GET(request: NextRequest) {
     })
 
     if (!response.ok) {
-      return new NextResponse('Failed to fetch image', { status: response.status })
+      const status = response.status >= 400 && response.status <= 599 ? response.status : 502
+      return new NextResponse('Failed to fetch image', { status, headers: DEAD_URL_STATUSES.has(status) ? NEGATIVE_CACHE_HEADERS : NO_STORE_HEADERS })
     }
 
     const contentType = response.headers.get('content-type') || 'image/jpeg'
@@ -71,6 +82,6 @@ export async function GET(request: NextRequest) {
       },
     })
   } catch {
-    return new NextResponse('Image fetch failed', { status: 502 })
+    return new NextResponse('Image fetch failed', { status: 502, headers: NO_STORE_HEADERS })
   }
 }
