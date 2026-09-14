@@ -3010,7 +3010,7 @@ export function CampaignReport({
                               </td>
                             )}
                             {showCol('creators.followers') && (
-                              <td className={num}>{fmtN(c.inf.followers || 0)}</td>
+                              <td className={num}>{c.inf.followers ? fmtN(c.inf.followers) : '—'}</td>
                             )}
                             {report.hasBaseline && (
                               <td className={num}>

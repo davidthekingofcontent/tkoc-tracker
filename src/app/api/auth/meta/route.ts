@@ -3,22 +3,22 @@
  * Redirects user to Facebook OAuth dialog to connect their IG Business Account.
  */
 
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { getAuthorizationUrl } from '@/lib/instagram-api'
-import { verifyToken } from '@/lib/auth'
-import { cookies } from 'next/headers'
+import { getSession } from '@/lib/auth'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const cookieStore = await cookies()
-    const token = cookieStore.get('auth-token')?.value
-    if (!token) {
+    // Session from the 'token' cookie / Authorization header (the app never
+    // issued an 'auth-token' cookie, so this route always answered 401).
+    const session = await getSession(request)
+    if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-
-    const payload = verifyToken(token)
-    if (!payload) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 401 })
+    // /api/auth is on the BRAND edge whitelist: connecting a Meta/YouTube
+    // account (and the SocialToken the callback persists) is agency-only.
+    if (session.role === 'BRAND') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
     const appId = process.env.META_APP_ID
@@ -30,7 +30,7 @@ export async function GET() {
     const redirectUri = `${baseUrl}/api/auth/meta/callback`
 
     // State contains the user ID for the callback
-    const state = JSON.stringify({ userId: payload.userId })
+    const state = JSON.stringify({ userId: session.id })
     const encodedState = Buffer.from(state).toString('base64')
 
     const authUrl = getAuthorizationUrl(appId, redirectUri, encodedState)

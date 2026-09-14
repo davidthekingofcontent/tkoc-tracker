@@ -1,12 +1,16 @@
 "use client"
 
-import { Search } from "lucide-react"
+import { Search, User } from "lucide-react"
 import { useI18n } from '@/i18n/context'
 import { LanguageToggle } from '@/components/ui/language-toggle'
 import { NotificationsBell } from '@/components/notifications-bell'
+import { useCurrentUser, initialsOf } from '@/hooks/use-current-user'
 
 export function Header() {
   const { t } = useI18n()
+  const { user } = useCurrentUser()
+  // Initials from the session user (was a hard-coded "DC"); email letter, then a generic icon, when there is no name
+  const initials = initialsOf(user?.name) || (user?.email?.[0]?.toUpperCase() ?? '')
 
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-gray-200 bg-white px-6">
@@ -25,11 +29,15 @@ export function Header() {
         <LanguageToggle />
 
         {/* Notifications: the real bell (unread count, list, mark as read) — the old one here was decorative */}
-        <NotificationsBell />
+        <NotificationsBell placement="down" />
 
         {/* User Avatar */}
-        <button className="flex h-8 w-8 items-center justify-center rounded-full bg-purple-100 text-sm font-semibold text-purple-700 transition-colors hover:bg-purple-200">
-          DC
+        <button
+          className="flex h-8 w-8 items-center justify-center rounded-full bg-purple-100 text-sm font-semibold text-purple-700 transition-colors hover:bg-purple-200"
+          title={user?.name || user?.email || undefined}
+          aria-label={user?.name || user?.email || undefined}
+        >
+          {initials || <User className="h-4 w-4" />}
         </button>
       </div>
     </header>

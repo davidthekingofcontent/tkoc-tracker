@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Loader2, Eye, MessageCircle, Radio, Clock, Plus, X } from 'lucide-react'
 import { formatNumber } from '@/lib/utils'
+import { mediaThumbUrl } from '@/lib/proxy-image'
 
 interface StoryData {
   id: string
@@ -60,19 +61,25 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
     permalink: '',
   })
   const [isAdding, setIsAdding] = useState(false)
+  // Story ids whose thumbnail failed to load → placeholder instead of a broken image
+  const [brokenThumbs, setBrokenThumbs] = useState<Set<string>>(() => new Set())
+  // Clock for the "time remaining" labels, refreshed with each stories load (Date.now() in render is impure)
+  const [now, setNow] = useState(() => Date.now())
 
-  const fetchStories = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/campaigns/${campaignId}/stories`)
-      if (res.ok) {
-        const data = await res.json()
+  // Promise chain (not async/await) so the state updates run in resolved callbacks — react-hooks/set-state-in-effect
+  const fetchStories = useCallback(() =>
+    fetch(`/api/campaigns/${campaignId}/stories`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data) return
         setStories(data.stories || [])
         setByInfluencer(data.byInfluencer || [])
         setStats(data.stats || null)
-      }
-    } catch { /* ignore */ }
-    setIsLoading(false)
-  }, [campaignId])
+        setNow(Date.now())
+      })
+      .catch(() => { /* ignore */ })
+      .finally(() => setIsLoading(false)),
+  [campaignId])
 
   useEffect(() => {
     fetchStories()
@@ -104,7 +111,7 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
 
   function timeRemaining(expiresAt: string | null) {
     if (!expiresAt) return ''
-    const diff = new Date(expiresAt).getTime() - Date.now()
+    const diff = new Date(expiresAt).getTime() - now
     if (diff <= 0) return locale === 'es' ? 'Expirada' : 'Expired'
     const hours = Math.floor(diff / 3600000)
     const mins = Math.floor((diff % 3600000) / 60000)
@@ -312,11 +319,13 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
                         : 'border-gray-200 bg-gray-50 dark:bg-gray-800 dark:border-gray-700'
                     }`}
                   >
-                    {story.thumbnailUrl ? (
+                    {story.thumbnailUrl && !brokenThumbs.has(story.id) ? (
                       <img
-                        src={story.thumbnailUrl}
+                        // Durable copy via /api/media/[id]/thumb — the raw cdninstagram URL expires and 403s
+                        src={mediaThumbUrl({ id: story.id, thumbnailUrl: story.thumbnailUrl })}
                         alt=""
                         className="mb-1.5 h-16 w-full rounded object-cover"
+                        onError={() => setBrokenThumbs(prev => new Set(prev).add(story.id))}
                       />
                     ) : (
                       <div className={`mb-1.5 flex h-16 w-full items-center justify-center rounded ${

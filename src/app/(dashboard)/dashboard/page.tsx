@@ -45,6 +45,7 @@ import {
 } from "lucide-react"
 import { RepeatRadarWidget } from '@/components/dashboard/repeat-radar-widget'
 import { CampaignWizard } from '@/components/campaign-wizard'
+import { useCurrentUser } from '@/hooks/use-current-user'
 
 // ============ SHARED TYPES ============
 
@@ -737,7 +738,9 @@ function Building2Icon({ className }: { className?: string }) {
 function AdminDashboard({ showEconomics }: { showEconomics: boolean }) {
   const { t, locale } = useI18n()
   const [greeting, setGreeting] = useState("")
-  const [userName, setUserName] = useState("there")
+  // First name from the session (/api/auth/me); empty → the greeting stands alone ("Buenas tardes") instead of ", there"
+  const { user: sessionUser } = useCurrentUser()
+  const userName = sessionUser?.name?.split(' ')[0] || ''
   const [isLoading, setIsLoading] = useState(true)
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [recentCampaigns, setRecentCampaigns] = useState<RecentCampaign[]>([])
@@ -759,14 +762,6 @@ function AdminDashboard({ showEconomics }: { showEconomics: boolean }) {
     if (hour < 12) setGreeting(t.dashboard.greeting.morning)
     else if (hour < 18) setGreeting(t.dashboard.greeting.afternoon)
     else setGreeting(t.dashboard.greeting.evening)
-
-    try {
-      const userData = localStorage.getItem('user')
-      if (userData) {
-        const user = JSON.parse(userData)
-        setUserName(user.name?.split(' ')[0] || 'there')
-      }
-    } catch {}
 
     async function fetchDashboard() {
       try {
@@ -832,7 +827,7 @@ function AdminDashboard({ showEconomics }: { showEconomics: boolean }) {
       <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            {greeting}, <span className="text-purple-600">{userName}</span>
+            {greeting}{userName && <>, <span className="text-purple-600">{userName}</span></>}
           </h1>
           <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">{t.dashboard.subtitle}</p>
         </div>

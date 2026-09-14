@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
-import { scrapeHashtag, scrapeAccountMentions, scrapeStories, isApifyConfigured, isApifyExhausted, detectCountry } from '@/lib/apify'
+import { scrapeHashtag, scrapeAccountMentions, isApifyConfigured, isApifyOverSoftLimit, detectCountry } from '@/lib/apify'
 import { searchVideos as ytSearchVideos, isYouTubeApiConfigured } from '@/lib/youtube-api'
 import {
   mediaMatchesCampaignRules,
-  campaignHasTargets,
+  normalizeTargets,
   scrapedPostToRuleItem,
-  scrapedStoryToRuleItem,
   upsertCampaignPost,
-  upsertCampaignStory,
 } from '@/lib/campaign-capture'
+import type { Platform } from '@/generated/prisma/client'
 
 function formatFollowers(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
@@ -20,9 +19,24 @@ function formatFollowers(n: number): string {
 
 export interface CronTrackingResults {
   campaignsProcessed: number
+  campaignsSkipped: number
   totalPostsFound: number
-  storiesCaptured: number
+  staleJobsFailed: number
   errors: string[]
+}
+
+/**
+ * Progress the HTTP handler can read after the run, even when it threw: the
+ * 24 h stamp is only written when the loop finished or at least one scrape
+ * job completed (a redeploy mid-run must NOT cost a whole day of tracking).
+ */
+export interface CronTrackingProgress {
+  finished: boolean
+  processed: number
+}
+
+export interface CronTrackingOptions {
+  progress?: CronTrackingProgress
 }
 
 import type { HashtagResult } from '@/lib/apify'
@@ -52,41 +66,112 @@ async function getYouTubeHashtagResults(hashtag: string): Promise<HashtagResult[
   }
 }
 
-const DEDUP_WINDOW_MS = 3 * 60 * 60 * 1000 // 3 hours
+const DEDUP_WINDOW_MS = 3 * 60 * 60 * 1000 // 3 hours: a COMPLETED job this recent is not repeated
+const RETRY_BACKOFF_MS = 6 * 60 * 60 * 1000 // 6 hours: a FAILED/RUNNING job this recent is not retried every tick
+const STALE_RUNNING_MS = 24 * 60 * 60 * 1000 // 24 hours: a job still RUNNING after this is dead (killed run)
 
 /**
  * Check if a scrape job for the same campaign+target was already run recently.
- * Returns true if a duplicate job exists within the dedup window (3 hours).
+ * Returns true if a COMPLETED job exists within the dedup window (3 h) OR a
+ * FAILED/RUNNING job was started within the retry back-off (6 h): a target
+ * that just failed (Apify down, bad hashtag) must not be retried on every tick.
  */
-async function wasRecentlyScraped(campaignId: string, jobType: string, target: string): Promise<boolean> {
-  const cutoff = new Date(Date.now() - DEDUP_WINDOW_MS)
+async function wasRecentlyScraped(campaignId: string, jobType: string, target: string, platform: Platform): Promise<boolean> {
+  const completedCutoff = new Date(Date.now() - DEDUP_WINDOW_MS)
+  const retryCutoff = new Date(Date.now() - RETRY_BACKOFF_MS)
   const recentJob = await prisma.scrapeJob.findFirst({
     where: {
       campaignId,
       jobType,
       targetUsername: target,
-      status: 'COMPLETED',
-      completedAt: { gte: cutoff },
+      platform,
+      OR: [
+        { status: 'COMPLETED', completedAt: { gte: completedCutoff } },
+        { status: { in: ['FAILED', 'RUNNING'] }, createdAt: { gte: retryCutoff } },
+      ],
     },
-    orderBy: { completedAt: 'desc' },
+    orderBy: { createdAt: 'desc' },
   })
   if (recentJob) {
-    console.log(`[Cron/Track] Skipping ${jobType} for "${target}" in campaign ${campaignId} — already scraped at ${recentJob.completedAt?.toISOString()}`)
+    const when = (recentJob.completedAt ?? recentJob.startedAt ?? recentJob.createdAt).toISOString()
+    console.log(`[Cron/Track] Skipping ${jobType} for "${target}"@${platform} in campaign ${campaignId} — ${recentJob.status} job at ${when}`)
     return true
   }
   return false
 }
 
+/** Jobs left RUNNING for more than 24 h belong to a killed run: close them as FAILED ('stale'). */
+async function failStaleRunningJobs(): Promise<number> {
+  const cutoff = new Date(Date.now() - STALE_RUNNING_MS)
+  try {
+    const res = await prisma.scrapeJob.updateMany({
+      where: {
+        status: 'RUNNING',
+        OR: [
+          { startedAt: { lt: cutoff } },
+          { startedAt: null, createdAt: { lt: cutoff } },
+        ],
+      },
+      data: { status: 'FAILED', errorMessage: 'stale', completedAt: new Date() },
+    })
+    if (res.count > 0) console.log(`[Cron/Track] Swept ${res.count} stale RUNNING scrape jobs (> 24 h) → FAILED`)
+    return res.count
+  } catch (err) {
+    console.warn('[Cron/Track] Stale job sweep failed:', err instanceof Error ? err.message : err)
+    return 0
+  }
+}
+
+/** Never leave a job RUNNING: a thrown scrape is recorded as FAILED with its message. */
+async function failJob(jobId: string | null, err: unknown): Promise<void> {
+  if (!jobId) return
+  const errorMessage = (err instanceof Error ? err.message : String(err)).slice(0, 1000)
+  await prisma.scrapeJob
+    .update({ where: { id: jobId }, data: { status: 'FAILED', errorMessage, completedAt: new Date() } })
+    .catch(() => {})
+}
+
+/**
+ * A campaign is only tracked while its window can hold content: a window
+ * entirely in the future (startDate after today) or empty (endDate before
+ * startDate) cannot match any post — every scrape for it is a wasted run.
+ */
+function campaignWindowIsTrackable(campaign: { startDate: Date; endDate: Date | null }, now: Date): boolean {
+  const start = new Date(campaign.startDate).getTime()
+  if (Number.isFinite(start) && start > now.getTime()) return false
+  if (campaign.endDate) {
+    const end = new Date(campaign.endDate).getTime()
+    if (Number.isFinite(start) && Number.isFinite(end) && end < start) return false
+  }
+  return true
+}
+
 /**
  * Core tracking logic extracted for reuse by both the HTTP endpoint and
  * the instrumentation auto-tracker.
+ *
+ * Hashtag + @mention tracking only. Stories are the job of /api/cron/stories,
+ * which applies the soft budget, the date window and the ≤ 62-day rule — the
+ * per-campaign stories loop that used to live here bypassed all three
+ * (7 actor starts, 1,12 $ a day; removed 2026-09-14).
  */
-export async function runCronTracking(): Promise<CronTrackingResults> {
+export async function runCronTracking(options: CronTrackingOptions = {}): Promise<CronTrackingResults> {
   if (!isApifyConfigured()) {
     throw new Error('Apify not configured')
   }
+  const progress: CronTrackingProgress = options.progress ?? { finished: false, processed: 0 }
 
   console.log('[Cron/Track] Starting cron tracking run at', new Date().toISOString())
+
+  const results: CronTrackingResults = {
+    campaignsProcessed: 0,
+    campaignsSkipped: 0,
+    totalPostsFound: 0,
+    staleJobsFailed: 0,
+    errors: [],
+  }
+
+  results.staleJobsFailed = await failStaleRunningJobs()
 
   // Find all active campaigns with hashtags OR accounts to track
   const campaigns = await prisma.campaign.findMany({
@@ -98,23 +183,6 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
       ],
     },
   })
-
-  // Also find campaigns with influencers for story tracking
-  const campaignsWithInfluencers = await prisma.campaign.findMany({
-    where: { status: 'ACTIVE' },
-    include: {
-      influencers: {
-        include: { influencer: { select: { username: true, platform: true } } },
-      },
-    },
-  })
-
-  const results: CronTrackingResults = {
-    campaignsProcessed: 0,
-    totalPostsFound: 0,
-    storiesCaptured: 0,
-    errors: [],
-  }
 
   // Helper: process scraped results for a campaign
   async function processResults(
@@ -276,14 +344,22 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
     return postsFound
   }
 
+  const now = new Date()
   for (const campaign of campaigns) {
+    if (!campaignWindowIsTrackable(campaign, now)) {
+      console.log(`[Cron/Track] Campaign "${campaign.name}" window is in the future or empty (${campaign.startDate.toISOString()} → ${campaign.endDate?.toISOString() ?? 'open'}) — skipping`)
+      results.campaignsSkipped++
+      continue
+    }
     try {
       // ===== 1. HASHTAG TRACKING =====
-      for (const hashtag of campaign.targetHashtags) {
+      // One scrape per TOKEN: a field typed as "#vileda #viledaturbo" is two hashtags.
+      for (const hashtag of normalizeTargets(campaign.targetHashtags)) {
         for (const platform of campaign.platforms) {
+          let jobId: string | null = null
           try {
             // Idempotency: skip if already scraped within the dedup window
-            if (await wasRecentlyScraped(campaign.id, 'cron-hashtag', hashtag)) continue
+            if (await wasRecentlyScraped(campaign.id, 'cron-hashtag', hashtag, platform)) continue
 
             const job = await prisma.scrapeJob.create({
               data: {
@@ -295,6 +371,7 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
                 startedAt: new Date(),
               },
             })
+            jobId = job.id
 
             const hashtagResults = (platform === 'YOUTUBE' && isYouTubeApiConfigured())
               ? await getYouTubeHashtagResults(hashtag)
@@ -307,18 +384,21 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
               data: { status: 'COMPLETED', itemsFound: postsFound, completedAt: new Date() },
             })
             results.totalPostsFound += postsFound
+            progress.processed++
           } catch (err) {
+            await failJob(jobId, err)
             results.errors.push(`${campaign.name}: ${hashtag}@${platform} - ${err instanceof Error ? err.message : 'Error'}`)
           }
         }
       }
 
       // ===== 2. ACCOUNT MENTIONS TRACKING (tagged posts) =====
-      for (const account of campaign.targetAccounts) {
+      for (const account of normalizeTargets(campaign.targetAccounts)) {
         for (const platform of campaign.platforms) {
+          let jobId: string | null = null
           try {
             // Idempotency: skip if already scraped within the dedup window
-            if (await wasRecentlyScraped(campaign.id, 'cron-mentions', account)) continue
+            if (await wasRecentlyScraped(campaign.id, 'cron-mentions', account, platform)) continue
 
             const job = await prisma.scrapeJob.create({
               data: {
@@ -330,6 +410,7 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
                 startedAt: new Date(),
               },
             })
+            jobId = job.id
 
             const mentionResults = await scrapeAccountMentions(account, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', 50)
             const postsFound = await processResults(mentionResults, campaign, platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE', `@${account}`)
@@ -339,7 +420,9 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
               data: { status: 'COMPLETED', itemsFound: postsFound, completedAt: new Date() },
             })
             results.totalPostsFound += postsFound
+            progress.processed++
           } catch (err) {
+            await failJob(jobId, err)
             results.errors.push(`${campaign.name}: @${account}@${platform} - ${err instanceof Error ? err.message : 'Error'}`)
           }
         }
@@ -350,51 +433,9 @@ export async function runCronTracking(): Promise<CronTrackingResults> {
       results.errors.push(`Campaign ${campaign.name}: ${err instanceof Error ? err.message : 'Error'}`)
     }
   }
+  progress.finished = true
 
-  console.log(`[Cron/Track] Post/mention tracking done: ${results.campaignsProcessed} campaigns, ${results.totalPostsFound} posts found`)
-
-  // Story tracking for campaigns with Instagram influencers.
-  // PRECISE CAPTURE: a story is attached to a campaign ONLY if the creator is
-  // a member of THAT campaign, it is dated inside THAT campaign's window and
-  // its mentions[]/hashtags[] reference one of THAT campaign's targets.
-  for (const campaign of campaignsWithInfluencers) {
-    const igInfluencers = campaign.influencers.filter(ci => ci.influencer.platform === 'INSTAGRAM')
-    if (igInfluencers.length === 0) continue
-    if (!campaignHasTargets(campaign)) {
-      console.log(`[Cron/Track] Campaign "${campaign.name}" has no target accounts/hashtags — skipping stories`)
-      continue
-    }
-    if (isApifyExhausted()) {
-      results.errors.push('Apify monthly limit exhausted — story tracking skipped')
-      break
-    }
-
-    try {
-      // Idempotency: skip stories if already scraped within the dedup window
-      const storyTarget = igInfluencers.map(ci => ci.influencer.username).sort().join(',')
-      if (await wasRecentlyScraped(campaign.id, 'cron-stories', storyTarget)) continue
-
-      const usernames = igInfluencers.map(ci => ci.influencer.username)
-      const storyResults = await scrapeStories(usernames, 'INSTAGRAM')
-
-      for (const sr of storyResults) {
-        // Rule (1): must be a member of THIS campaign (not just any tracked creator)
-        const member = igInfluencers.find(ci => ci.influencer.username.toLowerCase() === sr.username.toLowerCase())
-        if (!member) continue
-
-        for (const story of sr.stories) {
-          if (!story.externalId) continue
-          // Rules (2) + (3)
-          if (!mediaMatchesCampaignRules(campaign, scrapedStoryToRuleItem(story))) continue
-          if (await upsertCampaignStory(campaign.id, member.influencerId, story)) results.storiesCaptured++
-        }
-      }
-    } catch (err) {
-      results.errors.push(`Stories ${campaign.name}: ${err instanceof Error ? err.message : 'Error'}`)
-    }
-  }
-
-  console.log(`[Cron/Track] Run complete: ${results.campaignsProcessed} campaigns, ${results.totalPostsFound} posts, ${results.storiesCaptured} stories, ${results.errors.length} errors`)
+  console.log(`[Cron/Track] Run complete: ${results.campaignsProcessed} campaigns (${results.campaignsSkipped} skipped), ${results.totalPostsFound} posts, ${results.errors.length} errors`)
   return results
 }
 
@@ -410,18 +451,32 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    const force = request.nextUrl.searchParams.get('force') === '1'
     // Every hashtag scrape charges an Apify run start: once a day is enough for posts (they do not expire)
-    const gate = await cronGate('track', 24, request.nextUrl.searchParams.get('force') === '1')
+    const gate = await cronGate('track', 24, force)
     if (!gate.allowed) return NextResponse.json(cronSkipped('track', gate))
-    await markCronRun('track')
 
-    const results = await runCronTracking()
+    // Soft monthly budget (same rule as /api/cron/stories): above it, no discretionary scrapes
+    const budget = await isApifyOverSoftLimit()
+    if (budget.over && !force) {
+      console.log(`[Cron/Track] Skipped: Apify usage ${budget.usd} $ ≥ soft limit ${budget.softLimit} $`)
+      return NextResponse.json({ skipped: 'soft_limit', cron: 'track', apifyUsageUsd: budget.usd, softLimitUsd: budget.softLimit })
+    }
 
-    return NextResponse.json({
-      message: 'Cron tracking completed',
-      results,
-      timestamp: new Date().toISOString(),
-    })
+    // The 24 h stamp is written AFTER the work (see finally): stamping first
+    // meant a redeploy mid-run skipped the rest until the next day.
+    const progress: CronTrackingProgress = { finished: false, processed: 0 }
+    try {
+      const results = await runCronTracking({ progress })
+
+      return NextResponse.json({
+        message: 'Cron tracking completed',
+        results,
+        timestamp: new Date().toISOString(),
+      })
+    } finally {
+      if (progress.finished || progress.processed > 0) await markCronRun('track')
+    }
   } catch (error) {
     console.error('Cron track error:', error)
     const message = error instanceof Error ? error.message : 'Internal server error'

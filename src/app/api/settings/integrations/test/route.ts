@@ -4,22 +4,18 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyToken } from '@/lib/auth'
-import { cookies } from 'next/headers'
+import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { decrypt } from '@/lib/crypto'
 
 export async function GET(request: NextRequest) {
   try {
-    const cookieStore = await cookies()
-    const token = cookieStore.get('auth-token')?.value
-    if (!token) {
+    // Same session resolution as every other API route (Authorization header
+    // or the 'token' cookie the app issues) — the old 'auth-token' cookie
+    // never existed, so this endpoint always answered 401.
+    const session = await getSession(request)
+    if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    const payload = verifyToken(token)
-    if (!payload) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 401 })
     }
 
     const platform = request.nextUrl.searchParams.get('platform')
@@ -29,7 +25,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (platform === 'meta') {
-      return testMetaConnection(payload.userId)
+      return testMetaConnection(session.id)
     }
 
     return NextResponse.json({ error: 'Invalid platform. Use: youtube, meta' }, { status: 400 })

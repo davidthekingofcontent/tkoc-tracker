@@ -8,10 +8,11 @@ export default function KnowledgeBasePage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // { content } — the in-code platform guide (src/lib/ai-knowledge.ts)
     fetch('/api/knowledge-base')
-      .then(res => res.text())
-      .then(text => {
-        setContent(text)
+      .then(res => (res.ok ? res.json() : null))
+      .then((data: { content?: string } | null) => {
+        if (typeof data?.content === 'string') setContent(data.content)
         setLoading(false)
       })
       .catch(() => setLoading(false))

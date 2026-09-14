@@ -180,13 +180,19 @@ interface CampaignTemplate {
   createdAt: string
 }
 
-// ---------- Mock Data ----------
-
-const mockProfile = {
-  name: "David Calamardo",
-  email: "david@tkoc.com",
-  company: "TKOC Agency",
+/** Human label for a UserRole in the UI locale (Profile tab). */
+function roleLabel(role: string, locale: 'en' | 'es'): string {
+  const labels: Record<string, { en: string; es: string }> = {
+    ADMIN: { en: 'Administrator', es: 'Administrador' },
+    EMPLOYEE: { en: 'Employee', es: 'Empleado' },
+    BRAND: { en: 'Brand (read-only)', es: 'Marca (solo lectura)' },
+    CREATOR: { en: 'Creator', es: 'Creador' },
+  }
+  const l = labels[role]
+  return l ? l[locale] : role
 }
+
+// ---------- Mock Data ----------
 
 interface Integration {
   id: string
@@ -247,12 +253,11 @@ export default function SettingsPage() {
   const L = (es: string, en: string) => (locale === 'es' ? es : en)
   const percentileLabels = DEFAULT_BENCHMARKS.percentileLabels[locale === 'es' ? 'es' : 'en']
 
-  // Profile state
-  const [profileName, setProfileName] = useState(mockProfile.name)
-  const [profileEmail, setProfileEmail] = useState(mockProfile.email)
-  const [profileCompany, setProfileCompany] = useState(mockProfile.company)
-  const [profileSaving, setProfileSaving] = useState(false)
-  const [profileSaved, setProfileSaved] = useState(false)
+  // Profile state — read-only, filled from /api/auth/me (there is no profile
+  // save endpoint; changes go through an administrator).
+  const [profileName, setProfileName] = useState('')
+  const [profileEmail, setProfileEmail] = useState('')
+  const [profileRole, setProfileRole] = useState('')
 
   // Team state
   const [teamUsers, setTeamUsers] = useState<TeamUser[]>([])
@@ -344,10 +349,15 @@ export default function SettingsPage() {
     fetchBenchmarks()
     fetchBrandAssignments()
     fetchBenchmarkBrands()
-    // Fetch current user role
+    // Fetch current user (role for tab gating; name/email/role for the Profile tab)
     fetch('/api/auth/me').then(r => r.ok ? r.json() : null).then(d => {
-      if (d?.user?.role) setCurrentUserRole(d.user.role)
+      if (d?.user?.role) {
+        setCurrentUserRole(d.user.role)
+        setProfileRole(d.user.role)
+      }
       if (d?.user?.id) setCurrentUserId(d.user.id)
+      if (typeof d?.user?.name === 'string') setProfileName(d.user.name)
+      if (typeof d?.user?.email === 'string') setProfileEmail(d.user.email)
     }).catch(() => {})
   }, [])
 
@@ -720,15 +730,6 @@ export default function SettingsPage() {
 
   // ---------- Handlers ----------
 
-  function handleProfileSave() {
-    setProfileSaving(true)
-    setTimeout(() => {
-      setProfileSaving(false)
-      setProfileSaved(true)
-      setTimeout(() => setProfileSaved(false), 2000)
-    }, 800)
-  }
-
   async function handleInvite() {
     if (!inviteEmail) return
     setInviteSending(true)
@@ -1048,27 +1049,35 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                {/* Fields */}
+                {/* Fields (read-only: no profile save endpoint exists) */}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Input
                     label={t.settings.fullName}
                     value={profileName}
-                    onChange={(e) => setProfileName(e.target.value)}
+                    readOnly
+                    className="bg-gray-50 dark:bg-gray-900"
                   />
                   <Input
                     label={t.settings.emailAddress}
                     type="email"
                     value={profileEmail}
-                    onChange={(e) => setProfileEmail(e.target.value)}
+                    readOnly
+                    className="bg-gray-50 dark:bg-gray-900"
                   />
                 </div>
                 <div className="max-w-sm">
                   <Input
-                    label={t.settings.company}
-                    value={profileCompany}
-                    onChange={(e) => setProfileCompany(e.target.value)}
+                    label={t.settings.role}
+                    value={profileRole ? roleLabel(profileRole, locale) : ''}
+                    readOnly
+                    className="bg-gray-50 dark:bg-gray-900"
                   />
                 </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {locale === 'en'
+                    ? 'To change these details, ask an administrator.'
+                    : 'Para cambiar estos datos, avisa a un administrador.'}
+                </p>
 
                 {/* Theme Toggle */}
                 <div className="flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 p-4">
@@ -1080,10 +1089,14 @@ export default function SettingsPage() {
                     )}
                     <div>
                       <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                        {theme === 'dark' ? 'Dark Mode' : 'Light Mode'}
+                        {theme === 'dark'
+                          ? (locale === 'en' ? 'Dark mode' : 'Modo oscuro')
+                          : (locale === 'en' ? 'Light mode' : 'Modo claro')}
                       </p>
                       <p className="text-xs text-gray-400">
-                        {theme === 'dark' ? 'Switch to light mode for a brighter interface' : 'Switch to dark mode for a darker interface'}
+                        {theme === 'dark'
+                          ? (locale === 'en' ? 'Switch to light mode for a brighter interface' : 'Cambia al modo claro para una interfaz más luminosa')
+                          : (locale === 'en' ? 'Switch to dark mode for a darker interface' : 'Cambia al modo oscuro para una interfaz más tenue')}
                       </p>
                     </div>
                   </div>
@@ -1101,22 +1114,6 @@ export default function SettingsPage() {
                       )}
                     />
                   </button>
-                </div>
-
-                {/* Save */}
-                <div className="flex items-center gap-3">
-                  <Button onClick={handleProfileSave} loading={profileSaving}>
-                    {profileSaved ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <Check className="h-4 w-4" /> {t.common.save}
-                      </span>
-                    ) : (
-                      t.common.save
-                    )}
-                  </Button>
-                  {profileSaved && (
-                    <span className="text-sm text-emerald-500">{t.settings.profileUpdated}</span>
-                  )}
                 </div>
               </div>
             </CardContent>

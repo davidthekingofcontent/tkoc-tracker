@@ -5,6 +5,7 @@ import { Platform } from '@/generated/prisma/client'
 import { scrapeProfile, scrapeStories, isApifyConfigured, isApifyExhausted } from '@/lib/apify'
 import { parseCreatorHandle } from '@/lib/handles'
 import { ensureContact } from '@/lib/contacts'
+import { scrapedProfileHasData, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 import {
   captureMemberContent,
   campaignHasTargets,
@@ -134,26 +135,10 @@ async function processHandle(
           country: scraped.country,
           city: scraped.city,
           dataSource: 'apify',
-          lastScraped: new Date(),
+          lastScraped: scrapedProfileHasData(scraped) ? new Date() : null,
         },
-        update: {
-          displayName: scraped.displayName,
-          bio: scraped.bio,
-          avatarUrl: scraped.avatarUrl,
-          email: scraped.email || undefined,
-          website: scraped.website || undefined,
-          followers: scraped.followers,
-          following: scraped.following,
-          postsCount: scraped.postsCount,
-          engagementRate: scraped.engagementRate,
-          avgLikes: scraped.avgLikes,
-          avgComments: scraped.avgComments,
-          avgViews: scraped.avgViews,
-          isVerified: scraped.isVerified,
-          country: scraped.country || undefined,
-          city: scraped.city || undefined,
-          lastScraped: new Date(),
-        },
+        // Empty scrapes never zero out real metrics nor stamp lastScraped
+        update: scrapedProfileUpdate(scraped),
         select: { id: true, username: true },
       })
       created = true

@@ -26,7 +26,12 @@ const typeIcons: Record<string, string> = {
   team_joined: '🎉',
 }
 
-export function NotificationsBell() {
+interface NotificationsBellProps {
+  /** Where the panel opens: 'up' for the sidebar footer (default), 'down' for the top header. */
+  placement?: 'up' | 'down'
+}
+
+export function NotificationsBell({ placement = 'up' }: NotificationsBellProps = {}) {
   const router = useRouter()
   const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
@@ -139,7 +144,7 @@ export function NotificationsBell() {
       {isOpen && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
-          <div className="absolute bottom-full left-0 z-50 mb-2 w-80 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-xl">
+          <div className={`absolute z-50 w-80 rounded-xl ${placement === 'down' ? 'top-full right-0 mt-2' : 'bottom-full left-0 mb-2'} border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-xl`}>
             {/* Header */}
             <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-4 py-3">
               <div className="flex items-center gap-2">

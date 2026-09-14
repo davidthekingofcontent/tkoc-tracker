@@ -33,10 +33,14 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // The 24 h stamp is written AFTER the work (finally): stamping first meant a
+  // redeploy mid-run skipped the rest until the next day. It is only written
+  // when the run finished or at least one post was actually checked.
+  let finished = false
+  let processed = 0
   try {
     const gate = await cronGate('check-deletions', 24, request.nextUrl.searchParams.get('force') === '1')
     if (!gate.allowed) return NextResponse.json(cronSkipped('check-deletions', gate))
-    await markCronRun('check-deletions')
 
     const startedAt = Date.now()
     const TIME_BUDGET_MS = 270_000
@@ -51,7 +55,10 @@ export async function GET(request: NextRequest) {
       },
       orderBy: { postedAt: 'desc' },
     })
-    if (allMedia.length === 0) return NextResponse.json({ message: 'No media to check', checked: 0, deleted: 0, restored: 0 })
+    if (allMedia.length === 0) {
+      finished = true
+      return NextResponse.json({ message: 'No media to check', checked: 0, deleted: 0, restored: 0 })
+    }
 
     // One check per post (a post can live in several campaigns)
     const groups = new Map<string, typeof allMedia>()
@@ -85,6 +92,7 @@ export async function GET(request: NextRequest) {
       if (Date.now() - startedAt > TIME_BUDGET_MS) break
       verdicts.set(copies[0].permalink as string, await headExists(copies[0].permalink as string))
     }
+    processed = verdicts.size
 
     let checked = 0, deleted = 0, restored = 0, suspected = 0
     const nowIso = new Date().toISOString()
@@ -126,10 +134,13 @@ export async function GET(request: NextRequest) {
 
     const summary = { success: true, candidates: candidates.length, checked, deleted, restored, suspected, unknown: candidates.length - checked, durationMs: Date.now() - startedAt }
     console.log('[Cron/CheckDeletions]', JSON.stringify(summary))
+    finished = true
     return NextResponse.json(summary)
   } catch (error) {
     console.error('[Cron/CheckDeletions] Error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  } finally {
+    if (finished || processed > 0) await markCronRun('check-deletions')
   }
 }
 

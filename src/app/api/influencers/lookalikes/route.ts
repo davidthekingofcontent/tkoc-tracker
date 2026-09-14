@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { isApifyConfigured, scrapeProfile, searchInstagramAccounts, scrapeInstagramSimilarAccounts } from '@/lib/apify'
+import { scrapedProfileUpdate } from '@/lib/influencer-upsert'
 
 function calculateMatchScore(
   source: { followers: number; engagementRate: number; platform: string },
@@ -85,15 +86,8 @@ export async function GET(request: NextRequest) {
               country: scraped.country,
               city: scraped.city,
             },
-            update: {
-              displayName: scraped.displayName,
-              avatarUrl: scraped.avatarUrl,
-              followers: scraped.followers,
-              engagementRate: scraped.engagementRate,
-              avgLikes: scraped.avgLikes,
-              avgComments: scraped.avgComments,
-              avgViews: scraped.avgViews,
-            },
+            // Empty scrapes never zero out real metrics
+            update: scrapedProfileUpdate(scraped),
           })
         }
       } catch (err) {

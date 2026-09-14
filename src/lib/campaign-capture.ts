@@ -3,6 +3,7 @@ import { scrapeProfile, scrapeStories, isApifyExhausted } from '@/lib/apify'
 import type { ScrapedPost, ScrapedStory } from '@/lib/apify'
 import type { MediaType, Platform } from '@/generated/prisma/client'
 import { computeBaseline } from '@/lib/creator-baseline'
+import { scrapedProfileUpdate } from '@/lib/influencer-upsert'
 
 /**
  * PRECISE CONTENT CAPTURE — the single source of truth for "does this piece
@@ -63,6 +64,26 @@ export function normalizeBrandToken(s: string): string {
 
 function stripSigil(s: string): string {
   return (s || '').trim().replace(/^[@#]+/, '')
+}
+
+/**
+ * Canonical form of a campaign's target list (accounts or hashtags), as it is
+ * STORED and as it is SENT to the scrapers: one token per element, no leading
+ * @/#, trimmed, lowercase, de-duplicated, empties dropped. A PM typing
+ * "#vileda #viledaturbo" or "h2pro, spin" in one field yields two targets —
+ * before 2026-09-14 that string reached Apify as ONE hashtag (a wasted run
+ * per tick). Handles are case-insensitive on every platform, so lowercase is
+ * safe for accounts too.
+ */
+export function normalizeTargets(values: string[]): string[] {
+  const out = new Set<string>()
+  for (const value of Array.isArray(values) ? values : []) {
+    for (const token of String(value ?? '').split(/[\s,]+/)) {
+      const clean = stripSigil(token).toLowerCase()
+      if (clean) out.add(clean)
+    }
+  }
+  return Array.from(out)
 }
 
 export function campaignHasTargets(campaign: Pick<CampaignRules, 'targetAccounts' | 'targetHashtags'>): boolean {
@@ -610,22 +631,10 @@ export async function captureMemberContent(
 
     if (scraped) {
       try {
+        // Empty scrapes never zero out real metrics nor stamp lastScraped
         await prisma.influencer.update({
           where: { id: influencer.id },
-          data: {
-            displayName: scraped.displayName,
-            bio: scraped.bio,
-            avatarUrl: scraped.avatarUrl,
-            followers: scraped.followers,
-            following: scraped.following,
-            postsCount: scraped.postsCount,
-            engagementRate: scraped.engagementRate,
-            avgLikes: scraped.avgLikes,
-            avgComments: scraped.avgComments,
-            avgViews: scraped.avgViews,
-            isVerified: scraped.isVerified,
-            lastScraped: new Date(),
-          },
+          data: scrapedProfileUpdate(scraped),
         })
       } catch (err) {
         console.error(`[campaign-capture] influencer refresh failed for @${influencer.username}:`, err instanceof Error ? err.message : err)

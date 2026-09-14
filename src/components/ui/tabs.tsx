@@ -39,7 +39,7 @@ function Tabs({
 
   return (
     <TabsContext.Provider value={{ activeTab, setActiveTab }}>
-      <div className={cn('w-full', className)} {...props}>
+      <div className={cn('w-full min-w-0', className)} {...props}>
         {children}
       </div>
     </TabsContext.Provider>
@@ -53,7 +53,10 @@ function TabsList({
   return (
     <div
       className={cn(
-        'inline-flex items-center gap-1 border-b border-gray-200',
+        // Full width and side-scrollable (scrollbar hidden) so a long tab row never widens the page on mobile/tablet.
+        // The grey baseline is an inset shadow (not border-b): a scroll container clips anything hanging past its
+        // padding box, so the triggers' 2px underline sits inside the box and paints over the 1px line.
+        'flex w-full items-center gap-1 overflow-x-auto shadow-[inset_0_-1px_0_0_#e5e7eb] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
         className
       )}
       role="tablist"
@@ -75,7 +78,7 @@ function TabsTrigger({ value, className, children, ...props }: TabsTriggerProps)
       role="tab"
       aria-selected={isActive}
       className={cn(
-        'inline-flex items-center justify-center px-3 py-2 text-sm font-medium transition-colors -mb-px',
+        'inline-flex shrink-0 items-center justify-center whitespace-nowrap px-3 py-2 text-sm font-medium transition-colors',
         isActive
           ? 'text-purple-700 border-b-2 border-purple-600'
           : 'text-gray-500 hover:text-gray-700 border-b-2 border-transparent',

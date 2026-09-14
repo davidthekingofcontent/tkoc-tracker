@@ -6,6 +6,8 @@ import { isApifyConfiguredAsync } from '@/lib/apify'
 import { fetchProfile } from '@/lib/platform-client'
 import { isYouTubeApiConfigured } from '@/lib/youtube-api'
 import { notifyAllTeam } from '@/lib/notifications'
+import { scrapedProfileUpdate } from '@/lib/influencer-upsert'
+import type { ScrapedProfile } from '@/lib/apify'
 
 /** Ad disclosure markers to detect paid partnership disclosures */
 const AD_MARKERS = [
@@ -38,11 +40,18 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // The 24 h stamp is written AFTER the work (finally): stamping first meant a
+  // redeploy mid-run skipped the remaining creators until the next day. It is
+  // only written when the loop finished or at least one creator was checked;
+  // per-creator progress lives in Setting checkposts_checked so a killed run
+  // resumes where it stopped on the next tick.
+  let finished = false
+  let processed = 0
   try {
+    const force = request.nextUrl.searchParams.get('force') === '1'
     // One profile scrape per confirmed creator of every active campaign: once a day (posts do not expire)
-    const gate = await cronGate('check-posts', 24, request.nextUrl.searchParams.get('force') === '1')
+    const gate = await cronGate('check-posts', 24, force)
     if (!gate.allowed) return NextResponse.json(cronSkipped('check-posts', gate))
-    await markCronRun('check-posts')
 
     const apifyConfigured = await isApifyConfiguredAsync()
     const youtubeConfigured = isYouTubeApiConfigured()
@@ -70,6 +79,7 @@ export async function GET(request: NextRequest) {
     })
 
     if (activeCampaigns.length === 0) {
+      finished = true
       return NextResponse.json({ message: 'No active campaigns', newPosts: 0 })
     }
 
@@ -106,7 +116,23 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    console.log(`[Cron/CheckPosts] Checking ${influencerMap.size} influencers across ${activeCampaigns.length} campaigns`)
+    // Resume support: creators checked < 20 h ago (by a run that was killed
+    // before stamping) are skipped, unless ?force=1 asks for everything again.
+    const checkedLog = await loadMap(CHECKED_KEY)
+    const recheckMs = RECHECK_HOURS * 3_600_000
+    const nowMs = Date.now()
+    let alreadyChecked = 0
+    if (!force) {
+      for (const key of Array.from(influencerMap.keys())) {
+        const t = Date.parse(checkedLog[key] || '')
+        if (Number.isFinite(t) && nowMs - t < recheckMs) {
+          influencerMap.delete(key)
+          alreadyChecked++
+        }
+      }
+    }
+
+    console.log(`[Cron/CheckPosts] Checking ${influencerMap.size} influencers across ${activeCampaigns.length} campaigns (${alreadyChecked} checked < ${RECHECK_HOURS} h ago, skipped)`)
 
     let totalNewPosts = 0
     const errors: string[] = []
@@ -117,7 +143,18 @@ export async function GET(request: NextRequest) {
         console.log(`[Cron/CheckPosts] Fetching @${inf.username} on ${inf.platform}...`)
         const result = await fetchProfile(inf.username, inf.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE')
 
-        if (!result || !result.profile.recentPosts.length) continue
+        // null = no scrape happened (Apify exhausted / not configured / all
+        // sources failed): do not stamp the creator, so it is re-checked as
+        // soon as the source recovers instead of after RECHECK_HOURS.
+        if (!result) continue
+
+        // The scrape (the paid part) is done: record it now so a run killed
+        // later in this iteration does not pay for this creator again.
+        processed++
+        checkedLog[key] = new Date().toISOString()
+        await saveMap(CHECKED_KEY, prune(checkedLog, 7))
+
+        if (!result.profile.recentPosts.length) continue
         const profile = result.profile
         const dataSource = result.dataSource
 
@@ -183,22 +220,11 @@ export async function GET(request: NextRequest) {
           }
         }
 
-        // Also update influencer profile data
+        // Also update influencer profile data — through the shared guard: an empty
+        // scrape never overwrites real followers/metrics nor stamps lastScraped
         await prisma.influencer.update({
           where: { id: inf.id },
-          data: {
-            followers: profile.followers,
-            following: profile.following,
-            postsCount: profile.postsCount,
-            engagementRate: profile.engagementRate,
-            avgLikes: profile.avgLikes,
-            avgComments: profile.avgComments,
-            avgViews: profile.avgViews,
-            avatarUrl: profile.avatarUrl || undefined,
-            bio: profile.bio || undefined,
-            dataSource,
-            lastScraped: new Date(),
-          },
+          data: { ...scrapedProfileUpdate(profile as unknown as ScrapedProfile), dataSource },
         })
 
         // Small delay between profiles to respect rate limits
@@ -242,10 +268,12 @@ export async function GET(request: NextRequest) {
     }
 
     console.log(`[Cron/CheckPosts] Done. New posts: ${totalNewPosts}, Ad disclosure updated: ${adDisclosureUpdated}, Errors: ${errors.length}`)
+    finished = true
 
     return NextResponse.json({
       success: true,
       influencersChecked: influencerMap.size,
+      influencersSkipped: alreadyChecked,
       campaignsActive: activeCampaigns.length,
       newPosts: totalNewPosts,
       errors: errors.length > 0 ? errors : undefined,
@@ -253,5 +281,28 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error('[Cron/CheckPosts] Error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  } finally {
+    if (finished || processed > 0) await markCronRun('check-posts')
   }
+}
+
+/** Setting checkposts_checked: "<PLATFORM>:<username>" → ISO of the last profile scrape (pruned after 7 days). */
+const CHECKED_KEY = 'checkposts_checked'
+const RECHECK_HOURS = 20
+
+type IsoMap = Record<string, string>
+async function loadMap(key: string): Promise<IsoMap> {
+  try {
+    const row = await prisma.setting.findUnique({ where: { key } })
+    const parsed = row?.value ? JSON.parse(row.value) as unknown : null
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as IsoMap) : {}
+  } catch { return {} }
+}
+async function saveMap(key: string, map: IsoMap): Promise<void> {
+  const value = JSON.stringify(map)
+  await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } }).catch(() => {})
+}
+function prune(map: IsoMap, days: number): IsoMap {
+  const cutoff = Date.now() - days * 86_400_000
+  return Object.fromEntries(Object.entries(map).filter(([, iso]) => { const t = Date.parse(iso); return Number.isFinite(t) && t >= cutoff }))
 }

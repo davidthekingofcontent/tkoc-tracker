@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { usePathname } from "next/navigation"
 import { Menu, X } from "lucide-react"
 import { Sidebar } from "./sidebar"
@@ -12,10 +12,13 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const pathname = usePathname()
 
-  // Close the drawer whenever the route changes (user tapped a nav link)
-  useEffect(() => {
+  // Close the drawer whenever the route changes (user tapped a nav link) —
+  // "adjust state on prop change" during render instead of a setState-in-effect
+  const [lastPathname, setLastPathname] = useState(pathname)
+  if (pathname !== lastPathname) {
+    setLastPathname(pathname)
     setMobileNavOpen(false)
-  }, [pathname])
+  }
 
   return (
     <ViewModeProvider>
@@ -65,7 +68,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           </div>
 
           <Header />
-          <main className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950 p-4 sm:p-6">
+          <main className="flex-1 overflow-y-auto overflow-x-hidden bg-gray-50 dark:bg-gray-950 p-4 sm:p-6">
             {children}
           </main>
         </div>

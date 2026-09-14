@@ -327,7 +327,7 @@ export default function CampaignsPage() {
             <TabsTrigger value="ARCHIVED">{t.common.archived}</TabsTrigger>
           </TabsList>
         </Tabs>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setGroupByBrand(!groupByBrand)}
             className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
@@ -404,7 +404,7 @@ export default function CampaignsPage() {
                           <TableCell>
                             <div className="flex flex-wrap gap-1">
                               {campaign.targetHashtags.slice(0, 2).map((tag) => (
-                                <Badge key={tag} variant="default">{tag}</Badge>
+                                <Badge key={tag} variant="default">{tag.startsWith('#') ? tag : `#${tag}`}</Badge>
                               ))}
                               {campaign.targetHashtags.length > 2 && (
                                 <Badge variant="default">+{campaign.targetHashtags.length - 2}</Badge>

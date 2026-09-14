@@ -23,6 +23,11 @@ import {
 // client already excluded). Nothing is re-derived here: "Interacciones" is
 // metrics.engagements (likes + comentarios + shares + saves), never a local
 // sum. NO economic data exists in this response by design (no cost, no ratio).
+//
+// Agency preview: an ADMIN/EMPLOYEE opening /portal has no brand of their own,
+// so the page shows a brand selector (GET /api/brands) and asks the overview
+// for that brand with ?brandId= (the API accepts it for the agency). BRAND
+// users never see the selector — their scope is resolved server-side.
 // ---------------------------------------------------------------------------
 
 interface PortalCampaign {
@@ -65,6 +70,14 @@ interface PortalOverview {
   campaigns?: PortalCampaign[]
 }
 
+interface BrandOption {
+  id: string
+  name: string
+}
+
+// Only ADMIN: /api/portal/overview answers 403 to any other agency role and honours ?brandId= for ADMIN alone
+const AGENCY_ROLES = ['ADMIN']
+
 function campaignStatusInfo(status?: string): { variant: 'active' | 'paused' | 'archived' | 'default'; label: string } {
   switch (status) {
     case 'ACTIVE': return { variant: 'active', label: 'Activa' }
@@ -104,28 +117,112 @@ function MiniStat({
 }
 
 export default function PortalHomePage() {
-  const [overview, setOverview] = useState<PortalOverview | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  // null until /api/auth/me answers; agency users get the brand selector
+  const [isAgency, setIsAgency] = useState<boolean | null>(null)
+  const [brands, setBrands] = useState<BrandOption[] | null>(null)
+  const [selectedBrandId, setSelectedBrandId] = useState('')
+  // The overview loaded for a given request key ('own' for BRAND users, the
+  // brandId for the agency preview). Loading is derived: the key we want is
+  // not the key we have.
+  const [result, setResult] = useState<{ key: string; overview: PortalOverview | null; error: string | null } | null>(null)
 
+  // 1) Who is looking? BRAND → own scope; ADMIN/EMPLOYEE → brand selector.
   useEffect(() => {
     let cancelled = false
-    fetch('/api/portal/overview')
+    fetch('/api/auth/me')
       .then(res => (res.ok ? res.json() : null))
-      .then(data => {
-        if (!cancelled && data) setOverview(data)
+      .then(async (data: { user?: { role?: string } } | null) => {
+        if (cancelled) return
+        const agency = AGENCY_ROLES.includes(data?.user?.role || '')
+        setIsAgency(agency)
+        if (!agency) return
+        let list: BrandOption[] = []
+        try {
+          const res = await fetch('/api/brands')
+          const body = res.ok ? await res.json() : null
+          list = Array.isArray(body?.brands)
+            ? body.brands.map((b: { id: string; name: string }) => ({ id: b.id, name: b.name }))
+            : []
+        } catch {
+          list = []
+        }
+        if (cancelled) return
+        setBrands(list)
+        if (list.length > 0) setSelectedBrandId(list[0].id)
       })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setIsLoading(false)
+      .catch(() => {
+        if (!cancelled) setIsAgency(false)
       })
     return () => { cancelled = true }
   }, [])
 
+  const requestKey: string | null =
+    isAgency === null ? null : isAgency ? (selectedBrandId || null) : 'own'
+
+  // 2) Overview — for the agency it waits for a brand and passes ?brandId=.
+  useEffect(() => {
+    if (!requestKey) return
+    let cancelled = false
+    const url = requestKey === 'own'
+      ? '/api/portal/overview'
+      : `/api/portal/overview?brandId=${encodeURIComponent(requestKey)}`
+    fetch(url)
+      .then(async res => {
+        if (res.ok) {
+          const data = (await res.json()) as PortalOverview
+          return { overview: data, error: null }
+        }
+        const body = await res.json().catch(() => null)
+        const error = requestKey === 'own'
+          ? null
+          : body?.error ? `${body.error} (HTTP ${res.status})` : `HTTP ${res.status}`
+        return { overview: null, error }
+      })
+      .catch(() => ({ overview: null, error: null }))
+      .then(({ overview, error }) => {
+        if (!cancelled) setResult({ key: requestKey, overview, error })
+      })
+    return () => { cancelled = true }
+  }, [requestKey])
+
+  const agencyWithoutBrands = isAgency === true && brands !== null && brands.length === 0
+  const isLoading = !agencyWithoutBrands && (requestKey === null || result?.key !== requestKey)
+  const overview = result?.key === requestKey ? result.overview : null
+  const previewError = result?.key === requestKey ? result.error : null
+
+  const brandSelector = isAgency ? (
+    <div className="flex flex-col gap-2 rounded-xl border border-dashed border-purple-300 bg-purple-50/60 p-4 dark:border-purple-800 dark:bg-purple-900/10 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <p className="text-sm font-medium text-purple-900 dark:text-purple-200">Vista previa del portal de cliente</p>
+        <p className="text-xs text-purple-700/80 dark:text-purple-300/80">
+          Estás viendo el portal como lo ve la marca seleccionada.
+        </p>
+      </div>
+      {brands && brands.length > 0 ? (
+        <select
+          value={selectedBrandId}
+          onChange={e => setSelectedBrandId(e.target.value)}
+          aria-label="Marca"
+          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+        >
+          {brands.map(b => (
+            <option key={b.id} value={b.id}>{b.name}</option>
+          ))}
+        </select>
+      ) : (
+        <span className="text-sm text-gray-500 dark:text-gray-400">No hay marcas disponibles.</span>
+      )}
+    </div>
+  ) : null
+
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <Loader2 className="h-8 w-8 animate-spin text-purple-600" />
-        <span className="ml-3 text-gray-500 dark:text-gray-400">Cargando tu portal...</span>
+      <div className="space-y-6">
+        {brandSelector}
+        <div className="flex items-center justify-center py-24">
+          <Loader2 className="h-8 w-8 animate-spin text-purple-600" />
+          <span className="ml-3 text-gray-500 dark:text-gray-400">Cargando tu portal...</span>
+        </div>
       </div>
     )
   }
@@ -134,6 +231,14 @@ export default function PortalHomePage() {
 
   return (
     <div className="space-y-6">
+      {brandSelector}
+
+      {previewError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+          No se pudo cargar la vista previa: {previewError}
+        </div>
+      )}
+
       {/* Welcome header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">

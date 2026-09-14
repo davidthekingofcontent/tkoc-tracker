@@ -1,7 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { RelationshipType, RelationshipStatus } from '@/generated/prisma/client'
+import { ClientContactSource, RelationshipType, RelationshipStatus } from '@/generated/prisma/client'
+
+// ---- Query validation: a bad value answers 400 instead of a Prisma 500 ----
+
+function parseEnumParam<T extends string>(
+  value: string | null,
+  allowed: readonly T[],
+  name: string
+): { value: T | null } | { error: string } {
+  if (!value) return { value: null }
+  if ((allowed as readonly string[]).includes(value)) return { value: value as T }
+  return { error: `Invalid ${name}. Use one of: ${allowed.join(', ')}` }
+}
+
+function parseIntParam(
+  value: string | null,
+  fallback: number,
+  min: number,
+  max: number,
+  name: string
+): { value: number } | { error: string } {
+  if (value === null || value === '') return { value: fallback }
+  const n = Number(value)
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < min || n > max) {
+    return { error: `Invalid ${name}: must be an integer between ${min} and ${max}` }
+  }
+  return { value: n }
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,11 +39,23 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url)
     const search = searchParams.get('search') || ''
-    const source = searchParams.get('source')
-    const relationshipType = searchParams.get('relationshipType')
-    const relationshipStatus = searchParams.get('relationshipStatus')
-    const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10))
-    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') || '25', 10)))
+
+    const sourceParam = parseEnumParam(searchParams.get('source'), Object.values(ClientContactSource), 'source')
+    if ('error' in sourceParam) return NextResponse.json({ error: sourceParam.error }, { status: 400 })
+    const typeParam = parseEnumParam(searchParams.get('relationshipType'), Object.values(RelationshipType), 'relationshipType')
+    if ('error' in typeParam) return NextResponse.json({ error: typeParam.error }, { status: 400 })
+    const statusParam = parseEnumParam(searchParams.get('relationshipStatus'), Object.values(RelationshipStatus), 'relationshipStatus')
+    if ('error' in statusParam) return NextResponse.json({ error: statusParam.error }, { status: 400 })
+    const pageParam = parseIntParam(searchParams.get('page'), 1, 1, Number.MAX_SAFE_INTEGER, 'page')
+    if ('error' in pageParam) return NextResponse.json({ error: pageParam.error }, { status: 400 })
+    const limitParam = parseIntParam(searchParams.get('limit'), 25, 1, 100, 'limit')
+    if ('error' in limitParam) return NextResponse.json({ error: limitParam.error }, { status: 400 })
+
+    const source = sourceParam.value
+    const relationshipType = typeParam.value
+    const relationshipStatus = statusParam.value
+    const page = pageParam.value
+    const limit = limitParam.value
     const skip = (page - 1) * limit
 
     // Build where clause

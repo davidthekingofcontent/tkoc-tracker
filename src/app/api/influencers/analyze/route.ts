@@ -4,6 +4,7 @@ import { getSession } from '@/lib/auth'
 import { Platform } from '@/generated/prisma/client'
 import { scrapeProfile, isApifyConfigured, isApifyExhausted, getApifyResumeDate } from '@/lib/apify'
 import { ensureContact } from '@/lib/contacts'
+import { scrapedProfileHasData, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 
 export async function POST(request: NextRequest) {
   try {
@@ -97,26 +98,10 @@ export async function POST(request: NextRequest) {
               isVerified: scraped.isVerified,
               country: scraped.country,
               city: scraped.city,
-              lastScraped: new Date(),
+              lastScraped: scrapedProfileHasData(scraped) ? new Date() : null,
             },
-            update: {
-              displayName: scraped.displayName,
-              bio: scraped.bio,
-              avatarUrl: scraped.avatarUrl,
-              email: scraped.email || undefined,
-              website: scraped.website || undefined,
-              followers: scraped.followers,
-              following: scraped.following,
-              postsCount: scraped.postsCount,
-              engagementRate: scraped.engagementRate,
-              avgLikes: scraped.avgLikes,
-              avgComments: scraped.avgComments,
-              avgViews: scraped.avgViews,
-              isVerified: scraped.isVerified,
-              country: scraped.country || undefined,
-              city: scraped.city || undefined,
-              lastScraped: new Date(),
-            },
+            // Empty scrapes never zero out real metrics nor stamp lastScraped
+            update: scrapedProfileUpdate(scraped, existing),
             include: {
               _count: { select: { campaigns: true, media: true } },
             },

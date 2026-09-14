@@ -3408,7 +3408,7 @@ export default function CampaignDetailPage() {
                 <span className="text-xs font-medium text-gray-500 uppercase">{t.campaigns.trackingAccounts}</span>
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   {targetAccounts.map(a => (
-                    <Badge key={a} variant="default">{a}</Badge>
+                    <Badge key={a} variant="default">{a.startsWith('@') ? a : `@${a}`}</Badge>
                   ))}
                 </div>
               </div>
@@ -3418,7 +3418,7 @@ export default function CampaignDetailPage() {
                 <span className="text-xs font-medium text-gray-500 uppercase">{t.campaigns.trackingHashtags}</span>
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   {targetHashtags.map(h => (
-                    <Badge key={h} variant="default">{h}</Badge>
+                    <Badge key={h} variant="default">{h.startsWith('#') ? h : `#${h}`}</Badge>
                   ))}
                 </div>
               </div>
@@ -4480,7 +4480,7 @@ export default function CampaignDetailPage() {
               <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 shadow-sm">
                 <div className="flex flex-wrap items-center gap-4">
                   {/* Filters */}
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-3">
                     {/* Platform filter */}
                     {mediaPlatforms.length > 1 && (
                       <select
@@ -4511,7 +4511,7 @@ export default function CampaignDetailPage() {
                   </div>
 
                   {/* Sort pills */}
-                  <div className="flex items-center gap-1.5 ml-auto">
+                  <div className="flex flex-wrap items-center gap-1.5 ml-auto">
                     <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">{t.campaignDetail.sortBy}:</span>
                     {([
                       { key: 'recent', label: t.campaignDetail.mostRecent },
@@ -5532,9 +5532,10 @@ export default function CampaignDetailPage() {
 
                       return (
                         <div key={ci.id} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-                          <div className="flex items-start gap-4">
+                          {/* Stacked below sm: five fixed columns in one row overflowed the 390 px viewport */}
+                          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
                             {/* Profile */}
-                            <div className="flex items-center gap-3 min-w-[200px]">
+                            <div className="flex flex-wrap items-center gap-3 min-w-0 sm:min-w-[200px]">
                               <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={ci.influencer.avatarUrl || undefined} />
                               <div>
                                 <p className="font-semibold text-gray-900">{ci.influencer.displayName || ci.influencer.username}</p>
@@ -5563,7 +5564,7 @@ export default function CampaignDetailPage() {
                             </div>
 
                             {/* Stats */}
-                            <div className="flex-1 grid grid-cols-4 gap-3 text-center">
+                            <div className="flex-1 min-w-0 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
                               <div>
                                 <p className="text-[10px] uppercase tracking-wider text-gray-400">{t.campaigns.followers}</p>
                                 <p className="text-sm font-bold text-gray-900">{formatNumber(ci.influencer.followers, { locale })}</p>
@@ -5582,6 +5583,8 @@ export default function CampaignDetailPage() {
                               </div>
                             </div>
 
+                            {/* Actions: traffic light + remove (wraps on narrow screens) */}
+                            <div className="flex flex-wrap items-center gap-3 min-w-0 sm:shrink-0">
                             {/* Traffic Light */}
                             <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${trafficColors[cpm.trafficLight]}`}>
                               <span className={`h-3 w-3 rounded-full ${trafficDot[cpm.trafficLight]}`} />
@@ -5609,14 +5612,15 @@ export default function CampaignDetailPage() {
                                 {locale === 'es' ? 'Quitar' : 'Remove'}
                               </button>
                             )}
+                            </div>
                           </div>
 
-                          {/* CPM Evaluation Row */}
-                          <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-8 gap-3 items-end">
+                          {/* CPM Evaluation Row — 2 / 4 / 8 columns by breakpoint; min-w-0 so the number inputs never widen a cell */}
+                          <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 items-end">
                             {/* Deal inputs: agreed fee · asking fee · negotiated format */}
-                            <div className="col-span-3 grid grid-cols-3 gap-2 items-start">
+                            <div className="col-span-2 sm:col-span-4 lg:col-span-3 grid grid-cols-2 sm:grid-cols-3 gap-2 items-start">
                             {/* Fee Input */}
-                            <div>
+                            <div className="min-w-0">
                               <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">
                                 {locale === 'es' ? 'Fee Acordado (€)' : 'Agreed Fee (€)'}
                               </label>
@@ -5654,7 +5658,7 @@ export default function CampaignDetailPage() {
                             </div>
 
                             {/* Asking fee (what the creator asked before negotiating) */}
-                            <div>
+                            <div className="min-w-0">
                               <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">
                                 {locale === 'es' ? 'Fee solicitado (€)' : 'Asking fee (€)'}
                               </label>
@@ -5678,7 +5682,7 @@ export default function CampaignDetailPage() {
                             </div>
 
                             {/* Negotiated format (drives the p25/p50/p75/p90 cell and the CPM threshold) */}
-                            <div>
+                            <div className="min-w-0">
                               <label className="text-[10px] uppercase tracking-wider text-gray-400 block mb-1">
                                 {locale === 'es' ? 'Formato' : 'Format'}
                               </label>
@@ -5696,7 +5700,7 @@ export default function CampaignDetailPage() {
                             </div>
 
                             {/* CPM Real */}
-                            <div>
+                            <div className="min-w-0">
                               <p className="text-[10px] uppercase tracking-wider text-gray-400 flex items-center gap-1">CPM Real <InfoTooltip text={locale === 'es' ? 'Coste por mil visualizaciones = (Fee / Avg Views) × 1.000' : 'Cost per thousand views = (Fee / Avg Views) × 1,000'} /></p>
                               <p className="text-sm font-bold text-gray-900">
                                 {cpm.cpmReal !== null ? formatEur(cpm.cpmReal, { locale, maxFractionDigits: 2 }) : '—'}
@@ -5704,7 +5708,7 @@ export default function CampaignDetailPage() {
                             </div>
 
                             {/* CPM Target */}
-                            <div>
+                            <div className="min-w-0">
                               <p className="text-[10px] uppercase tracking-wider text-gray-400">CPM {locale === 'es' ? 'Objetivo' : 'Target'}</p>
                               <p className="text-sm font-medium text-gray-600">
                                 {cpm.cpmTarget !== null ? formatEur(cpm.cpmTarget, { locale, maxFractionDigits: 2 }) : '—'}
@@ -5712,7 +5716,7 @@ export default function CampaignDetailPage() {
                             </div>
 
                             {/* Fee Recommended */}
-                            <div>
+                            <div className="min-w-0">
                               <p className="text-[10px] uppercase tracking-wider text-gray-400">Fee {locale === 'es' ? 'Recomendado' : 'Recommended'}</p>
                               <p className="text-sm font-bold text-green-600">
                                 {cpm.feeRecommended !== null ? formatEur(cpm.feeRecommended, { locale }) : '—'}
@@ -5720,7 +5724,7 @@ export default function CampaignDetailPage() {
                             </div>
 
                             {/* Fee Max */}
-                            <div>
+                            <div className="min-w-0">
                               <p className="text-[10px] uppercase tracking-wider text-gray-400">Fee {locale === 'es' ? 'Maximo' : 'Max'}</p>
                               <p className="text-sm font-medium text-amber-600">
                                 {cpm.feeMax !== null ? formatEur(cpm.feeMax, { locale }) : '—'}
@@ -5728,7 +5732,7 @@ export default function CampaignDetailPage() {
                             </div>
 
                             {/* Savings/Overcost */}
-                            <div>
+                            <div className="min-w-0">
                               <p className="text-[10px] uppercase tracking-wider text-gray-400">{locale === 'es' ? 'Diferencia' : 'Diff'}</p>
                               {cpm.savingsOrOvercost !== null ? (
                                 <p className={`text-sm font-bold ${cpm.savingsOrOvercost > 0 ? 'text-red-600' : 'text-green-600'}`}>
@@ -5763,7 +5767,7 @@ export default function CampaignDetailPage() {
                           )}
 
                           {/* Deal Advisor + Risk Signals */}
-                          <div className="mt-3 flex items-center gap-3">
+                          <div className="mt-3 flex flex-wrap items-center gap-3">
                             <DealAdvisorPanel
                               username={ci.influencer.username}
                               platform={ci.influencer.platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'}
@@ -5868,7 +5872,7 @@ export default function CampaignDetailPage() {
                           {renderBaselineRow(ci, perInfluencer)}
 
                           {/* Notes & History & Remove */}
-                          <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center gap-2">
+                          <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex flex-wrap items-center gap-2 min-w-0">
                             <CampaignNotesButton
                               campaignId={campaignId}
                               influencerId={ci.influencer.id}

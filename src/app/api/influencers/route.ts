@@ -3,6 +3,23 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { Platform, Prisma } from '@/generated/prisma/client'
 
+// ---- Query validation: a bad value answers 400 instead of a Prisma 500 ----
+
+function parseIntParam(
+  value: string | null,
+  fallback: number,
+  min: number,
+  max: number,
+  name: string
+): { value: number } | { error: string } {
+  if (value === null || value === '') return { value: fallback }
+  const n = Number(value)
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < min || n > max) {
+    return { error: `Invalid ${name}: must be an integer between ${min} and ${max}` }
+  }
+  return { value: n }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const session = await getSession(request)
@@ -14,8 +31,19 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get('search')
     const platform = searchParams.get('platform')
     const sort = searchParams.get('sort') // 'lastScraped', 'followers', 'engagement'
-    const page = parseInt(searchParams.get('page') || '1', 10)
-    const limit = Math.min(parseInt(searchParams.get('limit') || '20', 10), 100)
+
+    if (platform && !Object.values(Platform).includes(platform as Platform)) {
+      return NextResponse.json(
+        { error: `Invalid platform. Use one of: ${Object.values(Platform).join(', ')}` },
+        { status: 400 }
+      )
+    }
+    const pageParam = parseIntParam(searchParams.get('page'), 1, 1, Number.MAX_SAFE_INTEGER, 'page')
+    if ('error' in pageParam) return NextResponse.json({ error: pageParam.error }, { status: 400 })
+    const limitParam = parseIntParam(searchParams.get('limit'), 20, 1, 100, 'limit')
+    if ('error' in limitParam) return NextResponse.json({ error: limitParam.error }, { status: 400 })
+    const page = pageParam.value
+    const limit = limitParam.value
     const skip = (page - 1) * limit
 
     const where: Prisma.InfluencerWhereInput = {}
@@ -28,7 +56,7 @@ export async function GET(request: NextRequest) {
       ]
     }
 
-    if (platform && Object.values(Platform).includes(platform as Platform)) {
+    if (platform) {
       where.platform = platform as Platform
     }
 

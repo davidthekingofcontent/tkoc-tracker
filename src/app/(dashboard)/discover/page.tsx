@@ -605,7 +605,7 @@ export default function DiscoverPage() {
 
       {/* Tabs */}
       <Tabs defaultValue="database" value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="border-b border-gray-200 dark:border-gray-700">
+        <TabsList className="dark:shadow-[inset_0_-1px_0_0_#374151]">
           <TabsTrigger value="database" className="dark:text-gray-300 dark:data-[state=active]:text-purple-400">
             <Database className="h-4 w-4 mr-1.5" />
             {isEs ? 'Base de datos' : 'Database'}

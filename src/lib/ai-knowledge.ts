@@ -70,7 +70,7 @@ Otras páginas sin entrada en la barra lateral:
 - Analizar Perfil (/analyze): pega la URL o @handle de Instagram, TikTok o YouTube → estadísticas del creador (seguidores, engagement, medianas de likes/comentarios/vistas, desglose de contenido, frecuencia de publicación, mejor tipo de contenido, mejor hora, tendencia de engagement, calidad de audiencia), "Obtener Insights", "Buscar Similares", "Añadir a lista", "Tarjeta de Tarifas" (guardar tarifa estándar del creador).
 - Ficha de creador (/creators/[id]).
 - Calendario (/calendar): vista mensual de campañas por fechas.
-- Knowledge Base (/knowledge-base): documento interno de referencia.
+- Knowledge Base (/knowledge-base): esta misma guía de uso, en formato legible (se sirve desde el código, no desde un archivo).
 - Informe de campaña (/campaigns/[id]/report): ver sección 10.
 Notificaciones: campana en la parte inferior de la barra lateral (nuevos posts detectados, creadores añadidos, etc.).
 

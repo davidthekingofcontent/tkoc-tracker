@@ -8,6 +8,7 @@ import { computeCampaignOverview, stripEconomics } from '@/lib/campaign-overview
 import { buildCampaignLearnings, toClientLearnings, type CampaignLearnings, type LearningsMediaRow } from '@/lib/campaign-learnings'
 import { loadReportConfig } from '@/lib/report-config'
 import { sanitizeCampaignForBrand } from '@/lib/brand-scope'
+import { normalizeTargets } from '@/lib/campaign-capture'
 import type { CampaignOverview } from '@/lib/metrics'
 
 // ---- Numeric targets (decision 1B, David 2026-09-05) ----
@@ -61,6 +62,28 @@ function parseOptionalText(value: unknown, max: number): string | null | undefin
   const trimmed = value.trim()
   if (!trimmed) return null
   return trimmed.length <= max ? trimmed : undefined
+}
+
+// ---- Campaign window (2026-09-14: a campaign reached production with endDate
+// in the year 0026 — a typo the form let through — and the crons scraped for
+// a window nothing could ever match). Years must be plausible and the end
+// must not precede the start. Returns the Spanish error to send as 400.
+const CAMPAIGN_MIN_YEAR = 2020
+const CAMPAIGN_MAX_YEAR = 2100
+
+function validateCampaignWindow(startDate: Date | null, endDate: Date | null): string | null {
+  for (const [label, d] of [['inicio', startDate], ['fin', endDate]] as const) {
+    if (!d) continue
+    if (Number.isNaN(d.getTime())) return `La fecha de ${label} no es válida.`
+    const year = d.getUTCFullYear()
+    if (year < CAMPAIGN_MIN_YEAR || year > CAMPAIGN_MAX_YEAR) {
+      return `La fecha de ${label} (${year}) debe estar entre ${CAMPAIGN_MIN_YEAR} y ${CAMPAIGN_MAX_YEAR}.`
+    }
+  }
+  if (startDate && endDate && endDate.getTime() < startDate.getTime()) {
+    return 'La fecha de fin debe ser igual o posterior a la fecha de inicio.'
+  }
+  return null
 }
 
 /** Optional ISO date (YYYY-MM-DD or full ISO 8601): null/'' clears; undefined = invalid. */
@@ -399,6 +422,13 @@ export async function PUT(
       businessResultsNotes?: string | null
     } = {}
     const invalid = (message: string) => NextResponse.json({ error: message }, { status: 400 })
+    // normalizeTargets maps any non-array to [] — reject instead of silently clearing the campaign's targets
+    if (targetAccounts !== undefined && targetAccounts !== null && !Array.isArray(targetAccounts)) {
+      return invalid('targetAccounts must be an array of strings')
+    }
+    if (targetHashtags !== undefined && targetHashtags !== null && !Array.isArray(targetHashtags)) {
+      return invalid('targetHashtags must be an array of strings')
+    }
     if (promoCode !== undefined) {
       const v = parseOptionalText(promoCode, 100)
       if (v === undefined) return invalid('promoCode must be text of at most 100 characters')
@@ -472,6 +502,15 @@ export async function PUT(
     ) as Record<TargetKey, number | null>
     const hasAnyTarget = TARGET_KEYS.some(key => mergedTargets[key] !== null)
 
+    // ---- Dates: validate the window that WOULD be stored (incoming value, else the
+    // stored one — an empty endDate leaves it untouched, as before) ----
+    const nextStartDate: Date | null = startDate !== undefined && startDate ? new Date(startDate) : null
+    const nextEndDate: Date | null = endDate !== undefined && endDate ? new Date(endDate) : null
+    if (nextStartDate || nextEndDate) {
+      const dateError = validateCampaignWindow(nextStartDate ?? existing.startDate, nextEndDate ?? existing.endDate)
+      if (dateError) return invalid(dateError)
+    }
+
     const nextStatus: CampaignStatus =
       status !== undefined && Object.values(CampaignStatus).includes(status) ? status : existing.status
     const now = new Date()
@@ -507,11 +546,12 @@ export async function PUT(
         ...(status !== undefined && Object.values(CampaignStatus).includes(status) && { status }),
         ...(budget !== undefined && { budget }),
         ...(isPinned !== undefined && { isPinned }),
-        ...(startDate !== undefined && startDate && { startDate: new Date(startDate) }),
-        ...(endDate !== undefined && { endDate: endDate ? new Date(endDate) : undefined }),
+        ...(nextStartDate && { startDate: nextStartDate }),
+        ...(nextEndDate && { endDate: nextEndDate }),
         ...(platforms !== undefined && { platforms }),
-        ...(targetAccounts !== undefined && { targetAccounts }),
-        ...(targetHashtags !== undefined && { targetHashtags }),
+        // One token per element, no @/# (normalizeTargets): "#a #b" typed in one field is two targets
+        ...(targetAccounts !== undefined && { targetAccounts: normalizeTargets(targetAccounts || []) }),
+        ...(targetHashtags !== undefined && { targetHashtags: normalizeTargets(targetHashtags || []) }),
         ...(targetKeywords !== undefined && { targetKeywords }),
         ...(country !== undefined && { country: country || null }),
         ...(paymentType !== undefined && ['PAID', 'GIFTED'].includes(paymentType) && { paymentType }),

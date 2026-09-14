@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { dedupeMediaByPost } from '@/lib/campaign-capture'
+import { dedupeMediaByPost, normalizeTargets } from '@/lib/campaign-capture'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus, CampaignType, Prisma } from '@/generated/prisma/client'
 import { notifyAllTeam } from '@/lib/notifications'
@@ -18,6 +18,28 @@ function toPositiveFloat(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null
   const n = typeof value === 'number' ? value : parseFloat(String(value))
   return Number.isFinite(n) && n > 0 ? n : null
+}
+
+// ---- Campaign window (2026-09-14: a campaign reached production with endDate
+// in the year 0026 — a typo the form let through — and the crons scraped for
+// a window nothing could ever match). Years must be plausible and the end
+// must not precede the start. Returns the Spanish error to send as 400.
+const CAMPAIGN_MIN_YEAR = 2020
+const CAMPAIGN_MAX_YEAR = 2100
+
+function validateCampaignWindow(startDate: Date | null, endDate: Date | null): string | null {
+  for (const [label, d] of [['inicio', startDate], ['fin', endDate]] as const) {
+    if (!d) continue
+    if (Number.isNaN(d.getTime())) return `La fecha de ${label} no es válida.`
+    const year = d.getUTCFullYear()
+    if (year < CAMPAIGN_MIN_YEAR || year > CAMPAIGN_MAX_YEAR) {
+      return `La fecha de ${label} (${year}) debe estar entre ${CAMPAIGN_MIN_YEAR} y ${CAMPAIGN_MAX_YEAR}.`
+    }
+  }
+  if (startDate && endDate && endDate.getTime() < startDate.getTime()) {
+    return 'La fecha de fin debe ser igual o posterior a la fecha de inicio.'
+  }
+  return null
 }
 
 export async function GET(request: NextRequest) {
@@ -180,6 +202,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Campaign name is required' }, { status: 400 })
     }
 
+    // normalizeTargets maps any non-array to [] — reject instead of silently creating a campaign without targets
+    if (targetAccounts !== undefined && targetAccounts !== null && !Array.isArray(targetAccounts)) {
+      return NextResponse.json({ error: 'targetAccounts must be an array of strings' }, { status: 400 })
+    }
+    if (targetHashtags !== undefined && targetHashtags !== null && !Array.isArray(targetHashtags)) {
+      return NextResponse.json({ error: 'targetHashtags must be an array of strings' }, { status: 400 })
+    }
+
     // Numeric targets. New campaigns are ACTIVE by default (schema), so when at
     // least one target is set the targets are frozen right away (targetsFrozenAt);
     // later changes go through PUT /api/campaigns/[id] and land in targetsChangeLog.
@@ -217,17 +247,26 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Dates: end ≥ start, years 2020–2100 (a missing start is "today").
+    const resolvedStart = startDate ? new Date(startDate) : new Date()
+    const resolvedEnd = endDate ? new Date(endDate) : null
+    const dateError = validateCampaignWindow(resolvedStart, resolvedEnd)
+    if (dateError) {
+      return NextResponse.json({ error: dateError }, { status: 400 })
+    }
+
     const campaign = await prisma.campaign.create({
       data: {
         name,
         type: resolvedType,
         platforms: platforms && platforms.length > 0 ? platforms : ['INSTAGRAM'],
-        targetAccounts: targetAccounts || [],
-        targetHashtags: targetHashtags || [],
+        // One token per element, no @/# (normalizeTargets): "#a #b" typed in one field is two targets
+        targetAccounts: normalizeTargets(targetAccounts || []),
+        targetHashtags: normalizeTargets(targetHashtags || []),
         targetKeywords: targetKeywords || [],
         briefFiles: [],
-        startDate: startDate ? new Date(startDate) : new Date(),
-        ...(endDate && { endDate: new Date(endDate) }),
+        startDate: resolvedStart,
+        ...(resolvedEnd && { endDate: resolvedEnd }),
         ...(country && { country }),
         paymentType: type === 'UGC' ? 'PAID' : (paymentType && ['PAID', 'GIFTED'].includes(paymentType) ? paymentType : 'PAID'),
         ...(briefText !== undefined && { briefText }),

@@ -13,6 +13,7 @@ import {
   scrapedStoryToRuleItem,
   upsertCampaignPost,
   upsertCampaignStory,
+  normalizeTargets,
 } from '@/lib/campaign-capture'
 import { Platform } from '@/generated/prisma/client'
 
@@ -151,8 +152,9 @@ export async function POST(
       console.error('[Track] Meta sync pass failed:', err instanceof Error ? err.message : err)
     }
 
-    // Track hashtags
-    for (const hashtag of campaign.targetHashtags) {
+    // Track hashtags — one scrape per TOKEN: rows saved before normalisation-on-write
+    // may still hold "#a #b" in one element, so normalise at read time like the cron does
+    for (const hashtag of normalizeTargets(campaign.targetHashtags)) {
       for (const platform of campaign.platforms) {
         try {
           const job = await prisma.scrapeJob.create({
@@ -330,7 +332,7 @@ export async function POST(
 
     // ===== ACCOUNT MENTIONS TRACKING =====
     // Find posts where targetAccounts are tagged/mentioned
-    for (const account of campaign.targetAccounts) {
+    for (const account of normalizeTargets(campaign.targetAccounts)) {
       const normalizedAccount = account.toLowerCase().replace(/^@/, '').trim()
       for (const platform of campaign.platforms) {
         // Apify cost saver: Meta Graph API already captured tagged content for

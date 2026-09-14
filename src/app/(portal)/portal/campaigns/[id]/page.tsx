@@ -466,7 +466,7 @@ export default function PortalCampaignPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
-                          {typeof inf.followers === 'number' ? formatNumber(inf.followers) : '—'}
+                          {typeof inf.followers === 'number' && inf.followers > 0 ? formatNumber(inf.followers) : '—'}
                         </td>
                         <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">
                           {(() => {
