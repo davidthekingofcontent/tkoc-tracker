@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 import { campaignHasTargets, mediaMatchesCampaignRules, scrapedPostToRuleItem, upsertCampaignPost } from '@/lib/campaign-capture'
 import { isApifyConfiguredAsync } from '@/lib/apify'
 import { fetchProfile } from '@/lib/platform-client'
@@ -38,6 +39,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // One profile scrape per confirmed creator of every active campaign: once a day (posts do not expire)
+    const gate = await cronGate('check-posts', 24, request.nextUrl.searchParams.get('force') === '1')
+    if (!gate.allowed) return NextResponse.json(cronSkipped('check-posts', gate))
+    await markCronRun('check-posts')
+
     const apifyConfigured = await isApifyConfiguredAsync()
     const youtubeConfigured = isYouTubeApiConfigured()
     if (!apifyConfigured && !youtubeConfigured) {

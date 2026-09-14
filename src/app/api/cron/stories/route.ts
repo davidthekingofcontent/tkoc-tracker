@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { isApifyConfiguredAsync, isApifyExhausted, isApifyOverSoftLimit, scrapeStories, STORIES_BATCH_MAX } from '@/lib/apify'
+import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 
-/** Stories live 24 h: two scans a day catch every one of them. Whatever the external scheduler does, the route refuses to run more often than this (override with ?force=1). */
-const STORIES_MIN_INTERVAL_HOURS = Number(process.env.STORIES_MIN_INTERVAL_HOURS || 12)
-const LAST_RUN_KEY = 'cron_stories_last_run'
+/** Stories live 24 h: two scans a day catch every one of them (CRON_STORIES_MIN_HOURS overrides). */
+const STORIES_DEFAULT_MIN_HOURS = Number(process.env.STORIES_MIN_INTERVAL_HOURS || 12)
+/**
+ * David 2026-09-14: stories only for the campaigns "del mes" — active, inside
+ * their dates today AND no longer than this many days. Long-running listening
+ * campaigns (the annual contracts one) are excluded: their dozens of creators
+ * were the bulk of the stories bill.
+ */
+const STORIES_MAX_CAMPAIGN_DAYS = Number(process.env.STORIES_MAX_CAMPAIGN_DAYS || 62)
 import { notifyAllTeam } from '@/lib/notifications'
 import {
   mediaMatchesCampaignRules,
@@ -46,16 +53,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Apify monthly limit exhausted', storiesFound: 0 }, { status: 503 })
     }
     const force = request.nextUrl.searchParams.get('force') === '1'
-    // Throttle: at most one scan per STORIES_MIN_INTERVAL_HOURS (server-side, independent of the caller's schedule)
-    if (!force) {
-      const last = await prisma.setting.findUnique({ where: { key: LAST_RUN_KEY } }).catch(() => null)
-      const lastAt = last?.value ? Date.parse(last.value) : NaN
-      const minMs = STORIES_MIN_INTERVAL_HOURS * 60 * 60 * 1000
-      if (Number.isFinite(lastAt) && Date.now() - lastAt < minMs) {
-        const nextAllowedAt = new Date(lastAt + minMs).toISOString()
-        console.log(`[Cron/Stories] Skipped: last scan ${last?.value}, next allowed ${nextAllowedAt} (every ${STORIES_MIN_INTERVAL_HOURS} h)`)
-        return NextResponse.json({ skipped: 'too_soon', lastRunAt: last?.value, nextAllowedAt, storiesFound: 0 })
-      }
+    // Throttle: at most one scan per interval (server-side, independent of the caller's schedule)
+    const gate = await cronGate('stories', STORIES_DEFAULT_MIN_HOURS, force)
+    if (!gate.allowed) {
+      console.log(`[Cron/Stories] Skipped: last scan ${gate.lastRunAt}, next allowed ${gate.nextAllowedAt} (every ${gate.minHours} h)`)
+      return NextResponse.json(cronSkipped('stories', gate, { storiesFound: 0 }))
     }
     // Soft monthly budget: stories are the most expensive scrape (0,099 $ per run start); stop them first
     const budget = await isApifyOverSoftLimit()
@@ -117,6 +119,15 @@ export async function GET(request: NextRequest) {
         console.log(`[Cron/Stories] Campaign "${c.name}" is outside its date window today — skipping`)
         continue
       }
+      // Only the campaigns of the month: a window longer than STORIES_MAX_CAMPAIGN_DAYS
+      // (or without both dates) is a listening/annual campaign — no story scraping.
+      const start = c.startDate ? new Date(c.startDate).getTime() : NaN
+      const end = c.endDate ? new Date(c.endDate).getTime() : NaN
+      const days = Number.isFinite(start) && Number.isFinite(end) ? (end - start) / 86_400_000 : NaN
+      if (!Number.isFinite(days) || days > STORIES_MAX_CAMPAIGN_DAYS) {
+        console.log(`[Cron/Stories] Campaign "${c.name}" spans ${Number.isFinite(days) ? Math.round(days) : '?'} days (> ${STORIES_MAX_CAMPAIGN_DAYS}) — stories not scraped for long campaigns`)
+        continue
+      }
       campaignsById.set(c.id, c)
     }
 
@@ -154,7 +165,7 @@ export async function GET(request: NextRequest) {
     let totalStories = 0
     let newStories = 0
     let rejectedByRules = 0
-    await prisma.setting.upsert({ where: { key: LAST_RUN_KEY }, update: { value: new Date().toISOString() }, create: { key: LAST_RUN_KEY, value: new Date().toISOString() } }).catch(() => {})
+    await markCronRun('stories')
 
     for (let i = 0; i < usernames.length; i += STORIES_BATCH_MAX) {
       if (isApifyExhausted()) break

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 import { prisma } from '@/lib/db'
 import { notifyAllTeam } from '@/lib/notifications'
 import { mediaPostKey } from '@/lib/campaign-capture'
@@ -26,6 +27,10 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    const gate = await cronGate('check-deletions', 24, request.nextUrl.searchParams.get('force') === '1')
+    if (!gate.allowed) return NextResponse.json(cronSkipped('check-deletions', gate))
+    await markCronRun('check-deletions')
+
     // Get all non-deleted media with permalinks from active campaigns
     const allMedia = await prisma.media.findMany({
       where: {

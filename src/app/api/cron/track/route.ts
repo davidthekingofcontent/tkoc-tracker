@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 import { scrapeHashtag, scrapeAccountMentions, scrapeStories, isApifyConfigured, isApifyExhausted, detectCountry } from '@/lib/apify'
 import { searchVideos as ytSearchVideos, isYouTubeApiConfigured } from '@/lib/youtube-api'
 import {
@@ -408,6 +409,11 @@ export async function GET(request: NextRequest) {
     if (authHeader !== `Bearer ${cronSecret}`) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    // Every hashtag scrape charges an Apify run start: once a day is enough for posts (they do not expire)
+    const gate = await cronGate('track', 24, request.nextUrl.searchParams.get('force') === '1')
+    if (!gate.allowed) return NextResponse.json(cronSkipped('track', gate))
+    await markCronRun('track')
 
     const results = await runCronTracking()
 
