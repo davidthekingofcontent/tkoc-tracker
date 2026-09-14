@@ -41,9 +41,15 @@ export async function notifyAllTeam(
   excludeUserId?: string
 ) {
   try {
+    // Team notifications are for the agency staff only: clients (BRAND) and
+    // creators must never receive internal events about campaigns, prospects
+    // or other brands (health check 2026-09-14: a Vileda client had 380 of them).
     const users = await prisma.user.findMany({
       select: { id: true },
-      where: excludeUserId ? { id: { not: excludeUserId } } : undefined,
+      where: {
+        role: { in: ['ADMIN', 'EMPLOYEE'] },
+        ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
+      },
     })
 
     await prisma.notification.createMany({
