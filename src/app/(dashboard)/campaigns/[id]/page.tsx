@@ -5003,7 +5003,7 @@ export default function CampaignDetailPage() {
                           className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-orange-600 px-3 py-2 text-xs font-medium text-white hover:bg-orange-700 transition-colors"
                         >
                           <Download className="h-3 w-3" />
-                          {locale === 'es' ? 'Descargar CSV Envios' : 'Download Shipping CSV'}
+                          {locale === 'es' ? 'Descargar CSV Envíos' : 'Download Shipping CSV'}
                         </a>
                       </div>
                     )}
@@ -5021,7 +5021,7 @@ export default function CampaignDetailPage() {
                 <div className="flex items-center gap-2 mb-4">
                   <Truck className="h-5 w-5 text-orange-600" />
                   <h3 className="text-sm font-semibold text-gray-900">
-                    {locale === 'es' ? 'Datos de Envio' : 'Shipping Data'}
+                    {locale === 'es' ? 'Datos de Envío' : 'Shipping Data'}
                   </h3>
                 </div>
                 {influencers.filter(ci => ci.status === 'SHIPPING' || ci.shippingAddress1).length === 0 ? (
@@ -5058,8 +5058,8 @@ export default function CampaignDetailPage() {
                         >
                           <Truck className="inline h-3 w-3 mr-1" />
                           {ci.shippingAddress1
-                            ? (locale === 'es' ? 'Editar envio' : 'Edit shipping')
-                            : (locale === 'es' ? 'Anadir envio' : 'Add shipping')}
+                            ? (locale === 'es' ? 'Editar envío' : 'Edit shipping')
+                            : (locale === 'es' ? 'Añadir envío' : 'Add shipping')}
                         </button>
                       </div>
                     ))}
@@ -5071,7 +5071,7 @@ export default function CampaignDetailPage() {
                         className="inline-flex items-center gap-1.5 rounded-lg bg-orange-600 px-4 py-2 text-xs font-medium text-white hover:bg-orange-700 transition-colors"
                       >
                         <Download className="h-3 w-3" />
-                        {locale === 'es' ? 'Descargar CSV Envios' : 'Download Shipping CSV'}
+                        {locale === 'es' ? 'Descargar CSV Envíos' : 'Download Shipping CSV'}
                       </a>
                     </div>
                   </div>

@@ -73,6 +73,7 @@ export const translations = {
       pricing: 'Pricing',
       results: 'Results',
       methodology: 'Methodology',
+      manual: 'Manual',
       analyzeProfiles: 'Analyze Profiles',
       findCreators: 'Find Creators',
       lookalikes: 'Lookalikes',
@@ -1353,6 +1354,33 @@ export const translations = {
       deliveryManualMark: 'manual',
       deliveryManualEmptyHint: 'Nothing set yet: this row is saved as Automatic until you enter a figure, a state or a note.',
     },
+
+    // TKOC AI widget: quick questions shown while the conversation is empty
+    aiChat: {
+      quickTitle: 'Common questions',
+      quick1: 'What do I do if a creator shows no posts?',
+      quick2: 'How do I log the statistics of a reel?',
+      quick3: 'Why is the checklist amber?',
+      quick4: 'How do I hide something from the client in the report?',
+      quick5: 'Why is there no engagement rate?',
+      quick6: 'How do I download the PDF for the client?',
+    },
+
+    // PM manual page (/manual) chrome; the manual body is Spanish by design
+    // (it mirrors the Spanish UI labels).
+    manual: {
+      title: 'PM Manual',
+      intro: 'What to do at each step of a campaign, with the buttons and tabs as they appear in the platform. For a specific doubt, the TKOC AI button answers with these same steps.',
+      print: 'Print',
+      searchPlaceholder: 'Search the manual (e.g. stories, PDF, address, Agreed)…',
+      searchLabel: 'Search the manual',
+      clearSearch: 'Clear search',
+      noResults: 'No section matches. Try another word or ask TKOC AI.',
+      resultsCount: '{n} of {total} sections match "{q}".',
+      tocLabel: 'Manual index',
+      toc: 'Index',
+      footer: 'TKOC Intelligence user manual · Metric definitions are those of Methodology; when a label changes in the platform, this manual is updated with it.',
+    },
   },
 
   es: {
@@ -1427,6 +1455,7 @@ export const translations = {
       pricing: 'Pricing',
       results: 'Resultados',
       methodology: 'Metodología',
+      manual: 'Manual',
       analyzeProfiles: 'Analizar Perfiles',
       findCreators: 'Buscar Creadores',
       lookalikes: 'Similares',
@@ -2706,6 +2735,31 @@ export const translations = {
       deliveryExtraMax: 'Máximo de 4 filas adicionales alcanzado',
       deliveryManualMark: 'manual',
       deliveryManualEmptyHint: 'Sin datos todavía: la fila se guarda como Automático hasta que fijes una cifra, un estado o una nota.',
+    },
+
+    // Widget TKOC AI: preguntas rápidas mientras la conversación está vacía
+    aiChat: {
+      quickTitle: 'Dudas frecuentes',
+      quick1: '¿Qué hago si una creadora no muestra publicaciones?',
+      quick2: '¿Cómo registro las estadísticas de un reel?',
+      quick3: '¿Por qué la checklist sale en ámbar?',
+      quick4: '¿Cómo oculto algo del informe al cliente?',
+      quick5: '¿Por qué no hay tasa de engagement?',
+      quick6: '¿Cómo descargo el PDF para el cliente?',
+    },
+
+    manual: {
+      title: 'Manual de la PM',
+      intro: 'Qué hacer en cada paso de una campaña, con los botones y pestañas tal como aparecen en la plataforma. Para una duda concreta, el botón TKOC AI responde con estos mismos pasos.',
+      print: 'Imprimir',
+      searchPlaceholder: 'Buscar en el manual (p. ej. stories, PDF, dirección, Acordado)…',
+      searchLabel: 'Buscar en el manual',
+      clearSearch: 'Borrar búsqueda',
+      noResults: 'Ninguna sección coincide. Prueba con otra palabra o pregunta a TKOC AI.',
+      resultsCount: '{n} de {total} secciones coinciden con «{q}».',
+      tocLabel: 'Índice del manual',
+      toc: 'Índice',
+      footer: 'Manual de uso de TKOC Intelligence · Las definiciones de métricas son las de Metodología; si un rótulo cambia en la plataforma, este manual se actualiza con él.',
     },
   },
 }

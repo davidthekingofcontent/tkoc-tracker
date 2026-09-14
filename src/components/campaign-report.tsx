@@ -2127,7 +2127,8 @@ export function CampaignReport({
 
   // Objectives (decision 1B): only the targets the PM filled in; the CPM row
   // compares against cost and never reaches the portal.
-  const targetRows = (overview?.targets ?? []).filter(tg => !(isPortal && tg.key === 'cpm'))
+  // CPM max is an economic target: never in the client view (portal, print, PDF)
+  const targetRows = (overview?.targets ?? []).filter(tg => !(clientView && tg.key === 'cpm'))
 
   // Title / subtitle overrides (decision 16A)
   const reportTitle = view.title?.trim() || campaign.name || 'Campaña'

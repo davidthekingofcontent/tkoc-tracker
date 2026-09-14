@@ -61,27 +61,10 @@ function formatMarkdown(text: string) {
   return `<p>${html}</p>`
 }
 
-const SUGGESTIONS = {
-  en: [
-    'How do I create a campaign and add creators?',
-    'Why is no content showing up in my campaign?',
-    'How do I connect the brand\'s Instagram (Meta)?',
-    'How do I give a client read-only portal access?',
-    'Which campaign is performing best right now?',
-  ],
-  es: [
-    '¿Cómo creo una campaña y añado creadores?',
-    '¿Por qué no aparece contenido en mi campaña?',
-    '¿Cómo conecto el Instagram de la marca (Meta)?',
-    '¿Cómo doy acceso de solo lectura a un cliente?',
-    '¿Qué campaña está funcionando mejor ahora mismo?',
-  ],
-}
-
 const ALLOWED_ROLES = new Set(['ADMIN', 'EMPLOYEE'])
 
 export function AIChatWidget() {
-  const { locale } = useI18n()
+  const { locale, t } = useI18n()
   const isEs = locale === 'es'
   const [isOpen, setIsOpen] = useState(false)
   const [userRole, setUserRole] = useState<string | null>(null)
@@ -194,7 +177,15 @@ export function AIChatWidget() {
     return null
   }
 
-  const suggestions = SUGGESTIONS[locale as keyof typeof SUGGESTIONS] || SUGGESTIONS.en
+  // The PM's most frequent doubts, one click away (empty conversation only).
+  const quickQuestions = [
+    t.aiChat.quick1,
+    t.aiChat.quick2,
+    t.aiChat.quick3,
+    t.aiChat.quick4,
+    t.aiChat.quick5,
+    t.aiChat.quick6,
+  ]
 
   if (!isOpen) {
     return (
@@ -276,18 +267,20 @@ export function AIChatWidget() {
               </p>
             </div>
 
-            {/* Suggestions */}
+            {/* Quick questions */}
             <div className="space-y-2">
               <p className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase px-1">
-                {isEs ? 'Prueba preguntando:' : 'Try asking:'}
+                {t.aiChat.quickTitle}
               </p>
-              {suggestions.map((suggestion, i) => (
+              {quickQuestions.map((question) => (
                 <button
-                  key={i}
-                  onClick={() => handleSend(suggestion)}
-                  className="w-full text-left rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 transition-colors hover:bg-purple-50 dark:hover:bg-purple-900/30 hover:border-purple-200 dark:hover:border-purple-700 hover:text-purple-700 dark:hover:text-purple-200"
+                  key={question}
+                  type="button"
+                  onClick={() => handleSend(question)}
+                  disabled={isLoading}
+                  className="w-full text-left rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 transition-colors hover:bg-purple-50 dark:hover:bg-purple-900/30 hover:border-purple-200 dark:hover:border-purple-700 hover:text-purple-700 dark:hover:text-purple-200 disabled:opacity-50"
                 >
-                  {suggestion}
+                  {question}
                 </button>
               ))}
             </div>

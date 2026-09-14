@@ -10,6 +10,7 @@ import {
   DollarSign,
   BarChart3,
   BookOpen,
+  BookMarked,
   ListChecks,
   Contact,
   Kanban,
@@ -43,6 +44,7 @@ const mainNavItems: NavItem[] = [
   { key: "pricing", icon: DollarSign, href: "/pricing" },
   { key: "results", icon: BarChart3, href: "/compare" },
   { key: "methodology", icon: BookOpen, href: "/methodology" },
+  { key: "manual", icon: BookMarked, href: "/manual" },
 ]
 
 const secondaryNavItems: NavItem[] = [
@@ -99,6 +101,7 @@ function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
     case 'pricing': return t.nav.pricing
     case 'results': return t.nav.results
     case 'methodology': return t.nav.methodology
+    case 'manual': return t.nav.manual
     case 'lists': return t.lists?.title || t.nav.lists
     case 'contacts': return t.contacts?.title || t.nav.contacts
     case 'lookalikes': return t.lookalikes?.title || 'Lookalikes'
