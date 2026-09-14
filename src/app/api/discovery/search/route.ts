@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { Prisma, Platform } from '@/generated/prisma/client'
+import { REAL_PROFILE_WHERE } from '@/lib/creator-pool'
 
-// POST /api/discovery/search — search CreatorProfile database
+// POST /api/discovery/search — search the creator pool (CreatorProfile).
+// Only creators with at least one platform profile that passes
+// REAL_PROFILE_WHERE (followers > 0) are listed: the hashtag shells created
+// by the old discovery cron never reach the "Base de datos" tab.
 export async function POST(req: NextRequest) {
   const session = await getSession(req)
   if (!session) {
@@ -58,8 +62,10 @@ export async function POST(req: NextRequest) {
     creatorWhere.geoProvince = { contains: province, mode: 'insensitive' }
   }
 
-  // Platform filter and text search go through platformProfiles
-  const platformProfileWhere: Prisma.CreatorPlatformProfileWhereInput = {}
+  // Platform filter, followers range and text search go through platformProfiles.
+  // The gate is always on: whatever the other filters, a listed creator needs
+  // one REAL platform profile (REAL_PROFILE_WHERE) matching platform/followers.
+  const platformProfileWhere: Prisma.CreatorPlatformProfileWhereInput = { ...REAL_PROFILE_WHERE }
 
   if (platform && platform !== 'all') {
     const p = platform.toUpperCase() as Platform
@@ -68,7 +74,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Followers range
+  // Followers range (merged with the followers > 0 gate)
   if (minFollowers && minFollowers > 0) {
     platformProfileWhere.followers = {
       ...(platformProfileWhere.followers as Prisma.IntFilter ?? {}),
@@ -82,37 +88,32 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Text search (username, displayName, bio)
+  // Creators that have at least one real platform profile matching the filters
+  // (kept even when a text query is added below, so the displayName branch
+  // stays inside the gate too). The count uses this same where.
+  creatorWhere.platformProfiles = { some: platformProfileWhere }
+
+  // Text search: displayName on the creator, username/bio on the platform
+  // profile — the profile branch carries the full platform/followers gate.
   if (query && query.trim()) {
     const q = query.trim()
-    platformProfileWhere.OR = [
-      { username: { contains: q, mode: 'insensitive' } },
-      { bio: { contains: q, mode: 'insensitive' } },
-    ]
-  }
-
-  // Combine: creators that have at least one matching platform profile
-  const hasPlatformFilter = Object.keys(platformProfileWhere).length > 0
-  if (hasPlatformFilter) {
-    creatorWhere.platformProfiles = { some: platformProfileWhere }
-  }
-
-  // Also search by displayName on creator level
-  if (query && query.trim()) {
-    const q = query.trim()
-    const existing = creatorWhere.platformProfiles
-    // Push text search condition into AND array (preserve existing AND conditions like category)
     if (!creatorWhere.AND) creatorWhere.AND = []
     ;(creatorWhere.AND as Prisma.CreatorProfileWhereInput[]).push({
       OR: [
         { displayName: { contains: q, mode: 'insensitive' } },
-        { platformProfiles: { some: platformProfileWhere } },
+        {
+          platformProfiles: {
+            some: {
+              ...platformProfileWhere,
+              OR: [
+                { username: { contains: q, mode: 'insensitive' } },
+                { bio: { contains: q, mode: 'insensitive' } },
+              ],
+            },
+          },
+        },
       ],
     })
-    // Remove the simple platformProfiles filter to avoid conflict
-    if (existing) {
-      delete creatorWhere.platformProfiles
-    }
   }
 
   // Determine sort

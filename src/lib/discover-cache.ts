@@ -29,9 +29,16 @@ export const APIFY_USD_PER_PROFILE = 0.0023
 export const DISCOVER_HASHTAG_DEFAULT_LIMIT = 60
 /** Absolute cap on posts per run, even if the env asks for more. */
 export const DISCOVER_HASHTAG_MAX_POSTS = 150
-/** Default number of NEW handles (not in our DB) enriched via profile scraper (env DISCOVER_ENRICH_LIMIT). */
-export const DISCOVER_ENRICH_DEFAULT_LIMIT = 0
-/** Cap on profile enrichments per paid search. */
+/**
+ * Default number of NEW handles (not in our DB) enriched per paid category
+ * search (env DISCOVER_ENRICH_LIMIT). The hashtag scraper returns authors
+ * without followers, bio or photo, so the paid search enriches them in ONE
+ * batched apify~instagram-profile-scraper run (0,0023 $ per profile, no start
+ * fee): the PM gets real cards instead of empty ones, and every profile is
+ * persisted + materialized into the pool so it is never paid for twice.
+ */
+export const DISCOVER_ENRICH_DEFAULT_LIMIT = 25
+/** Cap on profile enrichments per paid search (also one profile-scraper run). */
 export const DISCOVER_ENRICH_MAX = 25
 /** A cached hashtag run is served for 7 days. */
 export const HASHTAG_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -45,7 +52,7 @@ export function resolveHashtagLimit(envValue: string | undefined | null): number
   return Math.min(n, DISCOVER_HASHTAG_MAX_POSTS)
 }
 
-/** Parse an env value into the profile-enrichment limit: default 0, clamped to [0, 25]. */
+/** Parse an env value into the profile-enrichment limit: default 25, clamped to [0, 25]. */
 export function resolveEnrichLimit(envValue: string | undefined | null): number {
   const raw = String(envValue ?? '').trim()
   if (raw === '') return DISCOVER_ENRICH_DEFAULT_LIMIT
@@ -58,6 +65,8 @@ export function resolveEnrichLimit(envValue: string | undefined | null): number 
  * Estimated USD for one paid category search: one hashtag run of `posts`
  * results plus up to `profilesToEnrich` profile scrapes. Rounded to cents.
  * (The per-run-start overhead of the actor is not measured and not included.)
+ * SERVER LOGS ONLY: David (2026-09-14) wants no cost figure on screen, so the
+ * UI never renders this number.
  */
 export function estimateHashtagCostUsd(posts: number, profilesToEnrich = 0): number {
   const p = Math.max(0, Math.min(posts, DISCOVER_HASHTAG_MAX_POSTS))

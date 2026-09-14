@@ -38,10 +38,16 @@ interface SourceCreator {
   spainFitLevel: string | null
   geoCity: string | null
   origin?: 'creator_profile' | 'influencer' | 'apify'
+  /** Legacy Influencer id when linked (durable avatar copy is keyed by it) */
+  influencerId?: string | null
 }
 
 interface LookalikeResult {
   id: string
+  /** Legacy Influencer id when the pool row is linked to one */
+  influencerId?: string | null
+  /** False = audience-only match, no confirmed topic affinity */
+  topical?: boolean
   username: string
   displayName: string | null
   avatarUrl: string | null
@@ -218,9 +224,11 @@ function LookalikesContent() {
 
   // Add-to-list modal state
   const [lists, setLists] = useState<ListItem[]>([])
-  const [addToListModal, setAddToListModal] = useState<{ username: string; platform: string } | null>(null)
+  const [addToListModal, setAddToListModal] = useState<{ username: string; platform: string; influencerId?: string | null } | null>(null)
   const [addingToList, setAddingToList] = useState(false)
   const [addToListResult, setAddToListResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  // Pool-only creator (no Influencer row): the list the PM picked, waiting for the Apify confirmation
+  const [pendingApifyListId, setPendingApifyListId] = useState<string | null>(null)
 
   // Apify (live scraping) availability — note shown when the monthly limit is exhausted
   const [apifyStatus, setApifyStatus] = useState<{ available: boolean; resumesAt: string | null } | null>(null)
@@ -317,21 +325,33 @@ function LookalikesContent() {
 
   const handleSearch = () => doSearch(handle, platform)
 
-  const handleAddToList = async (listId: string) => {
+  const handleAddToList = async (listId: string, apifyConfirmed = false) => {
     if (!addToListModal) return
+    // Pool-only creator: adding needs an Influencer row, and today the only way to
+    // create one is /api/influencers/analyze (an Apify scrape) → confirm first,
+    // mirroring "Buscar más en Apify". Never spend Apify while it is paused.
+    if (!addToListModal.influencerId && (!apifyConfirmed || apifyDown)) {
+      setPendingApifyListId(listId)
+      return
+    }
+    setPendingApifyListId(null)
     setAddingToList(true)
     setAddToListResult(null)
     try {
-      const analyzeRes = await fetch('/api/influencers/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: addToListModal.username,
-          platform: addToListModal.platform.toUpperCase(),
-        }),
-      })
-      const analyzeData = await analyzeRes.json()
-      const influencerId = analyzeData.influencer?.id || analyzeData.id
+      // Known influencer: add directly (no scrape). Pool-only creator: analyze first (confirmed above).
+      let influencerId: string | null | undefined = addToListModal.influencerId
+      if (!influencerId) {
+        const analyzeRes = await fetch('/api/influencers/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: addToListModal.username,
+            platform: addToListModal.platform.toUpperCase(),
+          }),
+        })
+        const analyzeData = await analyzeRes.json()
+        influencerId = analyzeData.influencer?.id || analyzeData.id
+      }
       if (!influencerId) {
         setAddToListResult({ type: 'error', message: 'Could not find influencer' })
         return
@@ -346,6 +366,7 @@ function LookalikesContent() {
         setTimeout(() => {
           setAddToListModal(null)
           setAddToListResult(null)
+          setPendingApifyListId(null)
         }, 1500)
       } else if (addRes.status === 409) {
         setAddToListResult({ type: 'error', message: t.campaignDetail.alreadyAdded })
@@ -498,7 +519,7 @@ function LookalikesContent() {
             </div>
             <div className="flex items-center gap-4">
               <Avatar
-                src={avatarSrcOf(source.origin === 'influencer' ? source : { avatarUrl: source.avatarUrl })}
+                src={avatarSrcOf({ id: source.influencerId ?? undefined, avatarUrl: source.avatarUrl })}
                 name={source.displayName || source.username}
                 size="lg"
               />
@@ -570,7 +591,7 @@ function LookalikesContent() {
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3 min-w-0">
                       <Avatar
-                        src={avatarSrcOf(item.source === 'influencer' ? item : { avatarUrl: item.avatarUrl })}
+                        src={avatarSrcOf({ id: item.influencerId ?? undefined, avatarUrl: item.avatarUrl })}
                         name={item.displayName || item.username}
                         size="md"
                       />
@@ -597,7 +618,11 @@ function LookalikesContent() {
                       {item.matchReasons.map((reason, ri) => (
                         <span
                           key={ri}
-                          className="inline-flex items-center rounded-full bg-purple-50 dark:bg-purple-900/30 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300"
+                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                            item.topical === false
+                              ? 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+                              : 'bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
+                          }`}
                         >
                           {reason}
                         </span>
@@ -640,9 +665,11 @@ function LookalikesContent() {
                   {/* Action buttons */}
                   <div className="mt-4 flex gap-2">
                     <button
-                      onClick={() =>
-                        setAddToListModal({ username: item.username, platform: item.platform })
-                      }
+                      onClick={() => {
+                        setPendingApifyListId(null)
+                        setAddToListResult(null)
+                        setAddToListModal({ username: item.username, platform: item.platform, influencerId: item.influencerId ?? null })
+                      }}
                       className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-purple-300 dark:border-purple-600 px-3 py-1.5 text-xs font-medium text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/30 transition-colors"
                     >
                       <ListPlus className="h-3.5 w-3.5" />
@@ -686,6 +713,7 @@ function LookalikesContent() {
                 onClick={() => {
                   setAddToListModal(null)
                   setAddToListResult(null)
+                  setPendingApifyListId(null)
                 }}
                 className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
               >
@@ -707,6 +735,46 @@ function LookalikesContent() {
                 )}
                 {addToListResult.message}
               </div>
+            )}
+            {pendingApifyListId && !addToListModal.influencerId && (
+              apifyDown ? (
+                <div className="mb-4 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                  {isEs
+                    ? `Este creador aún no tiene ficha y la búsqueda de perfiles nuevos está pausada${apifyResumeDate ? ` hasta el ${apifyResumeDate}` : ''}. No se puede añadir todavía.`
+                    : `This creator has no profile record yet and new-profile analysis is paused${apifyResumeDate ? ` until ${apifyResumeDate}` : ''}. It cannot be added yet.`}
+                </div>
+              ) : (
+                <div className="mb-4 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 p-3">
+                  <p className="text-sm font-semibold text-purple-800 dark:text-purple-200">
+                    {isEs ? 'Añadirlo usa Apify' : 'Adding it uses Apify'}
+                  </p>
+                  <p className="mt-1 text-xs text-purple-700 dark:text-purple-300">
+                    {isEs
+                      ? `@${addToListModal.username} aún no tiene ficha. Para añadirlo a la lista hay que analizar su perfil con Apify (unos segundos). ¿Continuar?`
+                      : `@${addToListModal.username} has no profile record yet. Adding it to the list requires analyzing the profile on Apify (a few seconds). Continue?`}
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleAddToList(pendingApifyListId, true)}
+                      disabled={addingToList}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-purple-600 px-3 py-2 text-xs font-semibold text-white hover:bg-purple-700 disabled:opacity-50 transition-colors"
+                    >
+                      {addingToList ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                      {isEs ? 'Sí, analizar y añadir' : 'Yes, analyze and add'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPendingApifyListId(null)}
+                      disabled={addingToList}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {isEs ? 'Cancelar' : 'Cancel'}
+                    </button>
+                  </div>
+                </div>
+              )
             )}
             {lists.length === 0 ? (
               <p className="text-sm text-gray-500 py-4 text-center">{t.lists.noLists}</p>

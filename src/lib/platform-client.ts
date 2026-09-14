@@ -18,7 +18,7 @@ import * as instagramApi from './instagram-api'
 import * as marketplace from './instagram-marketplace'
 import * as fbDiscovery from './facebook-discovery'
 import * as ytAnalytics from './youtube-analytics'
-import { scrapeProfile, scrapeHashtag, searchInstagramAccounts } from './apify'
+import { scrapeProfile, scrapeHashtag } from './apify'
 import { prisma } from './db'
 import { decrypt } from './crypto'
 
@@ -297,7 +297,7 @@ export async function fetchMedia(
  * Priority:
  * 1. Instagram Creator Marketplace API (best data, requires Meta OAuth)
  * 2. Facebook Creator Discovery API (for Facebook creators)
- * 3. Apify Instagram search (fallback)
+ * 3. No Apify fallback: anything else comes from our own creator pool
  */
 export async function discoverCreators(
   query: string,
@@ -364,23 +364,8 @@ export async function discoverCreators(
     }
   }
 
-  // Fallback: Apify Instagram search
-  if (platform === 'INSTAGRAM') {
-    try {
-      const results = await searchInstagramAccounts(query, { limit: maxResults })
-      return results.map(r => ({
-        username: r.username,
-        displayName: r.displayName,
-        avatarUrl: r.avatarUrl,
-        followers: r.followers,
-        platform: 'INSTAGRAM' as const,
-        dataSource: 'apify' as const,
-      }))
-    } catch (error) {
-      console.warn('[PlatformClient] Apify search failed:', error)
-    }
-  }
-
+  // No Apify fallback: the paid Instagram keyword-search actor was removed;
+  // discovery outside the Meta/YouTube APIs comes from our own creator pool.
   return []
 }
 

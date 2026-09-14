@@ -170,6 +170,11 @@ interface LookalikeEntry {
   avgViews: number
   email: string | null
   matchScore: number
+  /** Legacy Influencer id when the pool row is linked to one; required to add to a list/campaign */
+  influencerId?: string | null
+  creatorId?: string
+  matchReasons?: string[]
+  topical?: boolean
 }
 
 const PlatformIcon = ({ platform }: { platform: string }) => {
@@ -1275,7 +1280,7 @@ export default function AnalyzePage() {
                           <Avatar
                             name={item.displayName || item.username}
                             size="sm"
-                            src={avatarSrcOf(item.id.startsWith('ext_') ? { avatarUrl: item.avatarUrl } : item)}
+                            src={avatarSrcOf({ id: item.influencerId ?? undefined, avatarUrl: item.avatarUrl })}
                           />
                           <div className="text-left">
                             <div className="flex items-center gap-1.5">
@@ -1284,6 +1289,9 @@ export default function AnalyzePage() {
                             </div>
                             {item.displayName && item.displayName !== item.username && (
                               <span className="text-xs text-gray-400">{item.displayName}</span>
+                            )}
+                            {item.matchReasons && item.matchReasons.length > 0 && (
+                              <span className="block text-[11px] text-gray-400">{item.matchReasons.join(' · ')}</span>
                             )}
                           </div>
                         </button>
@@ -1326,19 +1334,31 @@ export default function AnalyzePage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="primary"
-                            size="sm"
-                            className="opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={() => setAddToModal({
-                              open: true,
-                              influencerId: item.id,
-                              influencerName: item.displayName || item.username,
-                            })}
+                          {/* The tooltip lives on the span: a disabled Button has pointer-events-none and never shows its title */}
+                          <span
+                            className="inline-flex"
+                            title={!item.influencerId
+                              ? (locale === 'es' ? 'Analiza el perfil para añadirlo' : 'Analyze the profile to add it')
+                              : undefined}
                           >
-                            <ListPlus className="h-3 w-3" />
-                            Add to...
-                          </Button>
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              className="opacity-0 group-hover:opacity-100 transition-opacity"
+                              disabled={!item.influencerId}
+                              onClick={() => {
+                                if (!item.influencerId) return
+                                setAddToModal({
+                                  open: true,
+                                  influencerId: item.influencerId,
+                                  influencerName: item.displayName || item.username,
+                                })
+                              }}
+                            >
+                              <ListPlus className="h-3 w-3" />
+                              Add to...
+                            </Button>
+                          </span>
                         </div>
                       </TableCell>
                     </TableRow>

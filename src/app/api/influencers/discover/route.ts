@@ -9,8 +9,12 @@ import {
   getApifyResumeDate,
   scrapeProfile,
   scrapeHashtag,
+  scrapeInstagramProfilesBatch,
   type HashtagResult,
+  type ScrapedProfile,
 } from '@/lib/apify'
+import { REAL_PROFILE_WHERE } from '@/lib/creator-pool'
+import { normalizeForMatch, textHasTerm } from '@/lib/category-detector'
 import {
   resolveCategoryQuery,
   resolveHashtagLimit,
@@ -28,7 +32,8 @@ import { afterInfluencerUpsert, scrapedProfileHasData, scrapedProfileUpdate } fr
 //
 // mode 'username' → direct Apify profile lookup (unchanged, ~0,0023 $).
 // mode 'category' → CHEAP FLOW (David 2026-09-14: "apify cobra demasiado"):
-//   1. Free: search our own DB (Influencer + CreatorProfile) for the category.
+//   1. Free: search our creator pool (CreatorPlatformProfile rows that pass
+//      REAL_PROFILE_WHERE — every Influencer with data is materialized there).
 //   2. Free: serve a HashtagSearchCache hit (< 7 days) if we already paid for it.
 //   3. Paid: only when the body carries `confirmPaid: true`, and only after the
 //      budget gates (breaker → 503, soft limit → 402). resultsLimit comes from
@@ -56,7 +61,7 @@ interface DiscoverResult {
   city?: string | null
   /** Category slugs known for this creator (CreatorProfile). */
   categories?: string[]
-  /** Why a DB row matched: category | signal | hashtag | bio | name. */
+  /** Why a pool row matched: category | bio | name. */
   matchReason?: string
 }
 
@@ -220,11 +225,25 @@ async function searchInternalDatabase(
   return stripScore(scored)
 }
 
-// ============ MODE 2a: category search in OUR database (free) ============
+// ============ MODE 2a: category search in OUR pool (free) ============
 
-const DB_TAKE = 100
-const RECENT_HASHTAG_DAYS = 180
+/** Real pool rows loaded per category search (the whole real pool is a few hundred rows today). */
+const POOL_TAKE = 2000
+/** Cap on the bonus from the category's secondary terms found in the bio. */
+const TERM_BONUS_CAP = 30
+/** A query shorter than this is never matched as a substring of the username ("eco" ⊂ "greco"). */
+const MIN_USERNAME_QUERY_LENGTH = 4
 
+/**
+ * Precise, pool-based category search. Only CreatorPlatformProfile rows that
+ * pass REAL_PROFILE_WHERE are loaded (hashtag shells never appear), then each
+ * row is scored in JS with whole-word matching (normalizeForMatch/textHasTerm):
+ *   primaryCategory === slug → 70 | categories includes slug → 60   ('category')
+ *   query phrase as a whole word/phrase in the bio → +25              ('bio')
+ *   other match.terms as whole words in the bio → +10 each, cap +30   ('bio')
+ *   query in displayName (whole word) or username (substring) → +20   ('name')
+ * Rows scoring 0 are dropped; order: score, followers, engagement.
+ */
 async function searchDatabaseByCategory(
   match: CategoryMatch,
   platform: Platform,
@@ -232,89 +251,74 @@ async function searchDatabaseByCategory(
   maxFollowers?: number
 ): Promise<DiscoverResult[]> {
   const q = match.terms[0] || ''
+  const qCompact = q.replace(/\s+/g, '')
   const slug = match.category?.slug || null
-  const bioTerms = match.terms.map(t => ({ bio: { contains: t, mode: 'insensitive' as const } }))
-  const hashtagVariants = Array.from(new Set(match.hashtags.flatMap(h => [h, `#${h}`])))
-  const since = new Date(Date.now() - RECENT_HASHTAG_DAYS * 24 * 60 * 60 * 1000)
+  const secondaryTerms = match.terms.filter(t => t !== q)
 
   const followersFilter: Prisma.IntFilter | undefined = (minFollowers || maxFollowers)
     ? { ...(minFollowers ? { gte: minFollowers } : {}), ...(maxFollowers ? { lte: maxFollowers } : {}) }
     : undefined
 
-  const [influencers, platformProfiles] = await Promise.all([
-    prisma.influencer.findMany({
-      where: {
-        platform,
-        ...(followersFilter ? { followers: followersFilter } : {}),
-        OR: [
-          ...bioTerms,
-          ...(q ? [{ displayName: { contains: q, mode: 'insensitive' as const } }] : []),
-        ],
-      },
-      take: DB_TAKE,
-      orderBy: { followers: 'desc' },
-    }),
-    prisma.creatorPlatformProfile.findMany({
-      where: {
-        platform,
-        ...(followersFilter ? { followers: followersFilter } : {}),
-        creator: { isSuppressed: false },
-        OR: [
-          ...(slug ? [
-            { creator: { categories: { has: slug } } },
-            { creator: { primaryCategory: slug } },
-            { creator: { categorySignals: { some: { category: slug } } } },
-          ] : []),
-          ...(hashtagVariants.length > 0 ? [{
-            creator: { posts: { some: { hashtags: { hasSome: hashtagVariants }, capturedAt: { gte: since } } } },
-          }] : []),
-          ...bioTerms,
-        ],
-      },
-      include: {
-        creator: {
-          select: {
-            categories: true,
-            primaryCategory: true,
-            geoCountry: true,
-            geoCity: true,
-            contactEmail: true,
-            categorySignals: slug ? { where: { category: slug }, take: 1, select: { id: true } } : false,
-          },
+  const platformProfiles = await prisma.creatorPlatformProfile.findMany({
+    where: {
+      platform,
+      AND: [REAL_PROFILE_WHERE, ...(followersFilter ? [{ followers: followersFilter }] : [])],
+      creator: { isSuppressed: false },
+    },
+    include: {
+      creator: {
+        select: {
+          displayName: true,
+          categories: true,
+          primaryCategory: true,
+          geoCountry: true,
+          geoCity: true,
+          contactEmail: true,
         },
       },
-      take: DB_TAKE,
-      orderBy: { followers: 'desc' },
-    }),
-  ])
-
-  const qLower = q.toLowerCase()
-  const scoreText = (bio: string | null | undefined, name: string | null | undefined): { score: number; reason: string | null } => {
-    const b = (bio || '').toLowerCase()
-    const n = (name || '').toLowerCase()
-    if (qLower && b.includes(qLower)) return { score: 25, reason: 'bio' }
-    if (qLower && n.includes(qLower)) return { score: 20, reason: 'name' }
-    if (match.terms.some(t => b.includes(t))) return { score: 15, reason: 'bio' }
-    return { score: 0, reason: null }
-  }
+    },
+    orderBy: { followers: 'desc' },
+    take: POOL_TAKE,
+  })
 
   type Scored = DiscoverResult & { _score: number }
-  const byKey = new Map<string, Scored>()
+  const scored: Scored[] = []
 
   for (const pp of platformProfiles) {
     const c = pp.creator
     let score = 0
     let reason: string | null = null
-    if (slug && (c.categories.includes(slug) || c.primaryCategory === slug)) { score = 60; reason = 'category' }
-    else if (slug && Array.isArray(c.categorySignals) && c.categorySignals.length > 0) { score = 50; reason = 'signal' }
-    const txt = scoreText(pp.bio, null)
-    if (txt.score > 0) { score += txt.score; reason = reason || txt.reason }
-    if (!reason) { score = 30; reason = 'hashtag' }
 
-    byKey.set(`${pp.platform}:${pp.username.toLowerCase()}`, {
+    if (slug && c.primaryCategory === slug) { score = 70; reason = 'category' }
+    else if (slug && c.categories.includes(slug)) { score = 60; reason = 'category' }
+
+    const bioNorm = normalizeForMatch(pp.bio || '')
+    if (bioNorm) {
+      let bioScore = 0
+      if (q && textHasTerm(bioNorm, q)) bioScore += 25
+      let termBonus = 0
+      for (const term of secondaryTerms) {
+        if (termBonus >= TERM_BONUS_CAP) break
+        if (textHasTerm(bioNorm, term)) termBonus += 10
+      }
+      bioScore += Math.min(termBonus, TERM_BONUS_CAP)
+      if (bioScore > 0) { score += bioScore; reason = reason || 'bio' }
+    }
+
+    if (q) {
+      const nameNorm = normalizeForMatch(c.displayName || '')
+      const userNorm = normalizeForMatch(pp.username)
+      const inName = nameNorm !== '' && textHasTerm(nameNorm, q)
+      const inUsername = qCompact.length >= MIN_USERNAME_QUERY_LENGTH && userNorm.includes(qCompact)
+      if (inName || inUsername) { score += 20; reason = reason || 'name' }
+    }
+
+    if (score <= 0 || !reason) continue
+
+    scored.push({
       influencerId: pp.influencerId ?? undefined,
       username: pp.username,
-      displayName: null,
+      displayName: c.displayName || null,
       avatarUrl: pp.avatarUrl,
       followers: pp.followers,
       engagementRate: pp.engagementRate,
@@ -334,50 +338,8 @@ async function searchDatabaseByCategory(
     })
   }
 
-  for (const inf of influencers) {
-    const key = `${inf.platform}:${inf.username.toLowerCase()}`
-    const txt = scoreText(inf.bio, inf.displayName)
-    const existing = byKey.get(key)
-    if (existing) {
-      // Merge the richer legacy fields into the creator row.
-      existing.influencerId = existing.influencerId || inf.id
-      existing.displayName = existing.displayName || inf.displayName
-      existing.email = existing.email || inf.email
-      existing.avatarUrl = existing.avatarUrl || inf.avatarUrl
-      existing.bio = existing.bio || inf.bio || null
-      existing.country = existing.country || inf.country
-      existing.city = existing.city || inf.city
-      existing.followers = existing.followers || inf.followers
-      existing.engagementRate = existing.engagementRate || inf.engagementRate
-      existing._score += txt.score
-      continue
-    }
-    byKey.set(key, {
-      influencerId: inf.id,
-      username: inf.username,
-      displayName: inf.displayName,
-      avatarUrl: inf.avatarUrl,
-      followers: inf.followers,
-      engagementRate: inf.engagementRate,
-      avgLikes: inf.avgLikes,
-      avgComments: inf.avgComments,
-      avgViews: inf.avgViews,
-      email: inf.email,
-      platform: inf.platform,
-      source: 'database',
-      enriched: true,
-      bio: inf.bio || null,
-      country: inf.country || null,
-      city: inf.city || null,
-      matchReason: txt.reason || 'bio',
-      _score: txt.score || 10,
-    })
-  }
-
-  return stripScore(
-    Array.from(byKey.values())
-      .sort((a, b) => b._score - a._score || b.followers - a.followers || b.engagementRate - a.engagementRate)
-  )
+  scored.sort((a, b) => b._score - a._score || b.followers - a.followers || b.engagementRate - a.engagementRate)
+  return stripScore(scored)
 }
 
 // ============ MODE 2b: hashtag posts (cache or paid) → creators ============
@@ -431,6 +393,47 @@ function authorsFromHashtagPosts(posts: HashtagResult[], platform: string, sourc
 }
 
 /**
+ * Profiles for the handles to enrich, keyed by lowercased username. Instagram
+ * goes through ONE batched profile-scraper run (cached usernames are not
+ * re-sent); the other platforms keep one scrapeProfile call per handle.
+ * Never throws: a failed run or an open breaker just leaves handles unenriched.
+ */
+async function scrapeProfilesForEnrichment(usernames: string[], platform: Platform): Promise<Map<string, ScrapedProfile>> {
+  if (platform === 'INSTAGRAM') {
+    try {
+      return await scrapeInstagramProfilesBatch(usernames)
+    } catch (err) {
+      console.error('[Discover] batched profile enrichment failed:', err instanceof Error ? err.message : err)
+      return new Map()
+    }
+  }
+  const out = new Map<string, ScrapedProfile>()
+  await Promise.allSettled(usernames.map(async (username) => {
+    try {
+      const profile = await scrapeProfile(username, platform)
+      if (profile) out.set(username.toLowerCase(), profile)
+    } catch { /* skip enrichment errors */ }
+  }))
+  return out
+}
+
+/** Copy a scraped profile onto a hashtag card (scraped values win, blanks keep the card's). */
+function applyScrapedProfile(r: DiscoverResult, profile: ScrapedProfile): void {
+  r.followers = profile.followers || r.followers
+  r.engagementRate = profile.engagementRate || r.engagementRate
+  r.avgLikes = profile.avgLikes || r.avgLikes
+  r.avgComments = profile.avgComments || r.avgComments
+  r.avgViews = profile.avgViews || r.avgViews
+  r.avatarUrl = profile.avatarUrl || r.avatarUrl
+  r.displayName = profile.displayName || r.displayName
+  r.email = profile.email || r.email
+  r.bio = profile.bio || r.bio
+  r.country = profile.country || r.country
+  r.city = profile.city || r.city
+  r.enriched = true
+}
+
+/**
  * Turn hashtag posts into creator cards. Handles already in our DB are filled
  * from existing rows (never re-scraped); at most `enrichLimit` unknown handles
  * are enriched via the profile scraper, and only when `allowPaidEnrich` is true.
@@ -452,7 +455,10 @@ async function creatorsFromHashtagPosts(
     const [dbProfiles, creatorRows] = await Promise.all([
       prisma.influencer.findMany({ where: { username: { in: usernames, mode: 'insensitive' }, platform } }),
       prisma.creatorPlatformProfile.findMany({
-        where: { username: { in: usernames, mode: 'insensitive' }, platform },
+        // Pool shells (followers 0, no bio, no avatar) must never fill a card:
+        // the REAL_PROFILE_WHERE gate keeps them out so the handle still gets
+        // enriched (and the shell repaired via materializeInfluencerIntoPool).
+        where: { username: { in: usernames, mode: 'insensitive' }, platform, ...REAL_PROFILE_WHERE },
         include: { creator: { select: { categories: true, geoCountry: true, geoCity: true, contactEmail: true } } },
       }),
     ])
@@ -461,6 +467,11 @@ async function creatorsFromHashtagPosts(
       if (!entry) continue
       const r = entry.result
       r.influencerId = db.id
+      if (db.email) r.email = db.email
+      // A bare Influencer row (followers 0 — e.g. created by /analyze when a
+      // scrape came back empty) carries no profile data: keep the link but let
+      // the handle go through enrichment so the upsert fills that same row.
+      if (!(db.followers > 0)) continue
       r.followers = db.followers || r.followers
       r.engagementRate = db.engagementRate || 0
       r.avgLikes = db.avgLikes || r.avgLikes
@@ -499,60 +510,49 @@ async function creatorsFromHashtagPosts(
   if (allowPaidEnrich && enrichLimit > 0) {
     const needsEnrichment = sortedEntries.filter(e => !e.result.enriched).slice(0, enrichLimit)
     if (needsEnrichment.length > 0) {
-      console.log(`[Discover] Enriching ${needsEnrichment.length} NEW handles via Apify (≈ ${estimateHashtagCostUsd(0, needsEnrichment.length)} $)`)
+      console.log(`[Discover] Enriching ${needsEnrichment.length} NEW handles via Apify (≈ ${estimateHashtagCostUsd(0, needsEnrichment.length)} $, ${platform === 'INSTAGRAM' ? 'one batched run' : 'one run per handle'})`)
+      const profiles = await scrapeProfilesForEnrichment(needsEnrichment.map(e => e.result.username), platform)
       await Promise.allSettled(needsEnrichment.map(async (entry) => {
+        const profile = profiles.get(entry.result.username.toLowerCase())
+        if (!profile) return
+        const r = entry.result
+        applyScrapedProfile(r, profile)
+        enrichedViaApify++
+        // Persist what we just paid for: the next search (another hashtag of
+        // the category, or this one after the 7-day TTL) fills it from the DB,
+        // and afterInfluencerUpsert materializes the creator into the pool.
         try {
-          const profile = await scrapeProfile(entry.result.username, platform)
-          if (!profile) return
-          const r = entry.result
-          r.followers = profile.followers || r.followers
-          r.engagementRate = profile.engagementRate || r.engagementRate
-          r.avgLikes = profile.avgLikes || r.avgLikes
-          r.avgComments = profile.avgComments || r.avgComments
-          r.avgViews = profile.avgViews || r.avgViews
-          r.avatarUrl = profile.avatarUrl || r.avatarUrl
-          r.displayName = profile.displayName || r.displayName
-          r.email = profile.email || r.email
-          r.bio = profile.bio || r.bio
-          r.country = profile.country || r.country
-          r.city = profile.city || r.city
-          r.enriched = true
-          enrichedViaApify++
-          // Persist what we just paid for: the next search (another hashtag of
-          // the category, or this one after the 7-day TTL) fills it from the DB.
-          try {
-            const saved = await prisma.influencer.upsert({
-              where: { username_platform: { username: profile.username, platform } },
-              create: {
-                username: profile.username,
-                platform,
-                displayName: profile.displayName,
-                bio: profile.bio,
-                avatarUrl: profile.avatarUrl,
-                email: profile.email,
-                website: profile.website,
-                followers: profile.followers,
-                following: profile.following,
-                postsCount: profile.postsCount,
-                engagementRate: profile.engagementRate,
-                avgLikes: profile.avgLikes,
-                avgComments: profile.avgComments,
-                avgViews: profile.avgViews,
-                isVerified: profile.isVerified,
-                country: profile.country,
-                city: profile.city,
-                lastScraped: scrapedProfileHasData(profile) ? new Date() : null,
-                dataSource: 'apify',
-              },
-              update: scrapedProfileUpdate(profile),
-              select: { id: true },
-            })
-            r.influencerId = saved.id
-            afterInfluencerUpsert(saved.id, profile.avatarUrl)
-          } catch (err) {
-            console.error(`[Discover] could not persist enriched @${profile.username}:`, err instanceof Error ? err.message : err)
-          }
-        } catch { /* skip enrichment errors */ }
+          const saved = await prisma.influencer.upsert({
+            where: { username_platform: { username: profile.username, platform } },
+            create: {
+              username: profile.username,
+              platform,
+              displayName: profile.displayName,
+              bio: profile.bio,
+              avatarUrl: profile.avatarUrl,
+              email: profile.email,
+              website: profile.website,
+              followers: profile.followers,
+              following: profile.following,
+              postsCount: profile.postsCount,
+              engagementRate: profile.engagementRate,
+              avgLikes: profile.avgLikes,
+              avgComments: profile.avgComments,
+              avgViews: profile.avgViews,
+              isVerified: profile.isVerified,
+              country: profile.country,
+              city: profile.city,
+              lastScraped: scrapedProfileHasData(profile) ? new Date() : null,
+              dataSource: 'apify',
+            },
+            update: scrapedProfileUpdate(profile),
+            select: { id: true },
+          })
+          r.influencerId = saved.id
+          afterInfluencerUpsert(saved.id, profile.avatarUrl)
+        } catch (err) {
+          console.error(`[Discover] could not persist enriched @${profile.username}:`, err instanceof Error ? err.message : err)
+        }
       }))
     }
   }

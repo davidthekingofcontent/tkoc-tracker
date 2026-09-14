@@ -63,10 +63,8 @@ interface CategoryMeta {
   /** Platform the free search was run on — the paid run must match it. */
   platform: string
   apifyLimit: number
-  estimatedApifyCostUsd: number
   apifyAvailable: boolean
   apifyUnavailableReason: 'not_configured' | 'exhausted' | 'soft_limit' | 'no_hashtag' | 'cached' | null
-  apifyUsage: { usd: number | null; softLimit: number } | null
   cached: boolean
   cacheFetchedAt: string | null
   /** The paid run could not be stored in the 7-day cache: repeating it costs again. */
@@ -76,7 +74,7 @@ interface CategoryMeta {
 }
 
 type SearchError =
-  | { type: 'soft_limit'; usd: number | null; softLimit: number | null }
+  | { type: 'soft_limit' }
   | { type: 'exhausted' }
   | { type: 'not_configured' }
   | { type: 'confirm_mismatch' }
@@ -287,37 +285,6 @@ export default function DiscoverPage() {
   const [dbHasSearched, setDbHasSearched] = useState(false)
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null)
 
-  // ============ BACKFILL STATE ============
-  const [backfillRunning, setBackfillRunning] = useState(false)
-  const [backfillResult, setBackfillResult] = useState<{ processed: number; categorized: number; skipped: number } | null>(null)
-
-  const handleBackfill = useCallback(async () => {
-    setBackfillRunning(true)
-    setBackfillResult(null)
-    let totalProcessed = 0
-    let totalCategorized = 0
-    let totalSkipped = 0
-
-    // Run batches until no more to process (max 10 rounds = 1000 creators)
-    for (let round = 0; round < 10; round++) {
-      try {
-        const res = await fetch('/api/admin/backfill-categories', { method: 'POST' })
-        if (!res.ok) break
-        const data = await res.json()
-        totalProcessed += data.processed || 0
-        totalCategorized += data.categorized || 0
-        totalSkipped += data.skipped || 0
-        if ((data.processed || 0) === 0) break
-      } catch {
-        break
-      }
-    }
-
-    setBackfillResult({ processed: totalProcessed, categorized: totalCategorized, skipped: totalSkipped })
-    setBackfillRunning(false)
-
-  }, [dbCategory])
-
   // ============ BULK PASTE STATE ============
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkText, setBulkText] = useState('')
@@ -415,14 +382,6 @@ export default function DiscoverPage() {
       setDbSearching(false)
     }
   }, [dbQuery, dbPlatform, dbSpainFitLevel, dbCategory, dbFollowersMin, dbFollowersMax, dbCity, dbSortBy, dbSortDir])
-
-  // Auto re-search after backfill completes
-  useEffect(() => {
-    if (backfillResult && backfillResult.categorized > 0 && dbCategory) {
-      handleDbSearch(0)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backfillResult])
 
   const handleDbLoadMore = () => {
     handleDbSearch(dbOffset + 50)
@@ -568,8 +527,6 @@ export default function DiscoverPage() {
     setConfirmPaidOpen(false)
   }
 
-  const formatUsd = (n: number) => (isEs ? `${n.toFixed(2).replace('.', ',')} $` : `$${n.toFixed(2)}`)
-
   const handleAddToList = async (listId: string) => {
     if (!addToListModal) return
     setAddingToList(true)
@@ -653,10 +610,8 @@ export default function DiscoverPage() {
             hashtag: data.hashtag ?? '',
             platform: requestPlatform,
             apifyLimit: data.apifyLimit ?? 0,
-            estimatedApifyCostUsd: data.estimatedApifyCostUsd ?? 0,
             apifyAvailable: data.apifyAvailable === true,
             apifyUnavailableReason: data.apifyUnavailableReason ?? null,
-            apifyUsage: data.apifyUsage ?? null,
             cached: data.cached === true,
             cacheFetchedAt: data.cacheFetchedAt ?? null,
             cacheWriteFailed: data.cacheWriteFailed === true,
@@ -668,7 +623,7 @@ export default function DiscoverPage() {
         let blocked: 'soft_limit' | 'not_configured' | 'exhausted' | null = null
         if (res.status === 402 && data?.error === 'apify_soft_limit') {
           blocked = 'soft_limit'
-          setSearchError({ type: 'soft_limit', usd: data.usd ?? null, softLimit: data.softLimit ?? null })
+          setSearchError({ type: 'soft_limit' })
         } else if (res.status === 503 && data?.error === 'not_configured') {
           blocked = 'not_configured'
           setSearchError({ type: 'not_configured' })
@@ -1116,58 +1071,6 @@ export default function DiscoverPage() {
                     </span>
                   </div>
 
-                  {/* Backfill banner — shown when category filter is active and few results */}
-                  {dbCategory && dbTotal < 50 && !backfillRunning && !backfillResult && (
-                    <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
-                          {isEs
-                            ? `Solo ${dbTotal} creadores tienen esta categoría asignada. Hay más perfiles sin categorizar.`
-                            : `Only ${dbTotal} creators have this category assigned. There are more uncategorized profiles.`}
-                        </p>
-                        <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                          {isEs
-                            ? 'Ejecuta el enriquecimiento para asignar categorías automáticamente a todos los perfiles.'
-                            : 'Run enrichment to auto-assign categories to all profiles.'}
-                        </p>
-                      </div>
-                      <button
-                        onClick={handleBackfill}
-                        className="shrink-0 ml-4 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700 transition-colors"
-                      >
-                        <RotateCcw className="h-4 w-4" />
-                        {isEs ? 'Enriquecer perfiles' : 'Enrich profiles'}
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Backfill running */}
-                  {backfillRunning && (
-                    <div className="rounded-xl border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 p-4 flex items-center gap-3">
-                      <Loader2 className="h-5 w-5 animate-spin text-purple-600 dark:text-purple-400" />
-                      <p className="text-sm font-medium text-purple-800 dark:text-purple-300">
-                        {isEs ? 'Enriqueciendo perfiles... esto puede tardar unos segundos.' : 'Enriching profiles... this may take a few seconds.'}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Backfill result */}
-                  {backfillResult && (
-                    <div className="rounded-xl border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
-                        <p className="text-sm font-medium text-green-800 dark:text-green-300">
-                          {isEs
-                            ? `Listo: ${backfillResult.processed} perfiles procesados, ${backfillResult.categorized} categorizados.`
-                            : `Done: ${backfillResult.processed} profiles processed, ${backfillResult.categorized} categorized.`}
-                        </p>
-                      </div>
-                      <button onClick={() => setBackfillResult(null)} className="text-green-500 hover:text-green-700 dark:hover:text-green-300">
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-                  )}
-
                   {/* Card Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                     {dbResults.map((item) => (
@@ -1513,7 +1416,7 @@ export default function DiscoverPage() {
 
                   {searchError?.type === 'soft_limit' && (
                     <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-                      {fill(t.discover.softLimitReached, { usd: searchError.usd !== null ? formatUsd(searchError.usd) : '?', limit: searchError.softLimit !== null ? formatUsd(searchError.softLimit) : '?' })}
+                      {t.discover.softLimitReached}
                     </p>
                   )}
                   {searchError?.type === 'exhausted' && (
@@ -1533,7 +1436,7 @@ export default function DiscoverPage() {
                   )}
                   {!searchError && categoryMeta.apifyUnavailableReason === 'soft_limit' && (
                     <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-                      {fill(t.discover.softLimitReached, { usd: categoryMeta.apifyUsage?.usd != null ? formatUsd(categoryMeta.apifyUsage.usd) : '?', limit: categoryMeta.apifyUsage ? formatUsd(categoryMeta.apifyUsage.softLimit) : '?' })}
+                      {t.discover.softLimitReached}
                     </p>
                   )}
                   {!searchError && categoryMeta.apifyUnavailableReason === 'exhausted' && (
@@ -1545,7 +1448,7 @@ export default function DiscoverPage() {
                       className="inline-flex items-center gap-2 rounded-lg border-2 border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50 transition-all">
                       {searchingMore
                         ? <><Loader2 className="h-4 w-4 animate-spin" />{t.discover.searchingApify}</>
-                        : <><Radio className="h-4 w-4" />{fill(t.discover.searchMoreApify, { cost: formatUsd(categoryMeta.estimatedApifyCostUsd) })}</>}
+                        : <><Radio className="h-4 w-4" />{t.discover.searchMoreApify}</>}
                     </button>
                   )}
 
@@ -1553,7 +1456,7 @@ export default function DiscoverPage() {
                     <div className="rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 p-3">
                       <p className="text-sm font-semibold text-purple-800 dark:text-purple-200">{t.discover.paidConfirmTitle}</p>
                       <p className="mt-1 text-xs text-purple-700 dark:text-purple-300">
-                        {fill(t.discover.paidConfirmBody, { hashtag: categoryMeta.hashtag, limit: categoryMeta.apifyLimit, cost: formatUsd(categoryMeta.estimatedApifyCostUsd) })}
+                        {fill(t.discover.paidConfirmBody, { hashtag: categoryMeta.hashtag })}
                       </p>
                       <div className="mt-3 flex gap-2">
                         <button type="button" onClick={() => handleSearch(true)} disabled={searchingMore}

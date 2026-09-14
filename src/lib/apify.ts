@@ -439,15 +439,11 @@ export interface ScrapedPost {
 
 // ============ INSTAGRAM ============
 
-async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile | null> {
-  const items = await runActor('apify~instagram-profile-scraper', {
-    usernames: [username],
-  })
-
-  if (!items || items.length === 0) return null
-
-  const profile = items[0]
-
+/**
+ * Maps one apify~instagram-profile-scraper dataset item to a ScrapedProfile.
+ * Shared by the single-profile scraper and the batched one. Pure.
+ */
+export function mapInstagramProfileItem(profile: Record<string, unknown>, fallbackUsername: string): ScrapedProfile {
   // Extract email from bio if present
   const bio = (profile.biography as string) || ''
   const emailMatch = bio.match(/[\w.-]+@[\w.-]+\.\w+/)
@@ -505,7 +501,7 @@ async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile 
     : 0
 
   return {
-    username: (profile.username as string) || username,
+    username: (profile.username as string) || fallbackUsername,
     displayName: (profile.fullName as string) || null,
     bio,
     avatarUrl: (profile.profilePicUrl as string) || (profile.profilePicUrlHD as string) || null,
@@ -523,6 +519,16 @@ async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile 
     city: (profile.locationName as string) || (profile.city as string) || null,
     recentPosts,
   }
+}
+
+async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile | null> {
+  const items = await runActor('apify~instagram-profile-scraper', {
+    usernames: [username],
+  })
+
+  if (!items || items.length === 0) return null
+
+  return mapInstagramProfileItem(items[0], username)
 }
 
 // ============ TIKTOK ============
@@ -1006,99 +1012,10 @@ export async function scrapeStories(usernames: string[], platform: 'INSTAGRAM' |
 
 // ============ PUBLIC API ============
 
-// ============ INSTAGRAM SEARCH (for Discovery & Lookalikes) ============
-
-export interface InstagramSearchResult {
-  username: string
-  displayName: string | null
-  avatarUrl: string | null
-  followers: number
-  bio: string | null
-  isVerified: boolean
-}
-
-/**
- * Search Instagram for accounts matching a query (keyword, category, or name).
- * Uses the apify~instagram-search actor.
- * Returns an array of profile summaries.
- */
-export async function searchInstagramAccounts(
-  query: string,
-  options?: { limit?: number }
-): Promise<InstagramSearchResult[]> {
-  const limit = options?.limit || 20
-
-  try {
-    const items = await runActor('apify~instagram-search', {
-      search: query,
-      resultsLimit: limit,
-      searchType: 'user',
-    })
-
-    if (!items || items.length === 0) return []
-
-    return items.map((item: Record<string, unknown>) => ({
-      username: (item.username as string) || (item.login as string) || '',
-      displayName: (item.fullName as string) || (item.full_name as string) || null,
-      avatarUrl: (item.profilePicUrl as string) || (item.profile_pic_url as string) || null,
-      followers: (item.followersCount as number) || (item.follower_count as number) || 0,
-      bio: (item.biography as string) || (item.bio as string) || null,
-      isVerified: (item.isVerified as boolean) || (item.is_verified as boolean) || false,
-    })).filter((r: InstagramSearchResult) => r.username)
-  } catch (err) {
-    console.error('[Apify] Instagram search error:', err)
-    return []
-  }
-}
-
-/**
- * Scrape Instagram's "similar accounts" / suggested profiles for a given username.
- * Uses the same apify~instagram-profile-scraper actor and extracts the relatedProfiles
- * or similarAccounts field from the result.
- */
-export async function scrapeInstagramSimilarAccounts(
-  username: string
-): Promise<InstagramSearchResult[]> {
-  try {
-    const items = await runActor('apify~instagram-profile-scraper', {
-      usernames: [username],
-    })
-
-    if (!items || items.length === 0) return []
-
-    const profile = items[0]
-
-    // The actor may return related profiles under different field names
-    const relatedProfiles =
-      (profile.relatedProfiles as Record<string, unknown>[]) ||
-      (profile.similarAccounts as Record<string, unknown>[]) ||
-      (profile.suggestedUsers as Record<string, unknown>[]) ||
-      (profile.relatedAccounts as Record<string, unknown>[]) ||
-      (profile.edgeRelatedProfiles as Record<string, unknown>[]) ||
-      []
-
-    if (!Array.isArray(relatedProfiles) || relatedProfiles.length === 0) {
-      console.log(`[Apify] No similar accounts found for @${username}`)
-      return []
-    }
-
-    console.log(`[Apify] Found ${relatedProfiles.length} similar accounts for @${username}`)
-
-    return relatedProfiles
-      .map((rp: Record<string, unknown>) => ({
-        username: (rp.username as string) || (rp.login as string) || '',
-        displayName: (rp.fullName as string) || (rp.full_name as string) || (rp.name as string) || null,
-        avatarUrl: (rp.profilePicUrl as string) || (rp.profile_pic_url as string) || (rp.avatarUrl as string) || null,
-        followers: (rp.followersCount as number) || (rp.follower_count as number) || (rp.followers as number) || 0,
-        bio: (rp.biography as string) || (rp.bio as string) || null,
-        isVerified: (rp.isVerified as boolean) || (rp.is_verified as boolean) || (rp.verified as boolean) || false,
-      }))
-      .filter((r) => r.username)
-  } catch (err) {
-    console.error('[Apify] Similar accounts scraping error:', err)
-    return []
-  }
-}
+// NOTE: the profile scraper's relatedProfiles field is always empty, so the
+// former "Sugerido por Instagram" similar-accounts helper and the paid
+// Instagram keyword-search actor are gone: similar creators and searches
+// come from our own creator pool now.
 
 // ============ IN-MEMORY SCRAPE CACHE (Apify cost saver) ============
 // The production deployment is a long-lived Node process, so this cache
@@ -1139,8 +1056,13 @@ function cacheSet<T>(key: string, data: T, ttl: number) {
   _scrapeCache.set(key, { data, at: Date.now(), ttl })
 }
 
+/** Cache key of a profile scrape — shared by scrapeProfile and scrapeInstagramProfilesBatch. */
+function profileCacheKey(platform: string, username: string): string {
+  return `profile:${platform}:${username.toLowerCase()}`
+}
+
 export async function scrapeProfile(username: string, platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<ScrapedProfile | null> {
-  const cacheKey = `profile:${platform}:${username.toLowerCase()}`
+  const cacheKey = profileCacheKey(platform, username)
   const cached = cacheGet<ScrapedProfile | null>(cacheKey)
   if (cached !== undefined) {
     console.log(`[Apify] Cache hit for ${cacheKey} — skipping paid scrape`)
@@ -1173,7 +1095,93 @@ export async function scrapeProfile(username: string, platform: 'INSTAGRAM' | 'T
   return result
 }
 
+// ============ BATCHED INSTAGRAM PROFILES (Discover enrichment) ============
+
+/** Usernames per apify~instagram-profile-scraper run in the batched path. */
+export const PROFILE_BATCH_MAX = 25
+
+/**
+ * Scrapes many Instagram profiles with ONE actor run per chunk of up to
+ * PROFILE_BATCH_MAX usernames (0,0023 $ per profile and no start fee, so the
+ * price equals one-by-one scraping but the PM waits for a single run).
+ *
+ * Shares the profile cache with scrapeProfile: usernames with a cached entry
+ * (positive or negative) are not sent again and every profile returned is
+ * cached for PROFILE_CACHE_TTL_MS. Only handles the actor explicitly reports
+ * as failed (not found / private) get the short negative TTL; usernames a run
+ * simply omitted (rate-limited, renamed, or returned under another spelling)
+ * are left uncached so a later single scrapeProfile() can still try them —
+ * the cache key is shared with /analyze, /discovery/batch and the captures.
+ *
+ * Returns a map keyed by lowercased username. If the monthly limit trips
+ * mid-way (APIFY_EXHAUSTED) the map built so far is returned; any other actor
+ * error is logged and also yields the partial map — enrichment is best-effort.
+ */
+export async function scrapeInstagramProfilesBatch(usernames: string[]): Promise<Map<string, ScrapedProfile>> {
+  const out = new Map<string, ScrapedProfile>()
+  const pending: string[] = []
+  const seen = new Set<string>()
+
+  for (const raw of usernames) {
+    const username = (raw || '').trim().replace(/^@+/, '')
+    const key = username.toLowerCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    const cached = cacheGet<ScrapedProfile | null>(profileCacheKey('INSTAGRAM', key))
+    if (cached !== undefined) {
+      if (cached) out.set(key, cached)
+      continue
+    }
+    pending.push(username)
+  }
+  if (pending.length === 0) {
+    if (seen.size > 0) console.log(`[Apify] Instagram profile batch: all ${seen.size} usernames served from cache`)
+    return out
+  }
+
+  for (let i = 0; i < pending.length; i += PROFILE_BATCH_MAX) {
+    const chunk = pending.slice(i, i + PROFILE_BATCH_MAX)
+    let items: Record<string, unknown>[]
+    let succeeded: boolean
+    try {
+      ;({ items, succeeded } = await runActorDetailed('apify~instagram-profile-scraper', { usernames: chunk }, 180))
+    } catch (err) {
+      if (!isExhaustedError(err)) {
+        console.error('[Apify] Instagram profile batch error:', err instanceof Error ? err.message : err)
+      }
+      return out
+    }
+
+    const chunkKeys = new Set(chunk.map(u => u.toLowerCase()))
+    const returned = new Set<string>()
+    const failed = new Set<string>()
+    for (const item of items || []) {
+      if (!item || typeof item !== 'object') continue
+      if (item.error) {
+        // The actor names the account it could not load: only THAT handle is
+        // negative-cached. Handles merely absent from the run stay uncached.
+        const failedKey = typeof item.username === 'string' ? item.username.trim().replace(/^@+/, '').toLowerCase() : ''
+        if (failedKey && chunkKeys.has(failedKey)) failed.add(failedKey)
+        continue
+      }
+      const profile = mapInstagramProfileItem(item, '')
+      const key = profile.username.toLowerCase()
+      if (!key) continue
+      returned.add(key)
+      out.set(key, profile)
+      cacheSet(profileCacheKey('INSTAGRAM', key), profile, PROFILE_CACHE_TTL_MS)
+    }
+    for (const key of failed) {
+      if (!returned.has(key)) cacheSet(profileCacheKey('INSTAGRAM', key), null, NEGATIVE_CACHE_TTL_MS)
+    }
+    console.log(`[Apify] Instagram profile batch: ${chunk.length} sent, ${returned.size} returned, ${failed.size} reported failed${succeeded ? '' : ' (partial run)'}`)
+  }
+
+  return out
+}
+
 async function scrapeTikTokHashtag(hashtag: string, maxPosts = 20): Promise<HashtagResult[]> {
+
   const cleanTag = hashtag.replace(/^#/, '')
 
   try {

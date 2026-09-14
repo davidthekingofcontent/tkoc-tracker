@@ -4,9 +4,18 @@ import { Platform } from '@/generated/prisma/client'
 import { getNextJob, completeJob, failJob, recoverStaleJobs } from '@/lib/crawl-queue'
 import { enrichCreatorFull } from '@/lib/creator-enrichment'
 import { scrapeHashtag, scrapeProfile, isApifyConfigured } from '@/lib/apify'
-import type { ScrapedProfile, HashtagResult } from '@/lib/apify'
+import type { HashtagResult } from '@/lib/apify'
 
 const MAX_JOBS_PER_RUN = 5
+
+/**
+ * Platforms whose hashtag scraper reports the author's follower count
+ * (TikTok: authorMeta.fans; YouTube: subscriberCount). Instagram's hashtag
+ * scraper never does (apify.ts hard-codes authorFollowers 0), so an Instagram
+ * hashtag job could neither create nor refresh anything: it is completed
+ * without paying for the scrape.
+ */
+const HASHTAG_PLATFORMS_WITH_FOLLOWERS: ReadonlySet<Platform> = new Set<Platform>([Platform.TIKTOK, Platform.YOUTUBE])
 
 /**
  * GET /api/cron/discovery
@@ -14,9 +23,10 @@ const MAX_JOBS_PER_RUN = 5
  * Cron-compatible endpoint that:
  * 1. Recovers stale jobs
  * 2. Picks up pending CrawlJobs from the queue
- * 3. Executes them (scrape hashtag, process results)
- * 4. For each discovered creator: enriches, scores, categorizes
- * 5. Limit: max 5 jobs per run
+ * 3. Executes them (hashtag jobs only refresh follower counts of creators
+ *    already in the pool; profile_scrape/enrichment jobs enrich, score and
+ *    categorize the requested creator)
+ * 4. Limit: max 5 jobs per run
  *
  * Auth: x-cron-secret header or ?secret= query param
  */
@@ -34,12 +44,14 @@ export async function GET(request: NextRequest) {
     jobsProcessed: number
     creatorsDiscovered: number
     creatorsUpdated: number
+    skippedUnknownAuthors: number
     errors: string[]
     staleRecovered: number
   } = {
     jobsProcessed: 0,
     creatorsDiscovered: 0,
     creatorsUpdated: 0,
+    skippedUnknownAuthors: 0,
     errors: [],
     staleRecovered: 0,
   }
@@ -100,21 +112,46 @@ export async function GET(request: NextRequest) {
 
 // ============ JOB PROCESSORS ============
 
+/**
+ * Hashtag discovery never CREATES a creator and never bills a profile scrape:
+ * the hashtag scraper only knows the author's username/name (Instagram: never
+ * followers, bio or avatar), and creating rows from that is how the ~2.993
+ * zero-follower shells were born in April 2026. The only write is a targeted
+ * follower refresh for an author that already is a REAL creator in the pool
+ * (followers > 0) when the scraper did report a count; engagement rate,
+ * averages, bio and lastScraped are never touched, so a real refresh stays
+ * due. Unknown authors are counted
+ * in `skippedUnknownAuthors`, shells in `skippedShellAuthors`.
+ */
 async function processHashtagDiscovery(
   jobId: string,
   hashtag: string,
   platform: Platform,
-  results: { creatorsDiscovered: number; creatorsUpdated: number; errors: string[] }
+  results: { creatorsDiscovered: number; creatorsUpdated: number; skippedUnknownAuthors: number; errors: string[] }
 ): Promise<void> {
+  if (!HASHTAG_PLATFORMS_WITH_FOLLOWERS.has(platform)) {
+    await completeJob(jobId, {
+      itemsFound: 0,
+      skippedUnknownAuthors: 0,
+      disabled: true,
+      hashtag,
+      message: `Hashtag discovery disabled for ${platform}: its hashtag scraper reports no follower data, so nothing could be created or refreshed (scrape not run)`,
+    })
+    return
+  }
+
   const platformStr = platform as 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
   const hashtagResults: HashtagResult[] = await scrapeHashtag(hashtag, platformStr, 30)
 
   if (!hashtagResults || hashtagResults.length === 0) {
-    await completeJob(jobId, { itemsFound: 0, message: 'No results from hashtag scrape' })
+    await completeJob(jobId, { itemsFound: 0, skippedUnknownAuthors: 0, message: 'No results from hashtag scrape' })
     return
   }
 
   let processedCount = 0
+  let skippedUnknownAuthors = 0
+  let skippedShellAuthors = 0
+  let knownAuthorsWithoutData = 0
 
   // Group posts by author and process each unique creator
   const authorMap = new Map<string, HashtagResult>()
@@ -128,65 +165,35 @@ async function processHashtagDiscovery(
     if (!username) continue
 
     try {
-      // Check if creator already exists to avoid unnecessary full scrapes
       const existing = await prisma.creatorPlatformProfile.findUnique({
         where: { platform_username: { platform, username } },
+        select: { id: true, followers: true },
       })
 
-      // Build a minimal ScrapedProfile from hashtag data for enrichment
-      const minimalProfile: ScrapedProfile = {
-        username,
-        displayName: hashtagResult.authorDisplayName,
-        bio: null,
-        avatarUrl: hashtagResult.authorAvatarUrl,
-        followers: hashtagResult.authorFollowers || 0,
-        following: 0,
-        postsCount: 0,
-        engagementRate: 0,
-        avgLikes: 0,
-        avgComments: 0,
-        avgViews: 0,
-        isVerified: false,
-        website: null,
-        email: null,
-        country: hashtagResult.authorCountry || null,
-        city: null,
-        recentPosts: hashtagResult.posts || [],
+      // Hashtag data alone may only refresh a creator that already exists — never create one.
+      if (!existing) {
+        skippedUnknownAuthors++
+        results.skippedUnknownAuthors++
+        continue
       }
 
-      // If creator is new or hasn't been scraped recently, do full enrichment
-      const needsFullScrape = !existing ||
-        !existing.lastScraped ||
-        (Date.now() - existing.lastScraped.getTime()) > 7 * 24 * 60 * 60 * 1000 // 7 days
-
-      if (needsFullScrape && hashtagResult.authorFollowers >= 1000) {
-        // Try full profile scrape for better data
-        try {
-          const fullProfile = await scrapeProfile(username, platformStr)
-          if (fullProfile) {
-            const enrichResult = await enrichCreatorFull(fullProfile, platform)
-            if (enrichResult.isNew) {
-              results.creatorsDiscovered++
-            } else {
-              results.creatorsUpdated++
-            }
-            processedCount++
-            continue
-          }
-        } catch {
-          // Full scrape failed, fall back to minimal profile
-        }
+      // A shell (followers 0) is never promoted by a hashtag result: it would
+      // pass the real-profile gate with no bio, ER or averages.
+      if (!(existing.followers > 0)) {
+        skippedShellAuthors++
+        continue
       }
 
-      // Use minimal profile from hashtag data
-      if (minimalProfile.followers >= 500 || !existing) {
-        const enrichResult = await enrichCreatorFull(minimalProfile, platform)
-        if (enrichResult.isNew) {
-          results.creatorsDiscovered++
-        } else {
-          results.creatorsUpdated++
-        }
+      const reportedFollowers = Math.floor(hashtagResult.authorFollowers || 0)
+      if (reportedFollowers > 0) {
+        await prisma.creatorPlatformProfile.update({
+          where: { id: existing.id },
+          data: { followers: reportedFollowers },
+        })
+        results.creatorsUpdated++
         processedCount++
+      } else {
+        knownAuthorsWithoutData++
       }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
@@ -197,6 +204,9 @@ async function processHashtagDiscovery(
   await completeJob(jobId, {
     itemsFound: processedCount,
     totalAuthors: authorMap.size,
+    skippedUnknownAuthors,
+    skippedShellAuthors,
+    knownAuthorsWithoutData,
     hashtag,
   })
 }

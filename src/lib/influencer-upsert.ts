@@ -87,16 +87,23 @@ export function scrapedProfileUpdate(
 }
 
 /**
- * Post-upsert hook for every code path that writes a scraped profile: copies
- * the profile picture into influencer_avatars while the CDN URL is still
- * alive (see src/lib/thumb-cache.ts). Fire-and-forget: the caller never
- * waits and a failed copy never fails the scrape. `refresh` is on, so a new
- * URL (every scrape signs a new one) replaces the stored copy; an unchanged
- * URL keeps it (no download).
+ * Post-upsert hook for every code path that writes a scraped profile:
+ * 1. copies the profile picture into influencer_avatars while the CDN URL is
+ *    still alive (see src/lib/thumb-cache.ts). `refresh` is on, so a new URL
+ *    (every scrape signs a new one) replaces the stored copy; an unchanged
+ *    URL keeps it (no download).
+ * 2. materializes the row into the creator pool (see src/lib/creator-pool.ts)
+ *    so CreatorProfile/CreatorPlatformProfile and its categories follow every
+ *    scrape.
+ * Both are fire-and-forget: the caller never waits and a failure never fails
+ * the scrape.
  */
 export function afterInfluencerUpsert(influencerId: string, avatarUrl?: string | null): void {
   if (!influencerId) return
   void import('@/lib/thumb-cache')
     .then(({ cacheInfluencerAvatar }) => cacheInfluencerAvatar(influencerId, avatarUrl, { refresh: true }))
     .catch(err => console.error(`[avatar-cache] ${influencerId}:`, err instanceof Error ? err.message : err))
+  void import('@/lib/creator-pool')
+    .then(m => m.materializeInfluencerIntoPool(influencerId))
+    .catch(err => console.error(`[creator-pool] ${influencerId}:`, err instanceof Error ? err.message : err))
 }
