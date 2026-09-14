@@ -18,6 +18,37 @@ export function isApifyExhausted(): boolean {
   return apifyExhaustedUntil !== null && Date.now() < apifyExhaustedUntil
 }
 
+/**
+ * Soft monthly budget (David 2026-09-14: "que se use lo mínimo posible"). Above
+ * APIFY_SOFT_LIMIT_USD (default 40 $) the NON-essential scrapes (stories) stop;
+ * the cheap essentials (single-post views) keep running up to the hard limit.
+ * Usage is read from Apify at most every 15 minutes; on any error we assume OK.
+ */
+export const APIFY_SOFT_LIMIT_USD = Number(process.env.APIFY_SOFT_LIMIT_USD || 40)
+let _usageCache: { at: number; usd: number; limit: number } | null = null
+export async function getApifyUsage(): Promise<{ usd: number; limit: number } | null> {
+  if (_usageCache && Date.now() - _usageCache.at < 15 * 60 * 1000) return { usd: _usageCache.usd, limit: _usageCache.limit }
+  try {
+    const token = await getTokenWithDbFallback()
+    if (!token) return null
+    const res = await fetch(`https://api.apify.com/v2/users/me/limits?token=${token}`)
+    if (!res.ok) return null
+    const json = await res.json() as { data?: { current?: { monthlyUsageUsd?: number }; limits?: { maxMonthlyUsageUsd?: number } } }
+    const usd = json.data?.current?.monthlyUsageUsd
+    const limit = json.data?.limits?.maxMonthlyUsageUsd
+    if (typeof usd !== 'number' || typeof limit !== 'number') return null
+    _usageCache = { at: Date.now(), usd, limit }
+    return { usd, limit }
+  } catch {
+    return null
+  }
+}
+export async function isApifyOverSoftLimit(): Promise<{ over: boolean; usd: number | null; softLimit: number }> {
+  const u = await getApifyUsage()
+  const softLimit = Math.min(APIFY_SOFT_LIMIT_USD, u?.limit ?? APIFY_SOFT_LIMIT_USD)
+  return { over: u !== null && u.usd >= softLimit, usd: u?.usd ?? null, softLimit }
+}
+
 export function getApifyResumeDate(): string | null {
   if (!isApifyExhausted()) return null
   return new Date(apifyExhaustedUntil as number).toISOString()
@@ -883,8 +914,15 @@ const STORY_ACTORS = [
   'louisdeconinck~instagram-story-details-scraper',
 ]
 
+/**
+ * The stories actor charges 0,099 $ per START plus 0,003 $ per username and
+ * accepts up to 100 usernames per run: one run for everybody is 5× cheaper
+ * than five runs of 20. Never call it for a single creator.
+ */
+export const STORIES_BATCH_MAX = 100
+
 async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[]> {
-  const usernameSlice = usernames.slice(0, 20) // Max 20 at a time
+  const usernameSlice = usernames.slice(0, STORIES_BATCH_MAX)
   console.log(`[Apify] Story scrape requested for ${usernameSlice.length} usernames: ${usernameSlice.join(', ')}`)
 
   for (const actor of STORY_ACTORS) {

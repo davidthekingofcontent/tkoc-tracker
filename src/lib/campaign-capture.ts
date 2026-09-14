@@ -503,9 +503,15 @@ export async function upsertCampaignStory(
 // ---------------------------------------------------------------------------
 
 export interface CaptureOptions {
-  /** Skip the per-member story scrape (the campaign track route batches
-   *  stories for all Instagram members in one Apify call instead). */
+  /** @deprecated stories are never scraped per member any more (see includeStories). */
   skipStories?: boolean
+  /**
+   * Scrape THIS member's stories in its own Apify run (0,099 $ per run start).
+   * Off by default since 2026-09-14: the stories cron scans every confirmed
+   * creator of every live campaign in ONE run twice a day, so a per-member run
+   * on each status change only burned budget (16 € in two days).
+   */
+  includeStories?: boolean
 }
 
 /**
@@ -658,7 +664,7 @@ export async function captureMemberContent(
     }
 
     // ----- Stories (Instagram only) -----
-    if (influencer.platform === 'INSTAGRAM' && !options.skipStories && !isApifyExhausted()) {
+    if (influencer.platform === 'INSTAGRAM' && options.includeStories === true && !options.skipStories && !isApifyExhausted()) {
       try {
         const storyResults = await scrapeStories([influencer.username], 'INSTAGRAM')
         for (const sr of storyResults) {

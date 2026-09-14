@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { isApifyConfiguredAsync, isApifyExhausted, scrapeStories } from '@/lib/apify'
+import { isApifyConfiguredAsync, isApifyExhausted, isApifyOverSoftLimit, scrapeStories, STORIES_BATCH_MAX } from '@/lib/apify'
+
+/** Stories live 24 h: two scans a day catch every one of them. Whatever the external scheduler does, the route refuses to run more often than this (override with ?force=1). */
+const STORIES_MIN_INTERVAL_HOURS = Number(process.env.STORIES_MIN_INTERVAL_HOURS || 12)
+const LAST_RUN_KEY = 'cron_stories_last_run'
 import { notifyAllTeam } from '@/lib/notifications'
 import {
   mediaMatchesCampaignRules,
@@ -40,6 +44,24 @@ export async function GET(request: NextRequest) {
     }
     if (isApifyExhausted()) {
       return NextResponse.json({ error: 'Apify monthly limit exhausted', storiesFound: 0 }, { status: 503 })
+    }
+    const force = request.nextUrl.searchParams.get('force') === '1'
+    // Throttle: at most one scan per STORIES_MIN_INTERVAL_HOURS (server-side, independent of the caller's schedule)
+    if (!force) {
+      const last = await prisma.setting.findUnique({ where: { key: LAST_RUN_KEY } }).catch(() => null)
+      const lastAt = last?.value ? Date.parse(last.value) : NaN
+      const minMs = STORIES_MIN_INTERVAL_HOURS * 60 * 60 * 1000
+      if (Number.isFinite(lastAt) && Date.now() - lastAt < minMs) {
+        const nextAllowedAt = new Date(lastAt + minMs).toISOString()
+        console.log(`[Cron/Stories] Skipped: last scan ${last?.value}, next allowed ${nextAllowedAt} (every ${STORIES_MIN_INTERVAL_HOURS} h)`)
+        return NextResponse.json({ skipped: 'too_soon', lastRunAt: last?.value, nextAllowedAt, storiesFound: 0 })
+      }
+    }
+    // Soft monthly budget: stories are the most expensive scrape (0,099 $ per run start); stop them first
+    const budget = await isApifyOverSoftLimit()
+    if (budget.over && !force) {
+      console.log(`[Cron/Stories] Skipped: Apify usage ${budget.usd} $ ≥ soft limit ${budget.softLimit} $`)
+      return NextResponse.json({ skipped: 'soft_limit', apifyUsageUsd: budget.usd, softLimitUsd: budget.softLimit, storiesFound: 0 })
     }
 
     // All ACTIVE campaigns, whatever their type: the rule is membership + brand
@@ -128,14 +150,15 @@ export async function GET(request: NextRequest) {
 
     console.log(`[Cron/Stories] Scraping stories for ${usernames.length} influencers across ${campaignsById.size} live campaigns (pay-per-story actor): ${usernames.join(', ')}`)
 
-    // Scrape in batches of 20 (Apify limit)
+    // One actor run per STORIES_BATCH_MAX (100) usernames: the actor charges per run start
     let totalStories = 0
     let newStories = 0
     let rejectedByRules = 0
+    await prisma.setting.upsert({ where: { key: LAST_RUN_KEY }, update: { value: new Date().toISOString() }, create: { key: LAST_RUN_KEY, value: new Date().toISOString() } }).catch(() => {})
 
-    for (let i = 0; i < usernames.length; i += 20) {
+    for (let i = 0; i < usernames.length; i += STORIES_BATCH_MAX) {
       if (isApifyExhausted()) break
-      const batch = usernames.slice(i, i + 20)
+      const batch = usernames.slice(i, i + STORIES_BATCH_MAX)
       const results = await scrapeStories(batch, 'INSTAGRAM')
 
       for (const result of results) {
