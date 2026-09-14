@@ -461,7 +461,7 @@ async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile 
   let totalViews = 0
 
   const recentPosts: ScrapedPost[] = posts.map((post: Record<string, unknown>) => {
-    const likes = (post.likesCount as number) || 0
+    const likes = nonNegative(post.likesCount) // -1 = likes hidden by the creator
     const comments = (post.commentsCount as number) || 0
     const views = (post.videoViewCount as number) || (post.videoPlayCount as number) || 0
 
@@ -742,7 +742,7 @@ async function scrapeInstagramHashtag(hashtag: string, maxPosts = 20): Promise<H
         thumbnailUrl: (post.thumbnailUrl as string) || (post.displayUrl as string) || null,
         permalink: post.shortCode ? `https://instagram.com/p/${post.shortCode}` : null,
         mediaType: ((post.type as string) || '').includes('Video') ? 'REEL' as const : 'POST' as const,
-        likes: (post.likesCount as number) || 0,
+        likes: nonNegative(post.likesCount),
         comments: (post.commentsCount as number) || 0,
         shares: 0,
         saves: 0,
@@ -803,7 +803,7 @@ async function scrapeInstagramAccountMentions(username: string, maxPosts = 50): 
             thumbnailUrl: (post.thumbnailUrl as string) || (post.displayUrl as string) || null,
             permalink: post.shortCode ? `https://instagram.com/p/${post.shortCode}` : null,
             mediaType: ((post.type as string) || '').includes('Video') ? 'REEL' as const : 'POST' as const,
-            likes: (post.likesCount as number) || 0,
+            likes: nonNegative(post.likesCount),
             comments: (post.commentsCount as number) || 0,
             shares: 0,
             saves: 0,
@@ -1210,7 +1210,7 @@ async function scrapeTikTokHashtag(hashtag: string, maxPosts = 20): Promise<Hash
             thumbnailUrl: (post.covers as Record<string, string>)?.default || (post.coverUrl as string) || (post.cover as string) || null,
             permalink: (post.webVideoUrl as string) || null,
             mediaType: 'VIDEO' as const,
-            likes: (post.diggCount as number) || (post.likes as number) || 0,
+            likes: nonNegative(post.diggCount) || nonNegative(post.likes),
             comments: (post.commentCount as number) || (post.comments as number) || 0,
             shares: (post.shareCount as number) || (post.shares as number) || 0,
             saves: 0,
@@ -1244,7 +1244,7 @@ async function scrapeTikTokHashtag(hashtag: string, maxPosts = 20): Promise<Hash
           thumbnailUrl: (post.covers as Record<string, string>)?.default || (post.coverUrl as string) || (post.cover as string) || null,
           permalink: (post.webVideoUrl as string) || `https://tiktok.com/@${(authorMeta.name as string) || ''}/video/${post.id}`,
           mediaType: 'VIDEO' as const,
-          likes: (post.diggCount as number) || (post.likes as number) || 0,
+          likes: nonNegative(post.diggCount) || nonNegative(post.likes),
           comments: (post.commentCount as number) || (post.comments as number) || 0,
           shares: (post.shareCount as number) || (post.shares as number) || 0,
           saves: 0,
@@ -1319,7 +1319,7 @@ function mapYouTubeHashtagItems(items: Record<string, unknown>[]): HashtagResult
         thumbnailUrl: (video.thumbnailUrl as string) || (video.thumbnail as string) || null,
         permalink: (video.url as string) || (video.id ? `https://youtube.com/watch?v=${video.id}` : null),
         mediaType: mediaType as ScrapedPost['mediaType'],
-        likes: (video.likes as number) || 0,
+        likes: nonNegative(video.likes),
         comments: (video.numberOfComments as number) || (video.commentCount as number) || 0,
         shares: 0,
         saves: 0,
@@ -1402,7 +1402,7 @@ async function scrapeInstagramComments(
       text: (item.text as string) || '',
       authorUsername: (item.ownerUsername as string) || (item.username as string) || 'unknown',
       authorAvatarUrl: (item.ownerProfilePicUrl as string) || (item.profilePicUrl as string) || null,
-      likes: (item.likesCount as number) || (item.likes as number) || 0,
+      likes: nonNegative(item.likesCount) || nonNegative(item.likes),
       replies: (item.repliesCount as number) || (item.replies as number) || 0,
       postedAt: (item.timestamp as string) || (item.createdAt as string) || null,
     }))

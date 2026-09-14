@@ -1,4 +1,5 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 
 /**
@@ -6,7 +7,12 @@ import { prisma } from '@/lib/db'
  * Returns booleans only — no secrets, no PII.
  * Used to know if the user has actually configured the Meta app in Railway.
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // Health check 2026-09-14: this was public; it maps which secrets exist — ADMIN only now.
+  const session = await getSession(request)
+  if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+  if (session.role !== 'ADMIN') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
   // Check env vars (just presence, never value)
   const envStatus = {
     META_APP_ID: !!process.env.META_APP_ID,
