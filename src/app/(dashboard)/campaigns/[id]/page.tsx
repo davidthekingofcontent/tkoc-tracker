@@ -3194,18 +3194,18 @@ export default function CampaignDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Link href="/campaigns">
+      {/* Header — responsive: title block grows, actions wrap under it below lg */}
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <Link href="/campaigns" className="shrink-0 pt-0.5">
             <Button variant="ghost" size="sm">
               <ArrowLeft className="h-4 w-4" />
               {t.common.back}
             </Button>
           </Link>
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-gray-900">{campaign.name}</h1>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <h1 className="text-2xl font-bold leading-tight text-gray-900 break-words">{campaign.name}</h1>
               <Badge variant={campaign.status === 'ACTIVE' ? 'active' : campaign.status === 'PAUSED' ? 'paused' : 'archived'}>
                 {campaign.status === 'ACTIVE' ? t.common.active : campaign.status === 'PAUSED' ? t.common.paused : t.common.archived}
               </Badge>
@@ -3239,7 +3239,7 @@ export default function CampaignDetailPage() {
                 </button>
               )}
             </div>
-            <div className="mt-1 flex items-center gap-2 text-sm text-gray-500">
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500">
               <span>{campaign.type === 'UGC' ? (locale === 'es' ? 'Campaña UGC' : 'UGC Campaign') : campaign.type === 'INFLUENCER_TRACKING' ? t.campaigns.influencerTracking : t.campaigns.socialListening}</span>
               {campaign.type === 'SOCIAL_LISTENING' && (
                 <>
@@ -3278,22 +3278,22 @@ export default function CampaignDetailPage() {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 xl:justify-end xl:pl-4">
           {isActive && (
             <Button
               variant="primary"
-              size="lg"
+              size="md"
               onClick={handleTrackNow}
               disabled={isTracking}
             >
               {isTracking ? (
                 <>
-                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <Loader2 className="h-4 w-4 animate-spin" />
                   {t.campaignDetail.tracking}
                 </>
               ) : (
                 <>
-                  <Radar className="h-5 w-5" />
+                  <Radar className="h-4 w-4" />
                   {t.campaignDetail.trackNow}
                 </>
               )}
@@ -3302,7 +3302,7 @@ export default function CampaignDetailPage() {
           {/* The standard report with cover is the single approved PDF (decision 10) */}
           <Link
             href={`/campaigns/${campaignId}/report`}
-            className="inline-flex h-10 items-center gap-2 rounded-lg bg-purple-600 px-4 text-sm font-semibold text-white hover:bg-purple-700 transition-colors"
+            className="inline-flex h-10 items-center gap-2 whitespace-nowrap rounded-lg bg-purple-600 px-4 text-sm font-semibold text-white hover:bg-purple-700 transition-colors"
             title={locale === 'es' ? 'Abrir el informe estándar de campaña (PDF con portada)' : 'Open the standard campaign report (PDF with cover)'}
           >
             <FileText className="h-4 w-4" />
@@ -3315,7 +3315,7 @@ export default function CampaignDetailPage() {
               onClick={() => setShowExportMenu(v => !v)}
               aria-haspopup="menu"
               aria-expanded={showExportMenu}
-              className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+              className="inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-lg border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
             >
               <Download className="h-4 w-4" />
               {t.campaignDetail.exportMenu}

@@ -1,9 +1,9 @@
 "use client"
 
-import { Search, Bell } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { Search } from "lucide-react"
 import { useI18n } from '@/i18n/context'
 import { LanguageToggle } from '@/components/ui/language-toggle'
+import { NotificationsBell } from '@/components/notifications-bell'
 
 export function Header() {
   const { t } = useI18n()
@@ -24,11 +24,8 @@ export function Header() {
         {/* Language Toggle */}
         <LanguageToggle />
 
-        {/* Notification Bell */}
-        <button className="relative flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700">
-          <Bell className="h-4.5 w-4.5" />
-          <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-purple-600" />
-        </button>
+        {/* Notifications: the real bell (unread count, list, mark as read) — the old one here was decorative */}
+        <NotificationsBell />
 
         {/* User Avatar */}
         <button className="flex h-8 w-8 items-center justify-center rounded-full bg-purple-100 text-sm font-semibold text-purple-700 transition-colors hover:bg-purple-200">
