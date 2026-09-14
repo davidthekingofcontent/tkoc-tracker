@@ -40,7 +40,6 @@ import {
   type PerMediaMetrics,
   type TimelinePoint,
   viewsBaseOf,
-  viewsBaseReliable,
   type CampaignBalance,
   type DeliveryChecklist,
   type EngagementRateResult,
@@ -154,7 +153,8 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
   const viewsBase = viewsBaseOf(media)
   const er = engagementRateOnViews(viewsBase, { minPieces: ER_MIN_PIECES_CAMPAIGN })
   // CPM on the same reliable sample as the ER: never "45.000 €" from one reel with 37 views
-  const cpm = viewsBaseReliable(viewsBase, { minPieces: ER_MIN_PIECES_CAMPAIGN }) ? cpmOf(cost.total, viewsBase.views) : null
+  // CPM is published exactly when the ER is (same reliable, plausible sample)
+  const cpm = er.value !== null ? cpmOf(cost.total, viewsBase.views) : null
   // Secondary ER over REAL reach (only pieces where the creator provided reach)
   const reachRows = media.filter(m => (m.reach || 0) > 0)
   const erOnReach: EngagementRateResult | null = reachRows.length > 0
@@ -182,6 +182,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
       void isRealIdx
       const ownViews = own.reduce((s, m) => s + (m.views || 0), 0)
       const ownViewsBase = viewsBaseOf(own)
+      const ownEr = engagementRateOnViews(ownViewsBase)
       const ownEmvBasic = idxs.reduce((s, i) => s + (emv.items[i]?.basic ?? 0), 0)
       const ownEmvExt = idxs.reduce((s, i) => s + (emv.items[i]?.extended ?? 0), 0)
       const c = memberCost(ci)
@@ -215,12 +216,12 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
         views: ownViews,
         engagements: ownEng,
         audience: ownAudience,
-        er: engagementRateOnViews(ownViewsBase),
+        er: ownEr,
         cost: c,
         emvBasic: Math.round(ownEmvBasic * 100) / 100,
         emvExtended: Math.round(ownEmvExt * 100) / 100,
         emvRatio: emvRatioOf(ownEmvExt, c),
-        cpm: viewsBaseReliable(ownViewsBase) ? cpmOf(c, ownViewsBase.views) : null,
+        cpm: ownEr.value !== null ? cpmOf(c, ownViewsBase.views) : null,
         deliverablesPlanned: ci.deliverablesPlanned ?? null,
         status: ci.status,
         trackedClicks: ci.trackedClicks ?? null,
