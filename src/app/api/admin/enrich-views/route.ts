@@ -5,7 +5,12 @@
  *        permalink, i.e. enrichable) and how many can never be enriched (no
  *        permalink), plus the Apify circuit-breaker state. `?campaignId=` scopes it.
  * POST { campaignId?, limit?, force? } → runs enrichMetaReelViews and returns
- *        the summary. Each fetched row costs an Apify run (≈ 0,002 $).
+ *        the summary. Rows are fetched in batches of 50 permalinks = ONE Apify
+ *        run per batch (apify~instagram-post-scraper, billed per result — list
+ *        price ≈ 0,002 $ per post, not yet measured on this path). Only if that
+ *        run finishes with nothing at all does a batch pay one start (0,099 $)
+ *        of apify~instagram-scraper. Rows a run could not answer (actor failure,
+ *        run outliving the wait) come back `unresolved` and retry next call.
  *
  * ADMIN only.
  */
@@ -15,7 +20,7 @@ import { getSession } from '@/lib/auth'
 import { getApifyResumeDate, isApifyExhausted } from '@/lib/apify'
 import { countPendingMetaReelViews, enrichMetaReelViews } from '@/lib/media-enrich'
 
-// Up to 100 rows × ~10–30 s each: allow a long request (Vercel-style hint; harmless elsewhere).
+// Up to 100 rows = 2 batches; every Apify run is clipped to the 240 s default budget: allow a long request (Vercel-style hint; harmless elsewhere).
 export const maxDuration = 300
 
 async function requireAdmin(request: NextRequest): Promise<NextResponse | null> {
@@ -41,6 +46,8 @@ export async function GET(request: NextRequest) {
     withoutPermalink: backlog.withoutPermalink,
     apifyExhausted: isApifyExhausted(),
     apifyResumeAt: getApifyResumeDate(),
+    // List price of the pay-per-result actor (≈ 0,002 $ per post, batched 50 per run), NOT a measured
+    // figure yet; excludes the fallback start fee (0,099 $ per batch that finishes with nothing).
     estimatedCostUsd: Math.round(backlog.pending * 0.002 * 1000) / 1000,
     timestamp: new Date().toISOString(),
   })

@@ -20,7 +20,7 @@ import {
   type IgMediaItem,
 } from '@/lib/meta-api'
 import { isApifyExhausted } from '@/lib/apify'
-import { ENRICH_ROW_RESERVE_MS, enrichMetaReelViews, type EnrichSummary } from '@/lib/media-enrich'
+import { ENRICH_BATCH_RESERVE_MS, enrichMetaReelViews, type EnrichSummary } from '@/lib/media-enrich'
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -45,9 +45,12 @@ export interface SyncResult {
  * syncs up to 20 connections in a row and the materialization happens in the
  * caller after the sync, so the rows created by THIS run get their views in the
  * NEXT one. Small batch (≤ ENRICH_MAX_ROWS_PER_SYNC rows) and ONLY the time the
- * sync has actually left of its own budget (see SyncOptions.timeBudgetMs): one
- * Apify row can take minutes and cannot be aborted, so the enrichment must
- * never push the cron past its 300 s self-fetch limit.
+ * sync has actually left of its own budget (see SyncOptions.timeBudgetMs): an
+ * Apify run cannot be aborted, so media-enrich clips every run to that budget
+ * and starts none without ENRICH_BATCH_RESERVE_MS of slack — the enrichment
+ * must never push the cron past its 300 s self-fetch limit. The throttle is
+ * armed only when a batch actually ran (a time-skip must not block the next
+ * connection's enrichment).
  */
 const ENRICH_MIN_INTERVAL_MS = 10 * 60 * 1000
 const ENRICH_MAX_ROWS_PER_SYNC = 5
@@ -436,9 +439,9 @@ export async function syncMetaConnection(connectionId: string, options: SyncOpti
   // 6) Real views for Meta-attributed reels materialized by earlier runs
   // (Meta hides other accounts' play counts; the public post shows them).
   // Guarded by the Apify circuit breaker, the time the sync has ACTUALLY left of
-  // its budget (one Apify row can take minutes and cannot be aborted, so the
-  // enrichment only gets the slack the tags crawl did not use) and a per-process
-  // throttle; never fails the sync.
+  // its budget (an Apify run cannot be aborted, so the enrichment only gets the
+  // slack the tags crawl did not use, and needs at least one batch's reserve)
+  // and a per-process throttle; never fails the sync.
   if (token.tokenType === 'brand' && options.enrichViews !== false) {
     const remainingMs = Math.max(0, syncBudgetMs - (Date.now() - syncStartedAt))
     const enrichBudgetMs = options.enrichTimeBudgetMs !== undefined ? Math.min(options.enrichTimeBudgetMs, remainingMs) : remainingMs
@@ -446,15 +449,19 @@ export async function syncMetaConnection(connectionId: string, options: SyncOpti
       console.log('[meta-sync] views enrichment skipped: Apify monthly limit exhausted')
     } else if (Date.now() - lastEnrichAt < ENRICH_MIN_INTERVAL_MS) {
       console.log('[meta-sync] views enrichment skipped: ran less than 10 min ago in this process')
-    } else if (enrichBudgetMs < ENRICH_ROW_RESERVE_MS) {
-      console.log(`[meta-sync] views enrichment skipped: ${Math.round(enrichBudgetMs / 1000)} s left of the sync budget (< ${ENRICH_ROW_RESERVE_MS / 1000} s per Apify row)`)
+    } else if (enrichBudgetMs < ENRICH_BATCH_RESERVE_MS) {
+      console.log(`[meta-sync] views enrichment skipped: ${Math.round(enrichBudgetMs / 1000)} s left of the sync budget (< ${Math.round(ENRICH_BATCH_RESERVE_MS / 1000)} s for one Apify batch)`)
     } else {
-      lastEnrichAt = Date.now()
       try {
         result.enriched = await enrichMetaReelViews({
           limit: ENRICH_MAX_ROWS_PER_SYNC,
           timeBudgetMs: enrichBudgetMs,
         })
+        // Arm the throttle only when a batch actually ran (or there was nothing to do):
+        // a run that stopped on time before fetching anything must not block the next sync.
+        if (!(result.enriched.stoppedBy === 'time' && result.enriched.scanned === 0 && result.enriched.unresolved === 0)) {
+          lastEnrichAt = Date.now()
+        }
       } catch (err) {
         console.error('[meta-sync] views enrichment failed', err instanceof Error ? err.message : err)
       }

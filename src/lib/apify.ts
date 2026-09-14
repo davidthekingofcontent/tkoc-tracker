@@ -109,18 +109,40 @@ async function getTokenWithDbFallback(): Promise<string | null> {
   return getTokenFromDb()
 }
 
-/** Run an Apify actor and return the dataset items */
-async function runActor(
+/** Apify caps `waitForFinish` at 60 s server-side; longer waits are polling. */
+const APIFY_WAIT_FOR_FINISH_MAX_SECS = 60
+const APIFY_POLL_INTERVAL_MS = 5_000
+/** Default polling after waitForFinish: 30 × 5 s. */
+const APIFY_DEFAULT_POLL_MS = 150_000
+
+interface ActorRunResult {
+  items: Record<string, unknown>[]
+  /**
+   * false when the run was still RUNNING when we stopped waiting: `items` is
+   * then whatever the dataset held at that moment (possibly nothing) and must
+   * not be taken as the final answer for the inputs that are missing.
+   */
+  succeeded: boolean
+}
+
+/**
+ * Run an Apify actor and return the dataset items plus whether the run had
+ * actually finished. Waits `waitForFinish` (≤ 60 s, Apify's cap) and then
+ * polls for at most `maxPollMs`.
+ */
+async function runActorDetailed(
   actorId: string,
   input: Record<string, unknown>,
-  timeoutSecs = 120
-): Promise<Record<string, unknown>[]> {
+  timeoutSecs = 120,
+  maxPollMs = APIFY_DEFAULT_POLL_MS
+): Promise<ActorRunResult> {
   // Circuit breaker: fail fast (no network, no DB) while the monthly limit is exhausted
   if (isApifyExhausted()) throw new Error('APIFY_EXHAUSTED')
 
   const token = await getTokenWithDbFallback()
   if (!token) throw new Error('APIFY_API_KEY not configured')
 
+  timeoutSecs = Math.min(Math.max(0, Math.round(timeoutSecs)), APIFY_WAIT_FOR_FINISH_MAX_SECS)
   const url = `${APIFY_BASE}/acts/${actorId}/runs?token=${token.substring(0, 8)}...&waitForFinish=${timeoutSecs}`
   console.log(`[Apify] Starting actor ${actorId} with input:`, JSON.stringify(input).substring(0, 200))
   console.log(`[Apify] Request URL pattern: ${url}`)
@@ -160,23 +182,29 @@ async function runActor(
   }
 
   // If status is not SUCCEEDED, the run may still be running or failed
-  const status = runData.data?.status
+  let status = runData.data?.status
   if (status && status !== 'SUCCEEDED' && status !== 'READY') {
     // Wait a bit more and check
     if (status === 'RUNNING' && runId) {
       // Poll until done — use the run ID, not the dataset ID
-      for (let i = 0; i < 30; i++) {
-        await new Promise(r => setTimeout(r, 5000))
+      const polls = Math.floor(Math.max(0, maxPollMs) / APIFY_POLL_INTERVAL_MS)
+      for (let i = 0; i < polls; i++) {
+        await new Promise(r => setTimeout(r, APIFY_POLL_INTERVAL_MS))
         const checkRes = await fetch(`${APIFY_BASE}/actor-runs/${runId}?token=${token}`)
         if (checkRes.ok) {
           const checkData = await checkRes.json() as { data?: { status?: string } }
-          if (checkData.data?.status === 'SUCCEEDED') break
-          if (checkData.data?.status === 'FAILED' || checkData.data?.status === 'ABORTED') {
-            throw new Error(`Apify actor ${actorId} ${checkData.data.status}`)
+          status = checkData.data?.status
+          if (status === 'SUCCEEDED') break
+          if (status === 'FAILED' || status === 'ABORTED' || status === 'TIMED-OUT') {
+            throw new Error(`Apify actor ${actorId} ${status}`)
           }
         }
       }
     }
+  }
+  const succeeded = status === 'SUCCEEDED' || status === 'READY' || !status
+  if (!succeeded) {
+    console.warn(`[Apify] Run ${runId} of ${actorId} still ${status} after the wait: reading the dataset as PARTIAL`)
   }
 
   // Fetch dataset items
@@ -189,8 +217,18 @@ async function runActor(
   }
 
   const items = await dataRes.json() as Record<string, unknown>[]
-  console.log(`[Apify] Got ${items?.length || 0} items from dataset ${datasetId}`)
-  return items || []
+  console.log(`[Apify] Got ${items?.length || 0} items from dataset ${datasetId}${succeeded ? '' : ' (partial)'}`)
+  return { items: items || [], succeeded }
+}
+
+/** Run an Apify actor and return the dataset items (partial if the run outlived the wait). */
+async function runActor(
+  actorId: string,
+  input: Record<string, unknown>,
+  timeoutSecs = 120
+): Promise<Record<string, unknown>[]> {
+  const { items } = await runActorDetailed(actorId, input, timeoutSecs)
+  return items
 }
 
 // ============ COUNTRY DETECTION ============
@@ -1521,7 +1559,9 @@ export async function scrapeSinglePost(url: string): Promise<ScrapedSinglePost |
         console.warn('[Apify] instagram-scraper failed for single post, trying instagram-post-scraper:', err instanceof Error ? err.message : err)
       }
       if (items.length === 0) {
-        items = await runActor('apify~instagram-post-scraper', { directUrls: [url], resultsLimit: 1 })
+        // The post-scraper's input field for URLs is `username` (it accepts post
+        // URLs); it has no `directUrls`, which is why it "came back empty".
+        items = await runActor('apify~instagram-post-scraper', { username: [url], resultsLimit: 1 })
       }
       for (const item of items) {
         result = mapInstagramSinglePost(item)
@@ -1550,4 +1590,212 @@ export async function scrapeSinglePost(url: string): Promise<ScrapedSinglePost |
   if (result === null && isApifyExhausted()) return null
   cacheSet(cacheKey, result, result ? LIST_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS)
   return result
+}
+
+// ============ BATCH SINGLE POSTS (views enrichment) ============
+
+/**
+ * Instagram shortcode of a post/reel permalink (/p/, /reel/, /reels/, /tv/).
+ * Local twin of instagramShortcode() in campaign-capture.ts — that module
+ * imports this one, so importing it back here would be a circular import.
+ * Same regex; keep them in sync.
+ */
+export function instagramShortcodeOf(url: string | null | undefined): string | null {
+  if (!url) return null
+  const m = url.match(/\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]{5,})/)
+  return m ? m[1] : null
+}
+
+/**
+ * Apify bills apify~instagram-scraper 0,099 $ per RUN START and
+ * apify~instagram-post-scraper per RESULT (list price ≈ 0,002 $ — NOT yet
+ * measured on this path: until 2026-09-14 the post-scraper was called with a
+ * field it does not have and every batch silently paid the fallback start
+ * instead; re-measure before quoting a per-post figure). One run per post
+ * (scrapeSinglePost) is the most expensive way to read 50 posts: measured
+ * 2026-09-14, 105 posts ≈ 0,8 $. One run for up to POSTS_BATCH_MAX permalinks
+ * costs the same per post whatever the batch size. Callers with more rows
+ * split them into batches of this size.
+ */
+export const POSTS_BATCH_MAX = 50
+
+/**
+ * Least wall time scrapePostsBatch needs to start a run: Apify's 60 s
+ * waitForFinish plus a couple of polls. With less than this left before the
+ * caller's deadline the run is not started (its posts come back unresolved).
+ */
+export const POSTS_BATCH_MIN_RUN_MS = APIFY_WAIT_FOR_FINISH_MAX_SECS * 1000 + 2 * APIFY_POLL_INTERVAL_MS
+
+export interface PostsBatchResult {
+  /** Fetched posts keyed by the INPUT url string. */
+  posts: Map<string, ScrapedSinglePost>
+  /**
+   * Input urls whose run did not give a final answer: the actor failed to
+   * start / crashed, the run outlived the wait (partial dataset), the breaker
+   * tripped, or there was no time left to run. Not negative-cached — the
+   * caller must NOT record them as attempted; they can be retried next run.
+   */
+  unresolved: Set<string>
+}
+
+export interface PostsBatchOptions {
+  /**
+   * Absolute time (Date.now() based) by which every run must have returned.
+   * Each run's wait is clipped to it and no run is started with less than
+   * POSTS_BATCH_MIN_RUN_MS left; the fallback run is skipped when it does not
+   * fit. Without it a run waits up to 60 s + 150 s of polling.
+   */
+  deadlineAt?: number
+}
+
+/**
+ * Fetch up to POSTS_BATCH_MAX Instagram posts/reels in ONE actor run.
+ *
+ * - apify~instagram-post-scraper first ({ username: [post urls], resultsLimit: 1 }
+ *   — its URL input is the `username` field, which accepts post URLs; it has
+ *   no `directUrls`): pay per result, the cheapest option. Only when that run
+ *   FINISHED and returned nothing at all, one run of apify~instagram-scraper
+ *   (0,099 $ per start — never per post).
+ * - Results are matched back to the input permalinks by Instagram shortcode
+ *   (/p/ and /reel/ forms of the same post map to the same result). Distinct
+ *   input URLs of one shortcode are sent ONCE and share the result. The
+ *   returned Map is keyed by the INPUT url string.
+ * - Per-URL cache entries (post:<url>) are honoured and written exactly like
+ *   scrapeSinglePost, so a later single fetch of the same post is free.
+ * - A run that outlived the wait (Apify caps waitForFinish at 60 s; then
+ *   polling) is PARTIAL: what it returned is used, the rest is `unresolved`
+ *   (no negative cache, no fallback run while the first one may still be
+ *   running and billing).
+ * - Never throws. While the monthly-limit breaker is open (isApifyExhausted())
+ *   it returns only cache hits and negative-caches nothing.
+ * - Non-Instagram URLs and URLs without a shortcode are left out of the result.
+ *
+ * More than POSTS_BATCH_MAX distinct uncached posts are processed in successive
+ * runs of POSTS_BATCH_MAX (one run each).
+ */
+export async function scrapePostsBatch(urls: string[], options: PostsBatchOptions = {}): Promise<PostsBatchResult> {
+  const out = new Map<string, ScrapedSinglePost>()
+  const unresolved = new Set<string>()
+
+  // Cache hits first; then the distinct Instagram posts (by shortcode) still to fetch.
+  const toFetch: Array<{ code: string; urls: string[] }> = []
+  const byInputCode = new Map<string, { code: string; urls: string[] }>()
+  const seen = new Set<string>()
+  for (const url of urls) {
+    if (!url || seen.has(url)) continue
+    seen.add(url)
+    let host = ''
+    try {
+      host = new URL(url).hostname.toLowerCase()
+    } catch {
+      continue
+    }
+    if (!host.includes('instagram.com') && !host.includes('instagr.am')) continue
+    const code = instagramShortcodeOf(url)
+    if (!code) continue
+    const cached = cacheGet<ScrapedSinglePost | null>(`post:${url}`)
+    if (cached !== undefined) {
+      if (cached) out.set(url, cached)
+      continue
+    }
+    const entry = byInputCode.get(code)
+    if (entry) { entry.urls.push(url); continue }
+    const fresh = { code, urls: [url] }
+    byInputCode.set(code, fresh)
+    toFetch.push(fresh)
+  }
+  if (toFetch.length === 0) {
+    if (urls.length > 0) console.log(`[Apify] Posts batch: ${out.size}/${urls.length} served from cache, nothing to fetch`)
+    return { posts: out, unresolved }
+  }
+  const markUnresolvedFrom = (index: number) => {
+    for (const entry of toFetch.slice(index)) for (const url of entry.urls) unresolved.add(url)
+  }
+  if (isApifyExhausted()) { markUnresolvedFrom(0); return { posts: out, unresolved } }
+
+  // Wait allowed for one run from now: waitForFinish (≤ 60 s) + polling, clipped to the deadline.
+  const runWait = (): { waitSecs: number; pollMs: number } | null => {
+    const left = options.deadlineAt === undefined ? Infinity : options.deadlineAt - Date.now()
+    if (left < POSTS_BATCH_MIN_RUN_MS) return null
+    const waitSecs = APIFY_WAIT_FOR_FINISH_MAX_SECS
+    const pollMs = Math.min(APIFY_DEFAULT_POLL_MS, Math.max(0, left - waitSecs * 1000))
+    return { waitSecs, pollMs }
+  }
+
+  for (let i = 0; i < toFetch.length; i += POSTS_BATCH_MAX) {
+    const chunk = toFetch.slice(i, i + POSTS_BATCH_MAX)
+    const chunkUrls = chunk.map(c => c.urls[0])
+
+    const wait = runWait()
+    if (!wait) {
+      console.warn(`[Apify] Posts batch: no time left to run ${chunk.length} posts (deadline); left unresolved`)
+      markUnresolvedFrom(i)
+      break
+    }
+    console.log(`[Apify] Posts batch: fetching ${chunk.length} posts in one run (wait ≤ ${wait.waitSecs} s + ${Math.round(wait.pollMs / 1000)} s polling)`)
+
+    let run: ActorRunResult | null = null
+    try {
+      run = await runActorDetailed('apify~instagram-post-scraper', { username: chunkUrls, resultsLimit: 1 }, wait.waitSecs, wait.pollMs)
+    } catch (err) {
+      if (isExhaustedError(err)) { markUnresolvedFrom(i); return { posts: out, unresolved } }
+      console.warn('[Apify] instagram-post-scraper failed for posts batch, trying instagram-scraper:', err instanceof Error ? err.message : err)
+    }
+    if (run && run.succeeded && run.items.length === 0) {
+      // Nothing at all from the pay-per-result actor: one run (one start fee) of the general scraper.
+      run = null
+    }
+    if (run === null) {
+      const fallbackWait = runWait()
+      if (!fallbackWait) {
+        console.warn(`[Apify] Posts batch: no time left for the fallback run of ${chunk.length} posts; left unresolved`)
+        markUnresolvedFrom(i)
+        break
+      }
+      try {
+        run = await runActorDetailed(
+          'apify~instagram-scraper',
+          { directUrls: chunkUrls, resultsType: 'posts', resultsLimit: chunkUrls.length },
+          fallbackWait.waitSecs,
+          fallbackWait.pollMs
+        )
+      } catch (err) {
+        if (isExhaustedError(err)) { markUnresolvedFrom(i); return { posts: out, unresolved } }
+        console.error('[Apify] Posts batch: instagram-scraper failed too:', err instanceof Error ? err.message : err)
+        // Transient actor failure: no negative cache, the rows can be retried next run.
+        for (const entry of chunk) for (const url of entry.urls) unresolved.add(url)
+        continue
+      }
+    }
+
+    // Index results by shortcode. The actor emits { error } items for private/removed
+    // posts — mapInstagramSinglePost returns null for those, so they stay unmatched.
+    const byCode = new Map<string, ScrapedSinglePost>()
+    for (const item of run.items) {
+      const code = (typeof item.shortCode === 'string' && item.shortCode)
+        || instagramShortcodeOf(typeof item.url === 'string' ? item.url : null)
+        || instagramShortcodeOf(typeof item.inputUrl === 'string' ? item.inputUrl : null)
+      if (!code || byCode.has(code)) continue
+      const mapped = mapInstagramSinglePost(item)
+      if (mapped) byCode.set(code, mapped)
+    }
+
+    let found = 0
+    const tripped = isApifyExhausted()
+    for (const { code, urls: entryUrls } of chunk) {
+      const post = byCode.get(code) ?? null
+      if (post) found++
+      for (const url of entryUrls) {
+        if (post) out.set(url, post)
+        // A missing post from a PARTIAL run (or with the breaker open) is not an answer.
+        if (post === null && (!run.succeeded || tripped)) { unresolved.add(url); continue }
+        // Same per-URL cache as scrapeSinglePost.
+        cacheSet(`post:${url}`, post, post ? LIST_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS)
+      }
+    }
+    console.log(`[Apify] Posts batch: ${found}/${chunk.length} posts matched (${run.items.length} items returned${run.succeeded ? '' : ', PARTIAL run'})`)
+    if (tripped) { markUnresolvedFrom(i + POSTS_BATCH_MAX); return { posts: out, unresolved } }
+  }
+
+  return { posts: out, unresolved }
 }

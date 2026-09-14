@@ -59,7 +59,8 @@ export class ReportPdfAbortedError extends Error {
   }
 }
 
-const LAUNCH_ARGS = [
+/** Headless Chromium flags shared by every server-side browser (PDF, thumbnail recovery). */
+export const LAUNCH_ARGS = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
   '--disable-dev-shm-usage',
@@ -91,6 +92,8 @@ export function reportPdfBaseUrl(): string {
 
 // ---- In-process semaphore: at most MAX_CONCURRENT_RENDERS Chromium at a time ----
 // A headless Chromium costs a few hundred MB; the Railway container is small.
+// Every server-side Chromium counts: the PDF renders here and the thumbnail
+// embed recovery (thumb-cache.ts) take a slot through acquireChromiumSlot().
 // The queue behind the semaphore is bounded (MAX_QUEUED_RENDERS) and every
 // waiter gives up after MAX_QUEUE_WAIT_MS or when its request is aborted, so
 // a burst of requests can never pile up minutes of back-to-back renders.
@@ -99,6 +102,19 @@ const MAX_QUEUED_RENDERS = 4
 const MAX_QUEUE_WAIT_MS = 30_000
 let activeRenders = 0
 const waiters: Array<() => void> = []
+
+/**
+ * Take one headless-Chromium slot (waits up to MAX_QUEUE_WAIT_MS behind a
+ * bounded queue; throws ReportPdfBusyError / ReportPdfAbortedError). Pair with
+ * releaseChromiumSlot() in a finally.
+ */
+export async function acquireChromiumSlot(signal?: AbortSignal): Promise<void> {
+  return acquire(signal)
+}
+
+export function releaseChromiumSlot(): void {
+  release()
+}
 
 async function acquire(signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) throw new ReportPdfAbortedError()
