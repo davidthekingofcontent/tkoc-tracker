@@ -12,7 +12,7 @@ const STORIES_DEFAULT_MIN_HOURS = Number(process.env.STORIES_MIN_INTERVAL_HOURS 
  * were the bulk of the stories bill.
  */
 const STORIES_MAX_CAMPAIGN_DAYS = Number(process.env.STORIES_MAX_CAMPAIGN_DAYS || 62)
-import { notifyAllTeam } from '@/lib/notifications'
+import { notifyCampaignTeam } from '@/lib/notifications'
 import {
   mediaMatchesCampaignRules,
   campaignHasTargets,
@@ -165,6 +165,8 @@ export async function GET(request: NextRequest) {
     let totalStories = 0
     let newStories = 0
     let rejectedByRules = 0
+    // New stories per campaign: each campaign's team is notified separately
+    const newStoriesByCampaign = new Map<string, number>()
     await markCronRun('stories')
 
     for (let i = 0; i < usernames.length; i += STORIES_BATCH_MAX) {
@@ -201,20 +203,23 @@ export async function GET(request: NextRequest) {
             if (already) continue
             if (await upsertCampaignStory(cid, mapping.influencerId, story)) {
               newStories++
+              newStoriesByCampaign.set(cid, (newStoriesByCampaign.get(cid) || 0) + 1)
             }
           }
         }
       }
     }
 
-    // If new stories were found, notify the team
-    if (newStories > 0) {
-      notifyAllTeam({
+    // One notification per campaign with new stories, to THAT campaign's team
+    // (creator + assigned PMs) — never a global message to the whole agency.
+    for (const [cid, count] of newStoriesByCampaign) {
+      const name = campaignsById.get(cid)?.name || cid
+      await notifyCampaignTeam(cid, {
         type: 'media_posted',
-        title: 'New Stories Detected',
-        message: `${newStories} new Instagram stories captured from active campaigns. Check the Stories tab to see them.`,
-        link: `/campaigns`,
-      }).catch(() => {})
+        title: 'Stories nuevas',
+        message: `${count} stories nuevas capturadas en la campaña "${name}"`,
+        link: `/campaigns/${cid}`,
+      })
     }
 
     console.log(`[Cron/Stories] Done. Total: ${totalStories}, New: ${newStories}, Rejected by rules: ${rejectedByRules}`)

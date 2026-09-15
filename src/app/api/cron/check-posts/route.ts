@@ -5,7 +5,7 @@ import { campaignHasTargets, mediaMatchesCampaignRules, scrapedPostToRuleItem, u
 import { isApifyConfiguredAsync } from '@/lib/apify'
 import { fetchProfile } from '@/lib/platform-client'
 import { isYouTubeApiConfigured } from '@/lib/youtube-api'
-import { notifyAllTeam } from '@/lib/notifications'
+import { notifyCampaignTeam } from '@/lib/notifications'
 import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 import type { ScrapedProfile } from '@/lib/apify'
 
@@ -207,16 +207,17 @@ export async function GET(request: NextRequest) {
             }
           }
 
-          // One notification per post (not per campaign copy)
+          // One notification per post (not per campaign copy), to the teams of
+          // the campaigns it was attached to (creator + assigned PMs)
           if (attachedTo.length > 0) {
             const platformName = inf.platform === 'INSTAGRAM' ? 'Instagram' : inf.platform === 'TIKTOK' ? 'TikTok' : 'YouTube'
             const names = attachedTo.map(c => `"${c.name}"`).join(', ')
-            notifyAllTeam({
+            await notifyCampaignTeam(attachedTo.map(c => c.id), {
               type: 'media_posted',
               title: `@${inf.username} ha publicado`,
               message: `@${inf.username} ha publicado en ${platformName} para ${attachedTo.length > 1 ? 'las campañas' : 'la campaña'} ${names}. ${post.permalink ? `Ver: ${post.permalink}` : ''} Consejo: espera 7 días antes de revisar las métricas.`,
               link: `/campaigns/${attachedTo[0].id}`,
-            }).catch(() => {})
+            })
           }
         }
 

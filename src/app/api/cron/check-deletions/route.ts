@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 import { prisma } from '@/lib/db'
-import { notifyAllTeam } from '@/lib/notifications'
+import { notifyCampaignTeam } from '@/lib/notifications'
 import { mediaPostKey } from '@/lib/campaign-capture'
 import { checkInstagramPostsExist, type PostExistence } from '@/lib/thumb-cache'
 
@@ -121,12 +121,14 @@ export async function GET(request: NextRequest) {
       deleted++
       const username = copies[0].influencer?.username || 'Unknown'
       const campaignNames = Array.from(new Set(copies.map(c => c.campaign?.name).filter(Boolean))) as string[]
-      notifyAllTeam({
+      const campaignIds = Array.from(new Set(copies.map(c => c.campaign?.id).filter(Boolean))) as string[]
+      // Only the teams of the campaigns that hold this post (creator + assigned PMs)
+      await notifyCampaignTeam(campaignIds, {
         type: 'post_deleted',
         title: 'Post eliminado detectado',
         message: `⚠️ El influencer @${username} ha eliminado un post de ${campaignNames.length > 1 ? 'las campañas' : 'la campaña'} ${campaignNames.join(', ') || 'Unknown'}`,
         link: copies[0].campaign?.id ? `/campaigns/${copies[0].campaign.id}` : undefined,
-      }).catch(() => {})
+      })
       console.log(`[Cron/CheckDeletions] Deleted (missing twice): ${permalink} by @${username}`)
     }
     await saveMap('deletion_checked', prune(checkedLog, 7))

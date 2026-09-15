@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { notifyAllTeam } from '@/lib/notifications'
+import { notifyCampaignTeam } from '@/lib/notifications'
 
 export async function GET(
   request: NextRequest,
@@ -11,6 +11,11 @@ export async function GET(
     const session = await getSession(request)
     if (!session) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    // Internal PM notes: staff only (never BRAND clients or CREATOR accounts)
+    if (session.role !== 'ADMIN' && session.role !== 'EMPLOYEE') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
     const { id } = await params
@@ -71,12 +76,18 @@ export async function POST(
       },
     })
 
-    // Notify team
-    notifyAllTeam(
+    // Notify the campaign team (creator + assigned PMs), not the whole agency
+    const campaign = await prisma.campaign
+      .findUnique({ where: { id }, select: { name: true } })
+      .catch(() => null)
+    notifyCampaignTeam(
+      id,
       {
         type: 'note_added',
-        title: 'New Note Added',
-        message: `${session.name} added a note on campaign`,
+        title: 'Nota nueva',
+        message: campaign?.name
+          ? `${session.name} ha añadido una nota en la campaña "${campaign.name}"`
+          : `${session.name} ha añadido una nota en la campaña`,
         link: `/campaigns/${id}`,
       },
       session.id

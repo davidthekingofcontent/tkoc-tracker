@@ -647,6 +647,14 @@ export const translations = {
       // Export menu
       exportMenu: 'Export',
       exportOpensNewTab: 'Opens in a new tab',
+      // Campaign team (who has access: creator + assigned staff)
+      teamButton: 'Team',
+      teamTitle: 'Campaign team',
+      teamHint: 'Whoever has access sees the campaign in their list and receives its notifications. Administrators see every campaign, but only get alerts for their own.',
+      teamOwner: 'Creator',
+      teamHasAccess: 'Has access',
+      teamReadOnly: 'Only the creator or an administrator can change access.',
+      teamError: 'Could not update access. Try again.',
       // Creator baseline ("their usual", decision 2)
       baselineUsual: 'Usual',
       baselineViews: 'views',
@@ -2055,6 +2063,14 @@ export const translations = {
       // Menú de exportación
       exportMenu: 'Exportar',
       exportOpensNewTab: 'Se abre en una pestaña nueva',
+      // Equipo de la campaña (quién tiene acceso: creador + personal asignado)
+      teamButton: 'Equipo',
+      teamTitle: 'Equipo de la campaña',
+      teamHint: 'Quien tiene acceso ve la campaña en su lista y recibe sus notificaciones. Los administradores ven todas las campañas, pero solo reciben avisos de las suyas.',
+      teamOwner: 'Creador',
+      teamHasAccess: 'Tiene acceso',
+      teamReadOnly: 'Solo el creador o un administrador pueden cambiar el acceso.',
+      teamError: 'No se pudo actualizar el acceso. Inténtalo de nuevo.',
       // Línea base del creador ("su habitual", decisión 2)
       baselineUsual: 'Habitual',
       baselineViews: 'vistas',

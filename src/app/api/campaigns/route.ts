@@ -3,7 +3,6 @@ import { prisma } from '@/lib/db'
 import { dedupeMediaByPost, normalizeTargets } from '@/lib/campaign-capture'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus, CampaignType, Prisma } from '@/generated/prisma/client'
-import { notifyAllTeam } from '@/lib/notifications'
 import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
 
 // ---- Numeric targets (decision 1B, David 2026-09-05) ----
@@ -296,16 +295,9 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Notify team about new campaign
-    notifyAllTeam(
-      {
-        type: 'campaign_created',
-        title: 'New Campaign Created',
-        message: `${session.name || 'A team member'} created campaign "${campaign.name}"`,
-        link: `/campaigns/${campaign.id}`,
-      },
-      session.id
-    ).catch(() => {})
+    // No campaign_created notification: at creation the team is only the
+    // creator (auto-assigned above), who is the actor. Other PMs learn about
+    // the campaign when they are given access (campaign_access).
 
     return NextResponse.json({ campaign }, { status: 201 })
   } catch (error) {

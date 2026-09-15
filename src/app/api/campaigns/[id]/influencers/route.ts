@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { InfluencerStatus, Prisma } from '@/generated/prisma/client'
-import { notifyAllTeam } from '@/lib/notifications'
+import { notifyCampaignTeam } from '@/lib/notifications'
 import { ensureContact, saveContactAddress } from '@/lib/contacts'
 import { captureMemberContent } from '@/lib/campaign-capture'
 import { familyOf, manualBaseline, parseBaseline } from '@/lib/creator-baseline'
@@ -182,8 +182,8 @@ export async function POST(
     // passes the campaign rules. Fire-and-forget — the add must not wait for Apify.
     triggerMemberCapture(id, influencerId, 'added')
 
-    // Notify team
-    notifyAllTeam({
+    // Notify the campaign team (creator + assigned PMs), not the whole agency
+    notifyCampaignTeam(id, {
       type: 'influencer_added',
       title: 'Influencer añadido',
       message: `@${item.influencer.username} añadido a la campaña "${campaign.name}"`,

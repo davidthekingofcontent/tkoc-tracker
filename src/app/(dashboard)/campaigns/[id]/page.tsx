@@ -32,6 +32,7 @@ import { useI18n } from '@/i18n/context'
 import { calculateCPM, type CPMInput, type CPMResult, type Platform as CPMPlatform } from '@/lib/cpm-calculator'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { CampaignNotesButton } from '@/components/campaign-notes'
+import { CampaignTeamButton } from '@/components/campaign-team'
 import { InfluencerHistoryButton } from '@/components/influencer-history'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
 import { StoriesTracker } from '@/components/stories-tracker'
@@ -3279,6 +3280,8 @@ export default function CampaignDetailPage() {
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2 xl:justify-end xl:pl-4">
+          {/* Who has access (creator + assigned staff): list + notifications. Staff only. */}
+          {!isBrand && <CampaignTeamButton campaignId={campaignId} locale={locale} />}
           {isActive && (
             <Button
               variant="primary"

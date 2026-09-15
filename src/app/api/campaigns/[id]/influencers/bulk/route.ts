@@ -14,7 +14,7 @@ import {
   upsertCampaignStory,
 } from '@/lib/campaign-capture'
 import type { CampaignRules } from '@/lib/campaign-capture'
-import { notifyAllTeam } from '@/lib/notifications'
+import { notifyCampaignTeam } from '@/lib/notifications'
 
 const MAX_HANDLES = 200
 const CONCURRENCY = 3
@@ -331,7 +331,8 @@ export async function POST(
     }
 
     if (added > 0) {
-      notifyAllTeam({
+      // Campaign team only (creator + assigned PMs), never the whole agency
+      notifyCampaignTeam(campaignId, {
         type: 'influencer_added',
         title: 'Influencers añadidos',
         message: `${added} influencer${added === 1 ? '' : 's'} añadido${added === 1 ? '' : 's'} a la campaña "${campaign.name}"`,
