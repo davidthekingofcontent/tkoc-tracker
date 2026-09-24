@@ -71,10 +71,12 @@ interface CategoryMeta {
   cacheWriteFailed: boolean
   dbCount: number
   apifyCount: number
+  /** Budget state of the paid path: a percentage and the cycle reset date — the server never sends amounts. */
+  apifyUsage: { usedPct: number | null; cycleEndsAt: string | null } | null
 }
 
 type SearchError =
-  | { type: 'soft_limit' }
+  | { type: 'soft_limit'; cycleEndsAt: string | null }
   | { type: 'exhausted' }
   | { type: 'not_configured' }
   | { type: 'confirm_mismatch' }
@@ -235,6 +237,18 @@ function formatApifyResumeDate(resumesAt: string | null): string {
   const d = new Date(resumesAt)
   if (isNaN(d.getTime())) return ''
   return d.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })
+}
+
+/** dd/mm (viewer locale) of the day the Apify budget cycle resets — the instant right after it ends; '' when unknown. */
+function formatCycleResetDay(cycleEndsAt: string | null | undefined, isEs: boolean): string {
+  if (!cycleEndsAt) return ''
+  const t = Date.parse(cycleEndsAt)
+  if (Number.isNaN(t)) return ''
+  // formatToParts + padStart: some ICU builds ignore '2-digit' for es-ES ("25/9")
+  const parts = new Intl.DateTimeFormat(isEs ? 'es-ES' : 'en-GB', { day: '2-digit', month: '2-digit' }).formatToParts(new Date(t + 1))
+  const day = parts.find(p => p.type === 'day')?.value
+  const month = parts.find(p => p.type === 'month')?.value
+  return day && month ? `${day.padStart(2, '0')}/${month.padStart(2, '0')}` : ''
 }
 
 function ApifyExhaustedBanner({ isEs, resumesAt, className = '' }: { isEs: boolean; resumesAt: string | null; className?: string }) {
@@ -617,13 +631,19 @@ export default function DiscoverPage() {
             cacheWriteFailed: data.cacheWriteFailed === true,
             dbCount: data.dbCount ?? items.filter(i => i.source === 'database').length,
             apifyCount: data.apifyCount ?? items.filter(i => i.source !== 'database').length,
+            apifyUsage: data.apifyUsage && typeof data.apifyUsage === 'object'
+              ? {
+                  usedPct: typeof data.apifyUsage.usedPct === 'number' ? data.apifyUsage.usedPct : null,
+                  cycleEndsAt: typeof data.apifyUsage.cycleEndsAt === 'string' ? data.apifyUsage.cycleEndsAt : null,
+                }
+              : null,
           })
         }
       } else {
         let blocked: 'soft_limit' | 'not_configured' | 'exhausted' | null = null
         if (res.status === 402 && data?.error === 'apify_soft_limit') {
           blocked = 'soft_limit'
-          setSearchError({ type: 'soft_limit' })
+          setSearchError({ type: 'soft_limit', cycleEndsAt: typeof data?.cycleEndsAt === 'string' ? data.cycleEndsAt : null })
         } else if (res.status === 503 && data?.error === 'not_configured') {
           blocked = 'not_configured'
           setSearchError({ type: 'not_configured' })
@@ -664,6 +684,12 @@ export default function DiscoverPage() {
   const paidOfferVisible =
     searchMode === 'category' && hasSearched && !searching && categoryMeta !== null &&
     (categoryMeta.apifyAvailable || categoryMeta.apifyUnavailableReason === 'soft_limit' || categoryMeta.apifyUnavailableReason === 'exhausted')
+
+  // Budget pause note: says until when whenever the server knows the reset date (never an amount)
+  const softLimitNote = (cycleEndsAt: string | null | undefined): string => {
+    const date = formatCycleResetDay(cycleEndsAt, isEs)
+    return date ? fill(t.discover.softLimitReachedUntil, { date }) : t.discover.softLimitReached
+  }
 
   const sourceBadge = (src: ResultSource) => {
     const cls = src === 'database'
@@ -1416,7 +1442,7 @@ export default function DiscoverPage() {
 
                   {searchError?.type === 'soft_limit' && (
                     <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-                      {t.discover.softLimitReached}
+                      {softLimitNote(searchError.cycleEndsAt)}
                     </p>
                   )}
                   {searchError?.type === 'exhausted' && (
@@ -1436,7 +1462,7 @@ export default function DiscoverPage() {
                   )}
                   {!searchError && categoryMeta.apifyUnavailableReason === 'soft_limit' && (
                     <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-                      {t.discover.softLimitReached}
+                      {softLimitNote(categoryMeta.apifyUsage?.cycleEndsAt)}
                     </p>
                   )}
                   {!searchError && categoryMeta.apifyUnavailableReason === 'exhausted' && (

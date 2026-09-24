@@ -18,35 +18,150 @@ export function isApifyExhausted(): boolean {
   return apifyExhaustedUntil !== null && Date.now() < apifyExhaustedUntil
 }
 
-/**
- * Soft monthly budget (David 2026-09-14: "que se use lo mínimo posible"). Above
- * APIFY_SOFT_LIMIT_USD (default 40 $) the NON-essential scrapes (stories) stop;
- * the cheap essentials (single-post views) keep running up to the hard limit.
- * Usage is read from Apify at most every 15 minutes; on any error we assume OK.
- */
-export const APIFY_SOFT_LIMIT_USD = Number(process.env.APIFY_SOFT_LIMIT_USD || 40)
-let _usageCache: { at: number; usd: number; limit: number } | null = null
-export async function getApifyUsage(): Promise<{ usd: number; limit: number } | null> {
-  if (_usageCache && Date.now() - _usageCache.at < 15 * 60 * 1000) return { usd: _usageCache.usd, limit: _usageCache.limit }
+// ============ MONTHLY BUDGET (percentage of the Apify plan) ============
+//
+// Two tiers, both derived from the plan limit read LIVE from
+// GET /users/me/limits (maxMonthlyUsageUsd) — never from a fixed amount:
+//
+//  - CORE capture (crons stories + track): runs until usage ≥ 95 % of the plan
+//    (APIFY_CORE_RESERVE_RATIO). Capturing a client campaign's stories and
+//    posts is the platform's job; a campaign without them is a broken product.
+//  - OPTIONAL / discretionary spend (Discover paid category search and its
+//    enrichment): pauses at the soft limit — APIFY_SOFT_LIMIT_USD when the env
+//    var is set (finite, > 0), else 85 % of the plan (APIFY_SOFT_LIMIT_RATIO),
+//    always capped at the plan limit.
+//
+// Manual PM actions (analyze a profile, add a post by URL) are not gated here.
+//
+// Why there is NO fixed default any more: the 2026-09-14 version defaulted
+// APIFY_SOFT_LIMIT_USD to 40 $ on an 88 $ plan and gated the stories AND track
+// crons with it. Usage passed 40 $ around 9–14 Sept and both crons were
+// silently skipped for two weeks ("[Cron/Stories] Skipped…" every 12 h, nobody
+// told): no September stories were captured. Every pause is now also an ADMIN
+// notification (notifyApifyBudgetPauseOnce in @/lib/notifications), once per
+// UTC day per gate, with the date the cycle resets — percentage only, never an
+// amount (PMs and clients never see Apify prices).
+//
+// Usage is read from Apify at most every 15 minutes (and, after a failed read,
+// not again for 60 s — see getApifyUsage); when it cannot be read, nothing is
+// blocked (assume OK, as before). The separate circuit breaker
+// isApifyExhausted() above still trips on the real hard-limit error.
+
+export const APIFY_SOFT_LIMIT_RATIO = 0.85
+export const APIFY_CORE_RESERVE_RATIO = 0.95
+/** OPTIONAL env override of the soft limit, in USD: finite and > 0, else null (→ 85 % of the plan). */
+export const APIFY_SOFT_LIMIT_USD: number | null = (() => {
+  const n = Number(process.env.APIFY_SOFT_LIMIT_USD)
+  return Number.isFinite(n) && n > 0 ? n : null
+})()
+
+export interface ApifyBudget {
+  /** Usage so far in the current cycle (USD). Server-side only: never send it to the browser. */
+  usd: number | null
+  /** Plan limit (USD). Server-side only. */
+  limit: number | null
+  /** ISO instant the current usage cycle ends (usage resets right after); null when unknown. */
+  cycleEndsAt: string | null
+  /** OPTIONAL spend stops here (USD). Server-side only. */
+  softLimit: number | null
+  /** CORE capture stops here (USD). Server-side only. */
+  coreLimit: number | null
+  /** Discover paid search (and its enrichment) is paused. */
+  optionalBlocked: boolean
+  /** The stories and track crons are paused. */
+  coreBlocked: boolean
+  /** Rounded percentage of the plan used — the only figure the UI may show. */
+  usedPct: number | null
+}
+
+interface ApifyUsage { usd: number; limit: number; cycleEndsAt: string | null }
+const USAGE_CACHE_TTL_MS = 15 * 60 * 1000
+/** After a FAILED read (no token, non-2xx, bad payload, network error or timeout)
+ *  do not ask Apify again for this long. GET /api/apify-status is public and four
+ *  pages fetch it on mount: without this, a revoked token or a 429 turned every
+ *  page load — or any anonymous client in a loop — into an outbound call with the
+ *  production token, indefinitely. Now: at most one attempt a minute per process. */
+const USAGE_RETRY_AFTER_FAILURE_MS = 60 * 1000
+const USAGE_FETCH_TIMEOUT_MS = 10_000
+let _usageCache: ({ at: number } & ApifyUsage) | null = null
+let _usageFailedAt = 0
+/** Concurrent callers past the TTL share ONE outbound request instead of each making their own. */
+let _usageInFlight: Promise<ApifyUsage | null> | null = null
+
+export async function getApifyUsage(): Promise<ApifyUsage | null> {
+  if (_usageCache && Date.now() - _usageCache.at < USAGE_CACHE_TTL_MS) {
+    return { usd: _usageCache.usd, limit: _usageCache.limit, cycleEndsAt: _usageCache.cycleEndsAt }
+  }
+  if (_usageFailedAt && Date.now() - _usageFailedAt < USAGE_RETRY_AFTER_FAILURE_MS) return null
+  if (!_usageInFlight) {
+    _usageInFlight = fetchApifyUsage().finally(() => { _usageInFlight = null })
+  }
+  return _usageInFlight
+}
+
+/** One real read of GET /users/me/limits. Never throws: null (and the failure backoff) on any problem. */
+async function fetchApifyUsage(): Promise<ApifyUsage | null> {
   try {
     const token = await getTokenWithDbFallback()
-    if (!token) return null
-    const res = await fetch(`https://api.apify.com/v2/users/me/limits?token=${token}`)
-    if (!res.ok) return null
-    const json = await res.json() as { data?: { current?: { monthlyUsageUsd?: number }; limits?: { maxMonthlyUsageUsd?: number } } }
+    if (!token) { _usageFailedAt = Date.now(); return null }
+    const res = await fetch(`https://api.apify.com/v2/users/me/limits?token=${token}`, {
+      signal: AbortSignal.timeout(USAGE_FETCH_TIMEOUT_MS),
+    })
+    if (!res.ok) { _usageFailedAt = Date.now(); return null }
+    const json = await res.json() as {
+      data?: {
+        current?: { monthlyUsageUsd?: number }
+        limits?: { maxMonthlyUsageUsd?: number }
+        monthlyUsageCycle?: { endAt?: string }
+      }
+    }
     const usd = json.data?.current?.monthlyUsageUsd
     const limit = json.data?.limits?.maxMonthlyUsageUsd
-    if (typeof usd !== 'number' || typeof limit !== 'number') return null
-    _usageCache = { at: Date.now(), usd, limit }
-    return { usd, limit }
+    if (typeof usd !== 'number' || typeof limit !== 'number') { _usageFailedAt = Date.now(); return null }
+    const endAt = json.data?.monthlyUsageCycle?.endAt
+    const cycleEndsAt = typeof endAt === 'string' && !Number.isNaN(Date.parse(endAt)) ? endAt : null
+    _usageCache = { at: Date.now(), usd, limit, cycleEndsAt }
+    _usageFailedAt = 0
+    return { usd, limit, cycleEndsAt }
   } catch {
+    _usageFailedAt = Date.now()
     return null
   }
 }
-export async function isApifyOverSoftLimit(): Promise<{ over: boolean; usd: number | null; softLimit: number }> {
+
+const APIFY_BUDGET_UNKNOWN: ApifyBudget = {
+  usd: null, limit: null, cycleEndsAt: null, softLimit: null, coreLimit: null,
+  optionalBlocked: false, coreBlocked: false, usedPct: null,
+}
+
+/** The two budget gates, computed from live usage. Unknown usage (or a plan limit ≤ 0) blocks nothing. */
+export async function getApifyBudget(): Promise<ApifyBudget> {
   const u = await getApifyUsage()
-  const softLimit = Math.min(APIFY_SOFT_LIMIT_USD, u?.limit ?? APIFY_SOFT_LIMIT_USD)
-  return { over: u !== null && u.usd >= softLimit, usd: u?.usd ?? null, softLimit }
+  if (!u || !(u.limit > 0)) return APIFY_BUDGET_UNKNOWN
+  const softLimit = Math.min(APIFY_SOFT_LIMIT_USD ?? u.limit * APIFY_SOFT_LIMIT_RATIO, u.limit)
+  const coreLimit = u.limit * APIFY_CORE_RESERVE_RATIO
+  return {
+    usd: u.usd,
+    limit: u.limit,
+    cycleEndsAt: u.cycleEndsAt,
+    softLimit,
+    coreLimit,
+    optionalBlocked: u.usd >= softLimit,
+    coreBlocked: u.usd >= coreLimit,
+    usedPct: Math.round((u.usd / u.limit) * 100),
+  }
+}
+
+/** OPTIONAL gate (Discover paid search). Compatibility wrapper over getApifyBudget(). */
+export async function isApifyOverSoftLimit(): Promise<{ over: boolean; usd: number | null; softLimit: number | null; cycleEndsAt: string | null }> {
+  const b = await getApifyBudget()
+  return { over: b.optionalBlocked, usd: b.usd, softLimit: b.softLimit, cycleEndsAt: b.cycleEndsAt }
+}
+
+/** CORE gate (crons stories + track): blocked only at ≥ 95 % of the plan. */
+export async function isApifyOverCoreReserve(): Promise<{ over: boolean; usd: number | null; coreLimit: number | null; cycleEndsAt: string | null; usedPct: number | null }> {
+  const b = await getApifyBudget()
+  return { over: b.coreBlocked, usd: b.usd, coreLimit: b.coreLimit, cycleEndsAt: b.cycleEndsAt, usedPct: b.usedPct }
 }
 
 export function getApifyResumeDate(): string | null {

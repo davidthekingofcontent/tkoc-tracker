@@ -4,22 +4,28 @@ import { getSession } from '@/lib/auth'
 import { scrapeSinglePost, isApifyExhausted, isApifyConfiguredAsync } from '@/lib/apify'
 import type { ScrapedSinglePost } from '@/lib/apify'
 import { isWithinCampaignDates } from '@/lib/campaign-capture'
+import { parseInstagramStoryUrl } from '@/lib/story-url'
 import type { MediaType, Platform } from '@/generated/prisma/client'
 
 // POST /api/campaigns/[id]/media/manual
-// Add ONE post / reel / video to a campaign by pasting its public URL.
+// Add ONE post / reel / video / story to a campaign by pasting its public URL.
 // Manual additions are exempt from the brand-keyword rule ONLY (the PM asserts
 // relevance): the content MUST belong to a creator who is already a member of
 // the campaign AND must be dated inside the campaign window. Enriched through
 // Apify when available; otherwise the metrics come from the body (or stay at
 // 0) and the publication date MUST come from the body (`postedAt`) — an
 // undated row can't be proven inside the window and is rejected.
+//
+// Instagram STORIES (instagram.com/stories/{user}/{id}/) are never sent to
+// Apify: they expire after 24 h and the single-post scraper does not read
+// story URLs. Their publication date is decoded from the id (snowflake) and
+// views/reach come only from the body — the creator is the only source.
 
 type UrlPlatform = 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
 
 interface ParsedPostUrl {
   platform: UrlPlatform
-  /** URL-derived id: IG shortcode, TikTok video id, YouTube video id */
+  /** URL-derived id: IG shortcode, TikTok video id, YouTube video id, IG story id */
   externalId: string
   mediaType: MediaType
   /** Clean permalink (no query string / hash) */
@@ -28,6 +34,10 @@ interface ParsedPostUrl {
   permalinkNeedle: string
   /** Username embedded in the URL, when the platform includes it */
   ownerHint: string | null
+  /** Instagram story: no Apify, date from the snowflake, metrics from the PM */
+  isStory?: boolean
+  /** Publication time decoded from the story id; null when it can't be trusted */
+  postedAtHint?: Date | null
 }
 
 function parsePostUrl(input: string): ParsedPostUrl | null {
@@ -161,16 +171,40 @@ export async function POST(
       return NextResponse.json({ error: 'Indica la URL del contenido' }, { status: 400 })
     }
 
-    const parsed = parsePostUrl(rawUrl)
-    if (!parsed) {
+    // Instagram story first: /stories/{user}/{id}/ (never scraped, dated from the id)
+    const story = parseInstagramStoryUrl(rawUrl)
+    if (story?.isHighlight) {
       return NextResponse.json(
         {
           error:
-            'URL no reconocida. Usa el enlace de un post o reel de Instagram (instagram.com/p/… o /reel/…), un vídeo de TikTok (tiktok.com/@usuario/video/…) o un vídeo de YouTube (watch?v=… o /shorts/…). Los enlaces acortados no valen.',
+            'Los destacados (highlights) no son stories con fecha: registra la story original o usa "Registrar Story" con la fecha.',
         },
         { status: 400 }
       )
     }
+
+    const parsed: ParsedPostUrl | null = story
+      ? {
+          platform: 'INSTAGRAM',
+          externalId: story.storyId,
+          mediaType: 'STORY',
+          canonicalUrl: story.canonicalUrl,
+          permalinkNeedle: `/${story.storyId}`,
+          ownerHint: story.username || null,
+          isStory: true,
+          postedAtHint: story.postedAtHint,
+        }
+      : parsePostUrl(rawUrl)
+    if (!parsed) {
+      return NextResponse.json(
+        {
+          error:
+            'URL no reconocida. Usa el enlace de un post o reel de Instagram (instagram.com/p/… o /reel/…), una story de Instagram (instagram.com/stories/usuario/…), un vídeo de TikTok (tiktok.com/@usuario/video/…) o un vídeo de YouTube (watch?v=… o /shorts/…). Los enlaces acortados no valen.',
+        },
+        { status: 400 }
+      )
+    }
+    const isStory = parsed.isStory === true
 
     const influencerIdInput = typeof body.influencerId === 'string' && body.influencerId.trim()
       ? body.influencerId.trim()
@@ -179,9 +213,11 @@ export async function POST(
     const manualLikes = optionalCount(body.likes)
     const manualComments = optionalCount(body.comments)
     const manualViews = optionalCount(body.views)
-    if (manualLikes === null || manualComments === null || manualViews === null) {
+    // Reach is only meaningful for a story (the creator's insights); ignored otherwise
+    const manualReach = isStory ? optionalCount(body.reach) : undefined
+    if (manualLikes === null || manualComments === null || manualViews === null || manualReach === null) {
       return NextResponse.json(
-        { error: 'likes, comments y views deben ser números enteros positivos' },
+        { error: 'likes, comments, views y reach deben ser números enteros positivos' },
         { status: 400 }
       )
     }
@@ -222,8 +258,10 @@ export async function POST(
     const members = campaign.influencers.map((ci) => ci.influencer)
 
     // ===== Enrich via Apify when available (never blocks the add) =====
+    // Never for a story: it has expired or will within 24 h, and the single-post
+    // scraper does not read story URLs — a paid call that can only fail.
     let scraped: ScrapedSinglePost | null = null
-    if (!isApifyExhausted() && (await isApifyConfiguredAsync())) {
+    if (!isStory && !isApifyExhausted() && (await isApifyConfiguredAsync())) {
       scraped = await scrapeSinglePost(parsed.canonicalUrl)
     }
     const enriched = scraped !== null
@@ -319,13 +357,16 @@ export async function POST(
     }
 
     // ===== Build the row =====
-    const likes = pickMetric(scraped?.likes, manualLikes, existing?.likes)
-    const comments = pickMetric(scraped?.comments, manualComments, existing?.comments)
+    // A story has no likes/comments (only views and reach, typed by the PM)
+    const likes = isStory ? (existing?.likes ?? 0) : pickMetric(scraped?.likes, manualLikes, existing?.likes)
+    const comments = isStory ? (existing?.comments ?? 0) : pickMetric(scraped?.comments, manualComments, existing?.comments)
     const views = pickMetric(scraped?.views, manualViews, existing?.views)
+    const reach: number | undefined = isStory && manualReach !== undefined ? manualReach : undefined
 
+    // The PM's date wins; a story falls back to the time encoded in its id
     const postedAt: Date | null = scraped?.postedAt
       ? new Date(scraped.postedAt)
-      : (manualPostedAt ?? existing?.postedAt ?? null)
+      : (manualPostedAt ?? parsed.postedAtHint ?? existing?.postedAt ?? null)
 
     // ===== Rule (2): dated AND inside the campaign window =====
     // Manual additions skip the brand-keyword rule only; an undated row can't
@@ -333,9 +374,11 @@ export async function POST(
     if (!postedAt || Number.isNaN(postedAt.getTime())) {
       return NextResponse.json(
         {
-          error: enriched
-            ? 'No se pudo determinar la fecha de publicación del contenido. Indica postedAt (fecha de publicación) para añadirlo.'
-            : 'Apify no está disponible para leer la fecha de publicación. Indica postedAt (fecha de publicación) para añadir el contenido.',
+          error: isStory
+            ? 'No se pudo leer la fecha de la story del enlace: indica la fecha de publicación (o regístrala en Stories → "Registrar Story" con la fecha).'
+            : enriched
+              ? 'No se pudo determinar la fecha de publicación del contenido. Indica postedAt (fecha de publicación) para añadirlo.'
+              : 'Apify no está disponible para leer la fecha de publicación. Indica postedAt (fecha de publicación) para añadir el contenido.',
           needsPostedAt: true,
         },
         { status: 400 }
@@ -367,6 +410,7 @@ export async function POST(
           likes,
           comments,
           views,
+          ...(reach !== undefined && { reach }),
           postedAt,
           permalink: existing.permalink || parsed.canonicalUrl,
           ...(scraped?.caption && { caption: scraped.caption }),
@@ -393,6 +437,7 @@ export async function POST(
             likes,
             comments,
             views,
+            ...(reach !== undefined && { reach }),
             hashtags: scraped?.hashtags ?? [],
             mentions: scraped?.mentions ?? [],
             postedAt,
@@ -416,7 +461,7 @@ export async function POST(
     }
 
     return NextResponse.json(
-      { media, enriched, created: !existing },
+      { media, enriched, created: !existing, isStory },
       { status: existing ? 200 : 201 }
     )
   } catch (error) {

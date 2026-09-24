@@ -47,6 +47,7 @@ import { calculateCreatorScore } from '@/lib/creator-score'
 import { evaluateFeeClient } from '@/lib/market-benchmark-client'
 import { DEFAULT_BENCHMARKS, mergeBenchmarkConfig, normalizeFormat, normalizePlatform, formatsFor, type BenchmarkConfig, type DealTerms, type FeeFormat } from '@/lib/benchmarks'
 import { avatarSrcOf, mediaThumbUrl, proxyImg } from '@/lib/proxy-image'
+import { parseInstagramStoryUrl } from '@/lib/story-url'
 import { useRole } from '@/hooks/use-role'
 import {
   ArrowLeft,
@@ -830,8 +831,24 @@ export default function CampaignDetailPage() {
 
   // Manual media (post by URL) state
   const [showManualMedia, setShowManualMedia] = useState(false)
-  const [manualMediaForm, setManualMediaForm] = useState({ url: '', influencerId: '', likes: '', comments: '', views: '' })
+  const [manualMediaForm, setManualMediaForm] = useState({ url: '', influencerId: '', likes: '', comments: '', views: '', reach: '', postedAt: '' })
   const [isAddingManualMedia, setIsAddingManualMedia] = useState(false)
+  // The API answered `needsPostedAt` (story id that does not decode, or Apify down for a post): show the date field
+  const [manualMediaNeedsDate, setManualMediaNeedsDate] = useState(false)
+  // An Instagram story pasted in the URL form: no likes/comments (reach instead), date read from the link when it decodes
+  const manualUrlStory = useMemo(() => parseInstagramStoryUrl(manualMediaForm.url), [manualMediaForm.url])
+  const manualUrlIsStory = manualUrlStory !== null && !manualUrlStory.isHighlight
+  const showManualPostedAt = manualMediaNeedsDate || (manualUrlIsStory && !manualUrlStory?.postedAtHint)
+  const manualCountFields: Array<{ key: 'likes' | 'comments' | 'views' | 'reach'; label: string }> = manualUrlIsStory
+    ? [
+        { key: 'views', label: locale === 'es' ? 'Vistas' : 'Views' },
+        { key: 'reach', label: locale === 'es' ? 'Alcance' : 'Reach' },
+      ]
+    : [
+        { key: 'likes', label: 'Likes' },
+        { key: 'comments', label: locale === 'es' ? 'Comentarios' : 'Comments' },
+        { key: 'views', label: locale === 'es' ? 'Vistas' : 'Views' },
+      ]
   const [manualMediaResult, setManualMediaResult] = useState<{
     type: 'success' | 'error'
     message: string
@@ -1123,9 +1140,23 @@ export default function CampaignDetailPage() {
     try {
       const body: Record<string, unknown> = { url }
       if (manualMediaForm.influencerId) body.influencerId = manualMediaForm.influencerId
-      if (manualMediaForm.likes.trim() !== '') body.likes = Number(manualMediaForm.likes)
-      if (manualMediaForm.comments.trim() !== '') body.comments = Number(manualMediaForm.comments)
+      if (manualUrlIsStory) {
+        // A story has no likes/comments; its reach comes from the creator's insights
+        if (manualMediaForm.reach.trim() !== '') body.reach = Number(manualMediaForm.reach)
+      } else {
+        if (manualMediaForm.likes.trim() !== '') body.likes = Number(manualMediaForm.likes)
+        if (manualMediaForm.comments.trim() !== '') body.comments = Number(manualMediaForm.comments)
+      }
       if (manualMediaForm.views.trim() !== '') body.views = Number(manualMediaForm.views)
+      // datetime-local → ISO (the PM's local time); only sent when filled in
+      if (manualMediaForm.postedAt) {
+        const d = new Date(manualMediaForm.postedAt)
+        if (Number.isNaN(d.getTime())) {
+          setManualMediaResult({ type: 'error', message: locale === 'es' ? 'La fecha de publicación no es válida' : 'The publication date is not valid' })
+          return
+        }
+        body.postedAt = d.toISOString()
+      }
 
       const res = await fetch(`/api/campaigns/${campaignId}/media/manual`, {
         method: 'POST',
@@ -1141,6 +1172,8 @@ export default function CampaignDetailPage() {
           const match = (campaign?.influencers || []).find(ci => ci.influencer?.username?.toLowerCase() === owner)
           if (match) setManualMediaForm(f => ({ ...f, influencerId: match.influencer.id }))
         }
+        // The API could not date the content: reveal the date field so the PM can comply
+        if (data.needsPostedAt === true) setManualMediaNeedsDate(true)
         setManualMediaResult({
           type: 'error',
           message: data.error || (locale === 'es' ? 'No se pudo añadir la publicación' : 'Could not add the post'),
@@ -1150,11 +1183,15 @@ export default function CampaignDetailPage() {
 
       setManualMediaResult({
         type: 'success',
-        message: data.enriched
-          ? (locale === 'es' ? 'Publicación añadida con métricas obtenidas de la plataforma' : 'Post added with metrics pulled from the platform')
-          : (locale === 'es' ? 'Publicación añadida. No se pudo enriquecer automáticamente: se guardan las métricas indicadas' : 'Post added. Could not enrich automatically: the metrics you entered were saved'),
+        // A story is never enriched: its date comes from the link and its views only from the creator
+        message: data.isStory
+          ? t.campaignDetail.manualStoryAdded
+          : data.enriched
+            ? (locale === 'es' ? 'Publicación añadida con métricas obtenidas de la plataforma' : 'Post added with metrics pulled from the platform')
+            : (locale === 'es' ? 'Publicación añadida. No se pudo enriquecer automáticamente: se guardan las métricas indicadas' : 'Post added. Could not enrich automatically: the metrics you entered were saved'),
       })
-      setManualMediaForm({ url: '', influencerId: '', likes: '', comments: '', views: '' })
+      setManualMediaForm({ url: '', influencerId: '', likes: '', comments: '', views: '', reach: '', postedAt: '' })
+      setManualMediaNeedsDate(false)
       await fetchCampaign()
     } catch {
       setManualMediaResult({ type: 'error', message: locale === 'es' ? 'Error de red' : 'Network error' })
@@ -4354,9 +4391,9 @@ export default function CampaignDetailPage() {
                       <input
                         type="url"
                         value={manualMediaForm.url}
-                        onChange={(e) => setManualMediaForm(f => ({ ...f, url: e.target.value }))}
+                        onChange={(e) => { setManualMediaForm(f => ({ ...f, url: e.target.value })); setManualMediaNeedsDate(false) }}
                         onKeyDown={(e) => e.key === 'Enter' && handleAddManualMedia()}
-                        placeholder="https://www.instagram.com/reel/…  ·  tiktok.com/@usuario/video/…  ·  youtube.com/watch?v=…"
+                        placeholder="https://www.instagram.com/reel/…  ·  instagram.com/stories/usuario/…  ·  tiktok.com/@usuario/video/…  ·  youtube.com/watch?v=…"
                         className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                       />
                     </div>
@@ -4378,11 +4415,7 @@ export default function CampaignDetailPage() {
                       </select>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
-                      {([
-                        { key: 'likes', label: 'Likes' },
-                        { key: 'comments', label: locale === 'es' ? 'Comentarios' : 'Comments' },
-                        { key: 'views', label: locale === 'es' ? 'Vistas' : 'Views' },
-                      ] as const).map(field => (
+                      {manualCountFields.map(field => (
                         <div key={field.key}>
                           <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">{field.label}</label>
                           <input
@@ -4397,18 +4430,34 @@ export default function CampaignDetailPage() {
                         </div>
                       ))}
                     </div>
+                    {showManualPostedAt && (
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                          {t.campaignDetail.manualPostedAtLabel} *
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={manualMediaForm.postedAt}
+                          onChange={(e) => setManualMediaForm(f => ({ ...f, postedAt: e.target.value }))}
+                          className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 md:max-w-xs"
+                        />
+                        <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">{t.campaignDetail.manualPostedAtHelp}</p>
+                      </div>
+                    )}
                   </div>
                   <p className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
-                    {locale === 'es'
-                      ? 'El creador debe ser miembro de la campaña. Si Apify está disponible las métricas se rellenan solas; si no, se guardan las que indiques (opcionales).'
-                      : 'The creator must be a campaign member. When Apify is available the metrics fill in automatically; otherwise the ones you enter (optional) are saved.'}
+                    {manualUrlIsStory
+                      ? t.campaignDetail.manualStoryFieldsHint
+                      : locale === 'es'
+                        ? 'El creador debe ser miembro de la campaña. Si Apify está disponible las métricas se rellenan solas; si no, se guardan las que indiques (opcionales).'
+                        : 'The creator must be a campaign member. When Apify is available the metrics fill in automatically; otherwise the ones you enter (optional) are saved.'}
                   </p>
                   <div className="mt-3 flex items-center gap-2">
                     <Button
                       variant="primary"
                       size="sm"
                       onClick={handleAddManualMedia}
-                      disabled={isAddingManualMedia || !manualMediaForm.url.trim()}
+                      disabled={isAddingManualMedia || !manualMediaForm.url.trim() || (showManualPostedAt && !manualMediaForm.postedAt)}
                     >
                       {isAddingManualMedia ? (
                         <>

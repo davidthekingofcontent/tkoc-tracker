@@ -5,7 +5,7 @@ import { Platform, Prisma } from '@/generated/prisma/client'
 import {
   isApifyConfigured,
   isApifyExhausted,
-  isApifyOverSoftLimit,
+  getApifyBudget,
   getApifyResumeDate,
   scrapeProfile,
   scrapeHashtag,
@@ -27,6 +27,7 @@ import {
   type CategoryMatch,
 } from '@/lib/discover-cache'
 import { afterInfluencerUpsert, scrapedProfileHasData, scrapedProfileUpdate } from '@/lib/influencer-upsert'
+import { notifyApifyBudgetPauseOnce } from '@/lib/notifications'
 
 // POST /api/influencers/discover
 //
@@ -630,7 +631,7 @@ export async function POST(request: NextRequest) {
 
     // ---------- MODE 2: category — DB first, cache second, Apify only on request ----------
     if (!cleanQuery) {
-      return NextResponse.json({ results: [], total: 0, source: 'database', mode: 'category', apifyAvailable: false, estimatedApifyCostUsd: 0 })
+      return NextResponse.json({ results: [], total: 0, source: 'database', mode: 'category', apifyAvailable: false })
     }
 
     const match = resolveCategoryQuery(cleanQuery)
@@ -656,7 +657,7 @@ export async function POST(request: NextRequest) {
       hashtag: match.hashtag,
       apifyLimit: hashtagLimit,
       enrichLimit,
-      estimatedApifyCostUsd,
+      // No amounts leave the server (estimatedApifyCostUsd stays in the log only).
       dbCount: dbResults.length,
     }
 
@@ -681,14 +682,20 @@ export async function POST(request: NextRequest) {
 
     // Can a paid search be offered / executed right now?
     let apifyUnavailableReason: 'not_configured' | 'exhausted' | 'soft_limit' | 'no_hashtag' | null = null
-    let softLimit: { usd: number | null; softLimit: number } | null = null
+    /** What the browser may know about the budget: a percentage and the reset date — never amounts. */
+    let apifyUsage: { usedPct: number | null; cycleEndsAt: string | null } | null = null
     if (!match.hashtag) apifyUnavailableReason = 'no_hashtag'
     else if (!isApifyConfigured()) apifyUnavailableReason = 'not_configured'
     else if (isApifyExhausted()) apifyUnavailableReason = 'exhausted'
     else {
-      const s = await isApifyOverSoftLimit()
-      softLimit = { usd: s.usd, softLimit: s.softLimit }
-      if (s.over) apifyUnavailableReason = 'soft_limit'
+      // OPTIONAL spend: paused at the soft limit (env override or 85 % of the plan)
+      const b = await getApifyBudget()
+      apifyUsage = { usedPct: b.usedPct, cycleEndsAt: b.cycleEndsAt }
+      if (b.optionalBlocked) {
+        apifyUnavailableReason = 'soft_limit'
+        // A visible pause: ADMIN alert at most once per UTC day (fire-and-forget)
+        void notifyApifyBudgetPauseOnce('discover', apifyUsage).catch(() => {})
+      }
     }
 
     if (confirmPaid !== true) {
@@ -702,7 +709,7 @@ export async function POST(request: NextRequest) {
         cacheFetchedAt: null,
         apifyAvailable: apifyUnavailableReason === null,
         apifyUnavailableReason,
-        apifyUsage: softLimit,
+        apifyUsage,
       })
     }
 
@@ -711,7 +718,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'apify_exhausted', resumesAt: getApifyResumeDate() }, { status: 503 })
     }
     if (apifyUnavailableReason === 'soft_limit') {
-      return NextResponse.json({ error: 'apify_soft_limit', usd: softLimit?.usd ?? null, softLimit: softLimit?.softLimit ?? null }, { status: 402 })
+      return NextResponse.json({ error: 'apify_soft_limit', cycleEndsAt: apifyUsage?.cycleEndsAt ?? null }, { status: 402 })
     }
     if (apifyUnavailableReason !== null) {
       return NextResponse.json({ error: apifyUnavailableReason }, { status: 503 })
@@ -756,7 +763,7 @@ export async function POST(request: NextRequest) {
       apifyUnavailableReason: run.cacheWritten ? 'cached' : null,
       // The run was paid but could not be stored: repeating it will cost again.
       cacheWriteFailed: !run.cacheWritten,
-      apifyUsage: softLimit,
+      apifyUsage,
     })
   } catch (error) {
     console.error('Discover influencers error:', error)

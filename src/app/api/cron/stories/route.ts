@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { isApifyConfiguredAsync, isApifyExhausted, isApifyOverSoftLimit, scrapeStories, STORIES_BATCH_MAX } from '@/lib/apify'
+import { isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve, scrapeStories, STORIES_BATCH_MAX } from '@/lib/apify'
 import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 
 /** Stories live 24 h: two scans a day catch every one of them (CRON_STORIES_MIN_HOURS overrides). */
@@ -12,7 +12,7 @@ const STORIES_DEFAULT_MIN_HOURS = Number(process.env.STORIES_MIN_INTERVAL_HOURS 
  * were the bulk of the stories bill.
  */
 const STORIES_MAX_CAMPAIGN_DAYS = Number(process.env.STORIES_MAX_CAMPAIGN_DAYS || 62)
-import { notifyCampaignTeam } from '@/lib/notifications'
+import { notifyCampaignTeam, notifyApifyBudgetPauseOnce } from '@/lib/notifications'
 import {
   mediaMatchesCampaignRules,
   campaignHasTargets,
@@ -59,11 +59,14 @@ export async function GET(request: NextRequest) {
       console.log(`[Cron/Stories] Skipped: last scan ${gate.lastRunAt}, next allowed ${gate.nextAllowedAt} (every ${gate.minHours} h)`)
       return NextResponse.json(cronSkipped('stories', gate, { storiesFound: 0 }))
     }
-    // Soft monthly budget: stories are the most expensive scrape (0,099 $ per run start); stop them first
-    const budget = await isApifyOverSoftLimit()
+    // CORE budget reserve: stories are core capture and run until 95 % of the
+    // Apify plan (the old fixed 40 $ soft limit silently stopped them for two
+    // weeks in Sept 2026). A pause is always visible: ADMIN alert once a day.
+    const budget = await isApifyOverCoreReserve()
     if (budget.over && !force) {
-      console.log(`[Cron/Stories] Skipped: Apify usage ${budget.usd} $ ≥ soft limit ${budget.softLimit} $`)
-      return NextResponse.json({ skipped: 'soft_limit', apifyUsageUsd: budget.usd, softLimitUsd: budget.softLimit, storiesFound: 0 })
+      console.log(`[Cron/Stories] Skipped: Apify usage ${budget.usd} $ ≥ core reserve ${budget.coreLimit} $ (${budget.usedPct} % of the plan; cycle ends ${budget.cycleEndsAt ?? 'unknown'})`)
+      await notifyApifyBudgetPauseOnce('stories', { usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt })
+      return NextResponse.json({ skipped: 'apify_budget', cron: 'stories', usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt, storiesFound: 0 })
     }
 
     // All ACTIVE campaigns, whatever their type: the rule is membership + brand

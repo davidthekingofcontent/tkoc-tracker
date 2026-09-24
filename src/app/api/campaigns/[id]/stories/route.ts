@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { isWithinCampaignDates } from '@/lib/campaign-capture'
+import { parseInstagramStoryUrl } from '@/lib/story-url'
+
+function normalizeHandle(s: string): string {
+  return s.toLowerCase().replace(/^@/, '').trim()
+}
 
 export async function GET(
   request: NextRequest,
@@ -146,7 +151,7 @@ export async function POST(
     const ci = await prisma.campaignInfluencer.findFirst({
       where: { campaignId: id, influencerId },
       include: {
-        influencer: { select: { platform: true } },
+        influencer: { select: { platform: true, username: true } },
         campaign: { select: { startDate: true, endDate: true } },
       },
     })
@@ -158,17 +163,40 @@ export async function POST(
       )
     }
 
-    // Rule (2): dated inside the campaign window. A hand-added story defaults
-    // to "now"; once the campaign has ended that default falls outside the
-    // window, so the PM must supply the real publication date.
+    // An Instagram story link (instagram.com/stories/{user}/{id}/) names its
+    // owner and encodes its publication time in the id: use both. The link is
+    // optional, so anything that is not a story URL is stored as pasted.
+    const rawPermalink = typeof permalink === 'string' ? permalink.trim() : ''
+    const parsedStory = rawPermalink ? parseInstagramStoryUrl(rawPermalink) : null
+    if (parsedStory && !parsedStory.isHighlight && parsedStory.username) {
+      const linkOwner = normalizeHandle(parsedStory.username)
+      const member = normalizeHandle(ci.influencer.username)
+      if (linkOwner !== member) {
+        return NextResponse.json(
+          { error: `El enlace es de @${linkOwner}, no de @${member}.`, ownerUsername: linkOwner },
+          { status: 400 }
+        )
+      }
+    }
+
+    // Rule (2): dated inside the campaign window. The PM's date wins; a story
+    // link supplies the date encoded in its id; otherwise a hand-added story
+    // defaults to "now". Once the campaign has ended that default falls
+    // outside the window, so the PM must supply the real publication date.
     let resolvedPostedAt: Date
+    let dateSource: 'body' | 'link' | 'now'
     if (postedAt !== undefined && postedAt !== null && postedAt !== '') {
       resolvedPostedAt = new Date(String(postedAt))
       if (Number.isNaN(resolvedPostedAt.getTime())) {
         return NextResponse.json({ error: 'postedAt no es una fecha válida' }, { status: 400 })
       }
+      dateSource = 'body'
+    } else if (parsedStory?.postedAtHint) {
+      resolvedPostedAt = parsedStory.postedAtHint
+      dateSource = 'link'
     } else {
       resolvedPostedAt = new Date()
+      dateSource = 'now'
     }
 
     if (!isWithinCampaignDates(ci.campaign, resolvedPostedAt)) {
@@ -176,40 +204,107 @@ export async function POST(
       const window = `${fmt(ci.campaign.startDate)} – ${ci.campaign.endDate ? fmt(ci.campaign.endDate) : 'sin fecha de fin'}`
       return NextResponse.json(
         {
-          error: postedAt
-            ? `La story se publicó el ${fmt(resolvedPostedAt)}, fuera del periodo de la campaña (${window}).`
-            : `La campaña ya terminó (${window}): indica la fecha de publicación de la story (postedAt).`,
-          needsPostedAt: !postedAt,
+          error: dateSource === 'now'
+            ? `La campaña ya terminó (${window}): indica la fecha de publicación de la story.`
+            : `La story se publicó el ${fmt(resolvedPostedAt)}${dateSource === 'link' ? ' (según el enlace)' : ''}, fuera del periodo de la campaña (${window}).`,
+          needsPostedAt: dateSource === 'now',
+          postedAt: resolvedPostedAt.toISOString(),
         },
         { status: 400 }
       )
     }
 
+    // Counts typed by the PM (empty/absent → 0). A story has no likes; the
+    // "replies" field lands in `comments`.
+    const count = (v: unknown) => Math.max(0, Math.round(Number(v) || 0))
+    const nViews = count(views)
+    const nReach = count(reach)
+    const nImpressions = count(impressions)
+    const nReplies = count(replies)
+
+    const linkStory = parsedStory && !parsedStory.isHighlight ? parsedStory : null
+    const storyId = linkStory?.storyId ?? null
+    const canonicalPermalink = linkStory ? linkStory.canonicalUrl : (rawPermalink || null)
+
+    // Dedupe by story id INSIDE this campaign: the same link may already be a
+    // row from the cron (externalId = id) or from Media → "Añadir publicación
+    // por URL" (externalId = id, permalink = canonical URL). Media is unique
+    // per (externalId, platform, campaignId), so a second create would fail:
+    // update the metrics of the existing row instead of duplicating it.
+    const existing = storyId
+      ? await prisma.media.findFirst({
+          where: {
+            campaignId: id,
+            platform: ci.influencer.platform,
+            mediaType: 'STORY',
+            OR: [{ externalId: storyId }, { permalink: { contains: `/${storyId}` } }],
+          },
+          orderBy: { createdAt: 'asc' },
+        })
+      : null
+
+    if (existing) {
+      if (existing.influencerId !== influencerId) {
+        return NextResponse.json(
+          { error: 'Esta story ya está registrada para otro creador.' },
+          { status: 409 }
+        )
+      }
+      // A typed count > 0 wins; an empty field never wipes what we already had.
+      // The date is only replaced when the PM typed it or the link encodes it.
+      const story = await prisma.media.update({
+        where: { id: existing.id },
+        data: {
+          views: nViews > 0 ? nViews : existing.views,
+          reach: nReach > 0 ? nReach : existing.reach,
+          impressions: nImpressions > 0 ? nImpressions : existing.impressions,
+          comments: nReplies > 0 ? nReplies : existing.comments,
+          ...(dateSource !== 'now' && { postedAt: resolvedPostedAt }),
+          ...(!existing.externalId && { externalId: storyId }),
+          ...(!existing.permalink && { permalink: canonicalPermalink }),
+          // Mark as manual so revalidation keeps it, but never downgrade a Meta
+          // Graph API row (real reach/impressions) to 'manual'.
+          ...(existing.source !== 'meta_api' && { source: 'manual' }),
+        },
+      })
+      return NextResponse.json({ story, updated: true }, { status: 200 })
+    }
+
     // Manual additions are exempt from the brand-keyword rule only (the PM
     // asserts relevance); `source: 'manual'` is what keeps revalidation from
     // detaching a hand-added story that carries no mentions/hashtags.
-    const story = await prisma.media.create({
-      data: {
-        platform: ci.influencer.platform,
-        mediaType: 'STORY',
-        permalink: permalink || null,
-        mediaUrl: mediaUrl || null,
-        thumbnailUrl: thumbnailUrl || null,
-        views: views || 0,
-        reach: reach || 0,
-        impressions: impressions || 0,
-        comments: replies || 0,
-        postedAt: resolvedPostedAt,
-        mentions: mentions || [],
-        hashtags: hashtags || [],
-        source: 'manual',
-        dataSource: 'manual',
-        influencerId,
-        campaignId: id,
-      },
-    })
+    let story
+    try {
+      story = await prisma.media.create({
+        data: {
+          externalId: storyId,
+          platform: ci.influencer.platform,
+          mediaType: 'STORY',
+          permalink: canonicalPermalink,
+          mediaUrl: mediaUrl || null,
+          thumbnailUrl: thumbnailUrl || null,
+          views: nViews,
+          reach: nReach,
+          impressions: nImpressions,
+          comments: nReplies,
+          postedAt: resolvedPostedAt,
+          mentions: mentions || [],
+          hashtags: hashtags || [],
+          source: 'manual',
+          dataSource: 'manual',
+          influencerId,
+          campaignId: id,
+        },
+      })
+    } catch (err) {
+      // Concurrent "Registrar Story" for the same link → unique (externalId, platform, campaignId)
+      if ((err as { code?: string })?.code === 'P2002') {
+        return NextResponse.json({ error: 'Esta story ya está registrada.' }, { status: 409 })
+      }
+      throw err
+    }
 
-    return NextResponse.json({ story }, { status: 201 })
+    return NextResponse.json({ story, updated: false }, { status: 201 })
   } catch (error) {
     console.error('Add story error:', error)
     return NextResponse.json(

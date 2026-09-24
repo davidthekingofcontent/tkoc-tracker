@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
-import { scrapeHashtag, scrapeAccountMentions, isApifyConfigured, isApifyOverSoftLimit, detectCountry } from '@/lib/apify'
+import { scrapeHashtag, scrapeAccountMentions, isApifyConfigured, isApifyOverCoreReserve, detectCountry } from '@/lib/apify'
 import { searchVideos as ytSearchVideos, isYouTubeApiConfigured } from '@/lib/youtube-api'
 import {
   mediaMatchesCampaignRules,
@@ -11,7 +11,7 @@ import {
 } from '@/lib/campaign-capture'
 import type { Platform } from '@/generated/prisma/client'
 import { afterInfluencerUpsert } from '@/lib/influencer-upsert'
-import { campaignTeamUserIds } from '@/lib/notifications'
+import { campaignTeamUserIds, notifyApifyBudgetPauseOnce } from '@/lib/notifications'
 
 /**
  * creator_discovered → every member of the campaign team (creator + assigned
@@ -471,11 +471,13 @@ export async function GET(request: NextRequest) {
     const gate = await cronGate('track', 24, force)
     if (!gate.allowed) return NextResponse.json(cronSkipped('track', gate))
 
-    // Soft monthly budget (same rule as /api/cron/stories): above it, no discretionary scrapes
-    const budget = await isApifyOverSoftLimit()
+    // CORE budget reserve (same rule as /api/cron/stories): post capture runs
+    // until 95 % of the Apify plan; a pause is always visible (ADMIN alert once a day).
+    const budget = await isApifyOverCoreReserve()
     if (budget.over && !force) {
-      console.log(`[Cron/Track] Skipped: Apify usage ${budget.usd} $ ≥ soft limit ${budget.softLimit} $`)
-      return NextResponse.json({ skipped: 'soft_limit', cron: 'track', apifyUsageUsd: budget.usd, softLimitUsd: budget.softLimit })
+      console.log(`[Cron/Track] Skipped: Apify usage ${budget.usd} $ ≥ core reserve ${budget.coreLimit} $ (${budget.usedPct} % of the plan; cycle ends ${budget.cycleEndsAt ?? 'unknown'})`)
+      await notifyApifyBudgetPauseOnce('track', { usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt })
+      return NextResponse.json({ skipped: 'apify_budget', cron: 'track', usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt })
     }
 
     // The 24 h stamp is written AFTER the work (see finally): stamping first
