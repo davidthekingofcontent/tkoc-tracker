@@ -304,6 +304,7 @@ export const MANUAL_SECTIONS: ManualSection[] = [
           'Las stories solo se escanean de creadoras en Acordado o superior; en Prospecto, Contacto o Negociando no. Cambia el estado en Elegir.',
           'La campaña debe estar activa, dentro de fechas y durar 62 días o menos; las campañas largas no escanean stories.',
           'El escaneo es cada 12 h y la story caduca a las 24 h: si se publicó entre ciclos, regístrala a mano en Ejecutar → Stories → "Registrar Story".',
+          'Si el rastreo de stories deja de ejecutarse por cualquier causa (presupuesto de Apify, fallo), los ADMIN reciben en la campana el aviso "El rastreo de stories no se está ejecutando" al día siguiente como muy tarde: avisa a soporte si lo ves.',
           'Si la pestaña Stories muestra el aviso de pausa por presupuesto de Apify, el rastreo automático está parado porque Apify ha llegado al 95 % del plan mensual: se reanuda solo en la fecha del nuevo ciclo que indica el aviso (los ADMIN reciben "…pausado por presupuesto de Apify" una vez al día). Las stories de ese periodo no se recuperan: regístralas a mano con la captura de la creadora. Con el plan agotado se para también el scraping hasta el siguiente ciclo.',
           'Las menciones con sticker llegan al instante solo si la marca tiene conectado su Instagram (Marcas → "Copiar link de conexión IG") y ha concedido el permiso de mensajes en el diálogo de Meta.',
         ],

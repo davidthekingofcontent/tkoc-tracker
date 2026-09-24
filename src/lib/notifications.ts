@@ -12,6 +12,7 @@ export type NotificationType =
   | 'invitation_sent'
   | 'team_joined'
   | 'apify_budget'
+  | 'cron_stale'
 
 export interface CreateNotificationParams {
   userId: string
@@ -193,6 +194,32 @@ async function claimApifyBudgetAlertDay(key: string, today: string): Promise<boo
   } catch (err) {
     if (isUniqueViolation(err)) return false // the row exists → already stamped today by someone else
     throw err
+  }
+}
+
+/**
+ * ADMIN alert at most ONCE per UTC day for an arbitrary alert key (Setting
+ * `<alertKey>` = YYYY-MM-DD of the last alert), with the same atomic claim /
+ * release semantics as the Apify budget alert. Returns true when a
+ * notification was sent; never throws.
+ */
+export async function notifyAdminsOncePerDay(
+  alertKey: string,
+  params: Omit<CreateNotificationParams, 'userId'>
+): Promise<boolean> {
+  const today = new Date().toISOString().slice(0, 10) // UTC day
+  let claimed = false
+  try {
+    claimed = await claimApifyBudgetAlertDay(alertKey, today)
+    if (!claimed) return false
+    const sent = await notifyAdmins(params)
+    if (sent > 0) return true
+    await prisma.setting.deleteMany({ where: { key: alertKey, value: today } })
+    return false
+  } catch (error) {
+    console.error(`Failed to send daily admin alert ${alertKey}:`, error)
+    if (claimed) await prisma.setting.deleteMany({ where: { key: alertKey, value: today } }).catch(() => {})
+    return false
   }
 }
 
