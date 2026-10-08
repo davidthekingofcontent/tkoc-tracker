@@ -34,6 +34,8 @@ import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { CampaignNotesButton } from '@/components/campaign-notes'
 import { CampaignTeamButton } from '@/components/campaign-team'
 import { InfluencerHistoryButton } from '@/components/influencer-history'
+import { MoveCreatorsModal, type MoveCreatorsResult } from '@/components/move-creators-modal'
+import { GenderSelect } from '@/components/gender-select'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
 import { StoriesTracker } from '@/components/stories-tracker'
 import { CampaignIntelligencePanel } from '@/components/campaign-intelligence-panel'
@@ -109,6 +111,8 @@ import {
   MousePointerClick,
   Sparkles,
   ImagePlus,
+  ArrowRightLeft,
+  HelpCircle,
 } from 'lucide-react'
 import { parseCreatorHandle } from '@/lib/handles'
 
@@ -159,6 +163,9 @@ interface CampaignInfluencer {
     avgComments: number | null
     avgViews: number | null
     standardFee: number | null
+    /** 'F' | 'M' | 'X' | null and 'manual' | 'inferred' | null (src/lib/gender.ts). Never provided by the networks. */
+    gender?: string | null
+    genderSource?: string | null
   }
 }
 
@@ -785,6 +792,13 @@ export default function CampaignDetailPage() {
   const [elegirStatusFilter, setElegirStatusFilter] = useState<string>('all')
   const [elegirSortBy, setElegirSortBy] = useState<SortField | 'none'>('none')
   const [elegirSortDir, setElegirSortDir] = useState<SortDirection>('desc')
+  // Item 8: selection (Influencer.id) for "Mover a otra campaña" + the modal
+  const [selectedForMove, setSelectedForMove] = useState<string[]>([])
+  const [showMoveModal, setShowMoveModal] = useState(false)
+  // Item 9: targets change history, collapsed by default behind a clear button with the count
+  const [showChangeLog, setShowChangeLog] = useState(false)
+  // Item 5: server text when the PUT refuses the hashtags (generic words), shown under the field
+  const [editHashtagsError, setEditHashtagsError] = useState<string | null>(null)
 
   // Add influencer state
   const [addInfluencerUsername, setAddInfluencerUsername] = useState('')
@@ -1047,6 +1061,44 @@ export default function CampaignDetailPage() {
     fetchBriefFiles()
   }, [campaignId])
 
+  // ---- Item 8: selection for "Mover a otra campaña" ----
+  function toggleSelectedForMove(influencerId: string) {
+    setSelectedForMove(prev => (prev.includes(influencerId) ? prev.filter(id => id !== influencerId) : [...prev, influencerId]))
+  }
+
+  /** After the move/copy: refetch, clear the selection and summarise the server report in the toast. */
+  async function handleMoveDone(result: MoveCreatorsResult) {
+    setShowMoveModal(false)
+    setSelectedForMove([])
+    await fetchCampaign()
+    const cd = t.campaignDetail
+    const target = result.target.name
+    // In 'move' mode the rows kept because of captured content are counted in `copied` AND listed in
+    // keptBecauseMedia: show them once, as "conservadas".
+    const copiedPlain = result.mode === 'move' ? Math.max(0, result.copied - result.keptBecauseMedia.length) : result.copied
+    const parts: string[] = []
+    if (result.moved > 0) parts.push(cd.moveResultMoved.replace('{n}', String(result.moved)).replace('{campaign}', target))
+    if (copiedPlain > 0) parts.push(cd.moveResultCopied.replace('{n}', String(copiedPlain)).replace('{campaign}', target))
+    if (result.keptBecauseMedia.length > 0) parts.push(cd.moveResultKept.replace('{n}', String(result.keptBecauseMedia.length)).replace('{campaign}', target))
+    if (result.skippedExisting.length > 0) parts.push(cd.moveResultSkipped.replace('{n}', String(result.skippedExisting.length)))
+    setToast({
+      type: result.moved + result.copied > 0 ? 'success' : 'error',
+      message: parts.length > 0 ? parts.join(' · ') : cd.moveResultNothing,
+    })
+  }
+
+  // ---- Item 7: gender saved by GenderSelect → mirror it into the loaded campaign (no refetch needed) ----
+  function applyInfluencerGender(influencerId: string, next: { gender: string | null; genderSource: string | null }) {
+    setCampaign(prev => prev
+      ? {
+          ...prev,
+          influencers: prev.influencers.map(ci => ci.influencer?.id === influencerId
+            ? { ...ci, influencer: { ...ci.influencer, gender: next.gender, genderSource: next.genderSource } }
+            : ci),
+        }
+      : prev)
+  }
+
   // Toast auto-dismiss
   useEffect(() => {
     if (!toast) return
@@ -1258,52 +1310,28 @@ export default function CampaignDetailPage() {
   }
 
   /**
-   * Extract username from a plain handle or a full profile URL.
-   * Supports:
-   *   @vileda.es  /  vileda.es
-   *   https://www.instagram.com/vileda.es/
-   *   https://www.tiktok.com/@vileda.es
-   *   https://youtube.com/@vileda.es
+   * Single add box: "@user", "user" or a full profile URL (Instagram / TikTok / YouTube).
+   * The platform comes from the URL's host when there is one (so a TikTok URL creates a
+   * TikTok member even in an Instagram-first campaign); a bare handle falls back to the
+   * campaign's first platform. Same contract as «Añadir varios» (parseCreatorHandle).
    */
-  function extractUsername(input: string): string {
-    const trimmed = input.trim()
-
-    // Try to parse as URL
-    try {
-      const url = new URL(trimmed)
-      const hostname = url.hostname.replace(/^www\./, '')
-
-      if (
-        hostname === 'instagram.com' ||
-        hostname === 'tiktok.com' ||
-        hostname === 'youtube.com' ||
-        hostname === 'm.youtube.com'
-      ) {
-        // Get path segments, filter out empty strings
-        const segments = url.pathname.split('/').filter(Boolean)
-        if (segments.length > 0) {
-          // Take the first meaningful segment and strip leading @
-          return segments[0].replace(/^@/, '')
-        }
-      }
-    } catch {
-      // Not a valid URL — treat as plain username
-    }
-
-    // Plain username: strip leading @
-    return trimmed.replace(/^@/, '')
-  }
-
   async function handleAddInfluencer() {
-    const username = extractUsername(addInfluencerUsername)
-    if (!username) return
+    const parsed = parseCreatorHandle(addInfluencerUsername)
+    const username = parsed.username
+    if (!username) {
+      if (addInfluencerUsername.trim()) {
+        setAddInfluencerResult({ type: 'error', message: t.campaignDetail.addHandleInvalid })
+      }
+      return
+    }
 
     setIsAddingInfluencer(true)
     setAddInfluencerResult(null)
 
     try {
-      // Step 1: Analyze/scrape the influencer
-      const platform = (campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : 'INSTAGRAM'
+      // Step 1: Analyze/scrape the influencer on the platform the input names (URL host) or the campaign's first one
+      const platform = parsed.platform
+        ?? ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : 'INSTAGRAM')
       const analyzeRes = await fetch('/api/influencers/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1842,6 +1870,7 @@ export default function CampaignDetailPage() {
       targetCpmMax: campaign.targetCpmMax != null ? String(campaign.targetCpmMax) : '',
       targetsChangeReason: '',
     })
+    setEditHashtagsError(null)
     setShowEditModal(true)
   }
 
@@ -1878,10 +1907,21 @@ export default function CampaignDetailPage() {
         }),
       })
       if (res.ok) {
+        setEditHashtagsError(null)
         setShowEditModal(false)
         await fetchCampaign()
       } else {
-        setToast({ type: 'error', message: locale === 'es' ? 'No se pudieron guardar los cambios' : 'Changes could not be saved' })
+        // Item 5: a 400 for generic hashtags (server sends `genericHashtags` + its own text) stays
+        // in the modal, under the field; anything else keeps the generic toast.
+        const data = await res.json().catch(() => ({})) as { error?: string; genericHashtags?: unknown }
+        const generic = Array.isArray(data.genericHashtags) ? data.genericHashtags.map(String).filter(Boolean) : []
+        if (res.status === 400 && (generic.length > 0 || 'genericHashtags' in data)) {
+          const serverText = typeof data.error === 'string' && data.error.trim() ? data.error.trim() : t.campaignDetail.hashtagsRefused
+          const mentionsThem = generic.every(h => serverText.toLowerCase().includes(h.toLowerCase()))
+          setEditHashtagsError(generic.length > 0 && !mentionsThem ? `${serverText} (${generic.map(h => `#${h.replace(/^#/, '')}`).join(', ')})` : serverText)
+        } else {
+          setToast({ type: 'error', message: (typeof data.error === 'string' && data.error) || (locale === 'es' ? 'No se pudieron guardar los cambios' : 'Changes could not be saved') })
+        }
       }
     } catch { /* ignore */ }
     setIsSaving(false)
@@ -2203,6 +2243,14 @@ export default function CampaignDetailPage() {
     return result
   }, [influencers, elegirSearch, elegirStatusFilter, elegirSortBy, elegirSortDir])
 
+  // Item 8: ids selected for "Mover a otra campaña" that are still members (a "Quitar" may have removed one meanwhile)
+  const selectedMoveIds = useMemo(() => {
+    const members = new Set(influencers.filter(ci => ci.influencer).map(ci => ci.influencer.id))
+    return selectedForMove.filter(id => members.has(id))
+  }, [influencers, selectedForMove])
+  const allVisibleSelectedForMove =
+    filteredElegirInfluencers.length > 0 && filteredElegirInfluencers.every(ci => selectedForMove.includes(ci.influencer.id))
+
   // Unique platforms and influencers for filter dropdowns
   const mediaPlatforms = useMemo(() => {
     const platforms = new Set(nonStoryMedia.map(m => m.platform || m.influencer?.platform).filter(Boolean) as string[])
@@ -2368,26 +2416,53 @@ export default function CampaignDetailPage() {
               ? 'Variación = (resultado − objetivo) / objetivo. ±10 % cuenta como "En objetivo". Resultado según el contenido capturado hasta ahora.'
               : 'Variance = (result − target) / target. ±10 % counts as "On target". Results reflect the content captured so far.'}
           </p>
+          {/* Item 9: change history behind a clear button with the count; newest first, wrapping text, scrolls past 16 rem */}
           {changeLog.length > 0 && (
-            <details className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
-              <summary className="cursor-pointer font-medium text-gray-700">
-                {es ? `Historial de cambios (${changeLog.length})` : `Change history (${changeLog.length})`}
-              </summary>
-              <ul className="mt-2 space-y-1">
-                {[...changeLog].reverse().map((entry, i) => {
-                  const def = TARGET_FIELD_DEFS.find(d => d.key === entry.field)
-                  return (
-                    <li key={`${entry.at}-${entry.field}-${i}`} className="flex flex-wrap gap-x-2">
-                      <span className="text-gray-400">{formatDate(entry.at, { locale })}</span>
-                      <span className="font-medium text-gray-700">{def ? (es ? def.labelEs : def.labelEn) : entry.field}</span>
-                      <span className="tabular-nums">{def ? formatTargetValue(def, entry.from, locale) : String(entry.from ?? '—')} → {def ? formatTargetValue(def, entry.to, locale) : String(entry.to ?? '—')}</span>
-                      <span className="text-gray-400">· {entry.by}</span>
-                      {entry.reason && <span className="italic text-gray-500">· {entry.reason}</span>}
-                    </li>
-                  )
-                })}
-              </ul>
-            </details>
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={() => setShowChangeLog(v => !v)}
+                aria-expanded={showChangeLog}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                <Clock className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400" />
+                {t.campaignDetail.changeHistory}
+                <span className="rounded-full bg-purple-100 dark:bg-purple-900/40 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-purple-700 dark:text-purple-300">
+                  {changeLog.length}
+                </span>
+                {showChangeLog ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              </button>
+              {showChangeLog && (
+                <ul className="mt-2 max-h-64 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 divide-y divide-gray-200 dark:divide-gray-700 text-xs">
+                  {/* The log is appended chronologically by PUT /api/campaigns/[id] → reversed = newest first */}
+                  {[...changeLog].reverse().map((entry, i) => {
+                    const def = TARGET_FIELD_DEFS.find(d => d.key === entry.field)
+                    const from = def ? formatTargetValue(def, entry.from, locale) : String(entry.from ?? '—')
+                    const to = def ? formatTargetValue(def, entry.to, locale) : String(entry.to ?? '—')
+                    const at = new Date(entry.at)
+                    const time = Number.isNaN(at.getTime())
+                      ? ''
+                      : at.toLocaleTimeString(locale === 'es' ? 'es-ES' : 'en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' })
+                    return (
+                      <li key={`${entry.at}-${entry.field}-${i}`} className="px-3 py-2 break-words">
+                        <div className="flex flex-wrap items-center gap-x-2 text-gray-500 dark:text-gray-400">
+                          <span className="font-medium text-gray-800 dark:text-gray-100">{entry.by}</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="tabular-nums">{formatDate(entry.at, { locale })}{time ? ` ${time}` : ''}</span>
+                        </div>
+                        <div className="mt-0.5 text-gray-700 dark:text-gray-200">
+                          <span className="font-medium">{def ? (es ? def.labelEs : def.labelEn) : entry.field}</span>
+                          <span className="tabular-nums">: {from} → {to}</span>
+                        </div>
+                        {entry.reason && (
+                          <p className="mt-0.5 italic text-gray-600 dark:text-gray-300 break-words">{entry.reason}</p>
+                        )}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
           )}
         </CardContent>
       </Card>
@@ -4590,9 +4665,24 @@ export default function CampaignDetailPage() {
 
                 {/* Results count */}
                 <div className="mt-3 flex items-center justify-between border-t border-gray-100 dark:border-gray-800 pt-3">
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {t.campaignDetail.showing} <span className="font-semibold text-gray-700 dark:text-gray-200">{sortedMedia.length}</span> {t.campaignDetail.of} {postsTotal} {t.dashboard.media}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      {t.campaignDetail.showing} <span className="font-semibold text-gray-700 dark:text-gray-200">{sortedMedia.length}</span> {t.campaignDetail.of} {postsTotal} {t.dashboard.media}
+                    </p>
+                    {/* Item 4: what the "Vistas" figure of each card is (public plays, refreshed at 7 and 14 days) */}
+                    <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+                      <Eye className="h-3 w-3" />
+                      {t.campaignDetail.views}
+                      <button
+                        type="button"
+                        title={t.campaignDetail.viewsTooltip}
+                        aria-label={`${t.campaignDetail.views}: ${t.campaignDetail.viewsTooltip}`}
+                        className="inline-flex cursor-help items-center text-gray-300 hover:text-purple-500 dark:text-gray-600 dark:hover:text-purple-400 transition-colors"
+                      >
+                        <HelpCircle className="h-3.5 w-3.5" />
+                      </button>
+                    </span>
+                  </div>
                   {(mediaFilterPlatform !== 'all' || mediaFilterInfluencer !== 'all') && (
                     <button
                       onClick={() => { setMediaFilterPlatform('all'); setMediaFilterInfluencer('all') }}
@@ -4685,7 +4775,7 @@ export default function CampaignDetailPage() {
                           <BarChart3 className="h-3 w-3" />
                           {formatNumber(m.comments || 0, { locale })}
                         </span>
-                        <span className="flex items-center gap-1">
+                        <span className="flex items-center gap-1" title={t.campaignDetail.viewsTooltip} aria-label={`${t.campaignDetail.views}: ${formatNumber(m.views || 0, { locale })}`}>
                           <Eye className="h-3 w-3" />
                           {formatNumber(m.views || 0, { locale })}
                         </span>
@@ -5208,6 +5298,9 @@ export default function CampaignDetailPage() {
                 </div>
               )}
 
+              {/* Item 6: TikTok accounts are members in their own right; an Instagram-only member never yields TikTok media */}
+              <p className="mt-2 text-[11px] leading-relaxed text-gray-400 dark:text-gray-500">{t.campaignDetail.tiktokHint}</p>
+
               {/* Bulk add panel: paste handles/URLs or upload a CSV → one POST to /influencers/bulk */}
               {showBulkAdd && (
                 <div className="mt-4 border-t border-gray-100 dark:border-gray-800 pt-4">
@@ -5482,12 +5575,56 @@ export default function CampaignDetailPage() {
                     </button>
                   )}
                 </div>
-                {/* Count */}
-                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                  {locale === 'es'
-                    ? `Mostrando ${filteredElegirInfluencers.length} de ${influencers.length} influencers`
-                    : `Showing ${filteredElegirInfluencers.length} of ${influencers.length} influencers`}
-                </p>
+                {/* Count + selection toolbar (item 8: "Mover a otra campaña") */}
+                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {locale === 'es'
+                      ? `Mostrando ${filteredElegirInfluencers.length} de ${influencers.length} influencers`
+                      : `Showing ${filteredElegirInfluencers.length} of ${influencers.length} influencers`}
+                  </p>
+                  {canEdit && (
+                    <div className="ml-auto flex flex-wrap items-center gap-3">
+                      <label className="inline-flex cursor-pointer select-none items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                        <input
+                          type="checkbox"
+                          checked={allVisibleSelectedForMove}
+                          disabled={filteredElegirInfluencers.length === 0}
+                          onChange={() => {
+                            const visible = filteredElegirInfluencers.map(ci => ci.influencer.id)
+                            setSelectedForMove(prev => allVisibleSelectedForMove
+                              ? prev.filter(id => !visible.includes(id))
+                              : Array.from(new Set([...prev, ...visible])))
+                          }}
+                          className="h-4 w-4 cursor-pointer rounded border-gray-300 text-purple-600 focus:ring-purple-500 disabled:cursor-not-allowed"
+                        />
+                        {t.campaignDetail.moveSelectAll}
+                      </label>
+                      {selectedMoveIds.length > 0 && (
+                        <>
+                          <span className="text-xs font-medium text-purple-700 dark:text-purple-300">
+                            {t.campaignDetail.moveSelectedCount.replace('{n}', String(selectedMoveIds.length))}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedForMove([])}
+                            className="text-xs text-gray-400 hover:text-gray-600 hover:underline dark:hover:text-gray-300"
+                          >
+                            {t.campaignDetail.moveClearSelection}
+                          </button>
+                        </>
+                      )}
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={selectedMoveIds.length === 0}
+                        onClick={() => setShowMoveModal(true)}
+                      >
+                        <ArrowRightLeft className="h-3.5 w-3.5" />
+                        {t.campaignDetail.moveButton}
+                      </Button>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -5582,12 +5719,23 @@ export default function CampaignDetailPage() {
                         gray: 'bg-gray-400',
                       }
 
+                      const isSelectedForMove = selectedForMove.includes(ci.influencer.id)
+
                       return (
-                        <div key={ci.id} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <div key={ci.id} className={`rounded-xl border bg-white p-5 shadow-sm ${isSelectedForMove ? 'border-purple-300 ring-1 ring-purple-200' : 'border-gray-200'}`}>
                           {/* Stacked below sm: five fixed columns in one row overflowed the 390 px viewport */}
                           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-                            {/* Profile */}
+                            {/* Profile (+ selection checkbox for "Mover a otra campaña", item 8) */}
                             <div className="flex flex-wrap items-center gap-3 min-w-0 sm:min-w-[200px]">
+                              {canEdit && (
+                                <input
+                                  type="checkbox"
+                                  checked={isSelectedForMove}
+                                  onChange={() => toggleSelectedForMove(ci.influencer.id)}
+                                  aria-label={locale === 'es' ? `Seleccionar a @${ci.influencer.username}` : `Select @${ci.influencer.username}`}
+                                  className="h-4 w-4 shrink-0 cursor-pointer rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                                />
+                              )}
                               <Avatar name={ci.influencer.displayName || ci.influencer.username} size="md" src={avatarSrcOf(ci.influencer)} />
                               <div>
                                 <p className="font-semibold text-gray-900">{ci.influencer.displayName || ci.influencer.username}</p>
@@ -5598,6 +5746,16 @@ export default function CampaignDetailPage() {
                                     {ci.influencer.platform.charAt(0) + ci.influencer.platform.slice(1).toLowerCase()}
                                   </Badge>
                                   <span className="text-[10px] text-gray-400 uppercase font-medium">{cpm.tier}</span>
+                                </div>
+                                {/* Item 7: gender — set by the PM ('manual') or inferred from the public name ('inferred', "(estimado)"); never from the networks */}
+                                <div className="mt-1.5">
+                                  <GenderSelect
+                                    influencerId={ci.influencer.id}
+                                    gender={ci.influencer.gender ?? null}
+                                    genderSource={ci.influencer.genderSource ?? null}
+                                    readOnly={!canEdit}
+                                    onChange={next => applyInfluencerGender(ci.influencer.id, next)}
+                                  />
                                 </div>
                               </div>
                               {/* Creator Score */}
@@ -6044,8 +6202,8 @@ export default function CampaignDetailPage() {
               </div>
               <p className="mb-3 text-xs text-gray-500">
                 {locale === 'es'
-                  ? 'Añade creadores UGC por su handle de Instagram. Podrás gestionar pagos y portfolio desde aquí.'
-                  : 'Add UGC creators by their Instagram handle. You can manage payments and portfolio from here.'}
+                  ? 'Añade creadores UGC por su @handle de Instagram o pegando la URL de su perfil (Instagram o TikTok). Podrás gestionar pagos y portfolio desde aquí.'
+                  : 'Add UGC creators by their Instagram @handle or by pasting their profile URL (Instagram or TikTok). You can manage payments and portfolio from here.'}
               </p>
               <div className="flex items-center gap-2">
                 <input
@@ -6095,6 +6253,8 @@ export default function CampaignDetailPage() {
                   </button>
                 </div>
               )}
+              {/* Item 6: TikTok accounts are members in their own right; an Instagram-only member never yields TikTok media */}
+              <p className="mt-2 text-[11px] leading-relaxed text-gray-400 dark:text-gray-500">{t.campaignDetail.tiktokHint}</p>
             </div>
             )}
 
@@ -6776,11 +6936,25 @@ export default function CampaignDetailPage() {
                 <input
                   type="text"
                   value={editForm.targetHashtags}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, targetHashtags: e.target.value }))}
+                  onChange={(e) => { setEditForm(prev => ({ ...prev, targetHashtags: e.target.value })); setEditHashtagsError(null) }}
                   placeholder="#hashtag1, #hashtag2"
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                  aria-invalid={editHashtagsError ? true : undefined}
+                  aria-describedby={editHashtagsError ? 'edit-hashtags-error' : undefined}
+                  className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-1 ${
+                    editHashtagsError
+                      ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
+                      : 'border-gray-300 focus:border-purple-500 focus:ring-purple-500'
+                  }`}
                 />
-                <p className="mt-1 text-xs text-gray-400">{locale === 'es' ? 'Separados por comas' : 'Comma separated'}</p>
+                {/* Item 5: the server's own text when it refuses generic hashtags (never a generic toast) */}
+                {editHashtagsError ? (
+                  <p id="edit-hashtags-error" role="alert" className="mt-1 flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400">
+                    <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+                    <span className="break-words">{editHashtagsError}</span>
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-gray-400">{locale === 'es' ? 'Separados por comas' : 'Comma separated'}</p>
+                )}
               </div>
 
               {/* Accounts */}
@@ -7112,6 +7286,18 @@ export default function CampaignDetailPage() {
           </Button>
         </ModalFooter>
       </Modal>
+
+      {/* Item 8: move / copy the selected creators to another campaign (staff only) */}
+      {canEdit && (
+        <MoveCreatorsModal
+          open={showMoveModal}
+          onClose={() => setShowMoveModal(false)}
+          sourceCampaignId={campaignId}
+          sourceBrandId={campaign.brandId ?? null}
+          influencerIds={selectedMoveIds}
+          onDone={handleMoveDone}
+        />
+      )}
 
       {/* Toast (revalidation result and other one-off notices) */}
       {toast && (

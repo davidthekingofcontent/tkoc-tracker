@@ -16,6 +16,7 @@ import type { Prisma } from '@/generated/prisma/client'
 import { prisma } from '@/lib/db'
 import { detectCategories, type CategoryMatch } from '@/lib/category-detector'
 import { calculateSpainFit } from '@/lib/spain-fit'
+import { isValidGender, type Gender, type GenderSource } from '@/lib/gender'
 
 /** A platform profile carries real data; hashtag shells never pass. */
 export const REAL_PROFILE_WHERE: Prisma.CreatorPlatformProfileWhereInput = { followers: { gt: 0 } }
@@ -99,6 +100,25 @@ function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002'
 }
 
+type GenderFields = { gender: string | null; genderSource: string | null }
+
+/**
+ * Gender fields to copy from the Influencer row onto its pool creator
+ * (contract in src/lib/gender.ts). A value a PM set by hand on the creator is
+ * never overwritten by an inferred one, and an influencer without gender
+ * never clears what the pool already holds: only a valid value flows, with
+ * its source ('manual' stays 'manual'; anything else is 'inferred').
+ */
+export function genderPatchForPool(
+  inf: GenderFields,
+  before: GenderFields | null | undefined,
+): { gender?: Gender; genderSource?: GenderSource } {
+  if (!isValidGender(inf.gender)) return {}
+  const source: GenderSource = inf.genderSource === 'manual' ? 'manual' : 'inferred'
+  if (before?.genderSource === 'manual' && source !== 'manual') return {}
+  return { gender: inf.gender, genderSource: source }
+}
+
 // ============ MATERIALIZATION ============
 
 type InfluencerRow = Prisma.InfluencerGetPayload<{ include: { _count: { select: { campaigns: true } } } }>
@@ -170,6 +190,7 @@ export async function materializeInfluencerIntoPool(
         data: {
           displayName: nonEmpty(inf.displayName) ?? username,
           primaryPlatform: inf.platform,
+          ...genderPatchForPool(inf, null),
           platformProfiles: {
             create: {
               platform: inf.platform,
@@ -222,7 +243,7 @@ export async function materializeInfluencerIntoPool(
   const email = nonEmpty(inf.email)
   const before = await prisma.creatorProfile.findUnique({
     where: { id: creatorId },
-    select: { displayName: true, spainFitLevel: true, spainFitScore: true },
+    select: { displayName: true, spainFitLevel: true, spainFitScore: true, gender: true, genderSource: true },
   })
   const keepsSpainLevel = before?.spainFitLevel === 'confirmed' || before?.spainFitLevel === 'probable'
 
@@ -249,6 +270,7 @@ export async function materializeInfluencerIntoPool(
       contactEmail: email ?? undefined,
       contactEmailSource: email ? 'profile' : undefined,
       primaryLanguage: nonEmpty(inf.language) ?? undefined,
+      ...genderPatchForPool(inf, before),
       lastEnriched: new Date(),
     },
   })

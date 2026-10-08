@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { dedupeMediaByPost, normalizeTargets } from '@/lib/campaign-capture'
+import { genericHashtagsError, validateTargetHashtags } from '@/lib/campaign-targets'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus, CampaignType, Prisma } from '@/generated/prisma/client'
 import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
@@ -39,6 +40,19 @@ function validateCampaignWindow(startDate: Date | null, endDate: Date | null): s
     return 'La fecha de fin debe ser igual o posterior a la fecha de inicio.'
   }
   return null
+}
+
+/** Name of a brand entry (Setting key=brandId holds JSON { name, ... }) or null. Never throws. */
+async function brandNameById(brandId: unknown): Promise<string | null> {
+  if (typeof brandId !== 'string' || !brandId.trim()) return null
+  try {
+    const row = await prisma.setting.findUnique({ where: { key: brandId } })
+    if (!row?.value) return null
+    const data = JSON.parse(row.value) as { name?: unknown }
+    return typeof data?.name === 'string' && data.name.trim() ? data.name.trim() : null
+  } catch {
+    return null
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -209,6 +223,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'targetHashtags must be an array of strings' }, { status: 400 })
     }
 
+    // Doc item 5 (2026-10-08): generic hashtags ("turbo", "mopa") capture any
+    // creator's content — reject, never drop silently. Stems come from the
+    // target accounts and, when a brand is attached, from its name; with no
+    // stem to judge against the hashtags are accepted as before.
+    const nextTargetAccounts = normalizeTargets(targetAccounts || [])
+    const nextTargetHashtags = normalizeTargets(targetHashtags || [])
+    if (nextTargetHashtags.length > 0) {
+      const brandName = await brandNameById(brandId)
+      const { generic } = validateTargetHashtags(nextTargetHashtags, nextTargetAccounts, brandName)
+      if (generic.length > 0) {
+        return NextResponse.json(
+          { error: genericHashtagsError(generic), genericHashtags: generic },
+          { status: 400 }
+        )
+      }
+    }
+
     // Numeric targets. New campaigns are ACTIVE by default (schema), so when at
     // least one target is set the targets are frozen right away (targetsFrozenAt);
     // later changes go through PUT /api/campaigns/[id] and land in targetsChangeLog.
@@ -260,8 +291,8 @@ export async function POST(request: NextRequest) {
         type: resolvedType,
         platforms: platforms && platforms.length > 0 ? platforms : ['INSTAGRAM'],
         // One token per element, no @/# (normalizeTargets): "#a #b" typed in one field is two targets
-        targetAccounts: normalizeTargets(targetAccounts || []),
-        targetHashtags: normalizeTargets(targetHashtags || []),
+        targetAccounts: nextTargetAccounts,
+        targetHashtags: nextTargetHashtags,
         targetKeywords: targetKeywords || [],
         briefFiles: [],
         startDate: resolvedStart,

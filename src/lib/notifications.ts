@@ -140,7 +140,7 @@ export async function notifyAdmins(params: Omit<CreateNotificationParams, 'userI
 
 // ============ APIFY BUDGET PAUSE ALERTS ============
 
-export type ApifyBudgetGate = 'stories' | 'track' | 'discover'
+export type ApifyBudgetGate = 'stories' | 'track' | 'discover' | 'views'
 
 const APIFY_BUDGET_GATE_COPY: Record<ApifyBudgetGate, { title: string; subject: string; meanwhile: string }> = {
   stories: {
@@ -157,6 +157,13 @@ const APIFY_BUDGET_GATE_COPY: Record<ApifyBudgetGate, { title: string; subject: 
     title: 'Búsqueda externa de creadores pausada por presupuesto de Apify',
     subject: 'La búsqueda externa de creadores',
     meanwhile: 'Mientras, la búsqueda en nuestra base de datos sigue funcionando.',
+  },
+  // check-posts' views refresh (src/lib/media-enrich.ts, REFRESH): the public
+  // views of the videos that turned 7 and 14 days old are re-read daily.
+  views: {
+    title: 'Actualización de vistas de vídeos pausada por presupuesto de Apify',
+    subject: 'La relectura automática de las vistas públicas de los vídeos (a los 7 y 14 días)',
+    meanwhile: 'Mientras, cada vídeo conserva la última cifra leída; la cifra real del creador se registra en la publicación con "Registrar estadísticas".',
   },
 }
 

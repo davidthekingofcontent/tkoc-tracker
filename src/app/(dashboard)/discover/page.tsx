@@ -28,6 +28,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { useI18n } from '@/i18n/context'
 import { formatNumber } from '@/lib/utils'
 import { avatarSrcOf } from '@/lib/proxy-image'
+import { GENDER_LABEL_ES, type Gender, type GenderSource } from '@/lib/gender'
 import Link from 'next/link'
 
 // ============ TYPES ============
@@ -54,6 +55,9 @@ interface DiscoverResult {
   city?: string | null
   categories?: string[]
   matchReason?: string
+  /** 'F' | 'M' | 'X' | null (sin dato); genderSource 'inferred' is shown as "(estimado)". */
+  gender?: Gender | null
+  genderSource?: GenderSource | null
 }
 
 /** Metadata returned by /api/influencers/discover in category mode. */
@@ -71,6 +75,8 @@ interface CategoryMeta {
   cacheWriteFailed: boolean
   dbCount: number
   apifyCount: number
+  /** Cards hidden because their data was still unknown while a filter was set: Apify/cache profiles (followers/ER 0 after enrichment) and pool creators without a stored gender under a gender value. */
+  hiddenUnknown: number
   /** Budget state of the paid path: a percentage and the cycle reset date — the server never sends amounts. */
   apifyUsage: { usedPct: number | null; cycleEndsAt: string | null } | null
 }
@@ -98,6 +104,8 @@ interface DbCreatorResult {
   geoProvince: string | null
   geoCountry: string | null
   performanceScore: number | null
+  gender?: Gender | null
+  genderSource?: GenderSource | null
   username: string
   platform: string
   followers: number
@@ -212,6 +220,21 @@ function SpainFitBadge({ level, score }: { level: string | null; score: number |
   )
 }
 
+/** Tiny gender badge: Mujer / Hombre / Otro, plus "(estimado)" when the value was inferred from the name. Nothing when there is no data. */
+function GenderBadge({ gender, genderSource }: { gender?: Gender | null; genderSource?: GenderSource | null }) {
+  const { t, locale } = useI18n()
+  if (!gender) return null
+  const label = locale === 'es'
+    ? GENDER_LABEL_ES[gender]
+    : { F: t.discover.genderF, M: t.discover.genderM, X: t.discover.genderX }[gender]
+  const estimated = genderSource === 'inferred'
+  return (
+    <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-300">
+      {label}{estimated ? ` (${t.discover.genderEstimated})` : ''}
+    </span>
+  )
+}
+
 function CategoryTag({ slug, isEs }: { slug: string; isEs: boolean }) {
   // Format slug to display name
   const name = slug
@@ -290,6 +313,7 @@ export default function DiscoverPage() {
   const [dbFollowersMin, setDbFollowersMin] = useState('')
   const [dbFollowersMax, setDbFollowersMax] = useState('')
   const [dbCity, setDbCity] = useState('')
+  const [dbGender, setDbGender] = useState('all')
   const [dbSortBy, setDbSortBy] = useState('followers')
   const [dbSortDir, setDbSortDir] = useState<'asc' | 'desc'>('desc')
   const [dbResults, setDbResults] = useState<DbCreatorResult[]>([])
@@ -319,6 +343,7 @@ export default function DiscoverPage() {
   const [followersMax, setFollowersMax] = useState('')
   const [locationFilter, setLocationFilter] = useState('')
   const [engagementFilter, setEngagementFilter] = useState('')
+  const [genderFilter, setGenderFilter] = useState('all')
   const [bioKeywordFilter, setBioKeywordFilter] = useState('')
   const [visibleCount, setVisibleCount] = useState(50)
   const [results, setResults] = useState<DiscoverResult[]>([])
@@ -328,7 +353,6 @@ export default function DiscoverPage() {
   const [source, setSource] = useState<ResultSource | 'mixed'>('database')
   const [categoryMeta, setCategoryMeta] = useState<CategoryMeta | null>(null)
   const [searchError, setSearchError] = useState<SearchError | null>(null)
-  const [confirmPaidOpen, setConfirmPaidOpen] = useState(false)
   const [searchingMore, setSearchingMore] = useState(false)
   const [sortField, setSortField] = useState<string>('followers')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -373,6 +397,7 @@ export default function DiscoverPage() {
       if (dbFollowersMin) body.minFollowers = parseInt(dbFollowersMin, 10)
       if (dbFollowersMax) body.maxFollowers = parseInt(dbFollowersMax, 10)
       if (dbCity.trim()) body.city = dbCity.trim()
+      if (dbGender !== 'all') body.gender = dbGender
 
       const res = await fetch('/api/discovery/search', {
         method: 'POST',
@@ -395,7 +420,7 @@ export default function DiscoverPage() {
     } finally {
       setDbSearching(false)
     }
-  }, [dbQuery, dbPlatform, dbSpainFitLevel, dbCategory, dbFollowersMin, dbFollowersMax, dbCity, dbSortBy, dbSortDir])
+  }, [dbQuery, dbPlatform, dbSpainFitLevel, dbCategory, dbFollowersMin, dbFollowersMax, dbCity, dbGender, dbSortBy, dbSortDir])
 
   const handleDbLoadMore = () => {
     handleDbSearch(dbOffset + 50)
@@ -444,6 +469,7 @@ export default function DiscoverPage() {
     setDbFollowersMin('')
     setDbFollowersMax('')
     setDbCity('')
+    setDbGender('all')
     setDbSortBy('followers')
     setDbSortDir('desc')
     setDbHasSearched(false)
@@ -479,13 +505,21 @@ export default function DiscoverPage() {
 
   const filteredResults = useMemo(() => {
     let filtered = sortedResults
-    const minF = followersMin ? parseInt(followersMin, 10) : 0
-    const maxF = followersMax ? parseInt(followersMax, 10) : 0
-    if (minF > 0) filtered = filtered.filter(r => r.followers >= minF || r.followers === 0)
-    if (maxF > 0) filtered = filtered.filter(r => r.followers <= maxF || r.followers === 0)
-    if (engagementFilter) {
-      const minEng = parseFloat(engagementFilter)
-      filtered = filtered.filter(r => r.engagementRate >= minEng || r.engagementRate === 0)
+    // Category mode: followers / engagement / gender are applied by the server
+    // to every result (DB and Apify) on each Buscar, and the hidden unknown
+    // cards are counted in categoryMeta.hiddenUnknown. Re-filtering here would
+    // let the "--" cards back in (the old `|| === 0` escape hatch) the moment a
+    // filter changes without a new search. Username mode keeps its lenient
+    // client-side filter untouched.
+    if (searchMode === 'username') {
+      const minF = followersMin ? parseInt(followersMin, 10) : 0
+      const maxF = followersMax ? parseInt(followersMax, 10) : 0
+      if (minF > 0) filtered = filtered.filter(r => r.followers >= minF || r.followers === 0)
+      if (maxF > 0) filtered = filtered.filter(r => r.followers <= maxF || r.followers === 0)
+      if (engagementFilter) {
+        const minEng = parseFloat(engagementFilter)
+        filtered = filtered.filter(r => r.engagementRate >= minEng || r.engagementRate === 0)
+      }
     }
     if (locationFilter.trim()) {
       const loc = locationFilter.trim().toLowerCase()
@@ -509,7 +543,7 @@ export default function DiscoverPage() {
       })
     }
     return filtered
-  }, [sortedResults, followersMin, followersMax, engagementFilter, locationFilter])
+  }, [sortedResults, searchMode, followersMin, followersMax, engagementFilter, locationFilter])
 
   const paginatedResults = useMemo(() => {
     return filteredResults.slice(0, visibleCount)
@@ -531,6 +565,7 @@ export default function DiscoverPage() {
     setFollowersMax('')
     setLocationFilter('')
     setEngagementFilter('')
+    setGenderFilter('all')
     setBioKeywordFilter('')
     setPlatform('instagram')
     setHasSearched(false)
@@ -538,7 +573,6 @@ export default function DiscoverPage() {
     setVisibleCount(50)
     setCategoryMeta(null)
     setSearchError(null)
-    setConfirmPaidOpen(false)
   }
 
   const handleAddToList = async (listId: string) => {
@@ -578,12 +612,13 @@ export default function DiscoverPage() {
   }
 
   // confirmPaid=true is the ONLY way a category search spends Apify credit:
-  // the first call is free (our DB + 7-day cache) and returns the estimate.
+  // the first call is free (our DB + 7-day cache); the paid run is ONE click
+  // on the "Buscar fuera de nuestra base" offer, which quotes exactly what the
+  // free search returned (hashtag, platform, limit).
   const handleSearch = async (confirmPaid = false) => {
     if (!searchInput.trim()) return
     if (confirmPaid && !categoryMeta) return
     setSearchError(null)
-    setConfirmPaidOpen(false)
     const requestPlatform = platform || 'instagram'
     if (confirmPaid) {
       setSearchingMore(true)
@@ -605,7 +640,14 @@ export default function DiscoverPage() {
           mode: searchMode,
           minFollowers: followersMin ? parseInt(followersMin, 10) : undefined,
           maxFollowers: followersMax ? parseInt(followersMax, 10) : undefined,
-          // The server refuses the paid run unless it is exactly the one shown in the confirmation.
+          // Category mode only: the server applies these to every result (DB and Apify); username mode ignores them.
+          ...(searchMode === 'category'
+            ? {
+                minEngagement: engagementFilter ? parseFloat(engagementFilter) : undefined,
+                gender: genderFilter !== 'all' ? genderFilter : undefined,
+              }
+            : {}),
+          // The server refuses the paid run unless it is exactly the one shown in the offer card.
           ...(confirmPaid && categoryMeta
             ? { confirmPaid: true, confirmed: { hashtag: categoryMeta.hashtag, platform: categoryMeta.platform, limit: categoryMeta.apifyLimit } }
             : {}),
@@ -631,6 +673,7 @@ export default function DiscoverPage() {
             cacheWriteFailed: data.cacheWriteFailed === true,
             dbCount: data.dbCount ?? items.filter(i => i.source === 'database').length,
             apifyCount: data.apifyCount ?? items.filter(i => i.source !== 'database').length,
+            hiddenUnknown: typeof data.hiddenUnknown === 'number' ? data.hiddenUnknown : 0,
             apifyUsage: data.apifyUsage && typeof data.apifyUsage === 'object'
               ? {
                   usedPct: typeof data.apifyUsage.usedPct === 'number' ? data.apifyUsage.usedPct : null,
@@ -676,10 +719,6 @@ export default function DiscoverPage() {
       setSearchingMore(false)
     }
   }
-
-  // The confirmation quotes the hashtag/platform of the last free search; a
-  // changed input or platform means a different run, so close it.
-  useEffect(() => { setConfirmPaidOpen(false) }, [searchInput, platform])
 
   const paidOfferVisible =
     searchMode === 'category' && hasSearched && !searching && categoryMeta !== null &&
@@ -965,6 +1004,24 @@ export default function DiscoverPage() {
                 </div>
               </div>
 
+              {/* Gender */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {t.discover.genderFilter}
+                </label>
+                <select
+                  value={dbGender}
+                  onChange={(e) => setDbGender(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                >
+                  <option value="all">{t.discover.genderAll}</option>
+                  <option value="F">{t.discover.genderF}</option>
+                  <option value="M">{t.discover.genderM}</option>
+                  <option value="X">{t.discover.genderX}</option>
+                  <option value="none">{t.discover.genderNone}</option>
+                </select>
+              </div>
+
               {/* City / Province */}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -1121,7 +1178,10 @@ export default function DiscoverPage() {
                             {item.displayName && item.displayName !== item.username && (
                               <p className="text-xs text-gray-400 dark:text-gray-500 truncate">{item.displayName}</p>
                             )}
-                            <SpainFitBadge level={item.spainFitLevel} score={item.spainFitScore} />
+                            <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                              <SpainFitBadge level={item.spainFitLevel} score={item.spainFitScore} />
+                              <GenderBadge gender={item.gender} genderSource={item.genderSource} />
+                            </div>
                           </div>
                         </div>
 
@@ -1353,6 +1413,21 @@ export default function DiscoverPage() {
                 </select>
               </div>
 
+              {/* Gender (category mode; the @username lookup ignores it) */}
+              {searchMode === 'category' && (
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{t.discover.genderFilter}</label>
+                  <select value={genderFilter} onChange={(e) => setGenderFilter(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500">
+                    <option value="all">{t.discover.genderAll}</option>
+                    <option value="F">{t.discover.genderF}</option>
+                    <option value="M">{t.discover.genderM}</option>
+                    <option value="X">{t.discover.genderX}</option>
+                    <option value="none">{t.discover.genderNone}</option>
+                  </select>
+                </div>
+              )}
+
               {/* Action Buttons */}
               <div className="flex flex-col gap-2 border-t border-gray-200 dark:border-gray-600 pt-5">
                 <button type="button" onClick={() => handleSearch()} disabled={searching || searchingMore || !searchInput.trim()}
@@ -1460,6 +1535,9 @@ export default function DiscoverPage() {
                   {categoryMeta.cacheWriteFailed && (
                     <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">{t.discover.cacheWriteFailed}</p>
                   )}
+                  {categoryMeta.hiddenUnknown > 0 && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{fill(t.discover.hiddenUnknownNote, { n: categoryMeta.hiddenUnknown })}</p>
+                  )}
                   {!searchError && categoryMeta.apifyUnavailableReason === 'soft_limit' && (
                     <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
                       {softLimitNote(categoryMeta.apifyUsage?.cycleEndsAt)}
@@ -1469,33 +1547,37 @@ export default function DiscoverPage() {
                     <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">{t.discover.apifyExhausted}</p>
                   )}
 
-                  {paidOfferVisible && categoryMeta.apifyAvailable && !confirmPaidOpen && (
-                    <button type="button" onClick={() => setConfirmPaidOpen(true)} disabled={searchingMore}
-                      className="inline-flex items-center gap-2 rounded-lg border-2 border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50 transition-all">
-                      {searchingMore
-                        ? <><Loader2 className="h-4 w-4 animate-spin" />{t.discover.searchingApify}</>
-                        : <><Radio className="h-4 w-4" />{t.discover.searchMoreApify}</>}
-                    </button>
-                  )}
-
-                  {confirmPaidOpen && categoryMeta.apifyAvailable && (
-                    <div className="rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 p-3">
-                      <p className="text-sm font-semibold text-purple-800 dark:text-purple-200">{t.discover.paidConfirmTitle}</p>
-                      <p className="mt-1 text-xs text-purple-700 dark:text-purple-300">
-                        {fill(t.discover.paidConfirmBody, { hashtag: categoryMeta.hashtag })}
-                      </p>
-                      <div className="mt-3 flex gap-2">
+                  {/* Paid offer: ONE click runs the Apify search (the card itself is the explanation).
+                      Prominent card when our base returned fewer than 10 creators; a normal button otherwise. */}
+                  {paidOfferVisible && categoryMeta.apifyAvailable && (
+                    categoryMeta.dbCount < 10 ? (
+                      <div className="rounded-xl border-2 border-purple-300 dark:border-purple-700 bg-purple-50 dark:bg-purple-900/20 p-4">
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-300">
+                            <Radio className="h-5 w-5" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-base font-semibold text-purple-900 dark:text-purple-100">{t.discover.searchOutsideTitle}</p>
+                            <p className="mt-1 text-sm text-purple-800 dark:text-purple-200">
+                              {fill(t.discover.searchOutsideBody, { hashtag: categoryMeta.hashtag })}
+                            </p>
+                          </div>
+                        </div>
                         <button type="button" onClick={() => handleSearch(true)} disabled={searchingMore}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-purple-600 px-3 py-2 text-xs font-semibold text-white hover:bg-purple-700 disabled:opacity-50 transition-colors">
-                          {searchingMore ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                          {t.discover.paidConfirmYes}
-                        </button>
-                        <button type="button" onClick={() => setConfirmPaidOpen(false)} disabled={searchingMore}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
-                          <X className="h-3.5 w-3.5" />{t.discover.paidConfirmNo}
+                          className="mt-4 inline-flex w-full sm:w-auto items-center justify-center gap-2 rounded-xl bg-purple-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-purple-500/25 hover:bg-purple-700 active:bg-purple-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                          {searchingMore
+                            ? <><Loader2 className="h-4 w-4 animate-spin" />{t.discover.searchingApify}</>
+                            : <><Radio className="h-4 w-4" />{t.discover.searchOutsideButton}</>}
                         </button>
                       </div>
-                    </div>
+                    ) : (
+                      <button type="button" onClick={() => handleSearch(true)} disabled={searchingMore}
+                        className="inline-flex items-center gap-2 rounded-lg border-2 border-purple-300 dark:border-purple-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50 transition-all">
+                        {searchingMore
+                          ? <><Loader2 className="h-4 w-4 animate-spin" />{t.discover.searchingApify}</>
+                          : <><Radio className="h-4 w-4" />{t.discover.searchOutsideButton}</>}
+                      </button>
+                    )
                   )}
                 </div>
               )}
@@ -1507,8 +1589,14 @@ export default function DiscoverPage() {
                     <Search className="h-7 w-7" />
                   </div>
                   <p className="text-base font-semibold text-gray-700 dark:text-gray-200">{t.common.noResults}</p>
+                  {/* "Nothing in our base" is only true when nothing was hidden: with a gender
+                      filter the creators may exist and simply have no data yet. */}
                   {searchMode === 'category' && categoryMeta && (
-                    <p className="mt-2 text-sm text-gray-400 dark:text-gray-500 text-center">{t.discover.noDbResults}</p>
+                    <p className="mt-2 text-sm text-gray-400 dark:text-gray-500 text-center">
+                      {categoryMeta.hiddenUnknown > 0
+                        ? fill(t.discover.hiddenUnknownNote, { n: categoryMeta.hiddenUnknown })
+                        : t.discover.noDbResults}
+                    </p>
                   )}
                 </div>
               )}
@@ -1555,9 +1643,10 @@ export default function DiscoverPage() {
                             {item.displayName && item.displayName !== item.username && (
                               <p className="text-xs text-gray-400 dark:text-gray-500 truncate">{item.displayName}</p>
                             )}
-                            {searchMode === 'category' && (
-                              <div className="mt-1">{sourceBadge(item.source)}</div>
-                            )}
+                            <div className="mt-1 flex flex-wrap items-center gap-1">
+                              {searchMode === 'category' && sourceBadge(item.source)}
+                              <GenderBadge gender={item.gender} genderSource={item.genderSource} />
+                            </div>
                           </div>
                         </div>
                         <div className="grid grid-cols-2 gap-3 mb-4">

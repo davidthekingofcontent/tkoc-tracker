@@ -126,6 +126,9 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
   const { locale } = useI18n()
   const [step, setStep] = useState(0)
   const [isCreating, setIsCreating] = useState(false)
+  // Server-side rejection of the launch (e.g. generic target hashtags, 400 from
+  // POST /api/campaigns). Shown above the footer; cleared on the next attempt.
+  const [createError, setCreateError] = useState<string | null>(null)
   const es = locale === 'es'
 
   const [form, setForm] = useState({
@@ -194,9 +197,18 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
         const data = await res.json()
         onClose()
         router.push(`/campaigns/${data.campaign.id}`)
+      } else {
+        // The server explains the refusal (e.g. generic hashtags: "Los hashtags
+        // objetivo deben identificar a la marca… Hashtags a revisar: #turbo").
+        // Show it instead of leaving the PM with a spinner that did nothing.
+        const data = await res.json().catch(() => ({})) as { error?: string }
+        setCreateError(
+          (typeof data.error === 'string' && data.error.trim()) ||
+            (es ? 'No se pudo crear la campaña' : 'Campaign could not be created')
+        )
       }
     } catch {
-      // silent
+      setCreateError(es ? 'No se pudo crear la campaña' : 'Campaign could not be created')
     } finally {
       setIsCreating(false)
     }
@@ -496,6 +508,12 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
             </div>
           )}
         </div>
+
+        {createError && (
+          <div role="alert" className="mx-8 mb-4 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+            {createError}
+          </div>
+        )}
 
         {/* Footer */}
         <div className="border-t border-gray-200 dark:border-gray-700 px-8 py-4 flex items-center justify-between bg-gray-50 dark:bg-gray-800/50">

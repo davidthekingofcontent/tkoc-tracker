@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 import { campaignHasTargets, mediaMatchesCampaignRules, scrapedPostToRuleItem, upsertCampaignPost } from '@/lib/campaign-capture'
-import { isApifyConfiguredAsync } from '@/lib/apify'
+import { isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve } from '@/lib/apify'
+import { refreshMaturingViews, type EnrichSummary } from '@/lib/media-enrich'
 import { fetchProfile } from '@/lib/platform-client'
 import { isYouTubeApiConfigured } from '@/lib/youtube-api'
-import { notifyCampaignTeam } from '@/lib/notifications'
+import { notifyApifyBudgetPauseOnce, notifyCampaignTeam } from '@/lib/notifications'
 import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 import type { ScrapedProfile } from '@/lib/apify'
 
@@ -272,12 +273,46 @@ export async function GET(request: NextRequest) {
     console.log(`[Cron/CheckPosts] Done. New posts: ${totalNewPosts}, Ad disclosure updated: ${adDisclosureUpdated}, Errors: ${errors.length}`)
     finished = true
 
+    // Views refresh (doc item 4): re-read the public play count of the videos
+    // that turned 7 and 14 days old (src/lib/media-enrich.ts, REFRESH). Runs
+    // AFTER the capture, only with Apify available, the breaker closed and the
+    // CORE budget (< 95 % of the plan) not exceeded; never fails the cron. A
+    // 95 % pause is never silent: it raises its own once-a-day ADMIN alert
+    // (gate 'views' in notifications.ts — the stories/track alerts name other
+    // features and say nothing about reel views). 60 rows = up to two
+    // Apify runs of 50; 180 s lets the second one start (one batch needs ≈ 90 s
+    // of slack). Cost: 0,0023 $ per post read, server log only.
+    let viewsRefresh: EnrichSummary | { skipped: string; usedPct?: number | null; cycleEndsAt?: string | null } = { skipped: 'apify_not_configured' }
+    if (apifyConfigured) {
+      try {
+        if (isApifyExhausted()) {
+          viewsRefresh = { skipped: 'apify_exhausted' }
+        } else {
+          const budget = await isApifyOverCoreReserve()
+          if (budget.over && !force) {
+            viewsRefresh = { skipped: 'apify_budget', usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt }
+            // Once a day, like stories/track: "toda pausa avisa a ADMIN". Never throws.
+            await notifyApifyBudgetPauseOnce('views', { usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt })
+          } else {
+            viewsRefresh = await refreshMaturingViews({ limit: 60, timeBudgetMs: 180_000 })
+          }
+        }
+      } catch (err) {
+        console.error('[Cron/CheckPosts] views refresh failed:', err instanceof Error ? err.message : err)
+        viewsRefresh = { skipped: 'error' }
+      }
+    }
+    console.log('skipped' in viewsRefresh
+      ? `[Cron/CheckPosts] Views refresh skipped: ${viewsRefresh.skipped}${viewsRefresh.usedPct != null ? ` (${viewsRefresh.usedPct} % of the Apify plan)` : ''}`
+      : `[Cron/CheckPosts] Views refresh: ${viewsRefresh.scanned} read, ${viewsRefresh.updated} updated, ${viewsRefresh.unchanged} unchanged, ${viewsRefresh.failed} failed, ${viewsRefresh.unresolved} unresolved, ${viewsRefresh.pendingAfter} still due (${viewsRefresh.stoppedBy}, ${Math.round(viewsRefresh.durationMs / 1000)} s)`)
+
     return NextResponse.json({
       success: true,
       influencersChecked: influencerMap.size,
       influencersSkipped: alreadyChecked,
       campaignsActive: activeCampaigns.length,
       newPosts: totalNewPosts,
+      viewsRefresh,
       errors: errors.length > 0 ? errors : undefined,
     })
   } catch (error) {

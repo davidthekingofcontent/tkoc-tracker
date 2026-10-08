@@ -11,6 +11,11 @@
  *        run finishes with nothing at all does a batch pay one start (0,099 $)
  *        of apify~instagram-scraper. Rows a run could not answer (actor failure,
  *        run outliving the wait) come back `unresolved` and retry next call.
+ * POST { mode: 'refresh', campaignId?, limit?, force? } → runs
+ *        refreshMaturingViews instead: re-reads the public views of the videos
+ *        that are 7 and 14 days old (rules in media-enrich.ts, REFRESH; default
+ *        60 rows, 0,0023 $ per post). GET also returns `refreshDue` (rows due
+ *        now, per stage). The check-posts cron runs the same refresh daily.
  *
  * ADMIN only.
  */
@@ -18,7 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { getApifyResumeDate, isApifyExhausted } from '@/lib/apify'
-import { countPendingMetaReelViews, enrichMetaReelViews } from '@/lib/media-enrich'
+import { countMaturingViews, countPendingMetaReelViews, enrichMetaReelViews, refreshMaturingViews } from '@/lib/media-enrich'
 
 // Up to 100 rows = 2 batches; every Apify run is clipped to the 240 s default budget: allow a long request (Vercel-style hint; harmless elsewhere).
 export const maxDuration = 300
@@ -39,11 +44,13 @@ export async function GET(request: NextRequest) {
   if (denied) return denied
 
   const campaignId = optionalId(request.nextUrl.searchParams.get('campaignId'))
-  const backlog = await countPendingMetaReelViews(campaignId)
+  const [backlog, refreshDue] = await Promise.all([countPendingMetaReelViews(campaignId), countMaturingViews(campaignId)])
   return NextResponse.json({
     campaignId: campaignId ?? null,
     pending: backlog.pending,
     withoutPermalink: backlog.withoutPermalink,
+    stale: backlog.stale,
+    refreshDue,
     apifyExhausted: isApifyExhausted(),
     apifyResumeAt: getApifyResumeDate(),
     // List price of the pay-per-result actor (≈ 0,002 $ per post, batched 50 per run), NOT a measured
@@ -57,14 +64,15 @@ export async function POST(request: NextRequest) {
   const denied = await requireAdmin(request)
   if (denied) return denied
 
-  let body: { campaignId?: unknown; limit?: unknown; force?: unknown } = {}
+  let body: { mode?: unknown; campaignId?: unknown; limit?: unknown; force?: unknown } = {}
   try {
     body = (await request.json().catch(() => ({}))) as typeof body
   } catch { /* no body */ }
 
+  const mode: 'enrich' | 'refresh' = body.mode === 'refresh' ? 'refresh' : 'enrich'
   const campaignId = optionalId(body.campaignId)
   const limitRaw = typeof body.limit === 'number' ? body.limit : parseInt(String(body.limit ?? ''), 10)
-  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.round(limitRaw), 100) : 25
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.round(limitRaw), 100) : (mode === 'refresh' ? 60 : 25)
   const force = body.force === true
 
   if (isApifyExhausted()) {
@@ -75,8 +83,10 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const summary = await enrichMetaReelViews({ campaignId, limit, force })
-    return NextResponse.json({ campaignId: campaignId ?? null, limit, force, ...summary })
+    const summary = mode === 'refresh'
+      ? await refreshMaturingViews({ campaignId, limit, force })
+      : await enrichMetaReelViews({ campaignId, limit, force })
+    return NextResponse.json({ mode, campaignId: campaignId ?? null, limit, force, ...summary })
   } catch (error) {
     console.error('[admin/enrich-views] failed:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

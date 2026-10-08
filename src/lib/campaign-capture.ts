@@ -4,6 +4,7 @@ import type { ScrapedPost, ScrapedStory } from '@/lib/apify'
 import type { MediaType, Platform } from '@/generated/prisma/client'
 import { computeBaseline } from '@/lib/creator-baseline'
 import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-upsert'
+import { accountCoreStems, captionWords } from '@/lib/campaign-targets'
 
 /**
  * PRECISE CONTENT CAPTURE — the single source of truth for "does this piece
@@ -17,6 +18,13 @@ import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-up
  *   (3) it references the brand: a target account in mentions[], a target
  *       hashtag in hashtags[], or a target keyword inside the caption
  *       (normalized: lowercase, accents stripped, spaces/dots/_/-// removed).
+ *       The brand NAME inside a qualified target handle counts too
+ *       ('@vileda.es' → 'vileda'): a mention or hashtag starting with it, or
+ *       the name as a whole word in the caption (2026-10-08, doc item 6 —
+ *       TikTok handles differ from Instagram's and TikTok mentions are cut
+ *       at the dot). Only a lead segment of 5+ letters that is not an
+ *       everyday/qualifier word ('@casa.decor', '@hola.com', '@nike_spain'
+ *       derive nothing). See accountCoreStems in campaign-targets.ts.
  *       Rows from Meta's tagged edge (source 'meta_api') carry the tagged
  *       brand's handle in mentions[], so the same rule applies to them.
  *
@@ -150,6 +158,23 @@ export function itemReferencesBrand(
   if (!haystack) return false
   for (const kw of [...targetAccounts, ...targetHashtags]) {
     if (kw.length >= MIN_FUZZY_KEYWORD_LENGTH && haystack.includes(kw)) return true
+  }
+
+  // The brand name carried by a qualified handle ('@vileda.es' → 'vileda'):
+  // the brand's TikTok handle rarely equals its Instagram one and TikTok's
+  // mention extraction stops at the dot ('@vileda.es' → '@vileda'), so a
+  // mention/hashtag that STARTS with the name, or the name as a WHOLE word in
+  // the caption, is a brand reference on every platform. Whole-word (not
+  // substring) on purpose, and only for leads of 5+ letters outside the
+  // everyday-word stoplist: the stem is derived, the PM never sees it, and a
+  // '@casa.viva' handle must not capture every "nueva casa" post.
+  const stems = accountCoreStems(campaign.targetAccounts || [])
+  if (stems.length > 0) {
+    for (const token of [...mentions, ...hashtags]) {
+      for (const stem of stems) if (token.startsWith(stem)) return true
+    }
+    const words = captionWords(item.caption)
+    for (const stem of stems) if (words.has(stem)) return true
   }
   return false
 }

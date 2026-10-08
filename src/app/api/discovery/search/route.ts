@@ -3,6 +3,7 @@ import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { Prisma, Platform } from '@/generated/prisma/client'
 import { REAL_PROFILE_WHERE } from '@/lib/creator-pool'
+import { isValidGender } from '@/lib/gender'
 
 // POST /api/discovery/search — search the creator pool (CreatorProfile).
 // Only creators with at least one platform profile that passes
@@ -24,6 +25,7 @@ export async function POST(req: NextRequest) {
     category,
     city,
     province,
+    gender,
     sortBy = 'followers',
     sortDir = 'desc',
     offset = 0,
@@ -38,6 +40,14 @@ export async function POST(req: NextRequest) {
   // Spain Fit Level filter
   if (spainFitLevel && spainFitLevel !== 'all') {
     creatorWhere.spainFitLevel = spainFitLevel
+  }
+
+  // Gender filter: 'F' | 'M' | 'X' match the stored value (manual or inferred
+  // alike); 'none' lists the creators without data. Anything else = no filter.
+  if (gender === 'none') {
+    creatorWhere.gender = null
+  } else if (isValidGender(gender)) {
+    creatorWhere.gender = gender
   }
 
   // Category filter: match creators with CategorySignal rows OR category in their categories array
@@ -168,6 +178,8 @@ export async function POST(req: NextRequest) {
       geoProvince: c.geoProvince,
       geoCountry: c.geoCountry,
       performanceScore: c.performanceScore,
+      gender: c.gender,
+      genderSource: c.genderSource,
       platformProfiles: c.platformProfiles.map((pp) => ({
         id: pp.id,
         platform: pp.platform,

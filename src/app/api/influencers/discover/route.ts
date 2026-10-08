@@ -28,6 +28,7 @@ import {
 } from '@/lib/discover-cache'
 import { afterInfluencerUpsert, scrapedProfileHasData, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 import { notifyApifyBudgetPauseOnce } from '@/lib/notifications'
+import { inferGenderFromName, isValidGender, type Gender, type GenderSource } from '@/lib/gender'
 
 // POST /api/influencers/discover
 //
@@ -64,6 +65,32 @@ interface DiscoverResult {
   categories?: string[]
   /** Why a pool row matched: category | bio | name. */
   matchReason?: string
+  /** 'F' | 'M' | 'X' | null (sin dato). Stored value when the creator has a row; estimated from the name for new Apify authors. */
+  gender?: Gender | null
+  /** 'manual' | 'inferred' | null — 'inferred' is shown as "(estimado)". */
+  genderSource?: GenderSource | null
+}
+
+/** Gender filter as the page sends it: a value, or 'none' for the creators without data. */
+type GenderFilter = Gender | 'none'
+
+function parseGenderFilter(v: unknown): GenderFilter | null {
+  if (v === 'none') return 'none'
+  return isValidGender(v) ? v : null
+}
+
+/** Narrow the free-form DB strings to the contract (anything else counts as no data). */
+function asGender(v: string | null | undefined): Gender | null {
+  return isValidGender(v) ? v : null
+}
+function asGenderSource(v: string | null | undefined): GenderSource | null {
+  return v === 'manual' || v === 'inferred' ? v : null
+}
+
+/** Positive finite number or undefined — filters are ignored when unset/invalid. */
+function positiveNumber(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN
+  return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
 type ScrapePlatform = 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
@@ -120,7 +147,18 @@ async function searchViaApifyProfile(
     if (!scraped) return []
     if (minFollowers && scraped.followers < minFollowers) return []
     if (maxFollowers && scraped.followers > maxFollowers) return []
+    // The stored row (if any) carries the gender badge and the durable id: a
+    // free DB read, so the card matches what the "Base de datos" tab shows.
+    // A DB hiccup never hides a scrape we already paid for.
+    const dbPlatform = toPlatform(platform)
+    const stored = dbPlatform
+      ? await prisma.influencer.findFirst({
+          where: { username: { equals: scraped.username, mode: 'insensitive' }, platform: dbPlatform },
+          select: { id: true, gender: true, genderSource: true },
+        }).catch(() => null)
+      : null
     return [{
+      influencerId: stored?.id,
       username: scraped.username,
       displayName: scraped.displayName,
       avatarUrl: scraped.avatarUrl,
@@ -136,6 +174,8 @@ async function searchViaApifyProfile(
       bio: scraped.bio || null,
       country: scraped.country || null,
       city: scraped.city || null,
+      gender: asGender(stored?.gender),
+      genderSource: asGenderSource(stored?.genderSource),
     }]
   } catch (err) {
     console.error('[Discover] Profile scrape error:', err)
@@ -218,6 +258,8 @@ async function searchInternalDatabase(
       bio: inf.bio || null,
       country: inf.country || null,
       city: inf.city || null,
+      gender: asGender(inf.gender),
+      genderSource: asGenderSource(inf.genderSource),
       _score: score,
     }
   })
@@ -244,13 +286,21 @@ const MIN_USERNAME_QUERY_LENGTH = 4
  *   other match.terms as whole words in the bio → +10 each, cap +30   ('bio')
  *   query in displayName (whole word) or username (substring) → +20   ('name')
  * Rows scoring 0 are dropped; order: score, followers, engagement.
+ * Filters: followers range and min engagement are applied in SQL (a pool row
+ * with engagementRate 0 fails a min-engagement filter). The gender filter reads
+ * the stored CreatorProfile.gender: 'none' (→ null) is answered in SQL, but a
+ * gender VALUE is applied in JS after scoring so the matching creators WITHOUT
+ * data are counted in `hiddenUnknown` instead of vanishing — otherwise the page
+ * would claim the category is empty when the filter hid everything.
  */
 async function searchDatabaseByCategory(
   match: CategoryMatch,
   platform: Platform,
   minFollowers?: number,
-  maxFollowers?: number
-): Promise<DiscoverResult[]> {
+  maxFollowers?: number,
+  minEngagement?: number,
+  gender?: GenderFilter | null
+): Promise<{ results: DiscoverResult[]; hiddenUnknown: number }> {
   const q = match.terms[0] || ''
   const qCompact = q.replace(/\s+/g, '')
   const slug = match.category?.slug || null
@@ -263,8 +313,15 @@ async function searchDatabaseByCategory(
   const platformProfiles = await prisma.creatorPlatformProfile.findMany({
     where: {
       platform,
-      AND: [REAL_PROFILE_WHERE, ...(followersFilter ? [{ followers: followersFilter }] : [])],
-      creator: { isSuppressed: false },
+      AND: [
+        REAL_PROFILE_WHERE,
+        ...(followersFilter ? [{ followers: followersFilter }] : []),
+        ...(minEngagement ? [{ engagementRate: { gte: minEngagement } }] : []),
+      ],
+      creator: {
+        isSuppressed: false,
+        ...(gender === 'none' ? { gender: null } : {}),
+      },
     },
     include: {
       creator: {
@@ -275,6 +332,8 @@ async function searchDatabaseByCategory(
           geoCountry: true,
           geoCity: true,
           contactEmail: true,
+          gender: true,
+          genderSource: true,
         },
       },
     },
@@ -284,6 +343,8 @@ async function searchDatabaseByCategory(
 
   type Scored = DiscoverResult & { _score: number }
   const scored: Scored[] = []
+  /** Creators that matched the category but have no stored gender while a gender value is set. */
+  let hiddenUnknown = 0
 
   for (const pp of platformProfiles) {
     const c = pp.creator
@@ -316,6 +377,14 @@ async function searchDatabaseByCategory(
 
     if (score <= 0 || !reason) continue
 
+    // Gender value: a matching creator without data is hidden AND counted; a
+    // creator with another gender is simply not a match.
+    if (gender && gender !== 'none') {
+      const g = asGender(c.gender)
+      if (g == null) { hiddenUnknown++; continue }
+      if (g !== gender) continue
+    }
+
     scored.push({
       influencerId: pp.influencerId ?? undefined,
       username: pp.username,
@@ -335,12 +404,14 @@ async function searchDatabaseByCategory(
       city: c.geoCity,
       categories: c.categories,
       matchReason: reason,
+      gender: asGender(c.gender),
+      genderSource: asGenderSource(c.genderSource),
       _score: score,
     })
   }
 
   scored.sort((a, b) => b._score - a._score || b.followers - a.followers || b.engagementRate - a.engagementRate)
-  return stripScore(scored)
+  return { results: stripScore(scored), hiddenUnknown }
 }
 
 // ============ MODE 2b: hashtag posts (cache or paid) → creators ============
@@ -438,6 +509,11 @@ function applyScrapedProfile(r: DiscoverResult, profile: ScrapedProfile): void {
  * Turn hashtag posts into creator cards. Handles already in our DB are filled
  * from existing rows (never re-scraped); at most `enrichLimit` unknown handles
  * are enriched via the profile scraper, and only when `allowPaidEnrich` is true.
+ *
+ * Filters are strict: when any of minFollowers / maxFollowers / minEngagement
+ * / gender is set, a card whose data is still unknown after enrichment
+ * (followers 0, or no gender for a gender filter) is DROPPED and counted in
+ * `hiddenUnknown` — an unknown profile never passes a filter.
  */
 async function creatorsFromHashtagPosts(
   posts: HashtagResult[],
@@ -446,8 +522,10 @@ async function creatorsFromHashtagPosts(
   enrichLimit: number,
   allowPaidEnrich: boolean,
   minFollowers?: number,
-  maxFollowers?: number
-): Promise<{ results: DiscoverResult[]; enrichedViaApify: number }> {
+  maxFollowers?: number,
+  minEngagement?: number,
+  gender?: GenderFilter | null
+): Promise<{ results: DiscoverResult[]; enrichedViaApify: number; hiddenUnknown: number }> {
   const authorMap = authorsFromHashtagPosts(posts, platform, source)
   const usernames = Array.from(authorMap.values()).map(e => e.result.username)
   let enrichedViaApify = 0
@@ -460,7 +538,7 @@ async function creatorsFromHashtagPosts(
         // the REAL_PROFILE_WHERE gate keeps them out so the handle still gets
         // enriched (and the shell repaired via materializeInfluencerIntoPool).
         where: { username: { in: usernames, mode: 'insensitive' }, platform, ...REAL_PROFILE_WHERE },
-        include: { creator: { select: { categories: true, geoCountry: true, geoCity: true, contactEmail: true } } },
+        include: { creator: { select: { categories: true, geoCountry: true, geoCity: true, contactEmail: true, gender: true, genderSource: true } } },
       }),
     ])
     for (const db of dbProfiles) {
@@ -469,6 +547,10 @@ async function creatorsFromHashtagPosts(
       const r = entry.result
       r.influencerId = db.id
       if (db.email) r.email = db.email
+      // Gender is never scraped: the stored value (manual or inferred) is the
+      // only one, so it is copied even from a bare row.
+      r.gender = asGender(db.gender)
+      r.genderSource = asGenderSource(db.genderSource)
       // A bare Influencer row (followers 0 — e.g. created by /analyze when a
       // scrape came back empty) carries no profile data: keep the link but let
       // the handle go through enrichment so the upsert fills that same row.
@@ -502,6 +584,10 @@ async function creatorsFromHashtagPosts(
       r.country = r.country || cp.creator.geoCountry
       r.city = r.city || cp.creator.geoCity
       r.categories = cp.creator.categories
+      if (r.gender == null && cp.creator.gender != null) {
+        r.gender = asGender(cp.creator.gender)
+        r.genderSource = asGenderSource(cp.creator.genderSource)
+      }
       r.enriched = true
     }
   }
@@ -519,6 +605,13 @@ async function creatorsFromHashtagPosts(
         const r = entry.result
         applyScrapedProfile(r, profile)
         enrichedViaApify++
+        // A new author has no stored gender: estimate it from the public name
+        // (same rule as the backfill) so the badge and the filter can use it.
+        if (r.gender == null && !r.influencerId) {
+          const inferred = inferGenderFromName(profile.displayName, profile.username)
+          r.gender = inferred
+          r.genderSource = inferred ? 'inferred' : null
+        }
         // Persist what we just paid for: the next search (another hashtag of
         // the category, or this one after the 7-day TTL) fills it from the DB,
         // and afterInfluencerUpsert materializes the creator into the pool.
@@ -528,6 +621,8 @@ async function creatorsFromHashtagPosts(
             create: {
               username: profile.username,
               platform,
+              // Only on create: an existing row keeps its own (possibly manual) value.
+              ...(r.genderSource === 'inferred' && r.gender ? { gender: r.gender, genderSource: 'inferred' } : {}),
               displayName: profile.displayName,
               bio: profile.bio,
               avatarUrl: profile.avatarUrl,
@@ -559,13 +654,39 @@ async function creatorsFromHashtagPosts(
   }
 
   let all = sortedEntries.map(e => e.result)
-  // Unknown follower counts (0) pass the filters — we cannot judge them yet.
-  if (minFollowers) all = all.filter(r => r.followers >= minFollowers || r.followers === 0)
-  if (maxFollowers) all = all.filter(r => r.followers <= maxFollowers || r.followers === 0)
+  let hiddenUnknown = 0
+
+  // Followers / engagement: an unknown profile (followers still 0 after
+  // enrichment) never passes a filter — it is hidden and counted. ER 0 is
+  // also "unknown" (no posts read yet, header-only scrape, or an unenriched
+  // handle), whatever `enriched` says: when the engagement filter drops such
+  // a card it counts as "sin datos" too, so the PM can see why the list shrank.
+  if (minFollowers || maxFollowers || minEngagement) {
+    all = all.filter(r => {
+      if (r.followers === 0) { hiddenUnknown++; return false }
+      if (minFollowers && r.followers < minFollowers) return false
+      if (maxFollowers && r.followers > maxFollowers) return false
+      if (minEngagement && r.engagementRate < minEngagement) {
+        if (r.engagementRate === 0) hiddenUnknown++
+        return false
+      }
+      return true
+    })
+  }
+
+  // Gender: 'none' lists the cards without data; a value needs a match, and a
+  // card whose gender is unknown is hidden and counted.
+  if (gender) {
+    all = all.filter(r => {
+      if (gender === 'none') return r.gender == null
+      if (r.gender == null) { hiddenUnknown++; return false }
+      return r.gender === gender
+    })
+  }
 
   const enriched = all.filter(r => r.enriched).sort((a, b) => b.followers - a.followers)
   const notEnriched = all.filter(r => !r.enriched).sort((a, b) => (b.avgLikes + b.avgComments) - (a.avgLikes + a.avgComments))
-  return { results: [...enriched, ...notEnriched], enrichedViaApify }
+  return { results: [...enriched, ...notEnriched], enrichedViaApify, hiddenUnknown }
 }
 
 /** Merge hashtag creators after the DB results, skipping handles the DB already returned. */
@@ -591,18 +712,24 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { query, platform, minFollowers, maxFollowers, mode, confirmPaid, confirmed } = body as {
+    const { query, platform, minFollowers, maxFollowers, minEngagement, gender, mode, confirmPaid, confirmed } = body as {
       query: string
       platform: string
       minFollowers?: number
       maxFollowers?: number
+      /** Minimum engagement rate in % (category mode): results with a lower or unknown (0) ER are dropped. */
+      minEngagement?: number
+      /** 'F' | 'M' | 'X' | 'none' (category mode only; ignored in username mode). */
+      gender?: string
       mode?: 'username' | 'category'
       confirmPaid?: boolean
-      /** What the PM saw in the confirmation box; the paid run must match it exactly. */
+      /** What the PM saw in the offer card; the paid run must match it exactly. */
       confirmed?: { hashtag?: string; platform?: string; limit?: number }
     }
 
     const cleanQuery = (query || '').trim()
+    const minEngagementFilter = positiveNumber(minEngagement)
+    const genderFilter = parseGenderFilter(gender)
     const normalizedPlatform = platform?.toUpperCase() || 'INSTAGRAM'
     const dbPlatform = toPlatform(normalizedPlatform) || Platform.INSTAGRAM
 
@@ -642,8 +769,10 @@ export async function POST(request: NextRequest) {
 
     console.log(`[Discover] Category "${cleanQuery}" → ${match.category?.slug ?? '(no category)'} #${match.hashtag} on ${dbPlatform}; confirmPaid=${confirmPaid === true}`)
 
-    const [dbResults, cached] = await Promise.all([
-      searchDatabaseByCategory(match, dbPlatform, minFollowers, maxFollowers),
+    // dbHiddenUnknown: pool creators of the category hidden by a gender value
+    // because their gender is still null — reported in every branch below.
+    const [{ results: dbResults, hiddenUnknown: dbHiddenUnknown }, cached] = await Promise.all([
+      searchDatabaseByCategory(match, dbPlatform, minFollowers, maxFollowers, minEngagementFilter, genderFilter),
       match.hashtag ? getCachedHashtagSearch(cacheKey) : Promise.resolve(null),
     ])
 
@@ -663,8 +792,8 @@ export async function POST(request: NextRequest) {
 
     // 2b. Free: a cached hashtag run (< 7 days) is served without confirmation.
     if (cached) {
-      const { results: apifyResults } = await creatorsFromHashtagPosts(
-        cached.results, dbPlatform, 'apify-cache', 0, false, minFollowers, maxFollowers
+      const { results: apifyResults, hiddenUnknown } = await creatorsFromHashtagPosts(
+        cached.results, dbPlatform, 'apify-cache', 0, false, minFollowers, maxFollowers, minEngagementFilter, genderFilter
       )
       const { merged, apifyNew } = mergeResults(dbResults, apifyResults)
       return NextResponse.json({
@@ -673,6 +802,7 @@ export async function POST(request: NextRequest) {
         total: merged.length,
         source: dbResults.length > 0 ? (apifyNew > 0 ? 'mixed' : 'database') : 'apify-cache',
         apifyCount: apifyNew,
+        hiddenUnknown: dbHiddenUnknown + hiddenUnknown,
         cached: true,
         cacheFetchedAt: cached.fetchedAt.toISOString(),
         apifyAvailable: false,
@@ -705,6 +835,9 @@ export async function POST(request: NextRequest) {
         total: dbResults.length,
         source: 'database',
         apifyCount: 0,
+        // Pool rows always carry followers/ER (REAL_PROFILE_WHERE); only a gender
+        // value can hide pool creators whose gender is still unknown.
+        hiddenUnknown: dbHiddenUnknown,
         cached: false,
         cacheFetchedAt: null,
         apifyAvailable: apifyUnavailableReason === null,
@@ -745,8 +878,8 @@ export async function POST(request: NextRequest) {
     const posts = run.results
     console.log(`[Discover] Got ${posts.length} posts from #${match.hashtag}${run.cacheWritten ? '' : ' (NOT cached — write failed)'}`)
 
-    const { results: apifyResults, enrichedViaApify } = await creatorsFromHashtagPosts(
-      posts, dbPlatform, 'apify', enrichLimit, true, minFollowers, maxFollowers
+    const { results: apifyResults, enrichedViaApify, hiddenUnknown } = await creatorsFromHashtagPosts(
+      posts, dbPlatform, 'apify', enrichLimit, true, minFollowers, maxFollowers, minEngagementFilter, genderFilter
     )
     const { merged, apifyNew } = mergeResults(dbResults, apifyResults)
 
@@ -757,6 +890,7 @@ export async function POST(request: NextRequest) {
       source: dbResults.length > 0 ? (apifyNew > 0 ? 'mixed' : 'database') : 'apify',
       apifyCount: apifyNew,
       enrichedViaApify,
+      hiddenUnknown: dbHiddenUnknown + hiddenUnknown,
       cached: false,
       cacheFetchedAt: null,
       apifyAvailable: false,

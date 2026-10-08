@@ -9,6 +9,7 @@ import { buildCampaignLearnings, toClientLearnings, type CampaignLearnings, type
 import { loadReportConfig } from '@/lib/report-config'
 import { sanitizeCampaignForBrand } from '@/lib/brand-scope'
 import { normalizeTargets } from '@/lib/campaign-capture'
+import { genericHashtagsError, validateTargetHashtags } from '@/lib/campaign-targets'
 import type { CampaignOverview } from '@/lib/metrics'
 
 // ---- Numeric targets (decision 1B, David 2026-09-05) ----
@@ -429,6 +430,24 @@ export async function PUT(
     if (targetHashtags !== undefined && targetHashtags !== null && !Array.isArray(targetHashtags)) {
       return invalid('targetHashtags must be an array of strings')
     }
+    // Doc item 5 (2026-10-08): whenever the request touches the targets, the
+    // RESULTING hashtags must identify the brand (stems from the resulting
+    // accounts and from the attached brand's name). Generic ones ("turbo",
+    // "mopa") are rejected, never dropped silently. A request that does not
+    // touch the targets (e.g. a status change) is not judged; with no stem to
+    // judge against the hashtags are accepted as before.
+    const nextTargetAccounts = targetAccounts !== undefined ? normalizeTargets(targetAccounts || []) : existing.targetAccounts
+    const nextTargetHashtags = targetHashtags !== undefined ? normalizeTargets(targetHashtags || []) : existing.targetHashtags
+    if ((targetAccounts !== undefined || targetHashtags !== undefined) && nextTargetHashtags.length > 0) {
+      const brand = await resolveCampaignBrand(id)
+      const { generic } = validateTargetHashtags(nextTargetHashtags, nextTargetAccounts, brand?.name ?? null)
+      if (generic.length > 0) {
+        return NextResponse.json(
+          { error: genericHashtagsError(generic), genericHashtags: generic },
+          { status: 400 }
+        )
+      }
+    }
     if (promoCode !== undefined) {
       const v = parseOptionalText(promoCode, 100)
       if (v === undefined) return invalid('promoCode must be text of at most 100 characters')
@@ -550,8 +569,8 @@ export async function PUT(
         ...(nextEndDate && { endDate: nextEndDate }),
         ...(platforms !== undefined && { platforms }),
         // One token per element, no @/# (normalizeTargets): "#a #b" typed in one field is two targets
-        ...(targetAccounts !== undefined && { targetAccounts: normalizeTargets(targetAccounts || []) }),
-        ...(targetHashtags !== undefined && { targetHashtags: normalizeTargets(targetHashtags || []) }),
+        ...(targetAccounts !== undefined && { targetAccounts: nextTargetAccounts }),
+        ...(targetHashtags !== undefined && { targetHashtags: nextTargetHashtags }),
         ...(targetKeywords !== undefined && { targetKeywords }),
         ...(country !== undefined && { country: country || null }),
         ...(paymentType !== undefined && ['PAID', 'GIFTED'].includes(paymentType) && { paymentType }),

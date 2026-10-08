@@ -217,7 +217,8 @@ model Influencer {
   country       String?
   city          String?
   language      String?
-  gender        String?
+  gender        String?   // 'F' (mujer) | 'M' (hombre) | 'X' (otro: pareja/familia/marca) | null (sin dato)
+  genderSource  String?   // 'manual' (set by staff) | 'inferred' (src/lib/gender.ts, from the name) | null
 
   standardFee   Float?    // What the influencer typically charges
 
@@ -700,6 +701,10 @@ model CreatorProfile {
   geoProvince       String?
   geoCountry        String?
   geoConfidence     String    @default("unknown") // observed/inferred/unknown
+
+  // Gender (mirrored from the linked Influencer; see src/lib/gender.ts)
+  gender            String?   // 'F' | 'M' | 'X' | null (sin dato)
+  genderSource      String?   // 'manual' | 'inferred' | null
 
   // Contact
   contactEmail      String?
