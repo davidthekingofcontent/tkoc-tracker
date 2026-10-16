@@ -14,6 +14,21 @@ const APIFY_BASE = 'https://api.apify.com/v2'
 
 let apifyExhaustedUntil: number | null = null
 
+/**
+ * Instagram video views as the PUBLIC "visualizaciones" figure. The actors
+ * expose two fields: the legacy `videoViewCount` (often lower or null since
+ * 2025) and `videoPlayCount` (plays — what Instagram shows on the reel and
+ * what the creator's insights call "visualizaciones"). Preferring the legacy
+ * field produced 28k vs 62k mismatches reported by the PMs (Oct 2026): always
+ * take the larger of the two.
+ */
+export function instagramViews(post: Record<string, unknown>): number {
+  const a = Number(post.videoViewCount); const b = Number(post.videoPlayCount)
+  const av = Number.isFinite(a) && a > 0 ? a : 0
+  const bv = Number.isFinite(b) && b > 0 ? b : 0
+  return Math.max(av, bv)
+}
+
 export function isApifyExhausted(): boolean {
   return apifyExhaustedUntil !== null && Date.now() < apifyExhaustedUntil
 }
@@ -574,7 +589,7 @@ export function mapInstagramProfileItem(profile: Record<string, unknown>, fallba
   const recentPosts: ScrapedPost[] = posts.map((post: Record<string, unknown>) => {
     const likes = nonNegative(post.likesCount) // -1 = likes hidden by the creator
     const comments = (post.commentsCount as number) || 0
-    const views = (post.videoViewCount as number) || (post.videoPlayCount as number) || 0
+    const views = instagramViews(post)
 
     totalLikes += likes
     totalComments += comments
@@ -867,7 +882,7 @@ async function scrapeInstagramHashtag(hashtag: string, maxPosts = 20): Promise<H
         comments: (post.commentsCount as number) || 0,
         shares: 0,
         saves: 0,
-        views: (post.videoViewCount as number) || 0,
+        views: instagramViews(post),
         postedAt: (post.timestamp as string) || null,
         hashtags,
         mentions,
@@ -928,7 +943,7 @@ async function scrapeInstagramAccountMentions(username: string, maxPosts = 50): 
             comments: (post.commentsCount as number) || 0,
             shares: 0,
             saves: 0,
-            views: (post.videoViewCount as number) || 0,
+            views: instagramViews(post),
             postedAt: (post.timestamp as string) || null,
             hashtags,
             mentions,
@@ -1609,7 +1624,7 @@ function mapInstagramSinglePost(item: Record<string, unknown>): ScrapedSinglePos
     caption: caption || null,
     likes: nonNegative(item.likesCount), // -1 when likes are hidden
     comments: nonNegative(item.commentsCount),
-    views: nonNegative(item.videoViewCount) || nonNegative(item.videoPlayCount),
+    views: instagramViews(item),
     thumbnailUrl: (item.thumbnailUrl as string) || (item.displayUrl as string) || null,
     postedAt: (item.timestamp as string) || null,
     ownerUsername: (item.ownerUsername as string) || null,

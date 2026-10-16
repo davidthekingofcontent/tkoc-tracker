@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
   const denied = await requireAdmin(request)
   if (denied) return denied
 
-  let body: { mode?: unknown; campaignId?: unknown; limit?: unknown; force?: unknown } = {}
+  let body: { mode?: unknown; campaignId?: unknown; limit?: unknown; force?: unknown; all?: unknown } = {}
   try {
     body = (await request.json().catch(() => ({}))) as typeof body
   } catch { /* no body */ }
@@ -74,6 +74,7 @@ export async function POST(request: NextRequest) {
   const limitRaw = typeof body.limit === 'number' ? body.limit : parseInt(String(body.limit ?? ''), 10)
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.round(limitRaw), 100) : (mode === 'refresh' ? 60 : 25)
   const force = body.force === true
+  const all = body.all === true
 
   if (isApifyExhausted()) {
     return NextResponse.json(
@@ -84,9 +85,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const summary = mode === 'refresh'
-      ? await refreshMaturingViews({ campaignId, limit, force })
+      ? await refreshMaturingViews({ campaignId, limit, force, all })
       : await enrichMetaReelViews({ campaignId, limit, force })
-    return NextResponse.json({ mode, campaignId: campaignId ?? null, limit, force, ...summary })
+    return NextResponse.json({ mode, campaignId: campaignId ?? null, limit, force, all, ...summary })
   } catch (error) {
     console.error('[admin/enrich-views] failed:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

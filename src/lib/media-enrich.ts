@@ -99,6 +99,9 @@ export interface EnrichOptions {
   timeBudgetMs?: number
   /** Retry rows attempted recently (ignores the 7-day attempt window). */
   force?: boolean
+  /** Refresh: re-read EVERY eligible video row (age ≥ 1 day) regardless of the 7/14-day stages — one-off
+   *  catch-up after a metric-mapping change (e.g. videoViewCount → videoPlayCount, Oct 2026). Admin only. */
+  all?: boolean
   /**
    * Also re-fetch rows whose stored views are below their likes (a partial or
    * stale platform figure that metrics.ts treats as "sin dato real"), whatever
@@ -434,7 +437,8 @@ interface DueRow {
  */
 async function dueForRefresh(
   campaignId: string | undefined,
-  logs?: { read: AttemptMap; attempts: AttemptMap }
+  logs?: { read: AttemptMap; attempts: AttemptMap },
+  all = false
 ): Promise<DueRow[]> {
   const now = Date.now()
   const [read, attempts] = logs
@@ -449,7 +453,7 @@ async function dueForRefresh(
       permalink: { not: null },
       insightsSource: null,
       campaignId: campaignId ?? { not: null },
-      postedAt: { lte: new Date(now - REFRESH_STAGES_DAYS[0] * DAY_MS) },
+      postedAt: { lte: new Date(now - (all ? 1 : REFRESH_STAGES_DAYS[0]) * DAY_MS) },
     },
     orderBy: { postedAt: 'desc' },
     take: 5000,
@@ -481,6 +485,7 @@ async function dueForRefresh(
       const stageAt = posted + days * DAY_MS
       if (now >= stageAt && (!lastReadAt || lastReadAt.getTime() < stageAt)) { stage = days; break }
     }
+    if (all && !stage) stage = now >= posted + REFRESH_STAGES_DAYS[1] * DAY_MS ? REFRESH_STAGES_DAYS[1] : REFRESH_STAGES_DAYS[0]
     if (!stage) continue
 
     due.push({
@@ -532,7 +537,7 @@ export async function refreshMaturingViews(options: EnrichOptions = {}): Promise
   if (isApifyExhausted()) return finish('apify_exhausted')
 
   const [read, attempts] = await Promise.all([loadAttempts(VIEWS_READ), loadAttempts(ATTEMPTS)])
-  const due = await dueForRefresh(options.campaignId, { read, attempts })
+  const due = await dueForRefresh(options.campaignId, { read, attempts }, options.all === true)
 
   // Cross-path guard: a row read in the last 24 h by the refresh OR by the
   // missing/stale enrichment is not paid for again (unless force).
