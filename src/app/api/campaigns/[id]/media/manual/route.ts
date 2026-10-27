@@ -363,10 +363,12 @@ export async function POST(
     const views = pickMetric(scraped?.views, manualViews, existing?.views)
     const reach: number | undefined = isStory && manualReach !== undefined ? manualReach : undefined
 
-    // The PM's date wins; a story falls back to the time encoded in its id
+    // A story's id encodes its exact publication time (snowflake): it wins over
+    // the PM's typed date, which is a guess (hours off in practice, Oct 2026).
+    // A post keeps the PM's date when Apify did not read one.
     const postedAt: Date | null = scraped?.postedAt
       ? new Date(scraped.postedAt)
-      : (manualPostedAt ?? parsed.postedAtHint ?? existing?.postedAt ?? null)
+      : (parsed.postedAtHint ?? manualPostedAt ?? existing?.postedAt ?? null)
 
     // ===== Rule (2): dated AND inside the campaign window =====
     // Manual additions skip the brand-keyword rule only; an undated row can't

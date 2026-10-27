@@ -185,15 +185,17 @@ export async function POST(
     // outside the window, so the PM must supply the real publication date.
     let resolvedPostedAt: Date
     let dateSource: 'body' | 'link' | 'now'
-    if (postedAt !== undefined && postedAt !== null && postedAt !== '') {
+    if (parsedStory?.postedAtHint) {
+      // The story id encodes its exact publication time: it wins over the PM's
+      // typed date, which is a guess (two to four hours off in Oct 2026).
+      resolvedPostedAt = parsedStory.postedAtHint
+      dateSource = 'link'
+    } else if (postedAt !== undefined && postedAt !== null && postedAt !== '') {
       resolvedPostedAt = new Date(String(postedAt))
       if (Number.isNaN(resolvedPostedAt.getTime())) {
         return NextResponse.json({ error: 'postedAt no es una fecha válida' }, { status: 400 })
       }
       dateSource = 'body'
-    } else if (parsedStory?.postedAtHint) {
-      resolvedPostedAt = parsedStory.postedAtHint
-      dateSource = 'link'
     } else {
       resolvedPostedAt = new Date()
       dateSource = 'now'

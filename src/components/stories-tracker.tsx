@@ -360,13 +360,13 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
               />
               <p className="mt-1 text-[10px] leading-snug text-gray-500">
                 {locale === 'es'
-                  ? 'Si pegas el enlace de la story, la fecha se lee sola. Las vistas y el alcance solo los tiene la creadora: pídele la captura.'
-                  : 'Paste the story link and the date is read automatically. Only the creator has the views and reach: ask her for the screenshot.'}
+                  ? 'Si pegas el enlace de la story, la fecha se lee del propio enlace y manda sobre la que teclees. Las vistas y el alcance solo los tiene la creadora: pídele la captura.'
+                  : 'Paste the story link and the date is read from the link itself (it overrides the one you type). Only the creator has the views and reach: ask her for the screenshot.'}
               </p>
             </div>
             <div className="col-span-2 sm:col-span-1">
               <label className="mb-1 block text-[10px] font-semibold uppercase text-gray-500">
-                {locale === 'es' ? 'Fecha de publicación (opcional)' : 'Publication date (optional)'}
+                {locale === 'es' ? 'Fecha de publicación (si no hay enlace)' : 'Publication date (if there is no link)'}
               </label>
               <input
                 type="datetime-local"
