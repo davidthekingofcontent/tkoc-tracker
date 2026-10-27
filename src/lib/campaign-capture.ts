@@ -54,6 +54,11 @@ export interface RuleItem {
   mentions: string[]
   postedAt: Date | null
   source?: string
+  /** Stories only: decoded link stickers */
+  links?: string[]
+  /** Stories only: feed posts/reels shared into the story (IG media ids / shortcodes) */
+  resharedMediaIds?: string[]
+  resharedShortcodes?: string[]
 }
 
 /** Minimum normalized keyword length for fuzzy (substring) caption matching.
@@ -94,6 +99,44 @@ export function normalizeTargets(values: string[]): string[] {
   return Array.from(out)
 }
 
+/** Confirmed statuses whose creators are scanned for stories (pay-per-run actor): the PM must set them. */
+export const STORY_SCAN_STATUSES = ['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'] as const
+
+/**
+ * Safety cap on a campaign's length for the stories scan. Listening campaigns
+ * are excluded by TYPE (David 2026-09-14: the annual contracts campaign was the
+ * bulk of the stories bill); at 62 days this cap silently dropped "Macros
+ * Septiembre" and its 13 creators the day a PM extended it to 67 (Oct 2026).
+ */
+export const STORIES_MAX_CAMPAIGN_DAYS = Number(process.env.STORIES_MAX_CAMPAIGN_DAYS || 100)
+
+export type StoriesSkipReason = 'window' | 'listening' | 'no_targets' | 'too_long'
+
+/** Length of the campaign window in days, null without both dates. */
+export function campaignSpanDays(campaign: Pick<CampaignRules, 'startDate' | 'endDate'>): number | null {
+  const start = campaign.startDate ? new Date(campaign.startDate).getTime() : NaN
+  const end = campaign.endDate ? new Date(campaign.endDate).getTime() : NaN
+  const days = Number.isFinite(start) && Number.isFinite(end) ? (end - start) / 86_400_000 : NaN
+  return Number.isFinite(days) ? Math.round(days) : null
+}
+
+/**
+ * The ONE eligibility rule for the stories scan, shared by the stories cron
+ * and the watchdog so they can never disagree: null when the campaign is
+ * scanned today, else why it is not.
+ */
+export function storiesCampaignSkipReason(
+  campaign: Pick<CampaignRules, 'startDate' | 'endDate' | 'targetAccounts' | 'targetHashtags'> & { type: string },
+  now: Date = new Date()
+): StoriesSkipReason | null {
+  if (!isWithinCampaignDates(campaign, now)) return 'window'
+  if (campaign.type === 'SOCIAL_LISTENING') return 'listening'
+  if (!campaignHasTargets(campaign)) return 'no_targets'
+  const days = campaignSpanDays(campaign)
+  if (days === null || days > STORIES_MAX_CAMPAIGN_DAYS) return 'too_long'
+  return null
+}
+
 export function campaignHasTargets(campaign: Pick<CampaignRules, 'targetAccounts' | 'targetHashtags'>): boolean {
   const accounts = (campaign.targetAccounts || []).map(stripSigil).filter(Boolean)
   const hashtags = (campaign.targetHashtags || []).map(stripSigil).filter(Boolean)
@@ -131,7 +174,7 @@ export function isWithinCampaignDates(
 /** Rule (3): the item references one of the campaign's brand targets. */
 export function itemReferencesBrand(
   campaign: Pick<CampaignRules, 'targetAccounts' | 'targetHashtags'>,
-  item: Pick<RuleItem, 'caption' | 'hashtags' | 'mentions'>
+  item: Pick<RuleItem, 'caption' | 'hashtags' | 'mentions'> & { links?: string[] }
 ): boolean {
   // A target field may hold several tokens typed together ("#vileda #viledaturbo"):
   // split on whitespace/commas so each one counts (2026-09-14: that field made
@@ -155,10 +198,20 @@ export function itemReferencesBrand(
   const haystack = normalizeBrandToken(
     [item.caption || '', ...(item.hashtags || []), ...(item.mentions || [])].join(' ')
   )
-  if (!haystack) return false
-  for (const kw of [...targetAccounts, ...targetHashtags]) {
-    if (kw.length >= MIN_FUZZY_KEYWORD_LENGTH && haystack.includes(kw)) return true
+  const keywords = [...targetAccounts, ...targetHashtags].filter(kw => kw.length >= MIN_FUZZY_KEYWORD_LENGTH)
+  if (haystack) {
+    for (const kw of keywords) if (haystack.includes(kw)) return true
   }
+
+  // A link sticker to the brand's site is a brand reference too (stories,
+  // 2026-10-27): 'https://www.vileda.es/mopa-h2pro' normalizes to a string
+  // that contains the brand token ('viledaes', 'vileda'). Same length guard.
+  for (const link of item.links || []) {
+    const l = normalizeBrandToken(link)
+    if (!l) continue
+    for (const kw of keywords) if (l.includes(kw)) return true
+  }
+  if (!haystack) return false
 
   // The brand name carried by a qualified handle ('@vileda.es' → 'vileda'):
   // the brand's TikTok handle rarely equals its Instagram one and TikTok's
@@ -211,14 +264,126 @@ export function scrapedPostToRuleItem(post: Pick<ScrapedPost, 'caption' | 'hasht
   }
 }
 
-export function scrapedStoryToRuleItem(story: Pick<ScrapedStory, 'hashtags' | 'mentions' | 'postedAt'>): RuleItem {
+export function scrapedStoryToRuleItem(
+  story: Pick<ScrapedStory, 'hashtags' | 'mentions' | 'postedAt' | 'links' | 'resharedMediaIds' | 'resharedShortcodes'>
+): RuleItem {
   return {
     caption: null,
     hashtags: story.hashtags || [],
     mentions: story.mentions || [],
     postedAt: toDate(story.postedAt),
     source: 'apify',
+    links: story.links || [],
+    resharedMediaIds: story.resharedMediaIds || [],
+    resharedShortcodes: story.resharedShortcodes || [],
   }
+}
+
+/** Instagram media/story ids are 15+ digit snowflakes; webhook and manual placeholder ids are not. */
+export function isInstagramMediaId(id: string | null | undefined): boolean {
+  return !!id && /^\d{15,}$/.test(id)
+}
+
+export interface StoryVerdict {
+  ok: boolean
+  /** Why the story counts: a mention/hashtag sticker, a link sticker to the brand's site, or a shared campaign post */
+  via?: 'mention' | 'link' | 'reshare'
+  /**
+   * Brand tokens written to the row (mentions[] / hashtags[]) when the evidence
+   * is a link or a shared post, so the stored row passes rule (3) on its own
+   * when revalidateCampaignMedia re-judges it from caption/mentions/hashtags.
+   */
+  mentions: string[]
+  hashtags: string[]
+  /** Short note stored as the story's caption (a story has none): the link or the shared post */
+  caption: string | null
+}
+
+const NO_STORY_MATCH: StoryVerdict = { ok: false, mentions: [], hashtags: [], caption: null }
+
+/** 'https://www.vileda.es/Mopa-H2PRO/p/177871?utm_source=…' → 'vileda.es/Mopa-H2PRO/p/177871' (what a report can show). */
+function shortLink(raw: string): string {
+  try {
+    const url = new URL(raw)
+    const host = url.hostname.replace(/^www\./i, '')
+    const path = url.pathname.replace(/\/+$/, '')
+    return (host + path).slice(0, 120)
+  } catch {
+    return raw.slice(0, 120)
+  }
+}
+
+/**
+ * Rules (2) and (3) for a scraped STORY, including the two brand signals a
+ * story carries that a post does not (2026-10-27, after a month in which 27
+ * of the 47 Vileda stories the scraper saw were rejected): a link sticker to
+ * the brand's site, and the creator sharing a feed post/reel INTO the story
+ * (story_feed_media) when that post is campaign content — a row of THIS
+ * campaign, a row of this creator that itself references the brand, or a
+ * post of the brand's own connected account. Rule (1), membership, is the
+ * caller's.
+ */
+export async function storyMatchesCampaign(
+  campaign: CampaignRules & { id: string },
+  influencerId: string,
+  story: ScrapedStory
+): Promise<StoryVerdict> {
+  const item = scrapedStoryToRuleItem(story)
+  if (!isWithinCampaignDates(campaign, item.postedAt)) return NO_STORY_MATCH
+  const links = story.links || []
+  // (a) mention or hashtag sticker: the row carries its own evidence
+  if (itemReferencesBrand(campaign, { ...item, links: [] })) {
+    return { ok: true, via: 'mention', mentions: [], hashtags: [], caption: links.length ? `Enlace en la story: ${shortLink(links[0])}` : null }
+  }
+  // Tokens a link/reshare row must carry to pass rule (3) on its own: the
+  // brand handle when the campaign targets an account, else its hashtags.
+  const brandHandles = normalizeTargets(campaign.targetAccounts || [])
+  const brandTokens = brandHandles.length > 0
+    ? { mentions: brandHandles, hashtags: [] as string[] }
+    : { mentions: [] as string[], hashtags: normalizeTargets(campaign.targetHashtags || []) }
+  // (b) link sticker to the brand's site: store the link that MATCHED
+  const matchedLink = links.find(link => itemReferencesBrand(campaign, { caption: null, hashtags: [], mentions: [], links: [link] }))
+  if (matchedLink) return { ok: true, via: 'link', ...brandTokens, caption: `Enlace en la story: ${shortLink(matchedLink)}` }
+
+  // (c) a feed post/reel shared into the story
+  const ids = (story.resharedMediaIds || []).filter(isInstagramMediaId)
+  const codes = (story.resharedShortcodes || []).filter(c => /^[A-Za-z0-9_-]{5,}$/.test(c))
+  if (ids.length === 0 && codes.length === 0) return NO_STORY_MATCH
+  const rows = await prisma.media.findMany({
+    where: {
+      platform: 'INSTAGRAM',
+      OR: [
+        ...(ids.length ? [{ externalId: { in: ids } }, ...ids.map(id => ({ externalId: { startsWith: `${id}_` } }))] : []),
+        ...codes.map(code => ({ permalink: { contains: `/${code}` } })),
+      ],
+    },
+    select: { campaignId: true, influencerId: true, permalink: true, caption: true, hashtags: true, mentions: true },
+  })
+  const shared =
+    rows.find(r => r.campaignId === campaign.id) ||
+    rows.find(r => r.influencerId === influencerId && itemReferencesBrand(campaign, r))
+  if (shared) {
+    return { ok: true, via: 'reshare', ...brandTokens, caption: `Comparte en la story: ${shared.permalink ? shortLink(shared.permalink) : codes[0] || ids[0]}` }
+  }
+  // A post of the brand's own CONNECTED Instagram (MetaMedia): its igMediaId is
+  // a Graph API id, not the Instagram pk a story carries, so the shortcode in
+  // the Graph permalink is the key that works (plus the id, in case).
+  if (brandHandles.length > 0) {
+    const brandPost = await prisma.metaMedia.findFirst({
+      where: {
+        igUsername: { in: brandHandles, mode: 'insensitive' },
+        OR: [
+          ...(ids.length ? [{ igMediaId: { in: ids } }] : []),
+          ...codes.map(code => ({ permalink: { contains: `/${code}` } })),
+        ],
+      },
+      select: { permalink: true },
+    })
+    if (brandPost) {
+      return { ok: true, via: 'reshare', ...brandTokens, caption: `Comparte en la story: ${brandPost.permalink ? shortLink(brandPost.permalink) : codes[0] || ids[0]}` }
+    }
+  }
+  return NO_STORY_MATCH
 }
 
 // ---------------------------------------------------------------------------
@@ -444,7 +609,7 @@ export async function findStoryTwin(
   influencerId: string,
   postedAt: Date | null,
   excludeExternalId?: string | null
-): Promise<{ id: string; externalId: string | null; views: number; mentions: string[]; campaignId: string | null } | null> {
+): Promise<{ id: string; externalId: string | null; source: string; views: number; mentions: string[]; campaignId: string | null } | null> {
   if (!postedAt) return null
   return prisma.media.findFirst({
     where: {
@@ -456,16 +621,23 @@ export async function findStoryTwin(
       ...(excludeExternalId ? { NOT: { externalId: excludeExternalId } } : {}),
     },
     orderBy: { campaignId: { sort: 'desc', nulls: 'last' } },
-    select: { id: true, externalId: true, views: true, mentions: true, campaignId: true },
+    select: { id: true, externalId: true, source: true, views: true, mentions: true, campaignId: true },
   })
 }
 
 export async function upsertCampaignStory(
   campaignId: string,
   influencerId: string,
-  story: ScrapedStory
+  story: ScrapedStory,
+  verdict?: Pick<StoryVerdict, 'mentions' | 'hashtags' | 'caption'>
 ): Promise<boolean> {
   if (!story.externalId) return false
+  // What the row must carry for rule (3) to hold on revalidation: the sticker
+  // mentions/hashtags plus, for a story captured through a link or a shared
+  // post, the brand tokens; the link / shared post as the caption (a story has none).
+  const mentions = Array.from(new Set([...(story.mentions || []), ...(verdict?.mentions || [])]))
+  const hashtags = Array.from(new Set([...(story.hashtags || []), ...(verdict?.hashtags || [])]))
+  const caption = verdict?.caption ?? null
   /**
    * Story views may only RAISE what we hold (same rule as upsertCampaignPost's
    * raiseOnly). Apify cannot see other accounts' story view counts — it reports
@@ -489,19 +661,24 @@ export async function upsertCampaignStory(
           where: { id: decision.rowId },
           data: {
             ...(await raiseViews(decision.rowId)),
-            ...(story.mentions?.length ? { mentions: story.mentions } : {}),
-            ...(story.hashtags?.length ? { hashtags: story.hashtags } : {}),
+            ...(mentions.length ? { mentions } : {}),
+            ...(hashtags.length ? { hashtags } : {}),
+            ...(caption ? { caption } : {}),
             campaignId,
           },
         })
         return true
       case 'create': {
         // The same story may already be here as a Meta story_mention row
-        // (webhook): different id space (message id vs IG pk), no shortcode to
-        // match on, but the publish time is the same → upgrade that row in
-        // place instead of creating a twin.
+        // (webhook) or as a story a PM registered without its link: different
+        // id space (message id / placeholder vs IG pk), no shortcode to match
+        // on, but the publish time is the same → upgrade that row in place
+        // instead of creating a twin. NEVER another Apify story, nor a row
+        // that already carries an Instagram id: two stories minutes apart are
+        // two SLIDES of the creator's story, and merging them (Oct 2026) lost
+        // two of every three slides and re-announced the same stories daily.
         const twin = await findStoryTwin(campaignId, influencerId, toDate(story.postedAt))
-        if (twin) {
+        if (twin && twin.source !== 'apify' && !isInstagramMediaId(twin.externalId)) {
           await prisma.media.update({
             where: { id: twin.id },
             data: {
@@ -510,8 +687,9 @@ export async function upsertCampaignStory(
               ...(story.thumbnailUrl ? { thumbnailUrl: story.thumbnailUrl } : {}),
               ...(story.mediaUrl ? { mediaUrl: story.mediaUrl } : {}),
               views: Math.max(twin.views, story.views || 0),
-              mentions: Array.from(new Set([...(twin.mentions || []), ...(story.mentions || [])])),
-              ...(story.hashtags?.length ? { hashtags: story.hashtags } : {}),
+              mentions: Array.from(new Set([...(twin.mentions || []), ...mentions])),
+              ...(hashtags.length ? { hashtags } : {}),
+              ...(caption ? { caption } : {}),
               campaignId,
             },
           })
@@ -525,9 +703,10 @@ export async function upsertCampaignStory(
             mediaUrl: story.mediaUrl,
             thumbnailUrl: story.thumbnailUrl,
             permalink: story.permalink ?? null,
+            caption,
             views: story.views,
-            mentions: story.mentions || [],
-            hashtags: story.hashtags || [],
+            mentions,
+            hashtags,
             postedAt: toDate(story.postedAt),
             influencerId,
             campaignId,
@@ -707,8 +886,9 @@ export async function captureMemberContent(
           if (sr.username.toLowerCase() !== influencer.username.toLowerCase()) continue
           for (const story of sr.stories) {
             if (!story.externalId) { result.skipped++; continue }
-            if (!mediaMatchesCampaignRules(campaign, scrapedStoryToRuleItem(story))) { result.skipped++; continue }
-            const ok = await upsertCampaignStory(campaign.id, influencer.id, story)
+            const verdict = await storyMatchesCampaign(campaign, influencer.id, story)
+            if (!verdict.ok) { result.skipped++; continue }
+            const ok = await upsertCampaignStory(campaign.id, influencer.id, story, verdict)
             if (ok) result.captured++
             else result.skipped++
           }

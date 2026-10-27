@@ -5,20 +5,16 @@ import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 
 /** Stories live 24 h: two scans a day catch every one of them (CRON_STORIES_MIN_HOURS overrides). */
 const STORIES_DEFAULT_MIN_HOURS = Number(process.env.STORIES_MIN_INTERVAL_HOURS || 12)
-/**
- * David 2026-09-14: stories only for the campaigns "del mes" — active, inside
- * their dates today AND no longer than this many days. Long-running listening
- * campaigns (the annual contracts one) are excluded: their dozens of creators
- * were the bulk of the stories bill.
- */
-const STORIES_MAX_CAMPAIGN_DAYS = Number(process.env.STORIES_MAX_CAMPAIGN_DAYS || 62)
 import { notifyCampaignTeam, notifyApifyBudgetPauseOnce } from '@/lib/notifications'
 import {
-  mediaMatchesCampaignRules,
-  campaignHasTargets,
-  isWithinCampaignDates,
-  scrapedStoryToRuleItem,
+  STORIES_MAX_CAMPAIGN_DAYS,
+  STORY_SCAN_STATUSES,
+  campaignSpanDays,
+  storiesCampaignSkipReason,
+  storyMatchesCampaign,
   upsertCampaignStory,
+  type StoriesSkipReason,
+  type StoryVerdict,
 } from '@/lib/campaign-capture'
 
 /**
@@ -79,6 +75,7 @@ export async function GET(request: NextRequest) {
       select: {
         id: true,
         name: true,
+        type: true,
         targetAccounts: true,
         targetHashtags: true,
         startDate: true,
@@ -91,7 +88,7 @@ export async function GET(request: NextRequest) {
           // creators of any status, once the brand's Instagram allows message
           // access to the app.
           where: {
-            status: { in: ['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'] },
+            status: { in: [...STORY_SCAN_STATUSES] },
           },
           select: {
             status: true,
@@ -113,26 +110,26 @@ export async function GET(request: NextRequest) {
     // keeps the pay-per-story Apify cost bounded.
     const now = new Date()
     const campaignsById = new Map<string, (typeof activeCampaigns)[number]>()
+    // The eligibility rule is shared with the watchdog (storiesCampaignSkipReason).
+    // Live campaigns with confirmed creators that are NOT scanned: their team
+    // is told once per reason (never a silent gap again — Oct 2026).
+    const skipped: StoriesSkip[] = []
     for (const c of activeCampaigns) {
-      if (!campaignHasTargets(c)) {
-        console.log(`[Cron/Stories] Campaign "${c.name}" has no target accounts/hashtags — skipping`)
+      const reason = storiesCampaignSkipReason(c, now)
+      if (reason === null) {
+        campaignsById.set(c.id, c)
         continue
       }
-      if (!isWithinCampaignDates(c, now)) {
+      if (reason === 'window') {
         console.log(`[Cron/Stories] Campaign "${c.name}" is outside its date window today — skipping`)
         continue
       }
-      // Only the campaigns of the month: a window longer than STORIES_MAX_CAMPAIGN_DAYS
-      // (or without both dates) is a listening/annual campaign — no story scraping.
-      const start = c.startDate ? new Date(c.startDate).getTime() : NaN
-      const end = c.endDate ? new Date(c.endDate).getTime() : NaN
-      const days = Number.isFinite(start) && Number.isFinite(end) ? (end - start) / 86_400_000 : NaN
-      if (!Number.isFinite(days) || days > STORIES_MAX_CAMPAIGN_DAYS) {
-        console.log(`[Cron/Stories] Campaign "${c.name}" spans ${Number.isFinite(days) ? Math.round(days) : '?'} days (> ${STORIES_MAX_CAMPAIGN_DAYS}) — stories not scraped for long campaigns`)
-        continue
-      }
-      campaignsById.set(c.id, c)
+      const detail = skipDetail(reason, c)
+      console.log(`[Cron/Stories] Campaign "${c.name}" skipped (${reason}): ${detail}`)
+      const confirmed = c.influencers.filter(ci => ci.influencer.platform === 'INSTAGRAM').length
+      if (confirmed > 0) skipped.push({ id: c.id, name: c.name, reason, detail })
     }
+    await notifyStoriesSkips(skipped, Array.from(campaignsById.keys()))
 
     // Collect all Instagram usernames across campaigns (lowercased for matching)
     const usernameMap = new Map<string, { influencerId: string; username: string; campaignIds: string[] }>()
@@ -159,6 +156,10 @@ export async function GET(request: NextRequest) {
     const usernames = Array.from(usernameMap.values()).map(m => m.username)
     if (usernames.length === 0) {
       console.log('[Cron/Stories] No CONFIRMED (Acordado+) Instagram creators in live campaigns — nothing scraped (PMs must set the status)')
+      // A completed run with nothing to scan is still a completed run (the
+      // watchdog shares the eligibility rule, so it expects no work either).
+      await markCronRun('stories')
+      await recordStoriesRun({ at: now.toISOString(), usernamesChecked: 0, totalStories: 0, newStories: 0, newByReshare: 0, rejectedByRules: 0, campaigns: [], skipped })
       return NextResponse.json({ message: 'No confirmed Instagram creators (status Acordado or later) in live campaigns with targets', storiesFound: 0 })
     }
 
@@ -168,6 +169,8 @@ export async function GET(request: NextRequest) {
     let totalStories = 0
     let newStories = 0
     let rejectedByRules = 0
+    let newByReshare = 0
+    let newByLink = 0
     // New stories per campaign: each campaign's team is notified separately
     const newStoriesByCampaign = new Map<string, number>()
     await markCronRun('stories')
@@ -186,26 +189,30 @@ export async function GET(request: NextRequest) {
           if (!story.externalId) continue
 
           // One row per (story, campaign): attach the story to EVERY campaign
-          // whose rules it satisfies (member + brand tag + inside dates).
-          const item = scrapedStoryToRuleItem(story)
-          const matchingCampaignIds = mapping.campaignIds.filter(cid => {
+          // whose rules it satisfies (member + brand signal + inside dates).
+          const matches: Array<{ cid: string; verdict: StoryVerdict }> = []
+          for (const cid of mapping.campaignIds) {
             const campaign = campaignsById.get(cid)
-            return campaign ? mediaMatchesCampaignRules(campaign, item) : false
-          })
+            if (!campaign) continue
+            const verdict = await storyMatchesCampaign(campaign, mapping.influencerId, story)
+            if (verdict.ok) matches.push({ cid, verdict })
+          }
 
-          if (matchingCampaignIds.length === 0) {
+          if (matches.length === 0) {
             rejectedByRules++
             continue
           }
 
-          for (const cid of matchingCampaignIds) {
+          for (const { cid, verdict } of matches) {
             const already = await prisma.media.findFirst({
               where: { externalId: story.externalId, platform: 'INSTAGRAM', campaignId: cid },
               select: { id: true },
             })
             if (already) continue
-            if (await upsertCampaignStory(cid, mapping.influencerId, story)) {
+            if (await upsertCampaignStory(cid, mapping.influencerId, story, verdict)) {
               newStories++
+              if (verdict.via === 'reshare') newByReshare++
+              if (verdict.via === 'link') newByLink++
               newStoriesByCampaign.set(cid, (newStoriesByCampaign.get(cid) || 0) + 1)
             }
           }
@@ -225,18 +232,98 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    console.log(`[Cron/Stories] Done. Total: ${totalStories}, New: ${newStories}, Rejected by rules: ${rejectedByRules}`)
+    console.log(`[Cron/Stories] Done. Total: ${totalStories}, New: ${newStories} (${newByLink} via a brand link, ${newByReshare} via a shared post), Rejected by rules: ${rejectedByRules}`)
+    await recordStoriesRun({
+      at: now.toISOString(),
+      usernamesChecked: usernames.length,
+      totalStories,
+      newStories,
+      newByLink,
+      newByReshare,
+      rejectedByRules,
+      campaigns: Array.from(campaignsById.values()).map(c => ({
+        id: c.id,
+        name: c.name,
+        creators: c.influencers.filter(ci => ci.influencer.platform === 'INSTAGRAM').length,
+        newStories: newStoriesByCampaign.get(c.id) || 0,
+      })),
+      skipped,
+    })
 
     return NextResponse.json({
       success: true,
       usernamesChecked: usernames.length,
       totalStories,
       newStories,
+      newByLink,
+      newByReshare,
       rejectedByRules,
       campaigns: campaignsById.size,
+      skipped: skipped.map(s => ({ name: s.name, reason: s.reason })),
     })
   } catch (error) {
     console.error('[Cron/Stories] Error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+interface StoriesSkip {
+  id: string
+  name: string
+  reason: StoriesSkipReason
+  detail: string
+}
+
+/** What the campaign team is told when its campaign is not scanned. */
+function skipDetail(reason: Exclude<StoriesSkipReason, 'window'>, c: { startDate: Date; endDate: Date | null }): string {
+  switch (reason) {
+    case 'listening':
+      return 'es una campaña de Social Listening; las stories solo se rastrean en las campañas de seguimiento de influencers y UGC.'
+    case 'no_targets':
+      return 'no tiene Cuentas de Marca Objetivo ni hashtags; añádelos en Configurar para que sus stories entren.'
+    case 'too_long':
+      return `dura ${campaignSpanDays(c) ?? '?'} días (máximo ${STORIES_MAX_CAMPAIGN_DAYS}) o no tiene fecha de fin; acorta la campaña o registra sus stories a mano.`
+  }
+}
+
+/** Last run's figures, readable without Railway logs (Setting cron_stories_last_result). */
+async function recordStoriesRun(summary: Record<string, unknown>): Promise<void> {
+  try {
+    const value = JSON.stringify(summary)
+    await prisma.setting.upsert({
+      where: { key: 'cron_stories_last_result' },
+      update: { value },
+      create: { key: 'cron_stories_last_result', value },
+    })
+  } catch (err) {
+    console.error('[Cron/Stories] could not record the run summary:', err instanceof Error ? err.message : err)
+  }
+}
+
+/**
+ * One notification per campaign and reason to that campaign's team when a live
+ * campaign with confirmed creators is not scanned for stories (Setting
+ * stories_skip_notice_<campaignId> = reason). Cleared when the campaign is
+ * scanned again, so a later exclusion notifies again. Never throws.
+ */
+async function notifyStoriesSkips(skipped: StoriesSkip[], scannedIds: string[]): Promise<void> {
+  try {
+    if (scannedIds.length > 0) {
+      await prisma.setting.deleteMany({ where: { key: { in: scannedIds.map(id => `stories_skip_notice_${id}`) } } })
+    }
+    for (const s of skipped) {
+      const key = `stories_skip_notice_${s.id}`
+      const existing = await prisma.setting.findUnique({ where: { key }, select: { value: true } })
+      if (existing?.value === s.reason) continue
+      await prisma.setting.upsert({ where: { key }, update: { value: s.reason }, create: { key, value: s.reason } })
+      await notifyCampaignTeam(s.id, {
+        type: 'cron_stale',
+        title: 'Stories sin rastrear',
+        message: `Las stories de "${s.name}" no se están rastreando: ${s.detail}`,
+        link: `/campaigns/${s.id}`,
+      })
+    }
+  } catch (err) {
+    console.error('[Cron/Stories] skip notices failed:', err instanceof Error ? err.message : err)
   }
 }

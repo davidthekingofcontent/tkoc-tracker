@@ -188,7 +188,8 @@ function campaignWindowIsTrackable(campaign: { startDate: Date; endDate: Date | 
  * the instrumentation auto-tracker.
  *
  * Hashtag + @mention tracking only. Stories are the job of /api/cron/stories,
- * which applies the soft budget, the date window and the ≤ 62-day rule — the
+ * which applies the soft budget and the eligibility rule (dates, type, length
+ * cap: storiesCampaignSkipReason in campaign-capture.ts) — the
  * per-campaign stories loop that used to live here bypassed all three
  * (7 actor starts, 1,12 $ a day; removed 2026-09-14).
  */

@@ -1005,6 +1005,12 @@ export interface ScrapedStory {
   mentions: string[]
   hashtags: string[]
   stickers: string[]
+  /** Link stickers with the l.instagram.com wrapper removed ('https://www.vileda.es/...') */
+  links?: string[]
+  /** Feed posts/reels the creator shared INTO this story (story_feed_media): IG media ids */
+  resharedMediaIds?: string[]
+  /** Same shared posts by shortcode ('DeMfIg5Idxb'), for rows stored by permalink */
+  resharedShortcodes?: string[]
 }
 
 export interface StoryResult {
@@ -1012,7 +1018,7 @@ export interface StoryResult {
   stories: ScrapedStory[]
 }
 
-async function parseStoryItems(items: Record<string, unknown>[]): Promise<StoryResult[]> {
+export async function parseStoryItems(items: Record<string, unknown>[]): Promise<StoryResult[]> {
   const storyMap = new Map<string, ScrapedStory[]>()
   const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : typeof v === 'number' ? String(v) : null)
 
@@ -1052,6 +1058,18 @@ async function parseStoryItems(items: Record<string, unknown>[]): Promise<StoryR
       ...linkStickers.map(l => str((l.story_link as Record<string, unknown> | undefined)?.url)).filter((x): x is string => !!x),
       ...((item.stickers as string[] | undefined) || []),
     ]
+    // Link stickers arrive wrapped ('https://l.instagram.com/?u=https%3A%2F%2Fwww.vileda.es%2F...'):
+    // keep the real destination, which is what the campaign rules look at.
+    const links = Array.from(new Set(stickers.map(decodeInstagramLink).filter(Boolean)))
+    // A feed post/reel shared into the story: the most common "story" of a
+    // paid deal (the creator re-shares her own reel) carries NO mention sticker.
+    const feedMedia = (item.story_feed_media as Array<Record<string, unknown>> | undefined) || []
+    const resharedMediaIds = Array.from(new Set(
+      feedMedia.map(f => (str(f.media_id) || str(f.media_compound_str) || '').split('_')[0]).filter(Boolean)
+    ))
+    const resharedShortcodes = Array.from(new Set(
+      feedMedia.map(f => str(f.media_code)).filter((x): x is string => !!x)
+    ))
 
     const story: ScrapedStory = {
       externalId,
@@ -1065,6 +1083,9 @@ async function parseStoryItems(items: Record<string, unknown>[]): Promise<StoryR
       mentions,
       hashtags,
       stickers,
+      links,
+      resharedMediaIds,
+      resharedShortcodes,
     }
 
     const existing = storyMap.get(username) || []
@@ -1073,6 +1094,20 @@ async function parseStoryItems(items: Record<string, unknown>[]): Promise<StoryR
   }
 
   return Array.from(storyMap.entries()).map(([username, stories]) => ({ username, stories }))
+}
+
+/** 'https://l.instagram.com/?u=<encoded>' → the encoded destination; any other URL unchanged. */
+function decodeInstagramLink(raw: string): string {
+  try {
+    const url = new URL(raw)
+    if (/(^|\.)l\.instagram\.com$/i.test(url.hostname)) {
+      const inner = url.searchParams.get('u')
+      if (inner) return inner
+    }
+  } catch {
+    // not a URL: keep as is
+  }
+  return raw
 }
 
 /**

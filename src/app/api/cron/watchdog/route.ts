@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { campaignHasTargets, campaignWindowEndExclusive } from '@/lib/campaign-capture'
+import { STORY_SCAN_STATUSES, campaignHasTargets, campaignWindowEndExclusive, storiesCampaignSkipReason } from '@/lib/campaign-capture'
 import { notifyAdminsOncePerDay } from '@/lib/notifications'
 
 // GET /api/cron/watchdog (header x-cron-secret) — every 6 h from the internal scheduler.
@@ -13,8 +13,6 @@ import { notifyAdminsOncePerDay } from '@/lib/notifications'
 // cause (budget gate, breaker, crash, scheduler dead, Apify down) — it alerts
 // every active ADMIN once per UTC day per cron.
 
-const STORIES_MAX_CAMPAIGN_DAYS = Number(process.env.STORIES_MAX_CAMPAIGN_DAYS || 62)
-const STORY_STATUSES = ['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'] as const
 
 /** Hours after which a cron with pending work counts as stale. */
 const STALE_AFTER_HOURS: Record<string, number> = {
@@ -58,10 +56,11 @@ async function liveCampaigns() {
       name: true,
       startDate: true,
       endDate: true,
+      type: true,
       targetAccounts: true,
       targetHashtags: true,
       influencers: {
-        where: { status: { in: [...STORY_STATUSES] }, influencer: { platform: 'INSTAGRAM' } },
+        where: { status: { in: [...STORY_SCAN_STATUSES] }, influencer: { platform: 'INSTAGRAM' } },
         select: { id: true },
       },
       _count: { select: { influencers: true } },
@@ -83,13 +82,10 @@ export async function GET(request: NextRequest) {
   try {
     const live = await liveCampaigns()
     const withTargets = live.filter(c => campaignHasTargets(c))
-    // Stories: only short campaigns (the stories cron skips long/annual ones) with confirmed IG creators
-    const storyWork = withTargets.some(c => {
-      const start = new Date(c.startDate).getTime()
-      const end = c.endDate ? new Date(c.endDate).getTime() : NaN
-      const days = Number.isFinite(end) ? (end - start) / 86_400_000 : NaN
-      return Number.isFinite(days) && days <= STORIES_MAX_CAMPAIGN_DAYS && c.influencers.length > 0
-    })
+    // Stories: the SAME eligibility rule the stories cron applies (type, targets,
+    // dates, length cap) plus at least one confirmed IG creator
+    const nowTs = new Date()
+    const storyWork = live.some(c => storiesCampaignSkipReason(c, nowTs) === null && c.influencers.length > 0)
     const trackWork = withTargets.length > 0
     const checkPostsWork = live.some(c => c._count.influencers > 0)
 
