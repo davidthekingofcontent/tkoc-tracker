@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve, scrapeStories, STORIES_BATCH_MAX } from '@/lib/apify'
+import { isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve, scrapeStories, wasLastStoriesScrapePartial, STORIES_BATCH_MAX } from '@/lib/apify'
 import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 
 /** Stories live 24 h: two scans a day catch every one of them (CRON_STORIES_MIN_HOURS overrides). */
@@ -175,10 +175,12 @@ export async function GET(request: NextRequest) {
     const newStoriesByCampaign = new Map<string, number>()
     await markCronRun('stories')
 
+    let partial = false
     for (let i = 0; i < usernames.length; i += STORIES_BATCH_MAX) {
       if (isApifyExhausted()) break
       const batch = usernames.slice(i, i + STORIES_BATCH_MAX)
       const results = await scrapeStories(batch, 'INSTAGRAM')
+      if (wasLastStoriesScrapePartial()) partial = true
 
       for (const result of results) {
         const mapping = usernameMap.get(result.username.toLowerCase())
@@ -232,10 +234,11 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    console.log(`[Cron/Stories] Done. Total: ${totalStories}, New: ${newStories} (${newByLink} via a brand link, ${newByReshare} via a shared post), Rejected by rules: ${rejectedByRules}`)
+    console.log(`[Cron/Stories] Done. Total: ${totalStories}${partial ? ' (PARTIAL: the actor run had not finished)' : ''}, New: ${newStories} (${newByLink} via a brand link, ${newByReshare} via a shared post), Rejected by rules: ${rejectedByRules}`)
     await recordStoriesRun({
       at: now.toISOString(),
       usernamesChecked: usernames.length,
+      partial,
       totalStories,
       newStories,
       newByLink,
@@ -258,6 +261,7 @@ export async function GET(request: NextRequest) {
       newByLink,
       newByReshare,
       rejectedByRules,
+      partial,
       campaigns: campaignsById.size,
       skipped: skipped.map(s => ({ name: s.name, reason: s.reason })),
     })

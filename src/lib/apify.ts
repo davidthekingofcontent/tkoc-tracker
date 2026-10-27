@@ -311,11 +311,14 @@ async function runActorDetailed(
     throw new Error(`Apify actor ${actorId} did not return a dataset ID`)
   }
 
-  // If status is not SUCCEEDED, the run may still be running or failed
+  // If status is not SUCCEEDED, the run may still be queued, running or failed.
+  // READY means QUEUED (not started yet) and RUNNING means in progress: in both
+  // cases the dataset is incomplete. Until 2026-10-27 READY was taken as
+  // finished and the dataset read at once: with waitForFinish capped at 60 s
+  // and story runs of 65-95 s, a third of the stories were never evaluated.
   let status = runData.data?.status
-  if (status && status !== 'SUCCEEDED' && status !== 'READY') {
-    // Wait a bit more and check
-    if (status === 'RUNNING' && runId) {
+  if (status && status !== 'SUCCEEDED') {
+    if ((status === 'RUNNING' || status === 'READY') && runId) {
       // Poll until done — use the run ID, not the dataset ID
       const polls = Math.floor(Math.max(0, maxPollMs) / APIFY_POLL_INTERVAL_MS)
       for (let i = 0; i < polls; i++) {
@@ -332,7 +335,7 @@ async function runActorDetailed(
       }
     }
   }
-  const succeeded = status === 'SUCCEEDED' || status === 'READY' || !status
+  const succeeded = status === 'SUCCEEDED' || !status
   if (!succeeded) {
     console.warn(`[Apify] Run ${runId} of ${actorId} still ${status} after the wait: reading the dataset as PARTIAL`)
   }
@@ -355,9 +358,10 @@ async function runActorDetailed(
 async function runActor(
   actorId: string,
   input: Record<string, unknown>,
-  timeoutSecs = 120
+  timeoutSecs = 120,
+  maxPollMs = APIFY_DEFAULT_POLL_MS
 ): Promise<Record<string, unknown>[]> {
-  const { items } = await runActorDetailed(actorId, input, timeoutSecs)
+  const { items } = await runActorDetailed(actorId, input, timeoutSecs, maxPollMs)
   return items
 }
 
@@ -1124,6 +1128,18 @@ const STORY_ACTORS = [
 ]
 
 /**
+ * Story runs take 65-95 s for ~50 creators: after Apify's 60 s wait, poll up
+ * to this long (the whole request must stay under the scheduler's 300 s
+ * fetch limit). A dataset read before the run finished is PARTIAL.
+ */
+const STORIES_POLL_MS = 200_000
+let lastStoriesScrapePartial = false
+/** True when the last stories scrape read its dataset before the run finished (some stories unseen). */
+export function wasLastStoriesScrapePartial(): boolean {
+  return lastStoriesScrapePartial
+}
+
+/**
  * The stories actor charges 0,099 $ per START plus 0,003 $ per username and
  * accepts up to 100 usernames per run: one run for everybody is 5× cheaper
  * than five runs of 20. Never call it for a single creator.
@@ -1137,9 +1153,11 @@ async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[
   for (const actor of STORY_ACTORS) {
     try {
       console.log(`[Apify] Trying story actor: ${actor}`)
-      const items = await runActor(actor, { usernames: usernameSlice }, 300)
+      const { items, succeeded } = await runActorDetailed(actor, { usernames: usernameSlice }, 300, STORIES_POLL_MS)
+      lastStoriesScrapePartial = !succeeded
+      if (!succeeded) console.warn(`[Apify] ${actor}: run not finished when the dataset was read — the stories list is PARTIAL`)
       if (items && items.length > 0) {
-        console.log(`[Apify] ${actor} returned ${items.length} story items`)
+        console.log(`[Apify] ${actor} returned ${items.length} story items${succeeded ? '' : ' (partial)'}`)
         return parseStoryItems(items)
       }
       // A clean empty result is a real answer (nobody has live stories) — no need to pay a second actor
@@ -1169,8 +1187,10 @@ export async function scrapeStories(usernames: string[], platform: 'INSTAGRAM' |
   }
 
   const result = await scrapeInstagramStories(usernames)
-  // Don't negative-cache empties caused by the exhausted-limit circuit breaker
+  // Don't negative-cache empties caused by the exhausted-limit circuit breaker,
+  // and never cache a partial list (the next caller must see the whole run)
   if (result.length === 0 && isApifyExhausted()) return result
+  if (lastStoriesScrapePartial) return result
   cacheSet(cacheKey, result, result.length > 0 ? 30 * 60 * 1000 : NEGATIVE_CACHE_TTL_MS)
   return result
 }
