@@ -40,6 +40,7 @@ const CRON_JOBS: CronJob[] = [
   { name: 'meta-sync',          path: '/api/cron/meta-sync',          intervalMs: TWO_HOURS_MS,        initialDelayMs: 12 * 60 * 1000, auth: 'header' },
   { name: 'meta-token-refresh', path: '/api/cron/meta-token-refresh', intervalMs: TWENTY_FOUR_HOURS_MS, initialDelayMs: 30 * 60 * 1000, auth: 'header' },
   { name: 'watchdog',           path: '/api/cron/watchdog',           intervalMs: SIX_HOURS_MS,         initialDelayMs: 45 * 60 * 1000, auth: 'header' }, // alerts ADMINs when a capture cron has not run (any cause) — born after the silent 2-week stories pause of Sept 2026
+  { name: 'tiktok-link',        path: '/api/cron/tiktok-link',        intervalMs: TWELVE_HOURS_MS,      initialDelayMs: 35 * 60 * 1000, auth: 'header' }, // links the TikTok account of confirmed Instagram members when it publishes campaign content (20 h gate → once a day)
   { name: 'benchmarks',         path: '/api/cron/benchmarks',         intervalMs: THIRTY_DAYS_MS,       initialDelayMs: 40 * 60 * 1000, auth: 'header' }, // own negotiations → benchmark cells (cheap, idempotent)
 ]
 

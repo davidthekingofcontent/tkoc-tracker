@@ -78,6 +78,7 @@ export async function GET(request: NextRequest) {
         type: true,
         targetAccounts: true,
         targetHashtags: true,
+        targetKeywords: true,
         startDate: true,
         endDate: true,
         influencers: {

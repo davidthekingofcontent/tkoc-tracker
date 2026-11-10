@@ -5,6 +5,7 @@ import { scrapeSinglePost, isApifyExhausted, isApifyConfiguredAsync } from '@/li
 import type { ScrapedSinglePost } from '@/lib/apify'
 import { isWithinCampaignDates } from '@/lib/campaign-capture'
 import { parseInstagramStoryUrl } from '@/lib/story-url'
+import { ensureTikTokTwin, tiktokCandidateHandle } from '@/lib/tiktok-autolink'
 import type { MediaType, Platform } from '@/generated/prisma/client'
 
 // POST /api/campaigns/[id]/media/manual
@@ -241,7 +242,7 @@ export async function POST(
         influencers: {
           select: {
             influencer: {
-              select: { id: true, username: true, platform: true },
+              select: { id: true, username: true, platform: true, bio: true, website: true },
             },
           },
         },
@@ -269,6 +270,30 @@ export async function POST(
     // ===== Resolve the creator (must be a campaign member) =====
     const ownerUsername = scraped?.ownerUsername || parsed.ownerHint || null
 
+    // TikTok auto-link (Nov 2026): a TikTok video whose author — the SCRAPED
+    // owner, never the URL's @user — is the TikTok account of an Instagram
+    // member (the user she links in her Instagram bio, else the same username)
+    // links that account to the campaign instead of being refused. Only the
+    // INTENT is recorded here: the account is created right before the media
+    // row is written, so a request refused later (undated, outside the
+    // campaign dates, already filed under someone else) leaves nothing behind.
+    const twin: { intent: { igMember: (typeof members)[number]; handle: string } | null } = { intent: null }
+    const provisionalTwin = async (igMember: (typeof members)[number], tiktokHandle: string) => {
+      twin.intent = { igMember, handle: tiktokHandle }
+      const lookalikes = await prisma.influencer.findMany({
+        where: { platform: 'TIKTOK', username: { equals: tiktokHandle, mode: 'insensitive' } },
+        select: { id: true, username: true },
+      })
+      const row = lookalikes.find((r) => r.username.toLowerCase() === tiktokHandle)
+      return {
+        id: row?.id ?? `pending-tiktok:${tiktokHandle}`,
+        username: row?.username ?? tiktokHandle,
+        platform: 'TIKTOK' as const,
+        bio: null,
+        website: null,
+      }
+    }
+
     let member: (typeof members)[number] | undefined
     if (influencerIdInput) {
       member = members.find((m) => m.id === influencerIdInput)
@@ -277,6 +302,25 @@ export async function POST(
           { error: 'El creador no está en esta campaña. Añádelo primero.' },
           { status: 400 }
         )
+      }
+      if (parsed.platform === 'TIKTOK' && member.platform === 'INSTAGRAM' && scraped?.ownerUsername) {
+        const owner = normalizeHandle(scraped.ownerUsername)
+        const tiktokMember = members.find((m) => m.platform === 'TIKTOK' && normalizeHandle(m.username) === owner)
+        if (tiktokMember) {
+          // The author's TikTok account is already in the campaign: file it there
+          member = tiktokMember
+        } else if (tiktokCandidateHandle(member).handle === owner) {
+          member = await provisionalTwin(member, owner)
+        } else {
+          // A different username that her Instagram does not link: never guess identity
+          return NextResponse.json(
+            {
+              error: `Este vídeo es de @${owner} en TikTok. Si es la cuenta de TikTok de @${member.username}, añádela en Elegir con su URL (https://www.tiktok.com/@${owner}) y vuelve a pegar el enlace.`,
+              ownerUsername: owner,
+            },
+            { status: 400 }
+          )
+        }
       }
       // The scraped owner is authoritative: refuse to file someone else's post
       // under this creator. (The URL's @user is only a hint — TikTok resolves
@@ -298,6 +342,14 @@ export async function POST(
       member = members.find(
         (m) => m.platform === parsed.platform && normalizeHandle(m.username) === wanted
       )
+      if (!member && parsed.platform === 'TIKTOK' && scraped?.ownerUsername) {
+        // Same person, other network: an Instagram member whose TikTok (the one
+        // linked in her Instagram bio, else the same username) is the author
+        const igMember = members.find(
+          (m) => m.platform === 'INSTAGRAM' && tiktokCandidateHandle(m).handle === wanted
+        )
+        if (igMember) member = await provisionalTwin(igMember, wanted)
+      }
       if (!member) {
         return NextResponse.json(
           {
@@ -401,6 +453,18 @@ export async function POST(
       influencer: {
         select: { id: true, username: true, displayName: true, avatarUrl: true, platform: true },
       },
+    }
+
+    // Every check has passed: now the creator's TikTok account joins the campaign
+    if (twin.intent) {
+      const linked = await ensureTikTokTwin({ campaignId: id, igInfluencerId: twin.intent.igMember.id, handle: twin.intent.handle })
+      if (!linked) {
+        return NextResponse.json(
+          { error: 'No se pudo vincular la cuenta de TikTok. Añádela en Elegir con su URL completa y vuelve a pegar el enlace.' },
+          { status: 400 }
+        )
+      }
+      member = { ...member, id: linked.influencerId, username: linked.username }
     }
 
     let media

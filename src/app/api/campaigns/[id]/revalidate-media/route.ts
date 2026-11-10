@@ -37,6 +37,7 @@ export async function POST(
         userId: true,
         targetAccounts: true,
         targetHashtags: true,
+        targetKeywords: true,
         assignments: { where: { userId: session.id }, select: { id: true } },
       },
     })

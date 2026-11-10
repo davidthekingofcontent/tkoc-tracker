@@ -4,7 +4,7 @@ import type { ScrapedPost, ScrapedStory } from '@/lib/apify'
 import type { MediaType, Platform } from '@/generated/prisma/client'
 import { computeBaseline } from '@/lib/creator-baseline'
 import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-upsert'
-import { accountCoreStems, captionWords } from '@/lib/campaign-targets'
+import { accountCoreStems, captionWords, keywordNeedles, normalizeStem, tagCarriesKeyword, textTokens, tokensContain, tokensContainWords } from '@/lib/campaign-targets'
 
 /**
  * PRECISE CONTENT CAPTURE — the single source of truth for "does this piece
@@ -44,6 +44,12 @@ import { accountCoreStems, captionWords } from '@/lib/campaign-targets'
 export interface CampaignRules {
   targetAccounts: string[]
   targetHashtags: string[]
+  /**
+   * Product keywords ("Flection System"): searched as whole words in the
+   * content of the campaign's creators, never scraped as hashtags/mentions.
+   * Optional so a caller that did not select the column simply has none.
+   */
+  targetKeywords?: string[] | null
   startDate: Date
   endDate: Date | null
 }
@@ -126,7 +132,7 @@ export function campaignSpanDays(campaign: Pick<CampaignRules, 'startDate' | 'en
  * scanned today, else why it is not.
  */
 export function storiesCampaignSkipReason(
-  campaign: Pick<CampaignRules, 'startDate' | 'endDate' | 'targetAccounts' | 'targetHashtags'> & { type: string },
+  campaign: Pick<CampaignRules, 'startDate' | 'endDate' | 'targetAccounts' | 'targetHashtags' | 'targetKeywords'> & { type: string },
   now: Date = new Date()
 ): StoriesSkipReason | null {
   if (!isWithinCampaignDates(campaign, now)) return 'window'
@@ -137,10 +143,10 @@ export function storiesCampaignSkipReason(
   return null
 }
 
-export function campaignHasTargets(campaign: Pick<CampaignRules, 'targetAccounts' | 'targetHashtags'>): boolean {
+export function campaignHasTargets(campaign: Pick<CampaignRules, 'targetAccounts' | 'targetHashtags' | 'targetKeywords'>): boolean {
   const accounts = (campaign.targetAccounts || []).map(stripSigil).filter(Boolean)
   const hashtags = (campaign.targetHashtags || []).map(stripSigil).filter(Boolean)
-  return accounts.length + hashtags.length > 0
+  return accounts.length + hashtags.length + keywordNeedles(campaign.targetKeywords).length > 0
 }
 
 /**
@@ -173,7 +179,7 @@ export function isWithinCampaignDates(
 
 /** Rule (3): the item references one of the campaign's brand targets. */
 export function itemReferencesBrand(
-  campaign: Pick<CampaignRules, 'targetAccounts' | 'targetHashtags'>,
+  campaign: Pick<CampaignRules, 'targetAccounts' | 'targetHashtags' | 'targetKeywords'>,
   item: Pick<RuleItem, 'caption' | 'hashtags' | 'mentions'> & { links?: string[] }
 ): boolean {
   // A target field may hold several tokens typed together ("#vileda #viledaturbo"):
@@ -183,7 +189,10 @@ export function itemReferencesBrand(
     (values || []).flatMap(v => String(v).split(/[\s,]+/)).map(v => normalizeBrandToken(stripSigil(v))).filter(Boolean)
   const targetAccounts = new Set(splitTargets(campaign.targetAccounts))
   const targetHashtags = new Set(splitTargets(campaign.targetHashtags))
-  if (targetAccounts.size === 0 && targetHashtags.size === 0) return false
+  // Product keywords ("flection system" → 'flectionsystem'): searched like the
+  // brand name below, never matched as an exact @mention/#hashtag target.
+  const productNeedles = keywordNeedles(campaign.targetKeywords)
+  if (targetAccounts.size === 0 && targetHashtags.size === 0 && productNeedles.length === 0) return false
 
   const mentions = (item.mentions || []).map(m => normalizeBrandToken(stripSigil(m))).filter(Boolean)
   const hashtags = (item.hashtags || []).map(h => normalizeBrandToken(stripSigil(h))).filter(Boolean)
@@ -192,26 +201,38 @@ export function itemReferencesBrand(
   for (const m of mentions) if (targetAccounts.has(m)) return true
   for (const h of hashtags) if (targetHashtags.has(h)) return true
 
-  // Keyword match on the normalized text (caption + tags), so "PC Componentes"
-  // in a caption matches the target "pccomponentes" and "#viledaespaña"
-  // matches "#vileda". Guarded by a minimum keyword length.
-  const haystack = normalizeBrandToken(
-    [item.caption || '', ...(item.hashtags || []), ...(item.mentions || [])].join(' ')
-  )
-  const keywords = [...targetAccounts, ...targetHashtags].filter(kw => kw.length >= MIN_FUZZY_KEYWORD_LENGTH)
-  if (haystack) {
-    for (const kw of keywords) if (haystack.includes(kw)) return true
+  // Brand name in the text (caption, each tag, each mention), so
+  // "PC Componentes" in a caption matches the target "pccomponentes" and
+  // "#viledaespaña" matches "#vileda". Token-aware (tokensContain): until Nov
+  // 2026 the spaces were removed before searching and "jugador con" contained
+  // "dorco". Guarded by a minimum length.
+  const brandNeedles = Array.from(new Set(
+    [...targetAccounts, ...targetHashtags].map(normalizeStem).filter(kw => kw.length >= MIN_FUZZY_KEYWORD_LENGTH)
+  ))
+  const captionTokens = textTokens(item.caption)
+  const tags = [...(item.hashtags || []), ...(item.mentions || [])]
+  const segments: string[][] = [captionTokens, ...tags.map(tag => textTokens(tag))].filter(tokens => tokens.length > 0)
+  for (const tokens of segments) {
+    for (const needle of brandNeedles) if (tokensContain(tokens, needle)) return true
+  }
+
+  // Product keywords: WHOLE WORDS in the caption ("Flection System",
+  // "flection-system"); in a hashtag/mention also at its start or end
+  // (#flectionsystem6, #deliplusflectionsystem). Never inside another word.
+  for (const needle of productNeedles) {
+    if (tokensContainWords(captionTokens, needle)) return true
+    for (const tag of tags) if (tagCarriesKeyword(tag, needle)) return true
   }
 
   // A link sticker to the brand's site is a brand reference too (stories,
-  // 2026-10-27): 'https://www.vileda.es/mopa-h2pro' normalizes to a string
-  // that contains the brand token ('viledaes', 'vileda'). Same length guard.
+  // 2026-10-27): 'https://www.vileda.es/mopa-h2pro' → tokens 'https', 'www',
+  // 'vileda', 'es', … which contain the brand token ('viledaes', 'vileda').
   for (const link of item.links || []) {
-    const l = normalizeBrandToken(link)
-    if (!l) continue
-    for (const kw of keywords) if (l.includes(kw)) return true
+    const tokens = textTokens(link)
+    for (const needle of brandNeedles) if (tokensContain(tokens, needle)) return true
+    for (const needle of productNeedles) if (tokensContainWords(tokens, needle)) return true
   }
-  if (!haystack) return false
+  if (segments.length === 0) return false
 
   // The brand name carried by a qualified handle ('@vileda.es' → 'vileda'):
   // the brand's TikTok handle rarely equals its Instagram one and TikTok's
@@ -338,9 +359,10 @@ export async function storyMatchesCampaign(
   // Tokens a link/reshare row must carry to pass rule (3) on its own: the
   // brand handle when the campaign targets an account, else its hashtags.
   const brandHandles = normalizeTargets(campaign.targetAccounts || [])
+  const brandHashtags = normalizeTargets(campaign.targetHashtags || [])
   const brandTokens = brandHandles.length > 0
     ? { mentions: brandHandles, hashtags: [] as string[] }
-    : { mentions: [] as string[], hashtags: normalizeTargets(campaign.targetHashtags || []) }
+    : { mentions: [] as string[], hashtags: brandHashtags.length > 0 ? brandHashtags : keywordNeedles(campaign.targetKeywords) }
   // (b) link sticker to the brand's site: store the link that MATCHED
   const matchedLink = links.find(link => itemReferencesBrand(campaign, { caption: null, hashtags: [], mentions: [], links: [link] }))
   if (matchedLink) return { ok: true, via: 'link', ...brandTokens, caption: `Enlace en la story: ${shortLink(matchedLink)}` }
@@ -796,7 +818,7 @@ export async function captureMemberContent(
       include: {
         influencer: { select: { id: true, username: true, platform: true } },
         campaign: {
-          select: { id: true, name: true, targetAccounts: true, targetHashtags: true, startDate: true, endDate: true },
+          select: { id: true, name: true, targetAccounts: true, targetHashtags: true, targetKeywords: true, startDate: true, endDate: true },
         },
       },
     })
@@ -934,6 +956,7 @@ export async function revalidateCampaignMedia(campaignId: string): Promise<{ kep
       id: true,
       targetAccounts: true,
       targetHashtags: true,
+      targetKeywords: true,
       startDate: true,
       endDate: true,
       influencers: { select: { influencerId: true } },

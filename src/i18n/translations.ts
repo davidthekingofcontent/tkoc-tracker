@@ -135,7 +135,7 @@ export const translations = {
       influencerTrackingDesc: 'Track specific influencers and monitor their posts, stories, and engagement metrics in real-time.',
       selected: 'Selected',
       brandTargets: 'Brand Account Targets',
-      brandTargetsDesc: 'Add @mentions and #hashtags to track',
+      brandTargetsDesc: 'Add the BRAND\'s @account (e.g. @vileda.es) and its #hashtags. Creators do not go here: add them in the Choose tab.',
       brandTargetPlaceholder: '@brand or #hashtag',
       platforms: 'Platforms',
       platformsDesc: 'Select platforms to track',
@@ -149,6 +149,12 @@ export const translations = {
       influencersTab: 'Influencers',
       trackingHashtags: 'Tracking Hashtags',
       trackingAccounts: 'Tracking Accounts',
+      // Help under the brand accounts field (edit modal): brand accounts only, creators go in Choose
+      trackingAccountsHelp: 'The BRAND\'s account (e.g. @vileda.es), comma separated. Creators do not go here: add them in the Choose tab.',
+      // Product keywords: third kind of brand target, searched only in the content of the campaign's creators
+      productKeywords: 'Product keywords',
+      productKeywordsHelp: 'Optional. The full product name as creators write it (e.g. Flection System), comma separated. It is matched as whole words and only in the content of this campaign\'s creators.',
+      productKeywordsPlaceholder: 'product name, another name',
       followers: 'Followers',
       engagement: 'Engagement',
       platform: 'Platform',
@@ -767,7 +773,7 @@ export const translations = {
       genderManualHint: 'Set by hand',
       genderSaveError: 'The gender could not be saved',
       // Item 6: TikTok hint under the add-creator controls (Elegir)
-      tiktokHint: 'TikTok: each TikTok account is added as a campaign creator by pasting the full profile URL (https://www.tiktok.com/@user) in the add field or in "Add several"; a bare @handle is looked up on the campaign\'s main platform. If only the Instagram account is in, their TikTok videos are not captured.',
+      tiktokHint: 'TikTok: if the campaign includes TikTok, the TikTok account of each confirmed creator (Agreed or later) is linked automatically when they publish campaign content under the same username or the one linked in their Instagram bio (checked daily). If they use a different username, add their account with the full TikTok URL.',
       addHandleInvalid: 'Paste a @handle or a profile URL (a post or reel URL does not identify the creator)',
       // Item 9: targets change history (Resumen → Targets card)
       changeHistory: 'Change history',
@@ -775,6 +781,9 @@ export const translations = {
       viewsTooltip: 'Public plays of the reel (what Instagram shows); refreshed at 7 and 14 days. The views from the creator\'s private insights are logged with "Log insights" and replace this figure.',
       // Item 5: the server refused the hashtags (edit modal, shown under the field)
       hashtagsRefused: 'The hashtags could not be saved',
+      // The server refused the product keywords / the brand accounts (edit modal, shown under each field)
+      keywordsRefused: 'The product keywords could not be saved',
+      accountsRefused: 'The brand accounts could not be saved',
     },
 
     // Compliance
@@ -1607,7 +1616,7 @@ export const translations = {
       influencerTrackingDesc: 'Rastrea influencers específicos y monitoriza sus publicaciones, stories y métricas de engagement en tiempo real.',
       selected: 'Seleccionado',
       brandTargets: 'Cuentas de Marca Objetivo',
-      brandTargetsDesc: 'Añade @menciones y #hashtags para rastrear',
+      brandTargetsDesc: 'Añade la @cuenta de la MARCA (p. ej. @vileda.es) y sus #hashtags. Los creadores no van aquí: se añaden en la pestaña Elegir.',
       brandTargetPlaceholder: '@marca o #hashtag',
       platforms: 'Plataformas',
       platformsDesc: 'Selecciona las plataformas a rastrear',
@@ -1621,6 +1630,12 @@ export const translations = {
       influencersTab: 'Influencers',
       trackingHashtags: 'Hashtags Rastreados',
       trackingAccounts: 'Cuentas Rastreadas',
+      // Ayuda bajo el campo de cuentas de marca (modal de edición): solo cuentas de la marca, los creadores van en Elegir
+      trackingAccountsHelp: 'La cuenta de la MARCA (p. ej. @vileda.es), separadas por comas. Los creadores no van aquí: se añaden en Elegir.',
+      // Palabras clave del producto: tercer tipo de objetivo de marca, solo se buscan en el contenido de los creadores de la campaña
+      productKeywords: 'Palabras clave del producto',
+      productKeywordsHelp: 'Opcional. El nombre completo del producto tal y como lo escriben los creadores (p. ej. Flection System), separado por comas. Se busca por palabras completas y solo en el contenido de los creadores de la campaña.',
+      productKeywordsPlaceholder: 'nombre del producto, otro nombre',
       followers: 'Seguidores',
       engagement: 'Engagement',
       platform: 'Plataforma',
@@ -2239,7 +2254,7 @@ export const translations = {
       genderManualHint: 'Indicado a mano',
       genderSaveError: 'No se pudo guardar el género',
       // Item 6: aviso TikTok bajo los controles de añadir creadora (Elegir)
-      tiktokHint: 'TikTok: cada cuenta de TikTok se añade como creadora de la campaña pegando la URL completa de su perfil (https://www.tiktok.com/@usuario) en el campo de añadir o en «Añadir varios»; un @handle sin URL se busca en la plataforma principal de la campaña. Si solo está la cuenta de Instagram, sus vídeos de TikTok no se capturan.',
+      tiktokHint: 'TikTok: si la campaña incluye TikTok, la cuenta de TikTok de cada creador confirmado (Acordado o posterior) se vincula sola cuando publica contenido de la campaña con el mismo usuario o con el que enlaza en su bio de Instagram (revisión diaria). Si usa otro usuario, añade su cuenta con la URL completa de TikTok.',
       addHandleInvalid: 'Pega un @handle o la URL de un perfil (la URL de un post o reel no identifica a la creadora)',
       // Item 9: historial de cambios de objetivos (Resumen → tarjeta de objetivos)
       changeHistory: 'Historial de cambios',
@@ -2247,6 +2262,9 @@ export const translations = {
       viewsTooltip: 'Reproducciones públicas del reel (lo que muestra Instagram); se actualizan a los 7 y 14 días. Las visualizaciones de las estadísticas privadas de la creadora se registran con "Registrar estadísticas" y sustituyen a este dato.',
       // Item 5: el servidor rechazó los hashtags (modal de edición, bajo el campo)
       hashtagsRefused: 'No se pudieron guardar los hashtags',
+      // El servidor rechazó las palabras clave del producto / las cuentas de marca (modal de edición, bajo cada campo)
+      keywordsRefused: 'No se pudieron guardar las palabras clave del producto',
+      accountsRefused: 'No se pudieron guardar las cuentas de marca',
     },
 
     // Sentiment

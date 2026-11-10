@@ -43,6 +43,7 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus, CampaignType, InfluencerStatus, type Prisma } from '@/generated/prisma/client'
 import { notifyCampaignTeam } from '@/lib/notifications'
+import { stripMemberHandlesFromTargets } from '@/lib/campaign-target-guard'
 
 const STAFF_ROLES = new Set(['ADMIN', 'EMPLOYEE'])
 const MAX_IDS = 500
@@ -183,6 +184,12 @@ export async function POST(
           })
         }
       })
+    }
+
+    // A creator of the target campaign is never one of its brand accounts.
+    if (createData.length > 0) {
+      const createdIds = new Set(createData.map(d => d.influencerId))
+      await stripMemberHandlesFromTargets(targetId, toTransfer.filter(r => createdIds.has(r.influencerId)).map(r => r.influencer.username))
     }
 
     const moved = deletableIds.length

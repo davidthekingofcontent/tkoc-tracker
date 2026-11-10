@@ -667,58 +667,64 @@ async function scrapeInstagramProfile(username: string): Promise<ScrapedProfile 
 
 // ============ TIKTOK ============
 
-async function scrapeTikTokProfile(username: string): Promise<ScrapedProfile | null> {
-  const items = await runActor('clockworks~free-tiktok-scraper', {
-    profiles: [username],
-    resultsPerPage: 12,
-    shouldDownloadVideos: false,
-  })
+/** One TikTok video item of clockworks~free-tiktok-scraper → ScrapedPost. */
+function mapTikTokVideo(post: Record<string, unknown>, username: string): ScrapedPost {
+  const text = (post.text as string) || ''
+  const videoMeta = (post.videoMeta as Record<string, unknown> | undefined) || {}
+  const id = post.id !== undefined && post.id !== null ? String(post.id) : ''
+  return {
+    externalId: id,
+    caption: text,
+    mediaUrl: (post.videoUrl as string) || null,
+    // The actor returns the cover under videoMeta.coverUrl (the top-level
+    // `covers` object of older builds is null today).
+    thumbnailUrl:
+      (post.covers as Record<string, string>)?.default ||
+      (videoMeta.coverUrl as string) ||
+      (videoMeta.originalCoverUrl as string) ||
+      (post.coverUrl as string) ||
+      (post.cover as string) ||
+      (post.thumbnailUrl as string) ||
+      null,
+    permalink: (post.webVideoUrl as string) || `https://tiktok.com/@${username}/video/${id}`,
+    mediaType: 'VIDEO' as const,
+    likes: (post.diggCount as number) || (post.likes as number) || 0,
+    comments: (post.commentCount as number) || (post.comments as number) || 0,
+    shares: (post.shareCount as number) || (post.shares as number) || 0,
+    saves: 0,
+    views: (post.playCount as number) || (post.plays as number) || 0,
+    postedAt: (post.createTimeISO as string) || null,
+    hashtags: (post.hashtags as { name: string }[] || []).map(h => `#${h.name}`),
+    mentions: text.match(/@\w+/g) || [],
+  }
+}
 
-  if (!items || items.length === 0) return null
-
-  const firstItem = items[0]
+/**
+ * Items of ONE TikTok profile → ScrapedProfile. `maxPosts` caps recentPosts
+ * (12 for the profile analysis; the batched scan keeps every video of the
+ * window). A profile with no video in the requested window comes back as a
+ * single item that only carries authorMeta: it yields recentPosts [].
+ */
+function mapTikTokProfileItems(items: Record<string, unknown>[], username: string, maxPosts = 12): ScrapedProfile {
+  const firstItem = items[0] || {}
   const authorMeta = (firstItem.authorMeta as Record<string, unknown>) || firstItem
 
   const followers = (authorMeta.fans as number) || (authorMeta.followers as number) || 0
   const following = (authorMeta.following as number) || 0
 
+  const recentPosts: ScrapedPost[] = items
+    .filter(item => item.id !== undefined && item.id !== null && item.id !== '')
+    .slice(0, maxPosts)
+    .map(post => mapTikTokVideo(post, username))
+
   let totalLikes = 0
   let totalComments = 0
   let totalViews = 0
-  let totalShares = 0
-
-  const recentPosts: ScrapedPost[] = items.slice(0, 12).map((post: Record<string, unknown>) => {
-    const likes = (post.diggCount as number) || (post.likes as number) || 0
-    const comments = (post.commentCount as number) || (post.comments as number) || 0
-    const views = (post.playCount as number) || (post.plays as number) || 0
-    const shares = (post.shareCount as number) || (post.shares as number) || 0
-
-    totalLikes += likes
-    totalComments += comments
-    totalViews += views
-    totalShares += shares
-
-    const text = (post.text as string) || ''
-    const hashtags = (post.hashtags as { name: string }[] || []).map(h => `#${h.name}`)
-    const mentions = text.match(/@\w+/g) || []
-
-    return {
-      externalId: (post.id as string) || '',
-      caption: text,
-      mediaUrl: (post.videoUrl as string) || null,
-      thumbnailUrl: (post.covers as Record<string, string>)?.default || (post.coverUrl as string) || (post.cover as string) || (post.thumbnailUrl as string) || null,
-      permalink: (post.webVideoUrl as string) || `https://tiktok.com/@${username}/video/${post.id}`,
-      mediaType: 'VIDEO' as const,
-      likes,
-      comments,
-      shares,
-      saves: 0,
-      views,
-      postedAt: post.createTimeISO as string || null,
-      hashtags,
-      mentions,
-    }
-  })
+  for (const post of recentPosts) {
+    totalLikes += post.likes
+    totalComments += post.comments
+    totalViews += post.views
+  }
 
   const postCount = recentPosts.length || 1
   const avgLikes = Math.round(totalLikes / postCount)
@@ -750,6 +756,113 @@ async function scrapeTikTokProfile(username: string): Promise<ScrapedProfile | n
     city: null,
     recentPosts,
   }
+}
+
+async function scrapeTikTokProfile(username: string): Promise<ScrapedProfile | null> {
+  const items = await runActor('clockworks~free-tiktok-scraper', {
+    profiles: [username],
+    resultsPerPage: 12,
+    shouldDownloadVideos: false,
+  })
+
+  if (!items || items.length === 0) return null
+  // TikTok answers a missing profile with one error item, not with nothing
+  if (items.every(item => item.error)) return null
+
+  return mapTikTokProfileItems(items.filter(item => !item.error), username)
+}
+
+/** TikTok handles per run of the batched scan (one run start, items paid per video). */
+export const TIKTOK_PROFILES_BATCH_MAX = 60
+
+export interface TikTokProfilesBatch {
+  /**
+   * Requested handle (lowercase, no @) → its profile with the videos of the
+   * window. A profile that exists but published nothing in the window is
+   * present with recentPosts [].
+   */
+  profiles: Map<string, ScrapedProfile>
+  /** Requested handles TikTok reports as non-existent. */
+  notFound: Set<string>
+  /**
+   * Requested handles whose run did not finish (or failed): whatever came back
+   * for them may be missing videos — the OLDER ones, since items arrive newest
+   * first. They must not be taken as fully read.
+   */
+  incomplete: Set<string>
+  /** True when some run's dataset was read before the run finished or a run failed. */
+  partial: boolean
+}
+
+/**
+ * Latest videos of MANY TikTok profiles in one actor run per
+ * TIKTOK_PROFILES_BATCH_MAX handles (used by the daily TikTok auto-link scan;
+ * measured 2026-11-10: 28 profiles, 159 videos since the 1st, one 50 s run).
+ * `oldestPostDate` ('YYYY-MM-DD') limits the videos to those published on or
+ * after that day, so a daily pass only pays for what is new. Never writes the
+ * shared profile cache (a windowed read is not a profile analysis) and never
+ * throws: a failed run leaves its handles out and sets `partial`.
+ */
+export async function scrapeTikTokProfilesBatch(
+  handles: string[],
+  options: { resultsPerPage?: number; oldestPostDate?: string | null; maxPollMs?: number } = {}
+): Promise<TikTokProfilesBatch> {
+  const out: TikTokProfilesBatch = { profiles: new Map(), notFound: new Set(), incomplete: new Set(), partial: false }
+  const wanted = Array.from(new Set(
+    handles.map(h => String(h || '').trim().replace(/^@+/, '').toLowerCase()).filter(Boolean)
+  ))
+  const resultsPerPage = Math.min(Math.max(1, Math.round(options.resultsPerPage ?? 20)), 100)
+
+  for (let i = 0; i < wanted.length; i += TIKTOK_PROFILES_BATCH_MAX) {
+    const chunk = wanted.slice(i, i + TIKTOK_PROFILES_BATCH_MAX)
+    if (isApifyExhausted()) {
+      out.partial = true
+      for (const h of wanted.slice(i)) out.incomplete.add(h)
+      break
+    }
+    try {
+      const { items, succeeded } = await runActorDetailed('clockworks~free-tiktok-scraper', {
+        profiles: chunk,
+        resultsPerPage,
+        profileSorting: 'latest',
+        excludePinnedPosts: false,
+        shouldDownloadVideos: false,
+        ...(options.oldestPostDate ? { oldestPostDateUnified: options.oldestPostDate } : {}),
+      }, 60, options.maxPollMs ?? 200_000)
+      if (!succeeded) {
+        out.partial = true
+        for (const h of chunk) out.incomplete.add(h)
+      }
+
+      // Group by the handle we ASKED for (`input`); the author name is the fallback
+      const byHandle = new Map<string, Record<string, unknown>[]>()
+      for (const item of items || []) {
+        const authorMeta = item.authorMeta as Record<string, unknown> | undefined
+        const key = String(item.input || authorMeta?.name || '').trim().replace(/^@+/, '').toLowerCase()
+        if (!key) continue
+        if (item.error) {
+          if (String(item.errorCode || '').toUpperCase() === 'NOT_FOUND') out.notFound.add(key)
+          continue
+        }
+        if (!authorMeta) continue
+        const list = byHandle.get(key)
+        if (list) list.push(item)
+        else byHandle.set(key, [item])
+      }
+      for (const [handle, list] of byHandle) {
+        out.profiles.set(handle, mapTikTokProfileItems(list, handle, list.length))
+      }
+    } catch (err) {
+      out.partial = true
+      if (isExhaustedError(err)) {
+        for (const h of wanted.slice(i)) out.incomplete.add(h)
+        break
+      }
+      for (const h of chunk) out.incomplete.add(h)
+      console.error('[Apify] TikTok profiles batch failed:', err instanceof Error ? err.message : err)
+    }
+  }
+  return out
 }
 
 // ============ YOUTUBE ============
@@ -1377,49 +1490,8 @@ async function scrapeTikTokHashtag(hashtag: string, maxPosts = 20): Promise<Hash
       shouldDownloadVideos: false,
     }, 180)
 
-    if (!items || items.length === 0) {
-      console.log(`[Apify] TikTok hashtag: free-tiktok-scraper returned 0 results for #${cleanTag}, trying fallback`)
-      // Fallback: use apify~tiktok-scraper which supports hashtag search
-      const fallbackItems = await runActor('apify~tiktok-scraper', {
-        hashtags: [cleanTag],
-        resultsPerPage: maxPosts,
-        searchSection: '',
-      }, 180)
-
-      if (!fallbackItems || fallbackItems.length === 0) return []
-
-      return fallbackItems.map((post: Record<string, unknown>) => {
-        const authorMeta = (post.authorMeta as Record<string, unknown>) || {}
-        const text = (post.text as string) || ''
-        const hashtags = (post.hashtags as { name: string }[] || []).map(h => `#${h.name}`)
-        const mentions = text.match(/@\w+/g) || []
-        const authorCountry = detectCountry(authorMeta)
-
-        return {
-          posts: [{
-            externalId: (post.id as string) || '',
-            caption: text,
-            mediaUrl: (post.videoUrl as string) || null,
-            thumbnailUrl: (post.covers as Record<string, string>)?.default || (post.coverUrl as string) || (post.cover as string) || null,
-            permalink: (post.webVideoUrl as string) || null,
-            mediaType: 'VIDEO' as const,
-            likes: nonNegative(post.diggCount) || nonNegative(post.likes),
-            comments: (post.commentCount as number) || (post.comments as number) || 0,
-            shares: (post.shareCount as number) || (post.shares as number) || 0,
-            saves: 0,
-            views: (post.playCount as number) || (post.plays as number) || 0,
-            postedAt: (post.createTimeISO as string) || null,
-            hashtags,
-            mentions,
-          }],
-          authorUsername: (authorMeta.name as string) || (authorMeta.uniqueId as string) || '',
-          authorDisplayName: (authorMeta.nickName as string) || (authorMeta.nickname as string) || null,
-          authorAvatarUrl: (authorMeta.avatar as string) || null,
-          authorFollowers: (authorMeta.fans as number) || (authorMeta.followers as number) || 0,
-          authorCountry,
-        }
-      })
-    }
+    // (The fallback actor apify~tiktok-scraper no longer exists — 404 since at least Nov 2026.)
+    if (!items || items.length === 0) return []
 
     // Process results from free-tiktok-scraper
     return items.map((post: Record<string, unknown>) => {

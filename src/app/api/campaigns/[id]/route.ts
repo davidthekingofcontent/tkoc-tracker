@@ -9,7 +9,7 @@ import { buildCampaignLearnings, toClientLearnings, type CampaignLearnings, type
 import { loadReportConfig } from '@/lib/report-config'
 import { sanitizeCampaignForBrand } from '@/lib/brand-scope'
 import { normalizeTargets } from '@/lib/campaign-capture'
-import { genericHashtagsError, validateTargetHashtags } from '@/lib/campaign-targets'
+import { MAX_TARGET_KEYWORDS, TOO_MANY_KEYWORDS_ERROR, brandStems, genericHashtagsError, keywordsError, memberAccountsError, normalizeKeywords, splitMemberAccounts, validateKeywords, validateTargetHashtags } from '@/lib/campaign-targets'
 import type { CampaignOverview } from '@/lib/metrics'
 
 // ---- Numeric targets (decision 1B, David 2026-09-05) ----
@@ -438,9 +438,54 @@ export async function PUT(
     // judge against the hashtags are accepted as before.
     const nextTargetAccounts = targetAccounts !== undefined ? normalizeTargets(targetAccounts || []) : existing.targetAccounts
     const nextTargetHashtags = targetHashtags !== undefined ? normalizeTargets(targetHashtags || []) : existing.targetHashtags
+
+    const touchesTargets = targetAccounts !== undefined || targetHashtags !== undefined || targetKeywords !== undefined
+    const targetBrand = touchesTargets ? await resolveCampaignBrand(id) : null
+
+    // Brand accounts are the BRAND's (Nov 2026: a PM typed the campaign's 28
+    // creators here and every creator's own @mention became a brand reference).
+    // Judged on every save that carries the accounts — a campaign already in
+    // that state must be corrected — except an account that carries the
+    // attached brand's name (the brand's own account may also be a member).
+    // The membership side of the guard is stripMemberHandlesFromTargets.
+    if (targetAccounts !== undefined && nextTargetAccounts.length > 0) {
+      const members = await prisma.campaignInfluencer.findMany({
+        where: { campaignId: id },
+        select: { influencer: { select: { username: true } } },
+      })
+      const offenders = splitMemberAccounts(nextTargetAccounts, members.map(m => m.influencer.username), targetBrand?.name ?? null, existing.name).members
+      if (offenders.length > 0) {
+        return NextResponse.json({ error: memberAccountsError(offenders), memberAccounts: offenders }, { status: 400 })
+      }
+    }
+
+    // Product keywords: normalized and judged whenever they come in, with the
+    // brand in hand (a short single word only passes when it carries its name).
+    let nextTargetKeywords: string[] | undefined
+    if (targetKeywords !== undefined) {
+      if (targetKeywords !== null && !Array.isArray(targetKeywords)) {
+        return invalid('targetKeywords must be an array of strings')
+      }
+      nextTargetKeywords = normalizeKeywords(targetKeywords || [])
+      if (nextTargetKeywords.length > MAX_TARGET_KEYWORDS) {
+        return NextResponse.json({ error: TOO_MANY_KEYWORDS_ERROR, invalidKeywords: [] }, { status: 400 })
+      }
+      const badKeywords = validateKeywords(nextTargetKeywords, brandStems(nextTargetAccounts, targetBrand?.name ?? null)).invalid
+      if (badKeywords.length > 0) {
+        return NextResponse.json({ error: keywordsError(badKeywords), invalidKeywords: badKeywords }, { status: 400 })
+      }
+    }
+
+    // Platforms: stored as received until Nov 2026; the TikTok auto-link reads
+    // them, and the edit modal can now change them.
+    if (platforms !== undefined) {
+      const valid = ['INSTAGRAM', 'TIKTOK', 'YOUTUBE']
+      if (!Array.isArray(platforms) || platforms.length === 0 || platforms.some((p: unknown) => typeof p !== 'string' || !valid.includes(p))) {
+        return invalid('Elige al menos una plataforma: Instagram, TikTok o YouTube.')
+      }
+    }
     if ((targetAccounts !== undefined || targetHashtags !== undefined) && nextTargetHashtags.length > 0) {
-      const brand = await resolveCampaignBrand(id)
-      const { generic } = validateTargetHashtags(nextTargetHashtags, nextTargetAccounts, brand?.name ?? null)
+      const { generic } = validateTargetHashtags(nextTargetHashtags, nextTargetAccounts, targetBrand?.name ?? null)
       if (generic.length > 0) {
         return NextResponse.json(
           { error: genericHashtagsError(generic), genericHashtags: generic },
@@ -571,7 +616,7 @@ export async function PUT(
         // One token per element, no @/# (normalizeTargets): "#a #b" typed in one field is two targets
         ...(targetAccounts !== undefined && { targetAccounts: nextTargetAccounts }),
         ...(targetHashtags !== undefined && { targetHashtags: nextTargetHashtags }),
-        ...(targetKeywords !== undefined && { targetKeywords }),
+        ...(nextTargetKeywords !== undefined && { targetKeywords: nextTargetKeywords }),
         ...(country !== undefined && { country: country || null }),
         ...(paymentType !== undefined && ['PAID', 'GIFTED'].includes(paymentType) && { paymentType }),
         ...(briefText !== undefined && { briefText: briefText || null }),

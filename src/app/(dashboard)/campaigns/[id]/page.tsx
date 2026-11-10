@@ -251,6 +251,8 @@ interface CampaignData {
   platforms: string[]
   targetAccounts: string[]
   targetHashtags: string[]
+  /** Product keywords: third kind of brand target, searched only in the content of the campaign's creators. */
+  targetKeywords?: string[] | null
   startDate: string | null
   endDate: string | null
   country: string | null
@@ -678,13 +680,28 @@ const RechartsArea = dynamic(
 type SortField = 'followers' | 'engagement' | 'fee' | 'creatorScore'
 type SortDirection = 'asc' | 'desc'
 
-const PlatformIcon = ({ platform }: { platform: string }) => {
+const PlatformIcon = ({ platform, className = 'h-3.5 w-3.5' }: { platform: string; className?: string }) => {
   switch (platform) {
-    case 'INSTAGRAM': return <Instagram className="h-3.5 w-3.5" />
-    case 'YOUTUBE': return <Youtube className="h-3.5 w-3.5" />
-    case 'TIKTOK': return <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.34-6.34V9.05a8.27 8.27 0 004.76 1.5V7.12a4.83 4.83 0 01-1-.43z"/></svg>
+    case 'INSTAGRAM': return <Instagram className={className} />
+    case 'YOUTUBE': return <Youtube className={className} />
+    case 'TIKTOK': return <svg className={className} viewBox="0 0 24 24" fill="currentColor"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.34-6.34V9.05a8.27 8.27 0 004.76 1.5V7.12a4.83 4.83 0 01-1-.43z"/></svg>
     default: return null
   }
+}
+
+/**
+ * Platform selector of the "Editar Campaña" modal: same options, labels and look as the one of the
+ * new-campaign page (campaigns/new). The values are the Prisma `Platform` enum, the only ones the PUT accepts.
+ */
+const EDIT_PLATFORM_OPTIONS: { value: BulkPlatform; label: string; selectedClass: string; dotClass: string }[] = [
+  { value: 'INSTAGRAM', label: 'Instagram', selectedClass: 'border-pink-500/50 bg-pink-50 text-pink-500', dotClass: 'bg-pink-400' },
+  { value: 'TIKTOK', label: 'TikTok', selectedClass: 'border-cyan-500/50 bg-cyan-50 text-cyan-500', dotClass: 'bg-cyan-400' },
+  { value: 'YOUTUBE', label: 'YouTube', selectedClass: 'border-red-500/50 bg-red-50 text-red-500', dotClass: 'bg-red-400' },
+]
+
+/** The campaign's platforms as the selector knows them (old payloads may not carry the field). */
+function knownPlatforms(platforms: string[] | null | undefined): BulkPlatform[] {
+  return EDIT_PLATFORM_OPTIONS.map(o => o.value).filter(p => (platforms || []).includes(p))
 }
 
 const platformBadge = (platform: string) => {
@@ -799,6 +816,10 @@ export default function CampaignDetailPage() {
   const [showChangeLog, setShowChangeLog] = useState(false)
   // Item 5: server text when the PUT refuses the hashtags (generic words), shown under the field
   const [editHashtagsError, setEditHashtagsError] = useState<string | null>(null)
+  // Same pattern for the other two target fields: product keywords refused (`invalidKeywords`)
+  // and brand accounts that are creators of the campaign (`memberAccounts`)
+  const [editKeywordsError, setEditKeywordsError] = useState<string | null>(null)
+  const [editAccountsError, setEditAccountsError] = useState<string | null>(null)
 
   // Add influencer state
   const [addInfluencerUsername, setAddInfluencerUsername] = useState('')
@@ -931,8 +952,12 @@ export default function CampaignDetailPage() {
     startDate: '',
     endDate: '',
     country: '',
+    /** Platforms ticked in the selector (INSTAGRAM / TIKTOK / YOUTUBE); sent only when they differ from the campaign's. */
+    platforms: [] as string[],
     targetHashtags: '',
     targetAccounts: '',
+    /** Product keywords, comma separated (a keyword can be several words: never split on spaces). */
+    targetKeywords: '',
     status: '',
     // Objective + numeric targets (decision 1B: objective and ≥1 target are mandatory)
     objective: '',
@@ -1859,8 +1884,10 @@ export default function CampaignDetailPage() {
       startDate: campaign.startDate ? new Date(campaign.startDate).toISOString().split('T')[0] : '',
       endDate: campaign.endDate ? new Date(campaign.endDate).toISOString().split('T')[0] : '',
       country: campaign.country || '',
+      platforms: knownPlatforms(campaign.platforms),
       targetHashtags: targetHashtags.join(', '),
       targetAccounts: targetAccounts.join(', '),
+      targetKeywords: targetKeywords.join(', '),
       status: campaign.status,
       objective: campaign.objective || '',
       targetViews: campaign.targetViews != null ? String(campaign.targetViews) : '',
@@ -1871,7 +1898,18 @@ export default function CampaignDetailPage() {
       targetsChangeReason: '',
     })
     setEditHashtagsError(null)
+    setEditKeywordsError(null)
+    setEditAccountsError(null)
     setShowEditModal(true)
+  }
+
+  /** Edit modal: tick / untick a platform. The last one ticked cannot be unticked (a campaign needs at least one). */
+  function toggleEditPlatform(platform: string) {
+    setEditForm(prev => {
+      const ticked = prev.platforms.includes(platform)
+      if (ticked && prev.platforms.length === 1) return prev
+      return { ...prev, platforms: ticked ? prev.platforms.filter(p => p !== platform) : [...prev.platforms, platform] }
+    })
   }
 
   // Edit modal validation (decision 1B): name, objective and at least one numeric target.
@@ -1883,8 +1921,21 @@ export default function CampaignDetailPage() {
   async function handleSaveCampaign() {
     if (!editFormValid) return
     setIsSaving(true)
+    // A new attempt starts clean: the server names again whichever field it still refuses
+    setEditHashtagsError(null)
+    setEditKeywordsError(null)
+    setEditAccountsError(null)
     try {
       const reason = editForm.targetsChangeReason.trim()
+      // Platforms travel only when the selection differs from the campaign's (the order of the ticks never counts).
+      // The ones kept stay in the campaign's order (its first platform is the default for a bare @handle); new ones go last.
+      const currentPlatforms = campaign?.platforms || []
+      const platformsChanged = editForm.platforms.length !== knownPlatforms(currentPlatforms).length
+        || editForm.platforms.some(p => !currentPlatforms.includes(p))
+      const nextPlatforms = [
+        ...currentPlatforms.filter(p => editForm.platforms.includes(p)),
+        ...knownPlatforms(editForm.platforms).filter(p => !currentPlatforms.includes(p)),
+      ]
       const res = await fetch(`/api/campaigns/${campaignId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1894,8 +1945,11 @@ export default function CampaignDetailPage() {
           startDate: editForm.startDate || null,
           endDate: editForm.endDate || null,
           country: editForm.country || null,
+          ...(platformsChanged && nextPlatforms.length > 0 && { platforms: nextPlatforms }),
           targetHashtags: editForm.targetHashtags ? editForm.targetHashtags.split(',').map(s => s.trim()).filter(Boolean) : [],
           targetAccounts: editForm.targetAccounts ? editForm.targetAccounts.split(',').map(s => s.trim()).filter(Boolean) : [],
+          // Product keywords: split on commas only (a keyword can be several words)
+          targetKeywords: editForm.targetKeywords ? editForm.targetKeywords.split(',').map(s => s.trim()).filter(Boolean) : [],
           objective: editForm.objective || null,
           // Numeric targets: null when cleared (never 0)
           targetViews: parseTargetInput('int', editForm.targetViews),
@@ -1908,19 +1962,36 @@ export default function CampaignDetailPage() {
       })
       if (res.ok) {
         setEditHashtagsError(null)
+        setEditKeywordsError(null)
+        setEditAccountsError(null)
         setShowEditModal(false)
         await fetchCampaign()
       } else {
-        // Item 5: a 400 for generic hashtags (server sends `genericHashtags` + its own text) stays
-        // in the modal, under the field; anything else keeps the generic toast.
-        const data = await res.json().catch(() => ({})) as { error?: string; genericHashtags?: unknown }
-        const generic = Array.isArray(data.genericHashtags) ? data.genericHashtags.map(String).filter(Boolean) : []
-        if (res.status === 400 && (generic.length > 0 || 'genericHashtags' in data)) {
-          const serverText = typeof data.error === 'string' && data.error.trim() ? data.error.trim() : t.campaignDetail.hashtagsRefused
-          const mentionsThem = generic.every(h => serverText.toLowerCase().includes(h.toLowerCase()))
-          setEditHashtagsError(generic.length > 0 && !mentionsThem ? `${serverText} (${generic.map(h => `#${h.replace(/^#/, '')}`).join(', ')})` : serverText)
+        // Item 5: a 400 about one of the three target fields stays in the modal, under its field, with
+        // the server's own text: generic hashtags (`genericHashtags`), brand accounts that are creators
+        // of the campaign (`memberAccounts`) or refused product keywords (`invalidKeywords`).
+        // Anything else keeps the generic toast.
+        const data = await res.json().catch(() => ({})) as { error?: string; genericHashtags?: unknown; memberAccounts?: unknown; invalidKeywords?: unknown }
+        const asList = (v: unknown) => Array.isArray(v) ? v.map(String).filter(Boolean) : []
+        const generic = asList(data.genericHashtags)
+        const members = asList(data.memberAccounts)
+        const badKeywords = asList(data.invalidKeywords)
+        const serverError = typeof data.error === 'string' ? data.error.trim() : ''
+        /** Server text, plus the offending items in brackets when the text does not already name them. */
+        const withItems = (fallback: string, items: string[], format: (item: string) => string) => {
+          const text = serverError || fallback
+          const mentionsThem = items.every(item => text.toLowerCase().includes(item.replace(/^[@#]/, '').toLowerCase()))
+          return items.length > 0 && !mentionsThem ? `${text} (${items.map(format).join(', ')})` : text
+        }
+        const is400 = res.status === 400
+        if (is400 && (generic.length > 0 || 'genericHashtags' in data)) {
+          setEditHashtagsError(withItems(t.campaignDetail.hashtagsRefused, generic, h => `#${h.replace(/^#/, '')}`))
+        } else if (is400 && (members.length > 0 || 'memberAccounts' in data)) {
+          setEditAccountsError(withItems(t.campaignDetail.accountsRefused, members, a => `@${a.replace(/^@/, '')}`))
+        } else if (is400 && (badKeywords.length > 0 || 'invalidKeywords' in data)) {
+          setEditKeywordsError(withItems(t.campaignDetail.keywordsRefused, badKeywords, k => k))
         } else {
-          setToast({ type: 'error', message: (typeof data.error === 'string' && data.error) || (locale === 'es' ? 'No se pudieron guardar los cambios' : 'Changes could not be saved') })
+          setToast({ type: 'error', message: serverError || (locale === 'es' ? 'No se pudieron guardar los cambios' : 'Changes could not be saved') })
         }
       }
     } catch { /* ignore */ }
@@ -2164,6 +2235,9 @@ export default function CampaignDetailPage() {
   const platforms = campaign?.platforms || []
   const targetAccounts = campaign?.targetAccounts || []
   const targetHashtags = campaign?.targetHashtags || []
+  const targetKeywords = campaign?.targetKeywords || []
+  // A campaign has capture rules with any of the three: brand accounts, hashtags or product keywords
+  const hasTargets = targetAccounts.length > 0 || targetHashtags.length > 0 || targetKeywords.length > 0
 
   const stories = media.filter(m => m.mediaType === 'STORY')
 
@@ -2204,7 +2278,7 @@ export default function CampaignDetailPage() {
     !hasMetaConnection &&
     !metaBannerDismissed &&
     !!campaign &&
-    ((campaign.targetAccounts?.length || 0) > 0 || (campaign.targetHashtags?.length || 0) > 0)
+    hasTargets
   const isEmpty = totalMedia === 0 && influencers.length === 0
 
   const sortedReportInfluencers = useMemo(
@@ -3515,7 +3589,7 @@ export default function CampaignDetailPage() {
       )}
 
       {/* Tracking info */}
-      {(targetAccounts.length > 0 || targetHashtags.length > 0) && (
+      {hasTargets && (
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
           <div className="flex flex-wrap gap-4">
             {targetAccounts.length > 0 && (
@@ -3534,6 +3608,17 @@ export default function CampaignDetailPage() {
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   {targetHashtags.map(h => (
                     <Badge key={h} variant="default">{h.startsWith('#') ? h : `#${h}`}</Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* Product keywords: plain text (no @/#), only searched in the campaign creators' content */}
+            {targetKeywords.length > 0 && (
+              <div>
+                <span className="text-xs font-medium text-gray-500 uppercase">{t.campaigns.productKeywords}</span>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {targetKeywords.map(k => (
+                    <Badge key={k} variant="default">{k}</Badge>
                   ))}
                 </div>
               </div>
@@ -4372,13 +4457,13 @@ export default function CampaignDetailPage() {
         {/* ========== PHASE 4: EJECUTAR (Execute) ========== */}
         <TabsContent value="ejecutar">
           {/* No capture rules → nothing gets captured: say so before the PM wonders why the tab is empty */}
-          {targetAccounts.length === 0 && targetHashtags.length === 0 && (
+          {!hasTargets && (
             <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3">
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
               <p className="flex-1 text-sm text-amber-800 dark:text-amber-200">
                 {locale === 'es'
-                  ? 'Esta campaña no tiene cuentas objetivo ni hashtags: no se capturará contenido. Añádelos en Editar campaña.'
-                  : 'This campaign has no target accounts or hashtags: no content will be captured. Add them in Edit campaign.'}
+                  ? 'Esta campaña no tiene cuentas de marca, hashtags ni palabras clave del producto: no se capturará contenido. Añade al menos una de las tres cosas en Editar campaña.'
+                  : 'This campaign has no brand accounts, hashtags or product keywords: no content will be captured. Add at least one of the three in Edit campaign.'}
               </p>
               {canEdit && (
                 <button
@@ -6928,6 +7013,43 @@ export default function CampaignDetailPage() {
                 </select>
               </div>
 
+              {/* Platforms: same selector as the new-campaign page, so TikTok can be enabled after creation
+                  (the daily TikTok auto-link only runs for campaigns that include it). At least one stays ticked. */}
+              <div role="group" aria-labelledby="edit-platforms-label" aria-describedby="edit-platforms-help">
+                <span id="edit-platforms-label" className="mb-1.5 block text-sm font-medium text-gray-700">
+                  {t.campaigns.platforms}
+                </span>
+                <div className="flex flex-wrap gap-3">
+                  {EDIT_PLATFORM_OPTIONS.map(option => {
+                    const ticked = editForm.platforms.includes(option.value)
+                    const isLastTicked = ticked && editForm.platforms.length === 1
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => toggleEditPlatform(option.value)}
+                        aria-pressed={ticked}
+                        aria-disabled={isLastTicked || undefined}
+                        className={`flex items-center gap-2 rounded-lg border px-4 py-3 transition-all ${
+                          ticked
+                            ? option.selectedClass
+                            : 'border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300'
+                        } ${isLastTicked ? 'cursor-not-allowed' : ''}`}
+                      >
+                        <PlatformIcon platform={option.value} className="h-5 w-5" />
+                        <span className="text-sm font-medium">{option.label}</span>
+                        {ticked && <span className={`ml-1 h-2 w-2 rounded-full ${option.dotClass}`} />}
+                      </button>
+                    )
+                  })}
+                </div>
+                <p id="edit-platforms-help" className="mt-1 text-xs text-gray-400">
+                  {locale === 'es'
+                    ? 'TikTok debe estar marcado para que las cuentas de TikTok de los creadores se vinculen solas.'
+                    : 'TikTok must be ticked for creators\' TikTok accounts to be linked automatically.'}
+                </p>
+              </div>
+
               {/* Hashtags */}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-gray-700">
@@ -6957,7 +7079,37 @@ export default function CampaignDetailPage() {
                 )}
               </div>
 
-              {/* Accounts */}
+              {/* Product keywords: optional third kind of target, only searched in the campaign creators' content */}
+              <div>
+                <label htmlFor="edit-target-keywords" className="mb-1.5 block text-sm font-medium text-gray-700">
+                  {t.campaigns.productKeywords}
+                </label>
+                <input
+                  id="edit-target-keywords"
+                  type="text"
+                  value={editForm.targetKeywords}
+                  onChange={(e) => { setEditForm(prev => ({ ...prev, targetKeywords: e.target.value })); setEditKeywordsError(null) }}
+                  placeholder={t.campaigns.productKeywordsPlaceholder}
+                  aria-invalid={editKeywordsError ? true : undefined}
+                  aria-describedby={editKeywordsError ? 'edit-keywords-error' : 'edit-keywords-help'}
+                  className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-1 ${
+                    editKeywordsError
+                      ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
+                      : 'border-gray-300 focus:border-purple-500 focus:ring-purple-500'
+                  }`}
+                />
+                {/* The server's own text when it refuses a keyword (too short, common word, more than 10) */}
+                {editKeywordsError ? (
+                  <p id="edit-keywords-error" role="alert" className="mt-1 flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400">
+                    <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+                    <span className="break-words">{editKeywordsError}</span>
+                  </p>
+                ) : (
+                  <p id="edit-keywords-help" className="mt-1 text-xs text-gray-400">{t.campaigns.productKeywordsHelp}</p>
+                )}
+              </div>
+
+              {/* Accounts (the BRAND's accounts; creators are added in Elegir) */}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-gray-700">
                   {t.campaigns.trackingAccounts}
@@ -6965,11 +7117,25 @@ export default function CampaignDetailPage() {
                 <input
                   type="text"
                   value={editForm.targetAccounts}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, targetAccounts: e.target.value }))}
+                  onChange={(e) => { setEditForm(prev => ({ ...prev, targetAccounts: e.target.value })); setEditAccountsError(null) }}
                   placeholder="@account1, @account2"
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                  aria-invalid={editAccountsError ? true : undefined}
+                  aria-describedby={editAccountsError ? 'edit-accounts-error' : undefined}
+                  className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-1 ${
+                    editAccountsError
+                      ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
+                      : 'border-gray-300 focus:border-purple-500 focus:ring-purple-500'
+                  }`}
                 />
-                <p className="mt-1 text-xs text-gray-400">{locale === 'es' ? 'Separados por comas' : 'Comma separated'}</p>
+                {/* The server's own text when a target account is a creator of this campaign */}
+                {editAccountsError ? (
+                  <p id="edit-accounts-error" role="alert" className="mt-1 flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400">
+                    <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+                    <span className="break-words">{editAccountsError}</span>
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-gray-400">{t.campaigns.trackingAccountsHelp}</p>
+                )}
               </div>
             </div>
 

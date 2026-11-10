@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { STORY_SCAN_STATUSES, campaignHasTargets, campaignWindowEndExclusive, storiesCampaignSkipReason } from '@/lib/campaign-capture'
+import { STORY_SCAN_STATUSES, campaignHasTargets, campaignWindowEndExclusive, isWithinCampaignDates, storiesCampaignSkipReason } from '@/lib/campaign-capture'
 import { notifyAdminsOncePerDay } from '@/lib/notifications'
 
 // GET /api/cron/watchdog (header x-cron-secret) — every 6 h from the internal scheduler.
@@ -19,6 +19,7 @@ const STALE_AFTER_HOURS: Record<string, number> = {
   stories: Number(process.env.WATCHDOG_STORIES_STALE_HOURS || 36), // runs every 12 h
   track: Number(process.env.WATCHDOG_TRACK_STALE_HOURS || 48), // runs every 6 h, throttled to once a day
   'check-posts': Number(process.env.WATCHDOG_CHECK_POSTS_STALE_HOURS || 36), // runs every 12 h
+  'tiktok-link': Number(process.env.WATCHDOG_TIKTOK_LINK_STALE_HOURS || 48), // runs once a day
 }
 
 interface Check {
@@ -57,8 +58,10 @@ async function liveCampaigns() {
       startDate: true,
       endDate: true,
       type: true,
+      platforms: true,
       targetAccounts: true,
       targetHashtags: true,
+      targetKeywords: true,
       influencers: {
         where: { status: { in: [...STORY_SCAN_STATUSES] }, influencer: { platform: 'INSTAGRAM' } },
         select: { id: true },
@@ -86,8 +89,15 @@ export async function GET(request: NextRequest) {
     // dates, length cap) plus at least one confirmed IG creator
     const nowTs = new Date()
     const storyWork = live.some(c => storiesCampaignSkipReason(c, nowTs) === null && c.influencers.length > 0)
-    const trackWork = withTargets.length > 0
+    // The track cron scrapes hashtags and account mentions: a campaign whose only
+    // targets are product keywords gives it nothing to do (its creators' posts
+    // are read by check-posts), so it must not count as pending track work.
+    const trackWork = live.some(c => (c.targetAccounts || []).length + (c.targetHashtags || []).length > 0)
     const checkPostsWork = live.some(c => c._count.influencers > 0)
+    // TikTok auto-link: a campaign in dates that includes TikTok, has targets and a confirmed IG creator
+    const tiktokLinkWork = live.some(c =>
+      c.platforms.includes('TIKTOK') && campaignHasTargets(c) && isWithinCampaignDates(c, nowTs) && c.influencers.length > 0
+    )
 
     const defs: Array<{ name: string; eligibleWork: boolean; title: string; subject: string; meanwhile: string }> = [
       {
@@ -110,6 +120,13 @@ export async function GET(request: NextRequest) {
         title: 'La comprobación de publicaciones nuevas no se está ejecutando',
         subject: 'La comprobación periódica de publicaciones nuevas de las creadoras',
         meanwhile: 'Mientras, usa "Rastrear Ahora" en la ficha de cada campaña.',
+      },
+      {
+        name: 'tiktok-link',
+        eligibleWork: tiktokLinkWork,
+        title: 'La vinculación automática de TikTok no se está ejecutando',
+        subject: 'La vinculación automática de las cuentas de TikTok de las creadoras',
+        meanwhile: 'Mientras, añade la cuenta de TikTok de cada creador en Elegir con su URL completa de TikTok.',
       },
     ]
 

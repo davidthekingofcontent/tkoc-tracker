@@ -15,6 +15,8 @@ import {
 } from '@/lib/campaign-capture'
 import type { CampaignRules } from '@/lib/campaign-capture'
 import { notifyCampaignTeam } from '@/lib/notifications'
+import { stripMemberHandlesFromTargets } from '@/lib/campaign-target-guard'
+import { handleKey } from '@/lib/campaign-targets'
 
 const MAX_HANDLES = 200
 const CONCURRENCY = 3
@@ -280,7 +282,7 @@ export async function POST(
 
     const campaign = await prisma.campaign.findUnique({
       where: { id: campaignId },
-      select: { id: true, name: true, targetAccounts: true, targetHashtags: true, startDate: true, endDate: true },
+      select: { id: true, name: true, targetAccounts: true, targetHashtags: true, targetKeywords: true, startDate: true, endDate: true },
     })
     if (!campaign) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
@@ -313,6 +315,16 @@ export async function POST(
 
     const processed = outcomes.map(o => o.result)
     const newMembers = outcomes.flatMap(o => (o.newMember ? [o.newMember] : []))
+
+    // A creator of the campaign is never one of its brand accounts: clean the
+    // targets once, after every membership exists and BEFORE the capture judges
+    // the new members' posts (the team is notified by the helper).
+    if (newMembers.length > 0) {
+      const removed = new Set((await stripMemberHandlesFromTargets(campaignId, newMembers.map(m => m.username))).map(handleKey))
+      if (removed.size > 0) {
+        campaign.targetAccounts = campaign.targetAccounts.filter(a => !removed.has(handleKey(a)))
+      }
+    }
 
     // Background, bounded: the response does not wait for Apify
     captureNewMembers(campaign, newMembers).catch((err: unknown) => {

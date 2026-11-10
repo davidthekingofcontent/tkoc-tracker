@@ -123,7 +123,7 @@ function formatTarget(field: (typeof TARGET_FIELDS)[number], value: string, loca
 
 export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
   const router = useRouter()
-  const { locale } = useI18n()
+  const { locale, t } = useI18n()
   const [step, setStep] = useState(0)
   const [isCreating, setIsCreating] = useState(false)
   // Server-side rejection of the launch (e.g. generic target hashtags, 400 from
@@ -141,6 +141,8 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
     paymentType: 'PAID',
     targetHashtags: '',
     targetAccounts: '',
+    /** Product keywords (optional), comma separated: a keyword can be several words, never split on spaces. */
+    targetKeywords: '',
     startDate: new Date().toISOString().split('T')[0],
     endDate: '',
     // Numeric targets (kept as strings while typing; parsed on submit)
@@ -165,9 +167,12 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
   // Decision 1B: at least one numeric target is required alongside the objective.
   const hasAnyTarget = TARGET_FIELDS.some(f => (f.step >= 1 ? toPositiveInt(form[f.key]) : toPositiveFloat(form[f.key])) !== null)
   const filledTargets = TARGET_FIELDS.filter(f => (f.step >= 1 ? toPositiveInt(form[f.key]) : toPositiveFloat(form[f.key])) !== null)
+  // Product keywords as they are sent: split on commas only, trimmed, empties dropped (the server validates them)
+  const productKeywords = form.targetKeywords.split(',').map(k => k.trim()).filter(Boolean)
 
   async function handleCreate() {
     setIsCreating(true)
+    setCreateError(null)
     try {
       const res = await fetch('/api/campaigns', {
         method: 'POST',
@@ -182,6 +187,7 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
           paymentType: form.paymentType,
           targetHashtags: form.targetHashtags ? form.targetHashtags.split(',').map(h => h.trim().replace(/^#/, '')) : [],
           targetAccounts: form.targetAccounts ? form.targetAccounts.split(',').map(a => a.trim().replace(/^@/, '')) : [],
+          targetKeywords: productKeywords,
           startDate: form.startDate || null,
           endDate: form.endDate || null,
           // Numeric targets — null when not filled in
@@ -199,7 +205,8 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
         router.push(`/campaigns/${data.campaign.id}`)
       } else {
         // The server explains the refusal (e.g. generic hashtags: "Los hashtags
-        // objetivo deben identificar a la marca… Hashtags a revisar: #turbo").
+        // objetivo deben identificar a la marca… Hashtags a revisar: #turbo", or
+        // a refused product keyword, which it names in the same text).
         // Show it instead of leaving the PM with a spinner that did nothing.
         const data = await res.json().catch(() => ({})) as { error?: string }
         setCreateError(
@@ -414,7 +421,7 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
           {step === 3 && (
             <div className="space-y-5">
               <h3 className="text-lg font-bold text-gray-900 dark:text-white">{es ? '¿Qué rastrear?' : 'What to track?'}</h3>
-              <p className="text-sm text-gray-500">{es ? 'Define los hashtags y cuentas que quieres monitorizar. Puedes añadir más después.' : 'Define hashtags and accounts to monitor. You can add more later.'}</p>
+              <p className="text-sm text-gray-500">{es ? 'Define los hashtags y las cuentas de la MARCA que quieres monitorizar. Los creadores no van aquí: se añaden después, en la pestaña Elegir. Puedes añadir más hashtags y cuentas de marca después.' : 'Define the hashtags and the BRAND\'s accounts to monitor. Creators do not go here: they are added later, in the Choose tab. You can add more hashtags and brand accounts later.'}</p>
 
               <div>
                 <label className="block text-xs font-medium text-gray-500 uppercase mb-1">{es ? 'Hashtags (separados por coma)' : 'Hashtags (comma separated)'}</label>
@@ -424,10 +431,20 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-gray-500 uppercase mb-1">{es ? 'Cuentas a rastrear (separadas por coma)' : 'Accounts to track (comma separated)'}</label>
+                <label className="block text-xs font-medium text-gray-500 uppercase mb-1">{es ? 'Cuentas de la marca (separadas por coma)' : 'Brand accounts (comma separated)'}</label>
                 <input type="text" value={form.targetAccounts} onChange={e => setForm(prev => ({ ...prev, targetAccounts: e.target.value }))}
                   placeholder="@vileda.es, @vileda_espana"
                   className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-3 text-sm text-gray-900 dark:text-white focus:border-purple-500 outline-none" />
+              </div>
+
+              {/* Product keywords: optional third kind of target, same texts as the edit modal */}
+              <div>
+                <label htmlFor="wizard-target-keywords" className="block text-xs font-medium text-gray-500 uppercase mb-1">{t.campaigns.productKeywords}</label>
+                <input id="wizard-target-keywords" type="text" value={form.targetKeywords} onChange={e => setForm(prev => ({ ...prev, targetKeywords: e.target.value }))}
+                  placeholder={t.campaigns.productKeywordsPlaceholder}
+                  aria-describedby="wizard-target-keywords-help"
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-3 text-sm text-gray-900 dark:text-white focus:border-purple-500 outline-none" />
+                <p id="wizard-target-keywords-help" className="mt-1 text-xs text-gray-500">{t.campaigns.productKeywordsHelp}</p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -492,8 +509,14 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
                 )}
                 {form.targetAccounts && (
                   <div className="flex justify-between">
-                    <span className="text-xs text-gray-500 uppercase">{es ? 'Cuentas' : 'Accounts'}</span>
+                    <span className="text-xs text-gray-500 uppercase">{es ? 'Cuentas de la marca' : 'Brand accounts'}</span>
                     <span className="text-sm">{form.targetAccounts}</span>
+                  </div>
+                )}
+                {productKeywords.length > 0 && (
+                  <div className="flex justify-between gap-4">
+                    <span className="text-xs text-gray-500 uppercase shrink-0">{t.campaigns.productKeywords}</span>
+                    <span className="text-sm text-right">{productKeywords.join(', ')}</span>
                   </div>
                 )}
               </div>

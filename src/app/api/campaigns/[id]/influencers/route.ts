@@ -5,6 +5,7 @@ import { InfluencerStatus, Prisma } from '@/generated/prisma/client'
 import { notifyCampaignTeam } from '@/lib/notifications'
 import { ensureContact, saveContactAddress } from '@/lib/contacts'
 import { captureMemberContent } from '@/lib/campaign-capture'
+import { stripMemberHandlesFromTargets } from '@/lib/campaign-target-guard'
 import { familyOf, manualBaseline, parseBaseline } from '@/lib/creator-baseline'
 
 /** Statuses from which a creator is confirmed (or later) — content capture
@@ -177,6 +178,11 @@ export async function POST(
     } catch (err) {
       console.error('[Campaign/Influencers] ensureContact failed:', err instanceof Error ? err.message : err)
     }
+
+    // A creator of the campaign is never one of its brand accounts: clean the
+    // targets BEFORE the capture below judges her posts (her own @mention must
+    // not count as a brand reference). The team is notified; never throws.
+    await stripMemberHandlesFromTargets(id, [item.influencer.username])
 
     // Precise capture: scrape the new member's recent content and keep only what
     // passes the campaign rules. Fire-and-forget — the add must not wait for Apify.

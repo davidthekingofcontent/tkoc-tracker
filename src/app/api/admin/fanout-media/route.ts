@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
     where: { status: 'ACTIVE' },
     select: {
       id: true, name: true, startDate: true, endDate: true,
-      targetAccounts: true, targetHashtags: true,
+      targetAccounts: true, targetHashtags: true, targetKeywords: true,
       influencers: { select: { influencerId: true } },
     },
   })

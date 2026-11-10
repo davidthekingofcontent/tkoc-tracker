@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { dedupeMediaByPost, normalizeTargets } from '@/lib/campaign-capture'
-import { genericHashtagsError, validateTargetHashtags } from '@/lib/campaign-targets'
+import { MAX_TARGET_KEYWORDS, TOO_MANY_KEYWORDS_ERROR, brandStems, genericHashtagsError, keywordsError, normalizeKeywords, validateKeywords, validateTargetHashtags } from '@/lib/campaign-targets'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus, CampaignType, Prisma } from '@/generated/prisma/client'
 import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
@@ -223,14 +223,30 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'targetHashtags must be an array of strings' }, { status: 400 })
     }
 
+    // Product keywords (Nov 2026): the product's name when it does not carry
+    // the brand ("Flection System" for the client Dorco). Specific phrases only.
+    if (targetKeywords !== undefined && targetKeywords !== null && !Array.isArray(targetKeywords)) {
+      return NextResponse.json({ error: 'targetKeywords must be an array of strings' }, { status: 400 })
+    }
+    const nextTargetKeywords = normalizeKeywords(targetKeywords || [])
+    if (nextTargetKeywords.length > MAX_TARGET_KEYWORDS) {
+      return NextResponse.json({ error: TOO_MANY_KEYWORDS_ERROR, invalidKeywords: [] }, { status: 400 })
+    }
+
     // Doc item 5 (2026-10-08): generic hashtags ("turbo", "mopa") capture any
     // creator's content — reject, never drop silently. Stems come from the
     // target accounts and, when a brand is attached, from its name; with no
     // stem to judge against the hashtags are accepted as before.
     const nextTargetAccounts = normalizeTargets(targetAccounts || [])
     const nextTargetHashtags = normalizeTargets(targetHashtags || [])
+    const brandName = nextTargetHashtags.length > 0 || nextTargetKeywords.length > 0 ? await brandNameById(brandId) : null
+    // Keywords are judged with the brand in hand: a short single word only
+    // passes when it carries the brand's name ('dorco'), never 'turbo'/'spin'.
+    const badKeywords = validateKeywords(nextTargetKeywords, brandStems(nextTargetAccounts, brandName)).invalid
+    if (badKeywords.length > 0) {
+      return NextResponse.json({ error: keywordsError(badKeywords), invalidKeywords: badKeywords }, { status: 400 })
+    }
     if (nextTargetHashtags.length > 0) {
-      const brandName = await brandNameById(brandId)
       const { generic } = validateTargetHashtags(nextTargetHashtags, nextTargetAccounts, brandName)
       if (generic.length > 0) {
         return NextResponse.json(
@@ -293,7 +309,7 @@ export async function POST(request: NextRequest) {
         // One token per element, no @/# (normalizeTargets): "#a #b" typed in one field is two targets
         targetAccounts: nextTargetAccounts,
         targetHashtags: nextTargetHashtags,
-        targetKeywords: targetKeywords || [],
+        targetKeywords: nextTargetKeywords,
         briefFiles: [],
         startDate: resolvedStart,
         ...(resolvedEnd && { endDate: resolvedEnd }),

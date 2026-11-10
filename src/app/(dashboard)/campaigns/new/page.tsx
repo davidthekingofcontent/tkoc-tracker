@@ -100,6 +100,10 @@ export default function NewCampaignPage() {
   const [campaignName, setCampaignName] = useState('')
   const [targets, setTargets] = useState<string[]>([])
   const [targetInput, setTargetInput] = useState('')
+  // Product keywords (optional third kind of brand target): comma-separated text, a keyword can be several words
+  const [productKeywords, setProductKeywords] = useState('')
+  /** The POST refused the keywords (400 with invalidKeywords): the field is marked until it is edited. */
+  const [keywordsRefused, setKeywordsRefused] = useState(false)
   const [platforms, setPlatforms] = useState<Record<string, boolean>>({
     instagram: false,
     tiktok: false,
@@ -211,6 +215,8 @@ export default function NewCampaignPage() {
     setPaymentType('PAID')
     setCampaignName('')
     setTargets([])
+    setProductKeywords('')
+    setKeywordsRefused(false)
     setPlatforms({ instagram: false, tiktok: false, youtube: false })
     setFormats({ reel: false, story: false, post: false, video: false, short: false, carousel: false })
     setCountry('')
@@ -273,6 +279,7 @@ export default function NewCampaignPage() {
 
     setIsCreating(true)
     setError('')
+    setKeywordsRefused(false)
 
     const selectedPlatforms = Object.entries(platforms)
       .filter(([, enabled]) => enabled)
@@ -284,6 +291,11 @@ export default function NewCampaignPage() {
 
     const targetAccounts = targets.filter((t) => t.startsWith('@'))
     const targetHashtags = targets.filter((t) => t.startsWith('#'))
+    // Product keywords: split on commas only (a keyword can be several words). The field lives in the
+    // brand targets card, hidden for UGC: never send a value the user cannot see or fix.
+    const targetKeywords = trackingType === 'ugc'
+      ? []
+      : productKeywords.split(',').map((k) => k.trim()).filter(Boolean)
 
     try {
       const res = await fetch('/api/campaigns', {
@@ -295,6 +307,7 @@ export default function NewCampaignPage() {
           platforms: selectedPlatforms,
           targetAccounts,
           targetHashtags,
+          targetKeywords,
           paymentType,
           ...(selectedFormats.length > 0 && { formats: selectedFormats }),
           ...(trackingType === 'influencer_tracking' && startDate && { startDate }),
@@ -307,8 +320,19 @@ export default function NewCampaignPage() {
       })
 
       if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'Failed to create campaign')
+        // The server's own text is shown as is (Spanish, ready to show): this includes the 400 for
+        // refused product keywords ({ error, invalidKeywords }), which names the keywords itself.
+        const data = await res.json().catch(() => ({})) as { error?: string; invalidKeywords?: unknown }
+        const serverError = typeof data.error === 'string' ? data.error.trim() : ''
+        const badKeywords = Array.isArray(data.invalidKeywords) ? data.invalidKeywords.map(String).filter(Boolean) : []
+        if (res.status === 400 && (badKeywords.length > 0 || 'invalidKeywords' in data)) {
+          const text = serverError || t.campaignDetail.keywordsRefused
+          const mentionsThem = badKeywords.every((k) => text.toLowerCase().includes(k.toLowerCase()))
+          // Mark the field too, so the PM finds it when scrolling up from the error box
+          setKeywordsRefused(true)
+          throw new Error(badKeywords.length > 0 && !mentionsThem ? `${text} (${badKeywords.join(', ')})` : text)
+        }
+        throw new Error(serverError || 'Failed to create campaign')
       }
 
       const { campaign } = await res.json()
@@ -832,6 +856,23 @@ export default function NewCampaignPage() {
                 ))}
               </div>
             )}
+
+            {/* Product keywords: optional, only searched in the content of the campaign's creators */}
+            <div className="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4">
+              <Input
+                id="new-campaign-product-keywords"
+                label={t.campaigns.productKeywords}
+                placeholder={t.campaigns.productKeywordsPlaceholder}
+                value={productKeywords}
+                onChange={(e) => { setProductKeywords(e.target.value); setKeywordsRefused(false) }}
+                aria-invalid={keywordsRefused ? true : undefined}
+                aria-describedby="new-campaign-product-keywords-help"
+                className={keywordsRefused ? 'border-red-300 focus:border-red-500 focus:ring-red-500/20' : undefined}
+              />
+              <p id="new-campaign-product-keywords-help" className="mt-1.5 text-xs text-gray-500">
+                {t.campaigns.productKeywordsHelp}
+              </p>
+            </div>
           </Card>}
 
           {/* Platform Selection (not for UGC) */}
