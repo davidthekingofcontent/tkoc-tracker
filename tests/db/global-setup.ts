@@ -18,7 +18,29 @@ const URL = `postgresql://tkoc_test:local-only@localhost:${PORT}/tkoc_test`
 
 let pg: EmbeddedPostgres | null = null
 
+/**
+ * embedded-postgres registers async-exit-hook, whose `beforeExit` handler ends
+ * the process with process.exit(0). vitest reports failed tests by leaving
+ * process.exitCode at 1 and letting the process end by itself, so that
+ * explicit 0 won: a run with failed db tests exited with code 0 and anything
+ * that trusted the exit code believed it had passed (seen 12 Nov 2026:
+ * "1 failed", exit 0). From here on an exit that asks for 0 keeps the failure
+ * that is waiting in process.exitCode. An exit with any other code is untouched.
+ */
+let exitCodeKept = false
+function keepFailureExitCode() {
+  if (exitCodeKept) return
+  exitCodeKept = true
+  const realExit = process.exit.bind(process)
+  process.exit = ((code?: number | string | null) => {
+    const waiting = Number(process.exitCode) || 0
+    const asked = code === undefined || code === null ? waiting : Number(code) || 0
+    return realExit(asked === 0 ? waiting : asked)
+  }) as typeof process.exit
+}
+
 export async function setup() {
+  keepFailureExitCode()
   fs.rmSync(dataDir, { recursive: true, force: true })
   pg = new EmbeddedPostgres({ databaseDir: dataDir, user: 'tkoc_test', password: 'local-only', port: PORT, persistent: false, onLog: () => {}, onError: () => {} })
   await pg.initialise()

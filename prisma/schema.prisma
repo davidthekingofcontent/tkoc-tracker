@@ -1326,3 +1326,86 @@ model LiveCapture {
   @@index([isProcessed])
   @@map("live_captures")
 }
+
+// ============ MCP CONNECTOR FOR CLAUDE (read-only) ============
+// New tables only. They are decoupled on purpose: plain String ids, no
+// relation to the models above, so the existing schema is not touched.
+// The deploy does not push the schema: apply prisma/additive/2026-11-12-mcp.sql
+// by hand BEFORE the code ships (rollback: the .down.sql next to it).
+// Codes and tokens are never stored: only their SHA-256 hash.
+
+/// An OAuth client registered dynamically (RFC 7591). Always a public client.
+model McpClient {
+  id            String    @id @default(cuid())
+  clientId      String    @unique // random, 43 characters
+  name          String    // free text typed by the client: escape it when shown
+  redirectUris  String[]
+  createdAt     DateTime  @default(now())
+  lastUsedAt    DateTime?
+  createdFromIp String?
+
+  @@map("mcp_clients")
+}
+
+/// One row per authorisation approved by an administrator.
+model McpGrant {
+  id            String    @id @default(cuid())
+  clientId      String    // McpClient.clientId
+  userId        String    // User.id of the administrator who approved it
+  scope         String
+  resource      String    // RFC 8707: the MCP endpoint the tokens are bound to
+  createdAt     DateTime  @default(now())
+  lastUsedAt    DateTime?
+  revokedAt     DateTime?
+  revokedReason String?
+
+  @@index([userId])
+  @@map("mcp_grants")
+}
+
+/// A single-use authorization code (5 minutes).
+model McpAuthCode {
+  id            String    @id @default(cuid())
+  codeHash      String    @unique
+  clientId      String
+  userId        String
+  redirectUri   String
+  codeChallenge String    // PKCE S256
+  resource      String
+  scope         String
+  expiresAt     DateTime
+  usedAt        DateTime?
+  grantId       String?
+
+  @@map("mcp_auth_codes")
+}
+
+/// An access token (1 hour) or a refresh token (60 days) of a grant.
+model McpToken {
+  id        String    @id @default(cuid())
+  grantId   String
+  kind      String    // 'access' | 'refresh'
+  tokenHash String    @unique
+  expiresAt DateTime
+  rotatedAt DateTime? // refresh token already exchanged for a new pair
+  createdAt DateTime  @default(now())
+
+  @@index([grantId])
+  @@map("mcp_tokens")
+}
+
+/// One row per tool call. Never the result: only its size.
+model McpCallLog {
+  id          String   @id @default(cuid())
+  grantId     String
+  userId      String
+  tool        String
+  argsSummary String   // 300 characters at most; ids and handles only
+  ok          Boolean
+  ms          Int
+  resultChars Int
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("mcp_call_logs")
+}

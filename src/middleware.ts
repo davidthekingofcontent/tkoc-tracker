@@ -25,6 +25,11 @@ function isPublicPath(pathname: string): boolean {
   // Brand connect landing (public 1-click IG connect for brands)
   if (pathname.startsWith('/brand-connect')) return true
 
+  // OAuth discovery documents of the MCP connector for Claude (RFC 9728 and
+  // RFC 8414). Claude reads them before anybody has signed in: they hold no
+  // secret and must never be answered with a redirect to /login.
+  if (pathname.startsWith('/.well-known/')) return true
+
   // Static assets, Next.js internals, and ALL API routes
   // (API routes handle their own authentication via getSession)
   if (
@@ -89,6 +94,9 @@ const creatorApiWhitelist = [
 // Pages a CREATOR may open besides the public ones. The creator view lives
 // inside /dashboard (the page swaps to the creator dashboard by role).
 const creatorPages = ['/', '/dashboard']
+
+// Consent screen of the MCP connector for Claude (OAuth authorization endpoint)
+const OAUTH_AUTHORIZE_PATH = '/oauth/authorize'
 
 /**
  * The two image routes that are public by design (session-less, served by
@@ -185,6 +193,26 @@ export function middleware(request: NextRequest) {
       return NextResponse.next()
     }
     return NextResponse.redirect(new URL('/dashboard', request.url))
+  }
+
+  // Consent screen of the MCP connector for Claude. BRAND and CREATOR never
+  // get this far: the two blocks above already sent them to their own home.
+  // The page reads the session from the cookie alone, so the cookie is what
+  // counts here: whoever arrives without one signs in first and comes back to
+  // this very request (path and query travel in `next`, which the login page
+  // honours only for this path). Whether the session is a valid ADMIN one is
+  // decided by the page itself, against the database.
+  if (pathname === OAUTH_AUTHORIZE_PATH || pathname === OAUTH_AUTHORIZE_PATH + '/') {
+    if (!cookieToken) {
+      const loginUrl = new URL('/login', request.url)
+      loginUrl.searchParams.set('next', OAUTH_AUTHORIZE_PATH + request.nextUrl.search)
+      return NextResponse.redirect(loginUrl)
+    }
+    // The «Permitir» button must never be shown inside somebody else's page
+    const response = NextResponse.next()
+    response.headers.set('X-Frame-Options', 'DENY')
+    response.headers.set('Content-Security-Policy', "frame-ancestors 'none'")
+    return response
   }
 
   if (isPublicPath(pathname)) {

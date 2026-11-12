@@ -38,6 +38,7 @@ import {
   Plus,
 } from "lucide-react"
 import { useTheme } from '@/components/theme-provider'
+import { ClaudeConnectionsCard } from '@/components/mcp/claude-connections-card'
 import { cn } from '@/lib/utils'
 import {
   DEFAULT_BENCHMARKS,
@@ -1815,6 +1816,10 @@ export default function SettingsPage() {
                 </Card>
               </div>
             </div>
+
+            {/* Section: Conexiones con Claude (MCP connector). ADMIN only, like the
+                whole tab. Self-contained: the card loads, lists and revokes on its own. */}
+            {isAdmin && <ClaudeConnectionsCard />}
           </div>
           )}
         </TabsContent>
