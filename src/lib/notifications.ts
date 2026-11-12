@@ -231,6 +231,42 @@ export async function notifyAdminsOncePerDay(
 }
 
 /**
+ * ADMIN alert (once per UTC day) when Apify rejects the platform's token:
+ * nothing can be captured until APIFY_API_KEY is replaced. Called by
+ * @/lib/apify the moment a 401 is seen, by the capture crons before they run
+ * and by the watchdog on every tick. Returns true when a notification was
+ * sent; never throws.
+ */
+export async function notifyApifyTokenRejectedOnce(): Promise<boolean> {
+  return notifyAdminsOncePerDay('apify_token_alert', {
+    type: 'apify_budget',
+    title: 'Apify ha rechazado el token',
+    message: 'La captura automática está parada: Apify no acepta el token de acceso de la plataforma (revocado, cambiado o mal copiado). No entran stories, publicaciones ni TikTok hasta poner el token nuevo en la variable APIFY_API_KEY de Railway (pegarlo en Ajustes no sirve mientras exista esa variable). Las stories caducan a las 24 h: las que no se lean a tiempo no se recuperan.',
+  })
+}
+
+/**
+ * The token works again: forget today's claim so a later rejection on the
+ * same day (mis-copied replacement, second rotation) alerts again. Never throws.
+ */
+export async function clearApifyTokenAlert(): Promise<void> {
+  await prisma.setting.deleteMany({ where: { key: 'apify_token_alert' } }).catch(() => {})
+}
+
+/**
+ * ADMIN alert (once per UTC day) when a stories scan could not be done for a
+ * reason other than the token (the actors failed to start or to finish): the
+ * scan is retried on the next tick instead of counting as done. Never throws.
+ */
+export async function notifyStoriesScanFailedOnce(): Promise<boolean> {
+  return notifyAdminsOncePerDay('stories_scan_failed_alert', {
+    type: 'cron_stale',
+    title: 'El rastreo de stories ha fallado',
+    message: 'El último rastreo de stories no se ha podido completar (Apify no ha leído todas las creadoras o ha habido un error a mitad), así que no cuenta como hecho y se repite en la próxima pasada, en unas 4 horas. Si se repite, revisa el estado de Apify. Las stories caducan a las 24 h.',
+  })
+}
+
+/**
  * ADMIN alert when an Apify budget gate pauses a path — at most ONCE per UTC
  * day per gate. The day is claimed atomically BEFORE sending (see
  * claimApifyBudgetAlertDay) so concurrent callers never double-post, and the

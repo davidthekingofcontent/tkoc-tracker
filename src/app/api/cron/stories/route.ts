@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve, scrapeStories, wasLastStoriesScrapePartial, STORIES_BATCH_MAX } from '@/lib/apify'
-import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
+import { checkApifyAuth, isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve, scrapeStoriesDetailed, STORIES_BATCH_MAX } from '@/lib/apify'
+import { cronGate, cronSkipped, markCronRun, restoreCronRun, markCronFailed, cronFailedRecently, GATE_SLACK_MS } from '@/lib/cron-throttle'
+
+/** After a failed scan (which may have been charged) the next attempt waits at least this long, whoever ticks. */
+const STORIES_RETRY_FLOOR_MS = 3 * 60 * 60 * 1000 + 50 * 60 * 1000
 
 /** Stories live 24 h: two scans a day catch every one of them (CRON_STORIES_MIN_HOURS overrides). */
 const STORIES_DEFAULT_MIN_HOURS = Number(process.env.STORIES_MIN_INTERVAL_HOURS || 12)
-import { notifyCampaignTeam, notifyApifyBudgetPauseOnce } from '@/lib/notifications'
+import { notifyCampaignTeam, notifyApifyBudgetPauseOnce, notifyApifyTokenRejectedOnce, notifyStoriesScanFailedOnce } from '@/lib/notifications'
 import {
   STORIES_MAX_CAMPAIGN_DAYS,
   STORY_SCAN_STATUSES,
@@ -40,6 +43,9 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // What the catch needs to undo a stamp written for a scan that then broke
+  let stamped = false
+  let previousRunAt: string | null = null
   try {
     const isConfigured = await isApifyConfiguredAsync()
     if (!isConfigured) {
@@ -50,7 +56,7 @@ export async function GET(request: NextRequest) {
     }
     const force = request.nextUrl.searchParams.get('force') === '1'
     // Throttle: at most one scan per interval (server-side, independent of the caller's schedule)
-    const gate = await cronGate('stories', STORIES_DEFAULT_MIN_HOURS, force)
+    const gate = await cronGate('stories', STORIES_DEFAULT_MIN_HOURS, force, GATE_SLACK_MS)
     if (!gate.allowed) {
       console.log(`[Cron/Stories] Skipped: last scan ${gate.lastRunAt}, next allowed ${gate.nextAllowedAt} (every ${gate.minHours} h)`)
       return NextResponse.json(cronSkipped('stories', gate, { storiesFound: 0 }))
@@ -63,6 +69,24 @@ export async function GET(request: NextRequest) {
       console.log(`[Cron/Stories] Skipped: Apify usage ${budget.usd} $ ≥ core reserve ${budget.coreLimit} $ (${budget.usedPct} % of the plan; cycle ends ${budget.cycleEndsAt ?? 'unknown'})`)
       await notifyApifyBudgetPauseOnce('stories', { usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt })
       return NextResponse.json({ skipped: 'apify_budget', cron: 'stories', usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt, storiesFound: 0 })
+    }
+    // Rejected token (revoked or rotated by Apify): nothing can be read. Do
+    // NOT stamp the run — a scan that cannot start is not a scan, and stories
+    // die in 24 h — tell the ADMINs and let the next tick try again.
+    if ((await checkApifyAuth(true)) === 'rejected') {
+      console.error('[Cron/Stories] NOT RUN: Apify rejects the token (401). Replace APIFY_API_KEY; the next tick retries.')
+      await notifyApifyTokenRejectedOnce()
+      await recordStoriesRun({ at: new Date().toISOString(), failed: true, reason: 'apify_token', totalStories: 0, newStories: 0 })
+      return NextResponse.json({ error: 'Apify rejects the token', skipped: 'apify_token', cron: 'stories', storiesFound: 0 }, { status: 503 })
+    }
+    // Retry floor: a scan that failed a moment ago (and may have been charged)
+    // is not repeated by every scheduler tick
+    if (!force) {
+      const failedAt = await cronFailedRecently('stories', STORIES_RETRY_FLOOR_MS)
+      if (failedAt) {
+        console.log(`[Cron/Stories] Skipped: the last attempt failed at ${failedAt}; retrying no sooner than ${Math.round(STORIES_RETRY_FLOOR_MS / 60000)} min after it`)
+        return NextResponse.json({ skipped: 'recent_failure', cron: 'stories', failedAt, storiesFound: 0 })
+      }
     }
 
     // All ACTIVE campaigns, whatever their type: the rule is membership + brand
@@ -174,14 +198,24 @@ export async function GET(request: NextRequest) {
     let newByLink = 0
     // New stories per campaign: each campaign's team is notified separately
     const newStoriesByCampaign = new Map<string, number>()
+    previousRunAt = gate.lastRunAt
     await markCronRun('stories')
+    stamped = true
 
     let partial = false
+    // Every batch that is not read to the end counts as failed, also the ones
+    // never started because the monthly limit tripped mid-scan
+    const expectedBatches = Math.ceil(usernames.length / STORIES_BATCH_MAX)
+    let readBatches = 0
     for (let i = 0; i < usernames.length; i += STORIES_BATCH_MAX) {
       if (isApifyExhausted()) break
       const batch = usernames.slice(i, i + STORIES_BATCH_MAX)
-      const results = await scrapeStories(batch, 'INSTAGRAM')
-      if (wasLastStoriesScrapePartial()) partial = true
+      const scrape = await scrapeStoriesDetailed(batch, 'INSTAGRAM')
+      if (scrape.partial) partial = true
+      // A scrape that could not be done returns an empty list too: it is not
+      // counted as read, so it is never reported as "nobody has stories"
+      if (!scrape.failed) readBatches++
+      const results = scrape.results
 
       for (const result of results) {
         const mapping = usernameMap.get(result.username.toLowerCase())
@@ -235,6 +269,34 @@ export async function GET(request: NextRequest) {
       })
     }
 
+    // FAILED scan (no batch could be read): it does not count as a run. Put the
+    // previous stamp back so the next tick (4 h) retries instead of waiting 12 h
+    // behind a scan that never happened, and tell the ADMINs. Never silent.
+    const failedBatches = expectedBatches - readBatches
+    if (failedBatches > 0) {
+      // What was read is already saved and its teams notified above; the
+      // scan as a whole is repeated on a later tick
+      stamped = false
+      await restoreCronRun('stories', previousRunAt)
+      await markCronFailed('stories')
+      const tokenRejected = (await checkApifyAuth()) === 'rejected'
+      const reason = tokenRejected ? 'apify_token' : isApifyExhausted() ? 'apify_exhausted' : 'actors_failed'
+      console.error(`[Cron/Stories] FAILED: ${failedBatches} of ${expectedBatches} batches could not be read (${reason}). Not counted as a run; retried on a later tick.`)
+      if (tokenRejected) await notifyApifyTokenRejectedOnce()
+      else await notifyStoriesScanFailedOnce()
+      await recordStoriesRun({
+        at: now.toISOString(),
+        failed: true,
+        reason,
+        failedBatches,
+        usernamesChecked: usernames.length,
+        totalStories,
+        newStories,
+        skipped,
+      })
+      return NextResponse.json({ error: 'Stories scan failed', failed: true, reason, failedBatches, usernamesChecked: usernames.length, storiesFound: totalStories, newStories }, { status: 502 })
+    }
+
     console.log(`[Cron/Stories] Done. Total: ${totalStories}${partial ? ' (PARTIAL: the actor run had not finished)' : ''}, New: ${newStories} (${newByLink} via a brand link, ${newByReshare} via a shared post), Rejected by rules: ${rejectedByRules}`)
     await recordStoriesRun({
       at: now.toISOString(),
@@ -268,6 +330,16 @@ export async function GET(request: NextRequest) {
     })
   } catch (error) {
     console.error('[Cron/Stories] Error:', error)
+    // The stamp was written for a scan that then broke (database error, an
+    // unexpected actor payload, the monthly limit tripping mid-scan): put the
+    // previous one back and tell the ADMINs, or the next ticks would answer
+    // "too soon" for 12 h behind a scan that never finished.
+    if (stamped) {
+      await restoreCronRun('stories', previousRunAt)
+      await markCronFailed('stories')
+      await notifyStoriesScanFailedOnce()
+      await recordStoriesRun({ at: new Date().toISOString(), failed: true, reason: 'exception', detail: error instanceof Error ? error.message.slice(0, 200) : 'unknown' })
+    }
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -33,7 +33,7 @@ interface CronJob {
 const CRON_JOBS: CronJob[] = [
   { name: 'track',            path: '/api/cron/track',            intervalMs: SIX_HOURS_MS,    initialDelayMs: FIVE_MINUTES_MS,      auth: 'bearer' },
   { name: 'discovery',        path: '/api/cron/discovery',        intervalMs: TWELVE_HOURS_MS, initialDelayMs: 10 * 60 * 1000,       auth: 'header' },
-  { name: 'stories',          path: '/api/cron/stories',          intervalMs: TWELVE_HOURS_MS, initialDelayMs: 15 * 60 * 1000,       auth: 'header' }, // pay-per-story actor: 12h still sees every 24h story at least once
+  { name: 'stories',          path: '/api/cron/stories',          intervalMs: FOUR_HOURS_MS,   initialDelayMs: 15 * 60 * 1000,       auth: 'header' }, // ticks every 4 h; the route's own 12 h gate decides when a scan is paid (pay-per-story actor). The short tick is what retries a FAILED scan (rejected token, actor down) within 4 h instead of 12: stories die at 24 h
   { name: 'check-posts',      path: '/api/cron/check-posts',      intervalMs: TWELVE_HOURS_MS, initialDelayMs: 20 * 60 * 1000,       auth: 'header' },
   { name: 'check-deletions',  path: '/api/cron/check-deletions',  intervalMs: TWENTY_FOUR_HOURS_MS, initialDelayMs: 25 * 60 * 1000,  auth: 'bearer' },
   { name: 'live-capture-enrich', path: '/api/live-capture/enrich', intervalMs: FOUR_HOURS_MS,   initialDelayMs: 8 * 60 * 1000,        auth: 'header', method: 'POST' },

@@ -209,6 +209,75 @@ function isExhaustedError(err: unknown): boolean {
   return err instanceof Error && err.message === 'APIFY_EXHAUSTED'
 }
 
+// ============ REJECTED TOKEN (401) ============
+// Apify answers 401 when the token was revoked, rotated or mistyped (on
+// 11-12 Nov 2026 Apify rotated every customer token after a security
+// incident). Nothing can be scraped until APIFY_API_KEY is replaced, and a
+// scrape that could not even start is NOT "no results": every path that used
+// to swallow the error into an empty list would report a clean, empty run.
+// A rejected token is therefore (a) a distinct error, (b) remembered, and
+// (c) always told to the ADMINs (once a day), whoever hit it first.
+
+export type ApifyAuthState = 'ok' | 'rejected' | 'unknown'
+
+/** Thrown by runActorDetailed when Apify answers 401 to our token. */
+export const APIFY_AUTH_ERROR = 'APIFY_AUTH_FAILED'
+
+export function isApifyAuthError(err: unknown): boolean {
+  return err instanceof Error && err.message === APIFY_AUTH_ERROR
+}
+
+const AUTH_CHECK_TTL_MS = 5 * 60 * 1000
+const AUTH_CHECK_TIMEOUT_MS = 10_000
+let _authCheck: { at: number; state: ApifyAuthState } | null = null
+
+/** ADMIN alert, at most once a day, never throws. Lazy import: notifications must not load with every scrape. */
+function alertApifyTokenRejected(): void {
+  void import('@/lib/notifications')
+    .then(m => m.notifyApifyTokenRejectedOnce())
+    .catch(err => console.error('[Apify] Could not send the rejected-token alert:', err instanceof Error ? err.message : err))
+}
+
+/** Once per process, and on every rejected → ok change, forget the day's alert claim. */
+let _tokenAlertCleared = false
+
+function rememberAuthState(state: ApifyAuthState): void {
+  const previous = _authCheck?.state
+  _authCheck = { at: Date.now(), state }
+  if (state === 'rejected') {
+    _tokenAlertCleared = false
+    alertApifyTokenRejected()
+  } else if (state === 'ok' && (previous === 'rejected' || !_tokenAlertCleared)) {
+    // The token works: if it is rejected again later the same day (mis-copied
+    // replacement, a second rotation) the ADMINs must be told again
+    _tokenAlertCleared = true
+    void import('@/lib/notifications').then(m => m.clearApifyTokenAlert()).catch(() => {})
+  }
+}
+
+/**
+ * Does Apify accept our token right now? One cheap, free GET /users/me
+ * (5-minute cache; `fresh` skips it). 'rejected' ONLY on a real 401: a
+ * timeout, a 5xx or a missing token is 'unknown' and must not block anything.
+ * A 'rejected' answer alerts the ADMINs (once a day). Never throws.
+ */
+export async function checkApifyAuth(fresh = false): Promise<ApifyAuthState> {
+  if (!fresh && _authCheck && Date.now() - _authCheck.at < AUTH_CHECK_TTL_MS) return _authCheck.state
+  try {
+    const token = await getTokenWithDbFallback()
+    if (!token) return 'unknown'
+    const res = await fetch(`${APIFY_BASE}/users/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(AUTH_CHECK_TIMEOUT_MS),
+    })
+    const state: ApifyAuthState = res.status === 401 ? 'rejected' : res.ok ? 'ok' : 'unknown'
+    rememberAuthState(state)
+    return state
+  } catch {
+    return 'unknown'
+  }
+}
+
 // Cache the DB token for 60s to avoid hitting DB on every call
 let _cachedDbToken: string | null = null
 let _cachedDbTokenAt = 0
@@ -292,6 +361,12 @@ async function runActorDetailed(
   if (!runRes.ok) {
     const errText = await runRes.text()
     console.error(`[Apify] Actor ${actorId} FAILED: ${runRes.status} ${errText}`)
+    // Token rejected → remember it, alert the ADMINs and fail with a distinct
+    // error so no caller can mistake it for an empty result
+    if (runRes.status === 401) {
+      rememberAuthState('rejected')
+      throw new Error(APIFY_AUTH_ERROR)
+    }
     // Monthly usage hard limit → open the circuit breaker until the cycle resets
     if (
       runRes.status === 403 &&
@@ -302,6 +377,7 @@ async function runActorDetailed(
     throw new Error(`Apify actor ${actorId} failed to start: ${runRes.status} ${errText}`)
   }
 
+  if (_authCheck?.state === 'rejected') rememberAuthState('ok')
   const runData = await runRes.json() as { data?: { id?: string; defaultDatasetId?: string; status?: string } }
   const runId = runData.data?.id
   const datasetId = runData.data?.defaultDatasetId
@@ -334,6 +410,12 @@ async function runActorDetailed(
         }
       }
     }
+  }
+  // A run that ended badly is a failure whenever we learn it: also when the
+  // start response itself already says FAILED (the actor died in its first
+  // seconds), which used to fall through and be read as a "partial" dataset
+  if (status === 'FAILED' || status === 'ABORTED' || status === 'TIMED-OUT') {
+    throw new Error(`Apify actor ${actorId} ${status}`)
   }
   const succeeded = status === 'SUCCEEDED' || !status
   if (!succeeded) {
@@ -1247,19 +1329,36 @@ const STORY_ACTORS = [
  */
 const STORIES_POLL_MS = 200_000
 let lastStoriesScrapePartial = false
+let lastStoriesScrapeFailed = false
+/**
+ * True when the last stories scrape could not be done at all (every actor
+ * failed to start or to finish): its empty list is NOT "nobody has stories".
+ */
+export function wasLastStoriesScrapeFailed(): boolean {
+  return lastStoriesScrapeFailed
+}
 /** True when the last stories scrape read its dataset before the run finished (some stories unseen). */
 export function wasLastStoriesScrapePartial(): boolean {
   return lastStoriesScrapePartial
 }
 
 /**
- * The stories actor charges 0,099 $ per START plus 0,003 $ per username and
- * accepts up to 100 usernames per run: one run for everybody is 5× cheaper
+ * The stories actor charges 0,099 $ per START plus 0,0028 $ per username
+ * (0,003 $ until Nov 2026) and accepts up to 100 usernames per run: one run for everybody is 5× cheaper
  * than five runs of 20. Never call it for a single creator.
  */
 export const STORIES_BATCH_MAX = 100
 
-async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[]> {
+/** What a stories scrape really did: an empty `results` is only an answer when `failed` is false. */
+export interface StoriesScrape {
+  results: StoryResult[]
+  /** The run had not finished when its dataset was read: some stories unseen. */
+  partial: boolean
+  /** Nothing could be read (no actor could be run to the end): NOT "nobody has stories". */
+  failed: boolean
+}
+
+async function scrapeInstagramStories(usernames: string[]): Promise<StoriesScrape> {
   const usernameSlice = usernames.slice(0, STORIES_BATCH_MAX)
   console.log(`[Apify] Story scrape requested for ${usernameSlice.length} usernames: ${usernameSlice.join(', ')}`)
 
@@ -1267,27 +1366,40 @@ async function scrapeInstagramStories(usernames: string[]): Promise<StoryResult[
     try {
       console.log(`[Apify] Trying story actor: ${actor}`)
       const { items, succeeded } = await runActorDetailed(actor, { usernames: usernameSlice }, 300, STORIES_POLL_MS)
-      lastStoriesScrapePartial = !succeeded
+      // Still running after the whole wait and nothing in the dataset: nothing
+      // was read. That is a failed attempt, not "nobody has live stories".
+      if (!succeeded && (!items || items.length === 0)) throw new Error('the run had not finished and returned nothing')
       if (!succeeded) console.warn(`[Apify] ${actor}: run not finished when the dataset was read — the stories list is PARTIAL`)
       if (items && items.length > 0) {
         console.log(`[Apify] ${actor} returned ${items.length} story items${succeeded ? '' : ' (partial)'}`)
-        return parseStoryItems(items)
+        // awaited inside the try: an unexpected item shape is a failed attempt too
+        const results = await parseStoryItems(items)
+        return { results, partial: !succeeded, failed: false }
       }
       // A clean empty result is a real answer (nobody has live stories) — no need to pay a second actor
       console.log(`[Apify] ${actor} returned 0 items for ${usernameSlice.length} usernames`)
-      return []
+      return { results: [], partial: false, failed: false }
     } catch (err) {
       if (err instanceof Error && err.message === 'APIFY_EXHAUSTED') throw err
       console.error(`[Apify] Story actor ${actor} failed:`, err instanceof Error ? err.message : err)
+      // A rejected token fails every actor alike: no point in a second attempt
+      if (isApifyAuthError(err)) break
     }
   }
-  return []
+  // Every actor failed: the empty list below is a FAILED scrape, not an answer
+  console.error(`[Apify] Story scrape FAILED for ${usernameSlice.length} usernames: no actor could be run`)
+  return { results: [], partial: false, failed: true }
 }
 
-export async function scrapeStories(usernames: string[], platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<StoryResult[]> {
+/**
+ * Stories of a batch of creators, with what really happened. Callers that must
+ * tell "nobody has stories" from "could not be read" (the cron) use this one;
+ * the result travels with the call, so concurrent scrapes cannot mix it up.
+ */
+export async function scrapeStoriesDetailed(usernames: string[], platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<StoriesScrape> {
   if (platform !== 'INSTAGRAM') {
     // Stories only supported on Instagram for now
-    return []
+    return { results: [], partial: false, failed: false }
   }
 
   // Short TTL: stories expire in 24h so freshness matters, but a 30min cache
@@ -1296,16 +1408,25 @@ export async function scrapeStories(usernames: string[], platform: 'INSTAGRAM' |
   const cached = cacheGet<StoryResult[]>(cacheKey)
   if (cached !== undefined) {
     console.log(`[Apify] Cache hit for stories batch (${usernames.length} users) — skipping paid scrape`)
-    return cached
+    // Only complete, successful scrapes are cached
+    return { results: cached, partial: false, failed: false }
   }
 
-  const result = await scrapeInstagramStories(usernames)
+  const scrape = await scrapeInstagramStories(usernames)
   // Don't negative-cache empties caused by the exhausted-limit circuit breaker,
-  // and never cache a partial list (the next caller must see the whole run)
-  if (result.length === 0 && isApifyExhausted()) return result
-  if (lastStoriesScrapePartial) return result
-  cacheSet(cacheKey, result, result.length > 0 ? 30 * 60 * 1000 : NEGATIVE_CACHE_TTL_MS)
-  return result
+  // and never cache a partial or failed list (the next caller must retry it)
+  if (scrape.results.length === 0 && isApifyExhausted()) return scrape
+  if (scrape.partial || scrape.failed) return scrape
+  cacheSet(cacheKey, scrape.results, scrape.results.length > 0 ? 30 * 60 * 1000 : NEGATIVE_CACHE_TTL_MS)
+  return scrape
+}
+
+export async function scrapeStories(usernames: string[], platform: 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'): Promise<StoryResult[]> {
+  const scrape = await scrapeStoriesDetailed(usernames, platform)
+  // Legacy flags for callers that only take the list
+  lastStoriesScrapePartial = scrape.partial
+  lastStoriesScrapeFailed = scrape.failed
+  return scrape.results
 }
 
 // ============ PUBLIC API ============

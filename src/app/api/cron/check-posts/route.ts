@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 import { campaignHasTargets, mediaMatchesCampaignRules, scrapedPostToRuleItem, upsertCampaignPost } from '@/lib/campaign-capture'
-import { isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve } from '@/lib/apify'
+import { checkApifyAuth, isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve } from '@/lib/apify'
 import { refreshMaturingViews, type EnrichSummary } from '@/lib/media-enrich'
 import { fetchProfile } from '@/lib/platform-client'
 import { isYouTubeApiConfigured } from '@/lib/youtube-api'
-import { notifyApifyBudgetPauseOnce, notifyCampaignTeam } from '@/lib/notifications'
+import { notifyApifyBudgetPauseOnce, notifyApifyTokenRejectedOnce, notifyCampaignTeam } from '@/lib/notifications'
 import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 import type { ScrapedProfile } from '@/lib/apify'
 
@@ -58,6 +58,13 @@ export async function GET(request: NextRequest) {
     const youtubeConfigured = isYouTubeApiConfigured()
     if (!apifyConfigured && !youtubeConfigured) {
       return NextResponse.json({ error: 'No data source configured (Apify or YouTube API)' }, { status: 400 })
+    }
+    // Rejected token: every profile read would fail and the run would be
+    // stamped as "done, 0 new posts". Not run, not stamped, ADMINs told.
+    if (apifyConfigured && (await checkApifyAuth(true)) === 'rejected') {
+      console.error('[Cron/CheckPosts] NOT RUN: Apify rejects the token (401). Replace APIFY_API_KEY; the next tick retries.')
+      await notifyApifyTokenRejectedOnce()
+      return NextResponse.json({ error: 'Apify rejects the token', skipped: 'apify_token', cron: 'check-posts' }, { status: 503 })
     }
 
     // Find active campaigns with their influencers

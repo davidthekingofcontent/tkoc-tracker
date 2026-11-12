@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
-import { scrapeHashtag, scrapeAccountMentions, isApifyConfigured, isApifyOverCoreReserve, detectCountry } from '@/lib/apify'
+import { scrapeHashtag, scrapeAccountMentions, isApifyConfigured, isApifyOverCoreReserve, checkApifyAuth, detectCountry } from '@/lib/apify'
 import { searchVideos as ytSearchVideos, isYouTubeApiConfigured } from '@/lib/youtube-api'
 import {
   mediaMatchesCampaignRules,
@@ -11,7 +11,7 @@ import {
 } from '@/lib/campaign-capture'
 import type { Platform } from '@/generated/prisma/client'
 import { afterInfluencerUpsert } from '@/lib/influencer-upsert'
-import { campaignTeamUserIds, notifyApifyBudgetPauseOnce } from '@/lib/notifications'
+import { campaignTeamUserIds, notifyApifyBudgetPauseOnce, notifyApifyTokenRejectedOnce } from '@/lib/notifications'
 
 /**
  * creator_discovered → every member of the campaign team (creator + assigned
@@ -480,6 +480,13 @@ export async function GET(request: NextRequest) {
       await notifyApifyBudgetPauseOnce('track', { usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt })
       return NextResponse.json({ skipped: 'apify_budget', cron: 'track', usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt })
     }
+    // Rejected token: every scrape would fail and be reported as "0 posts".
+    // Not run, not stamped, ADMINs told; the next tick retries.
+    if ((await checkApifyAuth(true)) === 'rejected') {
+      console.error('[Cron/Track] NOT RUN: Apify rejects the token (401). Replace APIFY_API_KEY; the next tick retries.')
+      await notifyApifyTokenRejectedOnce()
+      return NextResponse.json({ error: 'Apify rejects the token', skipped: 'apify_token', cron: 'track' }, { status: 503 })
+    }
 
     // The 24 h stamp is written AFTER the work (see finally): stamping first
     // meant a redeploy mid-run skipped the rest until the next day.
@@ -493,7 +500,11 @@ export async function GET(request: NextRequest) {
         timestamp: new Date().toISOString(),
       })
     } finally {
-      if (progress.finished || progress.processed > 0) await markCronRun('track')
+      // Not stamped when the token was rejected mid-run (the pre-flight could
+      // not tell, e.g. it timed out): every scrape came back empty and a
+      // stamp would close the gate for 24 h behind a run that read nothing
+      const tokenRejected = (await checkApifyAuth()) === 'rejected'
+      if (!tokenRejected && (progress.finished || progress.processed > 0)) await markCronRun('track')
     }
   } catch (error) {
     console.error('Cron track error:', error)

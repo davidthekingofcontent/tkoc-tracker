@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { STORY_SCAN_STATUSES, campaignHasTargets, campaignWindowEndExclusive, isWithinCampaignDates, storiesCampaignSkipReason } from '@/lib/campaign-capture'
-import { notifyAdminsOncePerDay } from '@/lib/notifications'
+import { notifyAdminsOncePerDay, notifyApifyTokenRejectedOnce } from '@/lib/notifications'
+import { checkApifyAuth } from '@/lib/apify'
 
 // GET /api/cron/watchdog (header x-cron-secret) — every 6 h from the internal scheduler.
 //
@@ -149,7 +150,17 @@ export async function GET(request: NextRequest) {
       checks.push({ name: d.name, lastRunAt: iso, ageHours, eligibleWork: d.eligibleWork, stale, alerted })
     }
 
-    return NextResponse.json({ ok: true, liveCampaigns: live.length, withTargets: withTargets.length, checks })
+    // The token itself, on every tick: a revoked or rotated token stops ALL
+    // capture at once, and the crons would otherwise only find out when their
+    // own interval comes round. 'unknown' (timeout, Apify down) alerts nothing.
+    const apifyAuth = await checkApifyAuth(true)
+    let apifyTokenAlerted = false
+    if (apifyAuth === 'rejected') {
+      apifyTokenAlerted = await notifyApifyTokenRejectedOnce()
+      console.error(`[Cron/Watchdog] Apify REJECTS the token (401): capture is stopped until APIFY_API_KEY is replaced${apifyTokenAlerted ? ' — ADMINs alerted' : ''}`)
+    }
+
+    return NextResponse.json({ ok: true, liveCampaigns: live.length, withTargets: withTargets.length, checks, apifyAuth, apifyTokenAlerted })
   } catch (error) {
     console.error('[Cron/Watchdog] error:', error)
     return NextResponse.json({ error: 'Watchdog failed' }, { status: 500 })

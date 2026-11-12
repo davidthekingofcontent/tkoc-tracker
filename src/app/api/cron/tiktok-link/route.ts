@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve } from '@/lib/apify'
+import { checkApifyAuth, isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve } from '@/lib/apify'
 import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
-import { notifyApifyBudgetPauseOnce } from '@/lib/notifications'
+import { notifyApifyBudgetPauseOnce, notifyApifyTokenRejectedOnce } from '@/lib/notifications'
 import { runTikTokAutolink } from '@/lib/tiktok-autolink'
 
 /**
@@ -50,6 +50,12 @@ export async function GET(request: NextRequest) {
       console.log(`[Cron/TikTokLink] Skipped: Apify usage at ${budget.usedPct} % of the plan`)
       await notifyApifyBudgetPauseOnce('track', { usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt })
       return NextResponse.json({ skipped: 'apify_budget', cron: 'tiktok-link', usedPct: budget.usedPct, cycleEndsAt: budget.cycleEndsAt })
+    }
+    // Rejected token: nothing can be read. Not run, not stamped, ADMINs told.
+    if ((await checkApifyAuth(true)) === 'rejected') {
+      console.error('[Cron/TikTokLink] NOT RUN: Apify rejects the token (401). Replace APIFY_API_KEY; the next tick retries.')
+      await notifyApifyTokenRejectedOnce()
+      return NextResponse.json({ error: 'Apify rejects the token', skipped: 'apify_token', cron: 'tiktok-link' }, { status: 503 })
     }
 
     const summary = await runTikTokAutolink({ campaignId })
