@@ -11,6 +11,16 @@
  *
  * Deleted publications (isDeleted) stay in the totals and are counted apart
  * (David, decision 7B).
+ *
+ * A creator is a person with several profiles (Nov 2026). Media.influencerId is
+ * the CREDITED member of the campaign, so every count and per-creator row here
+ * groups by it and a person is never counted twice. When another profile of
+ * hers published the piece (her TikTok, a second Instagram),
+ * Media.publishedByInfluencerId names that profile and three things follow it:
+ *  - audience estimates use the followers of the account that published;
+ *  - "vs su habitual" only compares pieces from the member's own profile;
+ *  - perMedia.publishedBy and perInfluencer.byPlatform say where each piece is.
+ * With no linked profile every figure is the one it was before.
  */
 
 import { prisma } from '@/lib/db'
@@ -38,6 +48,7 @@ import {
   type CampaignOverview,
   type PerInfluencerMetrics,
   type PerMediaMetrics,
+  type PlatformBreakdown,
   type TimelinePoint,
   viewsBaseOf,
   type CampaignBalance,
@@ -61,9 +72,19 @@ const MEDIA_SELECT = {
   id: true, mediaType: true, platform: true, likes: true, comments: true, shares: true, saves: true,
   views: true, reach: true, impressions: true, postedAt: true, influencerId: true, isDeleted: true,
   caption: true, isAdDisclosed: true, isPaidPartnership: true,
+  publishedByInfluencerId: true,
 } as const
 
 const CLOSED_STATUSES = new Set(['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'])
+
+/**
+ * The OTHER profile that published a piece, or null when the credited member
+ * published it from her own profile (publishedByInfluencerId null, which is
+ * every row before Nov 2026, or equal to the member).
+ */
+function otherPublisherOf(m: { influencerId: string; publishedByInfluencerId: string | null }): string | null {
+  return m.publishedByInfluencerId && m.publishedByInfluencerId !== m.influencerId ? m.publishedByInfluencerId : null
+}
 
 export async function computeCampaignOverview(campaignId: string, options: ComputeOverviewOptions = {}): Promise<CampaignOverview | null> {
   const campaign = await prisma.campaign.findUnique({
@@ -102,14 +123,43 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
   const followersById = new Map<string, number>()
   for (const ci of campaign.influencers) followersById.set(ci.influencerId, ci.influencer?.followers || 0)
 
+  // Pieces published from ANOTHER profile of the member's person: load those
+  // profiles once. A campaign with none loads nothing here and every figure
+  // below is computed exactly as before Nov 2026.
+  const publisherIds = Array.from(new Set(media.map(otherPublisherOf).filter((id): id is string => id !== null)))
+  const publisherById = new Map<string, { id: string; username: string; platform: string; followers: number }>()
+  if (publisherIds.length > 0) {
+    const [profiles, publisherStoryRates] = await Promise.all([
+      prisma.influencer.findMany({ where: { id: { in: publisherIds } }, select: { id: true, username: true, platform: true, followers: true } }),
+      getCreatorStoryViewRates(publisherIds),
+    ])
+    for (const p of profiles) publisherById.set(p.id, p)
+    for (const [id, rate] of publisherStoryRates) if (!storyViewRates.has(id)) storyViewRates.set(id, rate)
+  }
+  /**
+   * Followers behind an audience estimate: those of the ACCOUNT THAT PUBLISHED
+   * the piece (her TikTok may have 29.000 where her Instagram has 2.382). A
+   * publishing profile with no followers on record gives no estimate at all,
+   * never one borrowed from the member's other account.
+   */
+  const followersOf = (m: typeof media[number]): number | null => {
+    const other = otherPublisherOf(m)
+    if (!other) return followersById.get(m.influencerId) ?? null
+    const publisher = publisherById.get(other)
+    return publisher ? publisher.followers || 0 : null
+  }
+
   // EMV per item (story estimates live here — single source for the audience of estimated stories)
   const emv = calculateCampaignEMV(
     media.map(m => ({
       platform: m.platform,
       impressions: m.impressions, reach: m.reach, views: m.views,
       likes: m.likes, comments: m.comments, shares: m.shares, saves: m.saves,
-      mediaType: m.mediaType, postedAt: m.postedAt, influencerId: m.influencerId,
-      followers: followersById.get(m.influencerId) ?? null,
+      mediaType: m.mediaType, postedAt: m.postedAt,
+      // The publishing ACCOUNT: a story sequence and a learned story view rate
+      // belong to one account, like the followers they multiply
+      influencerId: otherPublisherOf(m) ?? m.influencerId,
+      followers: followersOf(m),
     })),
     { rates, storyViewRates }
   )
@@ -118,8 +168,10 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
   const audienceResults: AudienceResult[] = []
   const perMedia: PerMediaMetrics[] = []
   media.forEach((m, i) => {
-    const a = audienceOf(m, { followers: followersById.get(m.influencerId) ?? null, emvItem: emv.items[i], rates })
+    const a = audienceOf(m, { followers: followersOf(m), emvItem: emv.items[i], rates })
     audienceResults.push(a)
+    const other = otherPublisherOf(m)
+    const publisher = other ? publisherById.get(other) : undefined
     perMedia.push({
       id: m.id,
       views: m.views || 0,
@@ -133,6 +185,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
       isDeleted: !!m.isDeleted,
       influencerId: m.influencerId,
       viewsPlausible: hasPlausibleViews(m),
+      publishedBy: publisher ? { influencerId: publisher.id, username: publisher.username, platform: publisher.platform } : null,
     })
   })
 
@@ -188,11 +241,25 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
       const c = memberCost(ci)
       const st = own.filter(m => isStoryType(m.mediaType)).length
 
-      // Baseline comparison per piece: median of the campaign pieces of the baseline's family
+      // Her pieces by the network of the publication (sums = media / views / engagements of this row)
+      const perNetwork = new Map<string, PlatformBreakdown>()
+      for (const m of own) {
+        const row = perNetwork.get(m.platform) || { pieces: 0, views: 0, engagements: 0 }
+        row.pieces++
+        row.views += m.views || 0
+        row.engagements += engagementsOf(m)
+        perNetwork.set(m.platform, row)
+      }
+      const byPlatform: Record<string, PlatformBreakdown> = {}
+      for (const network of Array.from(perNetwork.keys()).sort()) byPlatform[network] = perNetwork.get(network)!
+
+      // Baseline comparison per piece: median of the campaign pieces of the baseline's family.
+      // The baseline is the habit of the profile she is a member with, so only pieces
+      // published from that profile are compared (never her TikTok against her Instagram).
       let vsBaseline: PerInfluencerMetrics['vsBaseline'] = null
       const snapshot = parseBaseline(ci.baselineSnapshot)
       if (snapshot) {
-        const pieces = own.filter(m => familyOf(m.mediaType) === snapshot.family)
+        const pieces = own.filter(m => otherPublisherOf(m) === null && familyOf(m.mediaType) === snapshot.family)
         if (pieces.length > 0) {
           const med = (vals: number[]) => { const s = [...vals].sort((x, y) => x - y); const mid = Math.floor(s.length / 2); return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2) }
           const cmp = compareWithBaseline(snapshot, {
@@ -226,6 +293,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
         status: ci.status,
         trackedClicks: ci.trackedClicks ?? null,
         vsBaseline,
+        byPlatform,
       }
     })
 

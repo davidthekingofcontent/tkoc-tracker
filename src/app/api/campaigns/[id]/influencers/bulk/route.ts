@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { memberOfSamePerson } from '@/lib/person-profiles'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { Platform } from '@/generated/prisma/client'
@@ -153,6 +154,10 @@ async function processHandle(
     })
 
     if (existingMembership) {
+      return { result: { handle, username: influencer.username, status: 'already_member' } }
+    }
+    // Another profile of a creator who is already here counts as her: no second row
+    if (await memberOfSamePerson(campaignId, influencer.id)) {
       return { result: { handle, username: influencer.username, status: 'already_member' } }
     }
 

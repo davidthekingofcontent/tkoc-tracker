@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/db'
 import { scrapeProfile, scrapeStories, isApifyExhausted } from '@/lib/apify'
 import type { ScrapedPost, ScrapedStory } from '@/lib/apify'
-import type { MediaType, Platform } from '@/generated/prisma/client'
+import type { MediaType, Platform, Prisma } from '@/generated/prisma/client'
 import { computeBaseline } from '@/lib/creator-baseline'
 import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 import { accountCoreStems, captionWords, keywordNeedles, normalizeStem, tagCarriesKeyword, textTokens, tokensContain, tokensContainWords } from '@/lib/campaign-targets'
@@ -147,6 +147,57 @@ export function campaignHasTargets(campaign: Pick<CampaignRules, 'targetAccounts
   const accounts = (campaign.targetAccounts || []).map(stripSigil).filter(Boolean)
   const hashtags = (campaign.targetHashtags || []).map(stripSigil).filter(Boolean)
   return accounts.length + hashtags.length + keywordNeedles(campaign.targetKeywords).length > 0
+}
+
+/**
+ * The accounts that belong to the BRAND of a campaign, which a creator's
+ * profile can never be (Nov 2026: a brand's reel pasted in «Añadir publicación
+ * por URL» could be registered as a profile of a creator in one click, and from
+ * then on every publication of the brand was credited to her):
+ *   targets → its "Cuentas de Marca Objetivo" as typed (one handle per token)
+ *   own     → the Instagram account the brand attached to the campaign
+ *             connected through Meta (Setting campaign_brand_<campaignId> →
+ *             brand id; Setting brand_ig_<brandId> → that account's username),
+ *             also when the PM did not type it among the targets
+ * Compare with isBrandAccount (src/lib/campaign-targets.ts). Never throws: when
+ * the settings cannot be read, `own` is empty.
+ */
+export interface CampaignBrandAccounts {
+  targets: string[]
+  own: string[]
+}
+
+export async function loadCampaignBrandAccounts(
+  campaigns: ReadonlyArray<{ id: string; targetAccounts: string[] | null }>
+): Promise<Map<string, CampaignBrandAccounts>> {
+  const out = new Map<string, CampaignBrandAccounts>()
+  for (const c of campaigns) out.set(c.id, { targets: normalizeTargets(c.targetAccounts || []), own: [] })
+  if (campaigns.length === 0) return out
+  try {
+    const mappings = await prisma.setting.findMany({
+      where: { key: { in: campaigns.map(c => `campaign_brand_${c.id}`) } },
+      select: { key: true, value: true },
+    })
+    const brandOf = new Map<string, string>()
+    for (const m of mappings) {
+      const brandId = (m.value || '').trim()
+      if (brandId) brandOf.set(m.key.slice('campaign_brand_'.length), brandId)
+    }
+    const brandIds = Array.from(new Set(brandOf.values()))
+    if (brandIds.length === 0) return out
+    const accounts = await prisma.setting.findMany({
+      where: { key: { in: brandIds.map(id => `brand_ig_${id}`) } },
+      select: { key: true, value: true },
+    })
+    const igOf = new Map(accounts.map(a => [a.key.slice('brand_ig_'.length), normalizeTargets([a.value || ''])]))
+    for (const [campaignId, brandId] of brandOf) {
+      const entry = out.get(campaignId)
+      if (entry) entry.own = igOf.get(brandId) ?? []
+    }
+  } catch (err) {
+    console.error('[campaign-capture] could not read the brand accounts:', err instanceof Error ? err.message : err)
+  }
+  return out
 }
 
 /**
@@ -414,11 +465,46 @@ export async function storyMatchesCampaign(
 
 type ClaimDecision =
   | { kind: 'create' }
-  | { kind: 'claim'; rowId: string }   // this campaign's row, or an unattached one → update + attach
+  // this campaign's row, or an unattached one (`loose`: the profile it was credited as published by, null = its own) → update + attach
+  | { kind: 'claim'; rowId: string; loose?: { publishedByInfluencerId: string | null } }
   | { kind: 'refresh'; rowId: string } // this campaign's row is manual → metrics only
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002'
+}
+
+type CaptureDb = Prisma.TransactionClient | typeof prisma
+
+/**
+ * Runs `write` while the membership (campaignId, influencerId) is held, and
+ * only if it exists: every piece attached to a campaign is filed under a
+ * MEMBER. A piece filed under a profile that is not a member counts in the
+ * campaign totals and shows in no creator row (the next revalidation then
+ * detaches it).
+ *
+ * The lock matters because the callers decide who gets the credit from a list
+ * read before the write, sometimes minutes before (check-posts reads one
+ * profile after another; the manual endpoint waits for the scraper). A fold of
+ * a TikTok twin (src/lib/person-fold.ts) deletes the twin's membership under
+ * FOR UPDATE: it waits for this transaction and then moves the piece written
+ * here, or this one waits for the fold and then finds no membership. FOR KEY
+ * SHARE (the lock of a foreign-key check) only stops the row from being
+ * deleted or locked FOR UPDATE: a PM editing the member's status or fee is
+ * never kept waiting by a capture.
+ *
+ * null = not a member (any more): nothing was written.
+ */
+export async function withCampaignMembership<T>(
+  campaignId: string,
+  influencerId: string,
+  write: (db: Prisma.TransactionClient) => Promise<T>
+): Promise<T | null> {
+  return prisma.$transaction(async tx => {
+    const held = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM campaign_influencers WHERE "campaignId" = ${campaignId} AND "influencerId" = ${influencerId} FOR KEY SHARE`
+    if (held.length === 0) return null
+    return write(tx)
+  }, { maxWait: 10_000, timeout: 30_000 })
 }
 
 /**
@@ -466,7 +552,7 @@ export async function findMediaBySameLink(
   platform: Platform,
   permalink: string | null | undefined,
   campaignId: string
-): Promise<{ id: string; externalId: string | null; campaignId: string | null; source: string; likes: number; comments: number } | null> {
+): Promise<{ id: string; externalId: string | null; campaignId: string | null; source: string; likes: number; comments: number; publishedByInfluencerId: string | null } | null> {
   if (platform !== 'INSTAGRAM') return null
   const code = instagramShortcode(permalink)
   if (!code) return null
@@ -477,7 +563,7 @@ export async function findMediaBySameLink(
       OR: [{ campaignId }, { campaignId: null }],
     },
     orderBy: { campaignId: { sort: 'desc', nulls: 'last' } },
-    select: { id: true, externalId: true, campaignId: true, source: true, likes: true, comments: true },
+    select: { id: true, externalId: true, campaignId: true, source: true, likes: true, comments: true, publishedByInfluencerId: true },
   })
 }
 
@@ -500,20 +586,60 @@ async function decideClaim(
   if (ours) return ours.source === 'manual' ? { kind: 'refresh', rowId: ours.id } : { kind: 'claim', rowId: ours.id }
   const loose = await prisma.media.findFirst({
     where: { externalId, platform, campaignId: null },
-    select: { id: true },
+    select: { id: true, publishedByInfluencerId: true },
     orderBy: { createdAt: 'asc' },
   })
-  if (loose) return { kind: 'claim', rowId: loose.id }
+  if (loose) return { kind: 'claim', rowId: loose.id, loose: { publishedByInfluencerId: loose.publishedByInfluencerId } }
   return { kind: 'create' }
 }
 
+export interface UpsertPostOptions {
+  /**
+   * The profile that PUBLISHED the post when it is not the credited member's
+   * own profile but another profile of the same person (her TikTok, a second
+   * Instagram). Omitted, null or equal to `influencerId` = the member herself,
+   * which is what every caller did before Nov 2026.
+   */
+  publishedByInfluencerId?: string | null
+}
+
+/**
+ * Store a post for a campaign.
+ *
+ *   influencerId → the CREDITED MEMBER (a CampaignInfluencer of the campaign;
+ *                  decided by src/lib/campaign-roster.ts)
+ *   platform     → the network of the PUBLICATION, which is not the member's
+ *                  network when another profile of hers published it
+ *   options.publishedByInfluencerId → that other profile (see UpsertPostOptions)
+ *
+ * Without options the behaviour is exactly the one before Nov 2026.
+ */
 export async function upsertCampaignPost(
   campaignId: string,
   influencerId: string,
   platform: Platform,
-  post: ScrapedPost
+  post: ScrapedPost,
+  options: UpsertPostOptions = {}
 ): Promise<boolean> {
   if (!post.externalId) return false
+  const publishedByInfluencerId =
+    options.publishedByInfluencerId && options.publishedByInfluencerId !== influencerId
+      ? options.publishedByInfluencerId
+      : null
+  /**
+   * An UNATTACHED row of this post hangs from whoever it was last filed under.
+   * Left by a profile analysis, that is the profile that published it; detached
+   * from a campaign where another profile of the creator published it, that is
+   * the MEMBER OF THAT CAMPAIGN, with the publisher in publishedByInfluencerId.
+   * Attaching either as it is could put a non-member's content in this
+   * campaign (the next revalidation would detach it, the next pass attach it
+   * again): whenever a publisher is involved, in this call or in the row, the
+   * row is credited to the member and the publisher of THIS call. A row with no
+   * publisher claimed by a call with no publisher is left as it always was.
+   * Rows already in this campaign keep whoever they belong to.
+   */
+  const creditLoose = (row: { publishedByInfluencerId: string | null }) =>
+    publishedByInfluencerId || row.publishedByInfluencerId ? { influencerId, publishedByInfluencerId } : {}
   const metrics = {
     likes: post.likes,
     comments: post.comments,
@@ -547,18 +673,35 @@ export async function upsertCampaignPost(
     ...(post.mentions?.length ? { mentions: post.mentions } : {}),
     ...(toDate(post.postedAt) ? { postedAt: toDate(post.postedAt) } : {}),
   }
+  /**
+   * A row that JOINS the campaign here (a new one, or an unattached one) is
+   * written only while `influencerId` is a member (withCampaignMembership).
+   * A row already in the campaign is refreshed as it is: it keeps its member.
+   */
+  const write = async (joins: boolean, run: (db: CaptureDb) => Promise<unknown>): Promise<boolean> => {
+    if (!joins) {
+      await run(prisma)
+      return true
+    }
+    const done = await withCampaignMembership(campaignId, influencerId, async tx => { await run(tx); return true })
+    if (done === null) {
+      console.warn(`[campaign-capture] post ${platform}:${post.externalId} not stored in campaign ${campaignId}: ${influencerId} is not a member of it (any more)`)
+      return false
+    }
+    return true
+  }
   try {
+    // Every write is AWAITED inside this try: a refused write (a duplicate, a value the
+    // database does not take) answers false, as it always did, and never throws to the caller
     const decision = await decideClaim(post.externalId, platform, campaignId)
     switch (decision.kind) {
       case 'refresh':
         await prisma.media.update({ where: { id: decision.rowId }, data: await raiseOnly(decision.rowId) })
         return true
-      case 'claim':
-        await prisma.media.update({
-          where: { id: decision.rowId },
-          data: { ...(await raiseOnly(decision.rowId)), ...freshRuleInputs, campaignId },
-        })
-        return true
+      case 'claim': {
+        const data = { ...(await raiseOnly(decision.rowId)), ...freshRuleInputs, campaignId, ...(decision.loose ? creditLoose(decision.loose) : {}) }
+        return await write(!!decision.loose, db => db.media.update({ where: { id: decision.rowId }, data }))
+      }
       case 'create': {
         // Same post already stored for this campaign under another source's
         // externalId (Meta materialized it first)? Upgrade that row instead of
@@ -568,26 +711,21 @@ export async function upsertCampaignPost(
           if (twin.source === 'manual') {
             // A detached manual row may be re-claimed by this campaign (rules
             // 1-3 were just proven by the caller); keep source 'manual'.
-            await prisma.media.update({
-              where: { id: twin.id },
-              data: { ...(await raiseOnly(twin.id)), ...(twin.campaignId ? {} : { campaignId }) },
-            })
-            return true
+            const data = { ...(await raiseOnly(twin.id)), ...(twin.campaignId ? {} : { campaignId, ...creditLoose(twin) }) }
+            return await write(!twin.campaignId, db => db.media.update({ where: { id: twin.id }, data }))
           }
-          await prisma.media.update({
-            where: { id: twin.id },
-            data: {
-              // Apify's public counts can be fresher than a stale Meta sync
-              ...(await raiseOnly(twin.id)),
-              ...freshRuleInputs,
-              ...(post.thumbnailUrl ? { thumbnailUrl: post.thumbnailUrl } : {}),
-              ...(post.mediaUrl ? { mediaUrl: post.mediaUrl } : {}),
-              campaignId,
-            },
-          })
-          return true
+          const data = {
+            // Apify's public counts can be fresher than a stale Meta sync
+            ...(await raiseOnly(twin.id)),
+            ...freshRuleInputs,
+            ...(post.thumbnailUrl ? { thumbnailUrl: post.thumbnailUrl } : {}),
+            ...(post.mediaUrl ? { mediaUrl: post.mediaUrl } : {}),
+            campaignId,
+            ...(twin.campaignId ? {} : creditLoose(twin)),
+          }
+          return await write(!twin.campaignId, db => db.media.update({ where: { id: twin.id }, data }))
         }
-        await prisma.media.create({
+        return await write(true, db => db.media.create({
           data: {
             externalId: post.externalId,
             platform,
@@ -601,11 +739,11 @@ export async function upsertCampaignPost(
             mentions: post.mentions || [],
             postedAt: toDate(post.postedAt),
             influencerId,
+            publishedByInfluencerId,
             campaignId,
             source: 'apify',
           },
-        })
-        return true
+        }))
       }
     }
   } catch (err) {

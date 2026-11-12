@@ -952,6 +952,11 @@ export default function MethodologyPage() {
                 ]
           }
         />
+        <TipBox>
+          {es
+            ? "Una creadora es una persona con varios perfiles (por ejemplo, su Instagram y su TikTok) y en la campana cuenta una sola vez: lo que publica desde cualquiera de sus perfiles registrados se guarda en su fila. Si pegas en Ejecutar → Media → 'Anadir publicacion por URL' el enlace de Instagram o de TikTok de un perfil que aun no tiene registrado (vale el enlace corto), la plataforma te ofrece anadirselo en el mismo paso, sin crear otra creadora. El TikTok de las creadoras de Instagram tambien se registra solo, como perfil y no como otra creadora, cuando publican contenido de la campana. Las creadoras que ya estaban dadas de alta dos veces no se fusionan solas."
+            : "A creator is one person with several profiles (for example, her Instagram and her TikTok) and counts once in the campaign: whatever she publishes from any of her registered profiles is stored in her row. If you paste in Execute → Media → 'Add post by URL' an Instagram or TikTok link from a profile she does not have registered yet (short links work), the platform offers to add it to her in the same step, without creating another creator. The TikTok of Instagram creators is also registered automatically, as a profile and not as another creator, when they publish campaign content. Creators that were already added twice are not merged automatically."}
+        </TipBox>
 
         <H3>
           <Users className="h-4 w-4 text-purple-600" />

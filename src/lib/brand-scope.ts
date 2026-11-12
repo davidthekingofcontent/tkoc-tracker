@@ -137,7 +137,9 @@ export async function resolveBrandScopeForBrandId(
 // Brands must NEVER see agency economics or fulfillment PII:
 // agreedFee / cost / commission / notes on CampaignInfluencer,
 // budget / manualROI / manualROINotes on Campaign, shipping* fields,
-// and derived totals like totalCost.
+// and derived totals like totalCost. Nor who on the agency's team added a
+// creator: addedById / addedByName on Influencer and CampaignInfluencer
+// (Nov 2026) carry a staff member's id and name.
 // ---------------------------------------------------------------------------
 
 const CONFIDENTIAL_KEYS = new Set([
@@ -149,6 +151,8 @@ const CONFIDENTIAL_KEYS = new Set([
   'manualROINotes',
   'budget',
   'totalCost',
+  'addedById',
+  'addedByName',
 ])
 
 function isConfidentialKey(key: string): boolean {

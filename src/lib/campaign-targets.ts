@@ -352,6 +352,18 @@ export function handleKey(handle: string | null | undefined): string {
 }
 
 /**
+ * Is `handle` one of the campaign's "Cuentas de Marca Objetivo"? Exact handle,
+ * any casing, with or without @ ("@vileda.es @viledaturbo" typed together is
+ * two accounts). Nov 2026: the brand's own account must never be registered as
+ * a profile of a creator, or every publication of the brand would be credited
+ * to her (src/app/api/campaigns/[id]/media/manual, src/lib/tiktok-autolink.ts).
+ */
+export function isBrandAccount(targetAccounts: string[] | null | undefined, handle: string | null | undefined): boolean {
+  const key = handleKey(handle)
+  return !!key && splitHandles(targetAccounts).some(account => account.toLowerCase() === key)
+}
+
+/**
  * Splits the target accounts into the brand's (`brand`) and those that are in
  * fact creators of the campaign (`members`). Nov 2026: a PM typed the 28
  * creators of a campaign into "Cuentas de Marca Objetivo"; every creator's own

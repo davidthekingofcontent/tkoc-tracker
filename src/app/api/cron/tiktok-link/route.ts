@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
     }
 
     const summary = await runTikTokAutolink({ campaignId })
-    console.log(`[Cron/TikTokLink] Done. Campaigns: ${summary.campaigns.length}, handles scanned: ${summary.handlesScanned}, linked: ${summary.linked}, videos: ${summary.videos}${summary.partial ? ' (PARTIAL)' : ''}${summary.skipped ? ` (skipped: ${summary.skipped})` : ''}`)
+    console.log(`[Cron/TikTokLink] Done. Campaigns: ${summary.campaigns.length}, handles scanned: ${summary.handlesScanned}, linked: ${summary.linked}, videos: ${summary.videos}, not linked or not read (profile of another person, brand account): ${summary.notLinked.length}, failed: ${summary.failed.length}${summary.partial ? ' (PARTIAL)' : ''}${summary.skipped ? ` (skipped: ${summary.skipped})` : ''}`)
 
     // A completed full pass — also one with nothing to scan — is a completed
     // pass. One in which the actor answered for nobody is not: the next tick

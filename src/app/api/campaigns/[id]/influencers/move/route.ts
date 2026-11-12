@@ -39,6 +39,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { memberOfSamePerson } from '@/lib/person-profiles'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus, CampaignType, InfluencerStatus, type Prisma } from '@/generated/prisma/client'
@@ -117,6 +118,11 @@ export async function POST(
       select: { influencerId: true },
     })
     const existingIds = new Set(existingTarget.map(r => r.influencerId))
+    // A creator is a person: another of her profiles already in the target
+    // means she is already there (her pieces are credited to that row)
+    for (const r of sourceRows) {
+      if (!existingIds.has(r.influencerId) && (await memberOfSamePerson(targetId, r.influencerId))) existingIds.add(r.influencerId)
+    }
     const skippedExisting = sourceRows.filter(r => existingIds.has(r.influencerId)).map(r => r.influencer.username)
     const toTransfer = sourceRows.filter(r => !existingIds.has(r.influencerId))
 

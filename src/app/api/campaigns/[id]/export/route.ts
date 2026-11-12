@@ -33,7 +33,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getSession } from '@/lib/auth'
+import { getSession, isStaffRole } from '@/lib/auth'
 import { computeCampaignOverview } from '@/lib/campaign-overview'
 import { madridDayKey, type CampaignOverview } from '@/lib/metrics'
 import { parseBaseline } from '@/lib/creator-baseline'
@@ -78,12 +78,12 @@ type LoadedCampaign = NonNullable<Awaited<ReturnType<typeof loadCampaign>>>
 async function handle(request: NextRequest, id: string, format: Format) {
   const session = await getSession(request)
   if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+  // Staff only: the export carries fees, cost, CPM and Ratio EMV. A brand reads the
+  // portal (its own projection); the middleware already kept BRAND and CREATOR out.
+  if (!isStaffRole(session.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const campaign = await loadCampaign(id)
   if (!campaign) return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
-  if (session.role === 'BRAND' && campaign.userId !== session.id) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  }
 
   const overview = await computeCampaignOverview(id)
   if (!overview) return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
@@ -159,6 +159,25 @@ function dateEs(d: Date | string | null | undefined): string {
   if (!d) return ''
   const date = d instanceof Date ? d : new Date(d)
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' })
+}
+
+const NETWORK_LABELS: Record<string, string> = { INSTAGRAM: 'Instagram', TIKTOK: 'TikTok', YOUTUBE: 'YouTube' }
+
+function networkLabel(platform: string): string {
+  return NETWORK_LABELS[platform] ?? platform
+}
+
+/**
+ * «Redes» of a creator's row: every network she published on and her pieces on each,
+ * «Instagram: 2 | TikTok: 1» (her own network first, then the rest alphabetically).
+ * A creator with several profiles is one row and her pieces of all of them add up here.
+ * Without pieces: her own network with 0.
+ */
+function networksCell(byPlatform: CampaignOverview['perInfluencer'][number]['byPlatform'], ownPlatform: string): string {
+  const entries = Object.entries(byPlatform ?? {}).filter(([, b]) => b.pieces > 0)
+  if (entries.length === 0) return `${networkLabel(ownPlatform)}: 0`
+  entries.sort(([a], [b]) => (a === ownPlatform ? -1 : b === ownPlatform ? 1 : a.localeCompare(b)))
+  return entries.map(([network, b]) => `${networkLabel(network)}: ${b.pieces}`).join(' | ')
 }
 
 function basisLabel(b: string): string {
@@ -275,7 +294,7 @@ function buildCsv(c: LoadedCampaign, o: CampaignOverview): string {
 
   L.push('RENDIMIENTO POR CREADOR')
   L.push(row(
-    'Usuario', 'Nombre', 'Plataforma', 'Seguidores', 'Estado', 'Formato negociado', 'Coste (EUR)', 'Entregables comprometidos',
+    'Usuario', 'Nombre', 'Plataforma', 'Redes', 'Seguidores', 'Estado', 'Formato negociado', 'Coste (EUR)', 'Entregables comprometidos',
     'Publicaciones', 'Stories', 'Eliminadas', 'Vistas', 'Interacciones', 'Audiencia total', 'Audiencia real', 'Audiencia estimada',
     'Tasa de engagement sobre vistas (%)', 'CPM sobre vistas (EUR)', 'EMV (EUR)', 'Ratio EMV', 'Vs su habitual (x)', 'Línea base n', 'Clics enlace',
   ))
@@ -285,7 +304,7 @@ function buildCsv(c: LoadedCampaign, o: CampaignOverview): string {
     const baseline = parseBaseline(ci?.baselineSnapshot)
     const cmp = p.vsBaseline
     L.push(row(
-      `@${p.username}`, p.displayName || '', p.platform, p.followers, p.status, ci?.negotiatedFormat || '',
+      `@${p.username}`, p.displayName || '', p.platform, networksCell(p.byPlatform, p.platform), p.followers, p.status, ci?.negotiatedFormat || '',
       n2(p.cost), p.deliverablesPlanned, p.posts, p.stories, p.deleted, p.views, p.engagements,
       p.audience.total, p.audience.real, p.audience.estimated, n2(p.er.value), n2(p.cpm), n2(p.emvExtended), n2(p.emvRatio),
       n2(cmp?.multiplier ?? null), baseline?.n, ci?.trackedClicks,
@@ -322,6 +341,7 @@ function buildCsv(c: LoadedCampaign, o: CampaignOverview): string {
   L.push(row('Prometido vs entregado', 'creadores en Acordado o superior que han publicado; piezas publicadas frente a los entregables comprometidos por creador; publicaciones dentro del periodo de campaña; publicaciones de feed con #publicidad / colaboración pagada'))
   L.push(row('Balance', 'cuatro lecturas separadas: ejecución (lista Prometido vs entregado), resultados (objetivos), eficiencia (CPM sobre vistas frente al CPM máximo; interno) y fiabilidad de datos (% de publicaciones con vistas reales: ≥ 80 % alta, ≥ 50 % media)'))
   L.push(row('Vs su habitual', 'mediana por pieza de las publicaciones de la campaña del mismo formato ÷ mediana de las últimas 12 publicaciones del creador antes del acuerdo'))
+  L.push(row('Redes', 'redes en las que ha publicado la creadora y sus piezas en cada una. Una creadora con varios perfiles es una sola fila y suma las piezas de todos; Plataforma es la red del perfil con el que está en la campaña'))
   return L.join('\n')
 }
 

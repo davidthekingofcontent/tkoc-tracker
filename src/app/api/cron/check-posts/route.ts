@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
 import { campaignHasTargets, mediaMatchesCampaignRules, scrapedPostToRuleItem, upsertCampaignPost } from '@/lib/campaign-capture'
+import { loadCampaignRoster } from '@/lib/campaign-roster'
 import { checkApifyAuth, isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve } from '@/lib/apify'
 import { refreshMaturingViews, type EnrichSummary } from '@/lib/media-enrich'
 import { fetchProfile } from '@/lib/platform-client'
@@ -166,12 +167,19 @@ export async function GET(request: NextRequest) {
         const profile = result.profile
         const dataSource = result.dataSource
 
-        // Which (post, campaign) pairs do we already hold? One row per campaign.
+        // Which (post, campaign) pairs do we already hold? A campaign holds ONE
+        // row per post (unique externalId + platform + campaign), whoever it is
+        // filed under: this account, the member a linked profile of hers is
+        // credited to (Media.influencerId = that member, publishedByInfluencerId
+        // = this account) or the creator who shared a collab post with this
+        // one. Judged by the post itself, not by influencerId: by influencerId,
+        // such a post was taken for new, and announced, on every run.
         const existingPairs = new Set(
           (await prisma.media.findMany({
             where: {
-              influencerId: inf.id,
+              platform: inf.platform,
               externalId: { in: profile.recentPosts.map(p => p.externalId).filter(Boolean) },
+              campaignId: { in: inf.campaignIds },
             },
             select: { externalId: true, campaignId: true },
           })).map(m => `${m.externalId}|${m.campaignId ?? ''}`)
@@ -198,7 +206,18 @@ export async function GET(request: NextRequest) {
             if (!campaignHasTargets(campaign) || !mediaMatchesCampaignRules(campaign, item)) continue
 
             try {
-              const ok = await upsertCampaignPost(campaignId, inf.id, inf.platform, post)
+              // Who gets the credit is read NOW, not from the list loaded when
+              // the run started: a run lasts minutes, and meanwhile this account
+              // may have stopped being a member. A TikTok twin folded into the
+              // creator's own row (src/lib/person-fold.ts) is a linked profile
+              // of hers by then: the piece goes to her row, published by this
+              // account. Nobody to credit: not stored. upsertCampaignPost then
+              // writes it only while that member is still a member.
+              const credit = (await loadCampaignRoster(campaignId)).creditForInfluencer(inf.id)
+              if (!credit) continue
+              const ok = await upsertCampaignPost(campaignId, credit.member.influencerId, inf.platform, post, {
+                publishedByInfluencerId: credit.self ? null : inf.id,
+              })
               if (!ok) continue
               await prisma.media.updateMany({
                 where: { externalId: post.externalId, platform: inf.platform, campaignId },

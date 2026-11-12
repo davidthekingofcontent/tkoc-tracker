@@ -325,6 +325,10 @@ describe('the route table', () => {
     '/api/media/[id]/thumb': ['GET'], // image
     '/api/meta/connections/[id]': ['DELETE'], // revokes a client's connection at Meta
     '/api/portal/campaigns/[id]/report/pdf': ['GET'], // PDF
+    // Data repair run by an administrator by hand (folding duplicated members and undoing it): never through the connector
+    '/api/admin/fold-twins': ['GET', 'POST'],
+    // Identity changes (one creator, several profiles): a curated tool with approval in the platform comes in a later delivery
+    '/api/influencers/[id]/unlink-profile': ['POST'],
   }
 
   it('every entry is a real route of this working copy, with that method', () => {

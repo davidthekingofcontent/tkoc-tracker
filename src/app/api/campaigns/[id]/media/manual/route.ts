@@ -1,14 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getSession } from '@/lib/auth'
+import { getSession, isStaffRole } from '@/lib/auth'
 import { scrapeSinglePost, isApifyExhausted, isApifyConfiguredAsync } from '@/lib/apify'
 import type { ScrapedSinglePost } from '@/lib/apify'
-import { isWithinCampaignDates } from '@/lib/campaign-capture'
+import { isWithinCampaignDates, loadCampaignBrandAccounts, withCampaignMembership } from '@/lib/campaign-capture'
+import { loadCampaignRoster } from '@/lib/campaign-roster'
+import type { Roster, RosterMember } from '@/lib/campaign-roster'
+import { isBrandAccount } from '@/lib/campaign-targets'
+import {
+  PersonLinkError,
+  describeMainProfileOfPerson,
+  findInfluencerExact,
+  findOrCreateInfluencerExact,
+  linkProfile,
+  normalizeHandle,
+} from '@/lib/person-profiles'
+import type { Actor } from '@/lib/person-profiles'
 import { parseInstagramStoryUrl } from '@/lib/story-url'
 import { parsePostUrl, PLATFORM_LABEL } from '@/lib/post-url'
 import type { ParsedPostUrl, UrlPlatform } from '@/lib/post-url'
-import { ensureTikTokTwin, tiktokCandidateHandle } from '@/lib/tiktok-autolink'
-import type { MediaType, Platform } from '@/generated/prisma/client'
+import { isShortPostUrl, resolveShortUrl } from '@/lib/resolve-short-url'
+import { tiktokCandidateHandle } from '@/lib/tiktok-autolink'
+import { tiktokIdPostedAt } from '@/lib/tiktok-id'
+import type { Platform } from '@/generated/prisma/client'
 
 // POST /api/campaigns/[id]/media/manual
 // Add ONE post / reel / video / story to a campaign by pasting its public URL.
@@ -16,16 +30,53 @@ import type { MediaType, Platform } from '@/generated/prisma/client'
 // relevance): the content MUST belong to a creator who is already a member of
 // the campaign AND must be dated inside the campaign window. Enriched through
 // Apify when available; otherwise the metrics come from the body (or stay at
-// 0) and the publication date MUST come from the body (`postedAt`) — an
-// undated row can't be proven inside the window and is rejected.
+// 0) and the publication date comes from the id in the link (stories and
+// TikTok) or from the body (`postedAt`) — an undated row can't be proven
+// inside the window and is rejected.
 //
 // Instagram STORIES (instagram.com/stories/{user}/{id}/) are never sent to
 // Apify: they expire after 24 h and the single-post scraper does not read
 // story URLs. Their publication date is decoded from the id (snowflake) and
 // views/reach come only from the body — the creator is the only source.
+//
+// A CREATOR IS A PERSON WITH SEVERAL PROFILES (Nov 2026). The content may be
+// published by ANY profile of a member: it is stored with `influencerId` = the
+// member (who it counts for), `publishedByInfluencerId` = the profile that
+// published it when that is not the member's own, and `platform` = the network
+// of the publication. Who is credited is decided by the campaign roster
+// (src/lib/campaign-roster.ts). When the author is not a registered profile of
+// any member, the answer is 409 `profile_not_linked` and nothing is created:
+// the PM says whose profile it is (`linkProfileTo`) and the same request,
+// sent again, registers that profile on her and stores the publication. This
+// route NEVER creates a campaign member.
+//
+// Body: url (required), influencerId, likes, comments, views, reach (stories),
+// postedAt, linkProfileTo (a MEMBER's influencerId: "the author is another
+// profile of hers"), confirmUnverified (required with linkProfileTo when the
+// author could not be read from the network, only from the link),
+// linkProfileAuthor + linkProfileAuthorPlatform (the author and network the PM
+// was shown when she answered: when the author read now is another one, or on
+// another network, nothing is linked and she is asked again; when no author can
+// be read now, nothing is stored).
+//
+// A "Cuenta de Marca Objetivo" of the campaign, and the brand's own Instagram
+// account connected through Meta, are never registered as a profile of a
+// creator, nor credited to one: every publication of the brand would end up in
+// her row.
 
-function normalizeHandle(s: string): string {
-  return s.toLowerCase().replace(/^@/, '').trim()
+/** What a handle of Instagram or TikTok can look like once normalised. Nothing else ever becomes a profile row. */
+const PLAUSIBLE_HANDLE = /^[a-z0-9._]{1,40}$/
+
+const UNKNOWN_AUTHOR_ERROR =
+  'No he podido leer de quién es esta publicación. Inténtalo en unos minutos o pega el enlace con el usuario.'
+
+type SuggestionReason = 'selected' | 'bio_link' | 'same_handle'
+
+interface Suggestion {
+  influencerId: string
+  username: string
+  platform: Platform
+  reason: SuggestionReason
 }
 
 /** Optional non-negative integer from the body; `undefined` when absent, `null` when invalid */
@@ -36,11 +87,63 @@ function optionalCount(value: unknown): number | undefined | null {
   return Math.round(n)
 }
 
+/** Optional id from the body: a non-empty string, else null */
+function optionalId(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
 /** Scraped value wins when it carries signal; otherwise the PM's number; otherwise what we already had */
 function pickMetric(scraped: number | undefined, manual: number | undefined, existing: number | undefined): number {
   if (scraped && scraped > 0) return scraped
   if (manual !== undefined) return manual
   return existing ?? 0
+}
+
+function networkLabel(platform: string): string {
+  return PLATFORM_LABEL[platform as UrlPlatform] ?? platform
+}
+
+/**
+ * Members the author may belong to, strongest first and without repeats: the
+ * one the PM chose, then Instagram members whose bio or website links that
+ * TikTok user, then members with the same handle on another network. Only
+ * suggestions: nothing is linked until the PM confirms one.
+ */
+function suggestMembers(roster: Roster, platform: Platform, authorHandle: string, chosen: RosterMember | null): Suggestion[] {
+  const suggestions: Suggestion[] = []
+  const add = (m: RosterMember, reason: SuggestionReason) => {
+    if (suggestions.some(s => s.influencerId === m.influencerId)) return
+    suggestions.push({ influencerId: m.influencerId, username: m.username, platform: m.platform, reason })
+  }
+  if (chosen) add(chosen, 'selected')
+  if (platform === 'TIKTOK') {
+    for (const m of roster.members) {
+      if (m.platform !== 'INSTAGRAM') continue
+      const candidate = tiktokCandidateHandle(m)
+      if (candidate.via === 'bio' && candidate.handle === authorHandle) add(m, 'bio_link')
+    }
+  }
+  for (const m of roster.members) {
+    if (m.platform !== platform && normalizeHandle(m.username) === authorHandle) add(m, 'same_handle')
+  }
+  return suggestions
+}
+
+async function otherPersonResponse(args: {
+  authorHandle: string
+  platform: Platform
+  member: RosterMember
+  personId: string | null
+  profileId: string | null
+}) {
+  const main = args.personId ? await describeMainProfileOfPerson(args.personId, args.profileId) : null
+  return NextResponse.json(
+    {
+      code: 'profile_of_other_person',
+      error: `@${args.authorHandle} en ${networkLabel(args.platform)} ya es un perfil de ${main ?? 'otra creadora'}. No puede ser también un perfil de @${args.member.username}.`,
+    },
+    { status: 409 }
+  )
 }
 
 export async function POST(
@@ -52,9 +155,11 @@ export async function POST(
     if (!session) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
-    if (session.role !== 'ADMIN' && session.role !== 'EMPLOYEE') {
+    // Agency staff only, checked here and not left to the middleware
+    if (!isStaffRole(session.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
+    const actor: Actor = { id: session.id, name: session.name }
 
     const { id } = await params
 
@@ -66,9 +171,23 @@ export async function POST(
     }
 
     // ===== Validate input =====
-    const rawUrl = typeof body.url === 'string' ? body.url.trim() : ''
+    let rawUrl = typeof body.url === 'string' ? body.url.trim() : ''
     if (!rawUrl) {
       return NextResponse.json({ error: 'Indica la URL del contenido' }, { status: 400 })
+    }
+
+    // Short share links (vm.tiktok.com/…, tiktok.com/t/…, instagram.com/share/…)
+    // carry no id: they are opened first, and everything below — the duplicate
+    // check included — works on the real link.
+    if (isShortPostUrl(rawUrl)) {
+      const resolved = await resolveShortUrl(rawUrl)
+      if (!resolved.ok) {
+        return NextResponse.json(
+          { error: 'No he podido abrir ese enlace corto. Abre la publicación en el navegador y pega el enlace completo.' },
+          { status: 400 }
+        )
+      }
+      rawUrl = resolved.url
     }
 
     // Instagram story first: /stories/{user}/{id}/ (never scraped, dated from the id)
@@ -99,16 +218,23 @@ export async function POST(
       return NextResponse.json(
         {
           error:
-            'URL no reconocida. Usa el enlace de un post o reel de Instagram (instagram.com/p/… o /reel/…), una story de Instagram (instagram.com/stories/usuario/…), un vídeo de TikTok (tiktok.com/@usuario/video/…) o un vídeo de YouTube (watch?v=… o /shorts/…). Los enlaces acortados no valen.',
+            'URL no reconocida. Usa el enlace de un post o reel de Instagram (instagram.com/p/… o /reel/…), una story de Instagram (instagram.com/stories/usuario/…), un vídeo de TikTok (tiktok.com/@usuario/video/…) o un vídeo de YouTube (watch?v=… o /shorts/…).',
         },
         { status: 400 }
       )
     }
     const isStory = parsed.isStory === true
+    // The network of the PUBLICATION. It is what the row stores and what the
+    // duplicate lookup uses: not the network of the member it is credited to.
+    const platform: Platform = parsed.platform
 
-    const influencerIdInput = typeof body.influencerId === 'string' && body.influencerId.trim()
-      ? body.influencerId.trim()
-      : null
+    const influencerIdInput = optionalId(body.influencerId)
+    const linkProfileTo = optionalId(body.linkProfileTo)
+    const confirmUnverified = body.confirmUnverified === true
+    /** The author the PM had in front of her when she said whose profile it is ('' = not sent) */
+    const confirmedAuthor = typeof body.linkProfileAuthor === 'string' ? normalizeHandle(body.linkProfileAuthor) : ''
+    /** ...and the network she was told it is on ('' = not sent) */
+    const confirmedPlatform = typeof body.linkProfileAuthorPlatform === 'string' ? body.linkProfileAuthorPlatform.trim().toUpperCase() : ''
 
     const manualLikes = optionalCount(body.likes)
     const manualComments = optionalCount(body.comments)
@@ -131,21 +257,10 @@ export async function POST(
       manualPostedAt = d
     }
 
-    // ===== Campaign + members =====
+    // ===== Campaign + roster (members and the other profiles of their persons) =====
     const campaign = await prisma.campaign.findUnique({
       where: { id },
-      select: {
-        id: true,
-        startDate: true,
-        endDate: true,
-        influencers: {
-          select: {
-            influencer: {
-              select: { id: true, username: true, platform: true, bio: true, website: true },
-            },
-          },
-        },
-      },
+      select: { id: true, startDate: true, endDate: true, targetAccounts: true },
     })
 
     if (!campaign) {
@@ -155,7 +270,32 @@ export async function POST(
     const fmtDate = (d: Date) => d.toISOString().slice(0, 10)
     const windowLabel = `${fmtDate(campaign.startDate)} – ${campaign.endDate ? fmtDate(campaign.endDate) : 'sin fecha de fin'}`
 
-    const members = campaign.influencers.map((ci) => ci.influencer)
+    // The brand's accounts: never a creator's profile (see the guard below)
+    const brandAccounts = (await loadCampaignBrandAccounts([campaign])).get(campaign.id) ?? { targets: [], own: [] }
+    /** 'target' = a "Cuenta de Marca Objetivo"; 'own' = the brand's connected Instagram; null = not the brand's */
+    const brandAccountKind = (handle: string): 'target' | 'own' | null =>
+      isBrandAccount(brandAccounts.targets, handle) ? 'target' : isBrandAccount(brandAccounts.own, handle) ? 'own' : null
+
+    const roster = await loadCampaignRoster(id)
+    const memberById = new Map(roster.members.map((m) => [m.influencerId, m]))
+
+    // The members the PM names must be members: nobody joins a campaign here
+    const selected = influencerIdInput ? memberById.get(influencerIdInput) ?? null : null
+    if (influencerIdInput && !selected) {
+      return NextResponse.json(
+        { error: 'El creador no está en esta campaña. Añádelo primero.' },
+        { status: 400 }
+      )
+    }
+    const linkTarget = linkProfileTo ? memberById.get(linkProfileTo) ?? null : null
+    if (linkProfileTo && !linkTarget) {
+      return NextResponse.json(
+        { error: 'La creadora elegida no está en esta campaña. Añádela primero.' },
+        { status: 400 }
+      )
+    }
+    // Whose content the PM says it is: her answer to "whose profile is it?" wins over the form's selector
+    const claimed = linkTarget ?? selected
 
     // ===== Enrich via Apify when available (never blocks the add) =====
     // Never for a story: it has expired or will within 24 h, and the single-post
@@ -166,115 +306,146 @@ export async function POST(
     }
     const enriched = scraped !== null
 
-    // ===== Resolve the creator (must be a campaign member) =====
-    const ownerUsername = scraped?.ownerUsername || parsed.ownerHint || null
+    // ===== Author of the publication =====
+    // Verified = read from the network by the scraper. Otherwise the @user of
+    // the link, which is only a hint (TikTok opens any @user with a valid id).
+    const scrapedOwner = scraped?.ownerUsername ? normalizeHandle(scraped.ownerUsername) : ''
+    const hintedOwner = parsed.ownerHint ? normalizeHandle(parsed.ownerHint) : ''
+    const author: { handle: string; verified: boolean } | null = scrapedOwner
+      ? { handle: scrapedOwner, verified: true }
+      : hintedOwner
+        ? { handle: hintedOwner, verified: false }
+        : null
 
-    // TikTok auto-link (Nov 2026): a TikTok video whose author — the SCRAPED
-    // owner, never the URL's @user — is the TikTok account of an Instagram
-    // member (the user she links in her Instagram bio, else the same username)
-    // links that account to the campaign instead of being refused. Only the
-    // INTENT is recorded here: the account is created right before the media
-    // row is written, so a request refused later (undated, outside the
-    // campaign dates, already filed under someone else) leaves nothing behind.
-    const twin: { intent: { igMember: (typeof members)[number]; handle: string } | null } = { intent: null }
-    const provisionalTwin = async (igMember: (typeof members)[number], tiktokHandle: string) => {
-      twin.intent = { igMember, handle: tiktokHandle }
-      const lookalikes = await prisma.influencer.findMany({
-        where: { platform: 'TIKTOK', username: { equals: tiktokHandle, mode: 'insensitive' } },
-        select: { id: true, username: true },
-      })
-      const row = lookalikes.find((r) => r.username.toLowerCase() === tiktokHandle)
-      return {
-        id: row?.id ?? `pending-tiktok:${tiktokHandle}`,
-        username: row?.username ?? tiktokHandle,
-        platform: 'TIKTOK' as const,
-        bio: null,
-        website: null,
-      }
-    }
+    // ===== Who it counts for (always a member; decided by the roster) =====
+    let member: RosterMember | null = null
+    /** The profile that published it, when it is not the member's own profile */
+    let publisherId: string | null = null
+    /** The PM confirmed whose profile the author is: registered right before the row is written */
+    let pendingLink: { handle: string; verified: boolean; profileId: string | null } | null = null
+    /** The author is nobody's registered profile and the PM has not said whose it is (or has not confirmed it) */
+    let askWhoseProfile = false
 
-    let member: (typeof members)[number] | undefined
-    if (influencerIdInput) {
-      member = members.find((m) => m.id === influencerIdInput)
-      if (!member) {
-        return NextResponse.json(
-          { error: 'El creador no está en esta campaña. Añádelo primero.' },
-          { status: 400 }
-        )
-      }
-      if (parsed.platform === 'TIKTOK' && member.platform === 'INSTAGRAM' && scraped?.ownerUsername) {
-        const owner = normalizeHandle(scraped.ownerUsername)
-        const tiktokMember = members.find((m) => m.platform === 'TIKTOK' && normalizeHandle(m.username) === owner)
-        if (tiktokMember) {
-          // The author's TikTok account is already in the campaign: file it there
-          member = tiktokMember
-        } else if (tiktokCandidateHandle(member).handle === owner) {
-          member = await provisionalTwin(member, owner)
-        } else {
-          // A different username that her Instagram does not link: never guess identity
-          return NextResponse.json(
-            {
-              error: `Este vídeo es de @${owner} en TikTok. Si es la cuenta de TikTok de @${member.username}, añádela en Elegir con su URL (https://www.tiktok.com/@${owner}) y vuelve a pegar el enlace.`,
-              ownerUsername: owner,
-            },
-            { status: 400 }
-          )
+    if (author) {
+      const credit = roster.creditFor(platform, author.handle)
+      // A "Cuenta de Marca Objetivo" of this campaign, or the brand's own
+      // connected Instagram, is the BRAND's account. It keeps its own content
+      // when it is itself a member (the brand added as a creator). Otherwise it
+      // is never credited to a creator nor registered as a profile of hers:
+      // every publication of the brand would land in her row, here and in every
+      // campaign she is in. The only member it may belong to is one that is a
+      // brand account of the campaign too.
+      const brandKind = brandAccountKind(author.handle)
+      if (brandKind && !credit?.self) {
+        const goesTo = credit?.member ?? claimed
+        if (!goesTo || !brandAccountKind(goesTo.username)) {
+          const error = brandKind === 'target'
+            ? credit
+              ? `@${author.handle} es una Cuenta de Marca Objetivo de esta campaña. Su contenido no se guarda en la fila de @${credit.member.username}.`
+              : `@${author.handle} es una Cuenta de Marca Objetivo de esta campaña. No se puede registrar como perfil de una creadora.`
+            : credit
+              ? `@${author.handle} es la cuenta de la marca de esta campaña. Su contenido no se guarda en la fila de @${credit.member.username}.`
+              : `@${author.handle} es la cuenta de la marca de esta campaña. No se puede registrar como perfil de una creadora.`
+          return NextResponse.json({ error }, { status: 400 })
         }
       }
-      // The scraped owner is authoritative: refuse to file someone else's post
-      // under this creator. (The URL's @user is only a hint — TikTok resolves
-      // any @user with a valid video id — so it is not used for rejection.)
-      if (
-        scraped?.ownerUsername &&
-        normalizeHandle(scraped.ownerUsername) !== normalizeHandle(member.username)
+      if (credit) {
+        member = credit.member
+        publisherId = credit.self ? null : credit.publisher.influencerId
+        if (claimed && claimed.influencerId !== member.influencerId) {
+          // Not a contradiction when the PM picked ANOTHER ROW OF THE SAME
+          // CREATOR: a member of the same person, or (legacy double memberships
+          // and TikTok twins, which are not linked as one person) her row of
+          // another network while the account that published is itself a member
+          // (same handle, or the TikTok her Instagram links). The content is then
+          // filed under the account that published it, as it always was.
+          const samePerson = !!claimed.personId && claimed.personId === member.personId
+          const herRowOfAnotherNetwork =
+            credit.self &&
+            claimed.platform !== platform &&
+            (normalizeHandle(claimed.username) === author.handle ||
+              (platform === 'TIKTOK' && claimed.platform === 'INSTAGRAM' && tiktokCandidateHandle(claimed).handle === author.handle))
+          if (!samePerson && !herRowOfAnotherNetwork) {
+            return NextResponse.json(
+              {
+                error: credit.self
+                  ? `Este contenido es de @${author.handle}, no de @${claimed.username}.`
+                  : `Este contenido es de @${author.handle}, que es un perfil de @${member.username}, no de @${claimed.username}.`,
+                // The creator the form should preselect: the member it counts
+                // for, whose handle may differ from the profile that published
+                ownerUsername: credit.self ? author.handle : member.username,
+              },
+              { status: 400 }
+            )
+          }
+        }
+      } else if (!PLAUSIBLE_HANDLE.test(author.handle)) {
+        // Whatever was read is not a username: never ask to register it as a profile
+        return NextResponse.json({ error: UNKNOWN_AUTHOR_ERROR }, { status: 400 })
+      } else if (
+        linkTarget &&
+        (author.verified || confirmUnverified) &&
+        (!confirmedAuthor || confirmedAuthor === author.handle) &&
+        (!confirmedPlatform || confirmedPlatform === platform)
       ) {
-        return NextResponse.json(
-          {
-            error: `Este contenido es de @${normalizeHandle(scraped.ownerUsername)}, no de @${member.username}.`,
-            ownerUsername: normalizeHandle(scraped.ownerUsername),
-          },
-          { status: 400 }
-        )
-      }
-    } else if (ownerUsername) {
-      const wanted = normalizeHandle(ownerUsername)
-      member = members.find(
-        (m) => m.platform === parsed.platform && normalizeHandle(m.username) === wanted
-      )
-      if (!member && parsed.platform === 'TIKTOK' && scraped?.ownerUsername) {
-        // Same person, other network: an Instagram member whose TikTok (the one
-        // linked in her Instagram bio, else the same username) is the author
-        const igMember = members.find(
-          (m) => m.platform === 'INSTAGRAM' && tiktokCandidateHandle(m).handle === wanted
-        )
-        if (igMember) member = await provisionalTwin(igMember, wanted)
-      }
-      if (!member) {
-        return NextResponse.json(
-          {
-            error: `Indica el creador: @${wanted} no está en esta campaña.`,
-            ownerUsername: wanted,
-          },
-          { status: 400 }
-        )
+        // Her answer is about the author she was SHOWN (linkProfileAuthor, on
+        // linkProfileAuthorPlatform). When the author read now is another one
+        // (the scraper answered this time and not before, or the other way
+        // round, and the @user of the link is not the real one) or is on
+        // another network, nothing is linked: the branch below asks again, with
+        // the author of this request. Without those fields (a page loaded before
+        // they existed) the answer is taken as before.
+        //
+        // Only the INTENT is recorded here: the profile and the link are created
+        // right before the media row is written, so a request refused below
+        // (outside the campaign dates, already filed under someone else) leaves
+        // nothing behind.
+        const profile = await findInfluencerExact(platform, author.handle)
+        if (profile?.personId) {
+          // Not a profile of any member (the roster would have credited her): another person's
+          return otherPersonResponse({
+            authorHandle: author.handle,
+            platform,
+            member: linkTarget,
+            personId: profile.personId,
+            profileId: profile.id,
+          })
+        }
+        member = linkTarget
+        pendingLink = { handle: author.handle, verified: author.verified, profileId: profile?.id ?? null }
+      } else {
+        askWhoseProfile = true
       }
     } else {
-      return NextResponse.json(
-        { error: 'Indica el creador', ownerUsername: null },
-        { status: 400 }
-      )
+      // Nobody could be read as the author (an Instagram /p or /reel link with
+      // no scrape, a YouTube video): the PM says whose it is, and it can only be
+      // filed as published by that member's own profile.
+      if (linkTarget && (confirmedAuthor || confirmedPlatform)) {
+        // She answered "@x is another profile of hers", and @x cannot be read
+        // now: filing it as published by the member herself is not what she
+        // confirmed. Nothing is stored; she tries again in a few minutes.
+        return NextResponse.json({ error: UNKNOWN_AUTHOR_ERROR }, { status: 400 })
+      }
+      if (!claimed) {
+        return NextResponse.json(
+          { error: 'Indica el creador', ownerUsername: null },
+          { status: 400 }
+        )
+      }
+      if (claimed.platform !== platform) {
+        return NextResponse.json(
+          {
+            // A YouTube link never carries the user and is never scraped: say what is wrong instead
+            error: platform === 'YOUTUBE'
+              ? `La URL es de ${networkLabel(platform)} pero @${claimed.username} está registrado en ${networkLabel(claimed.platform)}.`
+              : UNKNOWN_AUTHOR_ERROR,
+          },
+          { status: 400 }
+        )
+      }
+      member = claimed
     }
 
-    if (member.platform !== parsed.platform) {
-      return NextResponse.json(
-        {
-          error: `La URL es de ${PLATFORM_LABEL[parsed.platform]} pero @${member.username} está registrado en ${PLATFORM_LABEL[member.platform as UrlPlatform] ?? member.platform}.`,
-        },
-        { status: 400 }
-      )
-    }
-
-    const platform = member.platform as Platform
     const externalId = scraped?.externalId || parsed.externalId
 
     // ===== Find an existing row for this post IN THIS CAMPAIGN =====
@@ -299,12 +470,24 @@ export async function POST(
       },
       orderBy: [{ campaignId: { sort: 'desc', nulls: 'last' } }, { createdAt: 'asc' }],
     })
+    /** An unattached row (left by a profile analysis) that this request attaches to the campaign */
+    const claimsLooseRow = !!existing && existing.campaignId === null
 
-    if (existing && existing.influencerId !== member.id) {
-      return NextResponse.json(
-        { error: 'Este contenido ya está registrado para otro creador.' },
-        { status: 409 }
-      )
+    if (existing && member) {
+      // A row already in this campaign belongs to the member it was filed under.
+      // An unattached row hangs from whoever published it: it can be claimed
+      // when that is the member herself or the profile that published this.
+      const knownPublisherId = publisherId ?? pendingLink?.profileId ?? null
+      const sameMember = existing.influencerId === member.influencerId
+      const samePublisher =
+        claimsLooseRow &&
+        (existing.publishedByInfluencerId ?? existing.influencerId) === (knownPublisherId ?? member.influencerId)
+      if (!sameMember && !samePublisher) {
+        return NextResponse.json(
+          { error: 'Este contenido ya está registrado para otro creador.' },
+          { status: 409 }
+        )
+      }
     }
 
     // ===== Build the row =====
@@ -314,12 +497,19 @@ export async function POST(
     const views = pickMetric(scraped?.views, manualViews, existing?.views)
     const reach: number | undefined = isStory && manualReach !== undefined ? manualReach : undefined
 
-    // A story's id encodes its exact publication time (snowflake): it wins over
-    // the PM's typed date, which is a guess (hours off in practice, Oct 2026).
-    // A post keeps the PM's date when Apify did not read one.
+    // The id in the link encodes the exact publication time of a story
+    // (snowflake) and of a TikTok video (top 32 bits): it wins over the PM's
+    // typed date, which is a guess (hours off in practice, Oct 2026), and makes
+    // typing one unnecessary when the scraper is not available. A post keeps
+    // the PM's date when Apify did not read one.
+    const idDate: Date | null = isStory
+      ? (parsed.postedAtHint ?? null)
+      : platform === 'TIKTOK'
+        ? tiktokIdPostedAt(parsed.externalId)
+        : null
     const postedAt: Date | null = scraped?.postedAt
       ? new Date(scraped.postedAt)
-      : (parsed.postedAtHint ?? manualPostedAt ?? existing?.postedAt ?? null)
+      : (idDate ?? manualPostedAt ?? existing?.postedAt ?? null)
 
     // ===== Rule (2): dated AND inside the campaign window =====
     // Manual additions skip the brand-keyword rule only; an undated row can't
@@ -348,50 +538,111 @@ export async function POST(
       )
     }
 
+    // ===== The author is nobody's registered profile: ask, create nothing =====
+    // Asked last, once the content itself is acceptable, so the PM's answer
+    // leads straight to the publication being stored. A non-member stays
+    // refused: this answer creates and links nothing.
+    if (askWhoseProfile || !member) {
+      if (!author) {
+        return NextResponse.json({ error: UNKNOWN_AUTHOR_ERROR }, { status: 400 })
+      }
+      return NextResponse.json(
+        {
+          code: 'profile_not_linked',
+          error: `Este contenido es de @${author.handle} en ${networkLabel(platform)}, que no está registrado como perfil de ninguna creadora de esta campaña.`,
+          author: { handle: author.handle, platform, verified: author.verified },
+          suggestions: suggestMembers(roster, platform, author.handle, claimed),
+        },
+        { status: 409 }
+      )
+    }
+
+    // ===== Every check has passed: register the author as a profile of the member =====
+    // No membership is created: the profile joins the member's person and the
+    // publication is credited to the member.
+    let linkedProfile: { handle: string; platform: Platform; memberUsername: string } | null = null
+    if (pendingLink) {
+      let profile: Awaited<ReturnType<typeof findOrCreateInfluencerExact>> | null = null
+      try {
+        profile = await findOrCreateInfluencerExact(platform, pendingLink.handle, actor)
+        await linkProfile({
+          memberInfluencerId: member.influencerId,
+          profileInfluencerId: profile.id,
+          actor,
+          evidence: pendingLink.verified ? 'pm_confirmed' : 'pm_confirmed_unverified',
+        })
+      } catch (err) {
+        if (!(err instanceof PersonLinkError)) throw err
+        if (err.code === 'profile_has_other_person') {
+          // Someone linked it to another person between the check above and now
+          return otherPersonResponse({
+            authorHandle: pendingLink.handle,
+            platform,
+            member,
+            personId: err.personId,
+            profileId: profile?.id ?? null,
+          })
+        }
+        return NextResponse.json({ error: err.message }, { status: 400 })
+      }
+      publisherId = profile.id
+      linkedProfile = { handle: profile.username, platform, memberUsername: member.username }
+    }
+
     const include = {
       influencer: {
         select: { id: true, username: true, displayName: true, avatarUrl: true, platform: true },
       },
+      publishedBy: {
+        select: { id: true, username: true, platform: true },
+      },
     }
 
-    // Every check has passed: now the creator's TikTok account joins the campaign
-    if (twin.intent) {
-      const linked = await ensureTikTokTwin({ campaignId: id, igInfluencerId: twin.intent.igMember.id, handle: twin.intent.handle })
-      if (!linked) {
-        return NextResponse.json(
-          { error: 'No se pudo vincular la cuenta de TikTok. Añádela en Elegir con su URL completa y vuelve a pegar el enlace.' },
-          { status: 400 }
-        )
-      }
-      member = { ...member, id: linked.influencerId, username: linked.username }
-    }
-
-    let media
-    if (existing) {
-      media = await prisma.media.update({
-        where: { id: existing.id },
-        data: {
-          campaignId: id,
-          likes,
-          comments,
-          views,
-          ...(reach !== undefined && { reach }),
-          postedAt,
-          permalink: existing.permalink || parsed.canonicalUrl,
-          ...(scraped?.caption && { caption: scraped.caption }),
-          ...(scraped?.thumbnailUrl && { thumbnailUrl: scraped.thumbnailUrl }),
-          ...(scraped && { mediaType: scraped.mediaType }),
-          ...(scraped && scraped.hashtags.length > 0 && { hashtags: scraped.hashtags }),
-          ...(scraped && scraped.mentions.length > 0 && { mentions: scraped.mentions }),
-          // Mark as manual so revalidation keeps it, but never downgrade a Meta
-          // Graph API row (real reach/impressions) to 'manual'.
-          ...(existing.source !== 'meta_api' && { source: 'manual' }),
-        },
-        include,
-      })
-    } else {
-      try {
-        media = await prisma.media.create({
+    /**
+     * The row, written for `credited` (published by `publishedBy`) only while
+     * she is a member of the campaign: withCampaignMembership holds her
+     * membership until the write is done. null = she is not a member any more.
+     */
+    const writeRow = (credited: RosterMember, publishedBy: string | null) =>
+      withCampaignMembership(id, credited.influencerId, async db => {
+        if (existing) {
+          // An unattached row is credited to the member and remembers who published
+          // it. A row already in the campaign keeps the member it has; who PUBLISHED
+          // it is filled in when it was not known (the row was stored while the
+          // network could not say) and corrected when the network now says
+          // otherwise. Without it the piece would keep counting as published from
+          // the member's own profile ("vs su habitual", estimates by her followers).
+          const credit = claimsLooseRow
+            ? { influencerId: credited.influencerId, publishedByInfluencerId: publishedBy }
+            : existing.influencerId === credited.influencerId &&
+                existing.publishedByInfluencerId !== publishedBy &&
+                (author?.verified === true || existing.publishedByInfluencerId === null)
+              ? { publishedByInfluencerId: publishedBy }
+              : {}
+          return db.media.update({
+            where: { id: existing.id },
+            data: {
+              campaignId: id,
+              ...credit,
+              likes,
+              comments,
+              views,
+              ...(reach !== undefined && { reach }),
+              postedAt,
+              permalink: existing.permalink || parsed.canonicalUrl,
+              ...(scraped?.caption && { caption: scraped.caption }),
+              ...(scraped?.thumbnailUrl && { thumbnailUrl: scraped.thumbnailUrl }),
+              ...(scraped && { mediaType: scraped.mediaType }),
+              ...(scraped && scraped.hashtags.length > 0 && { hashtags: scraped.hashtags }),
+              ...(scraped && scraped.mentions.length > 0 && { mentions: scraped.mentions }),
+              // Mark as manual so revalidation keeps it, but never downgrade a Meta
+              // Graph API row (real reach/impressions) to 'manual'.
+              ...(existing.source !== 'meta_api' && { source: 'manual' }),
+            },
+            include,
+          })
+        }
+        return db.media.create({
           data: {
             externalId,
             platform,
@@ -408,26 +659,52 @@ export async function POST(
             postedAt,
             source: 'manual',
             dataSource: enriched ? 'apify' : 'manual',
-            influencerId: member.id,
+            influencerId: credited.influencerId,
+            publishedByInfluencerId: publishedBy,
             campaignId: id,
           },
           include,
         })
-      } catch (err) {
-        // Concurrent add of the same post → unique (externalId, platform, campaignId) violation
-        if ((err as { code?: string })?.code === 'P2002') {
-          return NextResponse.json(
-            { error: 'Este contenido ya está registrado.' },
-            { status: 409 }
-          )
-        }
-        throw err
-      }
-    }
+      })
 
+    let media
+    try {
+      media = await writeRow(member, publisherId)
+      if (media === null) {
+        // She stopped being a member while the link was read (the scraper can
+        // take 20 s): her TikTok row folded into her own row
+        // (src/lib/person-fold.ts), for instance. The piece is credited where
+        // the roster says NOW, never under a profile that is not a member.
+        const now = (await loadCampaignRoster(id)).creditForInfluencer(publisherId ?? member.influencerId)
+        if (now) {
+          member = now.member
+          publisherId = now.self ? null : now.publisher.influencerId
+          media = await writeRow(member, publisherId)
+        }
+      }
+    } catch (err) {
+      // Concurrent add of the same post → unique (externalId, platform, campaignId) violation
+      if ((err as { code?: string })?.code === 'P2002') {
+        return NextResponse.json(
+          { error: 'Este contenido ya está registrado.' },
+          { status: 409 }
+        )
+      }
+      throw err
+    }
+    if (media === null) {
+      return NextResponse.json(
+        { error: `@${member.username} ya no está en esta campaña. Recarga la página y vuelve a pegar el enlace.` },
+        { status: 409 }
+      )
+    }
+    if (linkedProfile) linkedProfile = { ...linkedProfile, memberUsername: member.username }
+
+    // New in the campaign: a row created now, or an unattached one this request attached
+    const created = !existing || claimsLooseRow
     return NextResponse.json(
-      { media, enriched, created: !existing, isStory },
-      { status: existing ? 200 : 201 }
+      { media, enriched, created, isStory, linkedProfile },
+      { status: created ? 201 : 200 }
     )
   } catch (error) {
     console.error('Manual media add error:', error)

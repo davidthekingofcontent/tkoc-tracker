@@ -35,6 +35,11 @@ import { CampaignNotesButton } from '@/components/campaign-notes'
 import { CampaignTeamButton } from '@/components/campaign-team'
 import { InfluencerHistoryButton } from '@/components/influencer-history'
 import { MoveCreatorsModal, type MoveCreatorsResult } from '@/components/move-creators-modal'
+import { LinkProfileConfirm, closedQuestionResult, noClearAnswer, profileNotLinkedFrom, type LinkProfileRequest } from '@/components/link-profile-confirm'
+import { CreatorNetworkList, creatorNetworksOf } from '@/components/campaign-report'
+import { parsePostUrl } from '@/lib/post-url'
+import { tiktokIdPostedAt } from '@/lib/tiktok-id'
+import type { TranslationKeys } from '@/i18n/translations'
 import { GenderSelect } from '@/components/gender-select'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/modal'
 import { StoriesTracker } from '@/components/stories-tracker'
@@ -704,13 +709,83 @@ function knownPlatforms(platforms: string[] | null | undefined): BulkPlatform[] 
   return EDIT_PLATFORM_OPTIONS.map(o => o.value).filter(p => (platforms || []).includes(p))
 }
 
-const platformBadge = (platform: string) => {
-  switch (platform) {
-    case 'INSTAGRAM': return 'instagram' as const
-    case 'YOUTUBE': return 'youtube' as const
-    case 'TIKTOK': return 'tiktok' as const
-    default: return 'default' as const
+// ---- «Añadir publicación por URL»: every message names the link it is about (12 Nov 2026) ----
+
+const MANUAL_EMPTY_FORM = { url: '', influencerId: '', likes: '', comments: '', views: '', reach: '', postedAt: '' }
+const MANUAL_NETWORK_LABEL: Record<string, string> = { INSTAGRAM: 'Instagram', TIKTOK: 'TikTok', YOUTUBE: 'YouTube' }
+
+function fillManualText(template: string, values: Record<string, string>): string {
+  return template.replace(/\{(\w+)\}/g, (whole, name: string) => values[name] ?? whole)
+}
+
+/** «TikTok de @gema.ficticia_ (vídeo del 21 oct)»: a publication named the way the PM recognises it */
+function describeManualPiece(
+  p: { platform?: string | null; handle?: string | null; mediaType?: string | null; postedAt?: Date | string | null },
+  texts: TranslationKeys['campaignDetail'],
+  locale: string,
+): string {
+  const platform = (p.platform || '').toUpperCase()
+  const network = MANUAL_NETWORK_LABEL[platform] ?? platform
+  const handle = (p.handle || '').trim().replace(/^@+/, '')
+  const base = handle ? fillManualText(texts.manualLinkOf, { network, handle }) : network
+  const kind = (texts.manualMediaKinds as Record<string, string>)[(p.mediaType || '').toUpperCase()] ?? ''
+  const posted = p.postedAt ? new Date(p.postedAt) : null
+  const day = posted && !Number.isNaN(posted.getTime())
+    ? posted.toLocaleDateString(locale === 'es' ? 'es-ES' : 'en-GB', { day: 'numeric', month: 'short', timeZone: 'Europe/Madrid' }).replace(/\.$/, '')
+    : ''
+  const detail = kind && day ? fillManualText(texts.manualLinkKindDate, { kind, date: day }) : kind || day
+  return detail ? `${base} (${detail})` : base
+}
+
+/** The pasted link described from the URL alone (what was sent, before any answer arrives) */
+function describeManualLink(url: string, texts: TranslationKeys['campaignDetail'], locale: string): string {
+  const story = parseInstagramStoryUrl(url)
+  if (story && !story.isHighlight) {
+    return describeManualPiece({ platform: 'INSTAGRAM', handle: story.username, mediaType: 'STORY', postedAt: story.postedAtHint }, texts, locale)
   }
+  const parsed = parsePostUrl(url)
+  if (parsed) {
+    return describeManualPiece({
+      platform: parsed.platform,
+      handle: parsed.ownerHint,
+      mediaType: parsed.mediaType,
+      // A TikTok id carries its publication time; an Instagram shortcode does not
+      postedAt: parsed.platform === 'TIKTOK' ? tiktokIdPostedAt(parsed.externalId) : null,
+    }, texts, locale)
+  }
+  // A short link or anything the parser does not know: the link itself, shortened
+  const bare = url.trim().replace(/^https?:\/\/(www\.)?/i, '')
+  return bare.length > 60 ? `${bare.slice(0, 57)}…` : bare
+}
+
+/** The stored publication as the server answered it (media.platform / publishedBy / influencer / mediaType / postedAt) */
+function describeAddedPiece(media: unknown, texts: TranslationKeys['campaignDetail'], locale: string): string | null {
+  if (!media || typeof media !== 'object') return null
+  const m = media as Record<string, unknown>
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null)
+  const usernameOf = (v: unknown): string | null => (v && typeof v === 'object' ? str((v as Record<string, unknown>).username) : null)
+  const platform = str(m.platform)
+  if (!platform) return null
+  // The profile that published it (her TikTok) when it is not the creator's own profile
+  const handle = usernameOf(m.publishedBy) ?? usernameOf(m.influencer)
+  return describeManualPiece({ platform, handle, mediaType: str(m.mediaType), postedAt: str(m.postedAt) }, texts, locale)
+}
+// ---- end of the «Añadir publicación por URL» helpers (tests/unit/manual-media-form.test.ts runs them from this file) ----
+
+/** A message of «Añadir publicación por URL»: always about one link (`title` names it) */
+interface ManualOutcome { type: 'success' | 'error'; title: string; message: string }
+
+/**
+ * The answer about a link that arrives after the PM left the campaign page (Back, or
+ * a link she chose to follow anyway): the request goes on in the tab, its answer is
+ * kept here per campaign and shown when that campaign's page is open again. A link
+ * is never answered into nothing. Lives as long as the tab.
+ */
+const manualOutcomeInbox = new Map<string, ManualOutcome>()
+const manualOutcomeListeners = new Set<() => void>()
+function postManualOutcome(campaignId: string, outcome: ManualOutcome) {
+  manualOutcomeInbox.set(campaignId, outcome)
+  manualOutcomeListeners.forEach(listener => listener())
 }
 
 function SortIndicator({ field, sortField, sortDirection }: { field: SortField; sortField: SortField | null; sortDirection: SortDirection }) {
@@ -886,14 +961,97 @@ export default function CampaignDetailPage() {
       ]
   const [manualMediaResult, setManualMediaResult] = useState<{
     type: 'success' | 'error'
+    /** «Añadida: TikTok de @x (vídeo del 21 oct)»: the link the message is about */
+    title?: string
     message: string
   } | null>(null)
+  // The API answered 409 profile_not_linked: the request is kept so the confirmation can send it again with linkProfileTo
+  const [linkProfileRequest, setLinkProfileRequest] = useState<LinkProfileRequest | null>(null)
+  // ONE link at a time (12 Nov 2026: a link pasted while the previous one was processing was wiped
+  // by that one's reset and never sent). The ref is the synchronous lock (two Enter presses in the
+  // same tick both see it); it is held from the send until the answer, and while the «¿De quién es
+  // esta publicación?» question about that link is open. The state below disables the form.
+  const manualMediaLock = useRef(false)
+  // The link being processed, as the PM recognises it (shown while the form waits)
+  const [manualMediaSending, setManualMediaSending] = useState<string | null>(null)
+  const manualMediaBusy = isAddingManualMedia || linkProfileRequest !== null
+  const canSendManualMedia = !manualMediaBusy && !!manualMediaForm.url.trim() && !(showManualPostedAt && !manualMediaForm.postedAt)
+  // Once the answer is in, the URL field takes the next link (it lost the focus while disabled),
+  // unless the PM went on working in another field meanwhile: her focus is never pulled away
+  const manualUrlInputRef = useRef<HTMLInputElement>(null)
+  const manualMediaWasBusy = useRef(false)
+  useEffect(() => {
+    const focusLost = !document.activeElement || document.activeElement === document.body
+    if (manualMediaWasBusy.current && !manualMediaBusy && focusLost) manualUrlInputRef.current?.focus({ preventScroll: true })
+    manualMediaWasBusy.current = manualMediaBusy
+  }, [manualMediaBusy])
+  // The link in flight, or the one whose question is open (what leaving the page would leave unfinished)
+  const manualPendingLink = manualMediaSending
+    ?? (linkProfileRequest ? describeManualLink(String(linkProfileRequest.body.url ?? ''), t.campaignDetail, locale) : null)
+  // Leaving the page with a link unfinished asks first: closing or reloading the tab (the browser's own
+  // question) and every link of the app (sidebar, breadcrumbs), before Next.js navigates
+  useEffect(() => {
+    if (!manualPendingLink) return
+    const question = fillManualText(t.campaignDetail.manualLeaveConfirm, { link: manualPendingLink })
+    const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = question }
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      const anchor = e.target instanceof Element ? e.target.closest('a[href]') : null
+      if (!anchor || anchor.getAttribute('target') === '_blank' || anchor.getAttribute('href')?.startsWith('#')) return
+      if (!window.confirm(question)) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    window.addEventListener('click', onClick, true)
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload)
+      window.removeEventListener('click', onClick, true)
+    }
+  }, [manualPendingLink, t.campaignDetail.manualLeaveConfirm])
 
   // Revalidate media against the capture rules
   const [isRevalidating, setIsRevalidating] = useState(false)
 
   // Lightweight toast (bottom-right, auto-dismiss)
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+
+  // «Añadir publicación por URL» answered after the PM left this page: shown when she is back.
+  // While the page of THAT campaign is open the answer goes to the form as always (showManualResult);
+  // the same page component may show another campaign by then (one campaign to the next)
+  const manualMediaOpenFor = useRef<string | null>(null)
+  // The link whose «¿De quién es esta publicación?» is open: unsaved if the page goes away with it
+  const manualQuestionLink = useRef<string | null>(null)
+  useEffect(() => {
+    manualMediaOpenFor.current = campaignId
+    const take = () => {
+      const outcome = manualOutcomeInbox.get(campaignId)
+      if (!outcome) return
+      manualOutcomeInbox.delete(campaignId)
+      setManualMediaResult(outcome)
+      setToast({ type: outcome.type, message: `${outcome.title}. ${outcome.message}` })
+    }
+    take()
+    manualOutcomeListeners.add(take)
+    return () => {
+      manualMediaOpenFor.current = null
+      manualOutcomeListeners.delete(take)
+      // Left with the question open: nothing was saved, and she is told so when she is back
+      const link = manualQuestionLink.current
+      if (link) {
+        manualQuestionLink.current = null
+        postManualOutcome(campaignId, { type: 'error', title: fillManualText(t.campaignDetail.manualResultNotAdded, { link }), message: t.campaignDetail.manualDetailQuestionLeft })
+      }
+    }
+    // The texts of the first render are the ones used (the language does not change mid-visit); only the campaign matters
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaignId])
+  /** A message about a link: to the form while the page is open; kept for later if the PM has left */
+  function showManualResult(outcome: ManualOutcome) {
+    if (manualMediaOpenFor.current === campaignId) setManualMediaResult(outcome)
+    else postManualOutcome(campaignId, outcome)
+  }
 
   // Drag & drop state for pipeline kanban
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null)
@@ -1209,9 +1367,20 @@ export default function CampaignDetailPage() {
 
   async function handleAddManualMedia() {
     const url = manualMediaForm.url.trim()
-    if (!url) return
+    // One link at a time: nothing is sent while another is on its way or its question is open
+    if (!url || manualMediaLock.current || linkProfileRequest) return
+    const cd = t.campaignDetail
+    // Every message below names THIS link, never whatever the form holds when the answer lands
+    const link = describeManualLink(url, cd, locale)
+    manualMediaLock.current = true
+    // true when the answer opens «¿De quién es esta publicación?»: the lock stays until it closes
+    let waitsForAnswer = false
+    const notAdded = (message: string) => showManualResult({ type: 'error', title: fillManualText(cd.manualResultNotAdded, { link }), message })
+    // No answer from the server: the link may have been stored, so «No añadida» would be a guess
+    const notConfirmed = (message: string) => showManualResult({ type: 'error', title: fillManualText(cd.manualResultUnknown, { link }), message })
 
     setIsAddingManualMedia(true)
+    setManualMediaSending(link)
     setManualMediaResult(null)
 
     try {
@@ -1225,55 +1394,103 @@ export default function CampaignDetailPage() {
         if (manualMediaForm.comments.trim() !== '') body.comments = Number(manualMediaForm.comments)
       }
       if (manualMediaForm.views.trim() !== '') body.views = Number(manualMediaForm.views)
-      // datetime-local → ISO (the PM's local time); only sent when filled in
-      if (manualMediaForm.postedAt) {
+      // datetime-local → ISO (the PM's local time); only sent when the field is on screen and filled
+      // in: a date typed for another link is never sent with this one
+      if (showManualPostedAt && manualMediaForm.postedAt) {
         const d = new Date(manualMediaForm.postedAt)
         if (Number.isNaN(d.getTime())) {
-          setManualMediaResult({ type: 'error', message: locale === 'es' ? 'La fecha de publicación no es válida' : 'The publication date is not valid' })
+          notAdded(cd.manualDetailBadDate)
           return
         }
         body.postedAt = d.toISOString()
       }
 
-      const res = await fetch(`/api/campaigns/${campaignId}/media/manual`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const data = await res.json()
+      let res: Response
+      try {
+        res = await fetch(`/api/campaigns/${campaignId}/media/manual`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      } catch {
+        // No answer: it may or may not have been stored. Sending it again never duplicates it.
+        notConfirmed(cd.manualDetailNetworkError)
+        return
+      }
+      const parsed = await res.json().catch(() => null)
+      // A gateway answered (502-504 during a deploy or a restart), not the server: nothing is known
+      if (noClearAnswer(res, parsed)) {
+        notConfirmed(cd.manualDetailNoAnswer)
+        return
+      }
+      const data = parsed ?? {}
 
       if (!res.ok) {
-        // The API names the post's real owner: preselect them when they're already a member
+        // The author is not a registered profile of any creator here: ask whose it is (LinkProfileConfirm sends this same request again)
+        const notLinked = profileNotLinkedFrom(res.status, data)
+        if (notLinked) {
+          if (manualMediaOpenFor.current !== campaignId) {
+            // She left the page: nobody can answer the question, and nothing was stored
+            notAdded(cd.manualDetailQuestionLeft)
+            return
+          }
+          manualQuestionLink.current = link
+          waitsForAnswer = true
+          setLinkProfileRequest({ body, ...notLinked })
+          return
+        }
+        // The API names the post's real owner: preselect them when they're already a member (and the form still holds this link)
         if (typeof data.ownerUsername === 'string' && data.ownerUsername) {
           const owner = data.ownerUsername.toLowerCase()
           const match = (campaign?.influencers || []).find(ci => ci.influencer?.username?.toLowerCase() === owner)
-          if (match) setManualMediaForm(f => ({ ...f, influencerId: match.influencer.id }))
+          if (match) setManualMediaForm(f => (f.url.trim() === url ? { ...f, influencerId: match.influencer.id } : f))
         }
         // The API could not date the content: reveal the date field so the PM can comply
         if (data.needsPostedAt === true) setManualMediaNeedsDate(true)
-        setManualMediaResult({
-          type: 'error',
-          message: data.error || (locale === 'es' ? 'No se pudo añadir la publicación' : 'Could not add the post'),
-        })
+        notAdded(typeof data.error === 'string' && data.error ? data.error : cd.manualDetailError)
         return
       }
 
-      setManualMediaResult({
+      // Named from what was stored (network, the profile that published, type, date); the URL when the answer lacks it
+      const piece = describeAddedPiece(data.media, cd, locale) ?? link
+      showManualResult({
         type: 'success',
-        // A story is never enriched: its date comes from the link and its views only from the creator
-        message: data.isStory
-          ? t.campaignDetail.manualStoryAdded
-          : data.enriched
-            ? (locale === 'es' ? 'Publicación añadida con métricas obtenidas de la plataforma' : 'Post added with metrics pulled from the platform')
-            : (locale === 'es' ? 'Publicación añadida. No se pudo enriquecer automáticamente: se guardan las métricas indicadas' : 'Post added. Could not enrich automatically: the metrics you entered were saved'),
+        title: fillManualText(data.created === false ? cd.manualResultUpdated : cd.manualResultAdded, { link: piece }),
+        // Already in the campaign (a story too) says so; a NEW story is never enriched: its date
+        // comes from the link and its views only from the creator
+        message: data.created === false
+          ? cd.manualDetailAlreadyThere
+          : data.isStory
+            ? cd.manualStoryAdded
+            : data.enriched ? cd.manualDetailEnriched : cd.manualDetailNotEnriched,
       })
-      setManualMediaForm({ url: '', influencerId: '', likes: '', comments: '', views: '', reach: '', postedAt: '' })
+      // Cleared only if the form still holds the link that was sent
+      setManualMediaForm(f => (f.url.trim() === url ? MANUAL_EMPTY_FORM : f))
       setManualMediaNeedsDate(false)
-      await fetchCampaign()
+      // The answer is in: the form is free now, while the campaign reloads behind it
+      void fetchCampaign()
     } catch {
-      setManualMediaResult({ type: 'error', message: locale === 'es' ? 'Error de red' : 'Network error' })
+      notAdded(cd.manualDetailError)
     } finally {
+      if (!waitsForAnswer) manualMediaLock.current = false
+      setManualMediaSending(null)
       setIsAddingManualMedia(false)
+    }
+  }
+
+  /** «¿De quién es esta publicación?» closed: whatever happened, the form can take the next link */
+  function finishLinkProfileQuestion(result: { type: 'success' | 'error'; title: string; message: string } | null, sentUrl: string, needsDate = false) {
+    manualMediaLock.current = false
+    manualQuestionLink.current = null
+    setLinkProfileRequest(null)
+    // An answer that lands after the PM left (she confirmed and went Back) is kept for her return
+    if (result) showManualResult(result)
+    if (needsDate) setManualMediaNeedsDate(true)
+    if (result?.type === 'success') {
+      // Cleared only if the form still holds the link that was sent
+      setManualMediaForm(f => (f.url.trim() === sentUrl ? MANUAL_EMPTY_FORM : f))
+      setManualMediaNeedsDate(false)
+      void fetchCampaign()
     }
   }
 
@@ -4430,10 +4647,14 @@ export default function CampaignDetailPage() {
                               </div>
                             </TableCell>
                             <TableCell>
-                              <Badge variant={platformBadge(ci.influencer.platform)}>
-                                <PlatformIcon platform={ci.influencer.platform} />
-                                {ci.influencer.platform.charAt(0) + ci.influencer.platform.slice(1).toLowerCase()}
-                              </Badge>
+                              {/* Her networks: her own, plus every other one she published on with her pieces there */}
+                              <CreatorNetworkList
+                                networks={creatorNetworksOf(perInfluencerById.get(ci.influencer.id)?.byPlatform, ci.influencer.platform, { includeOwn: true })}
+                                ownPlatform={ci.influencer.platform}
+                                texts={t.campaignReport}
+                                locale={locale}
+                                renderIcon={platform => <PlatformIcon platform={platform} />}
+                              />
                             </TableCell>
                             <TableCell>{formatNumber(ci.influencer.followers, { locale })}</TableCell>
                             <TableCell>
@@ -4517,7 +4738,9 @@ export default function CampaignDetailPage() {
                   <button
                     type="button"
                     onClick={() => { setShowManualMedia(v => !v); setManualMediaResult(null) }}
-                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    // Not hidden while a link is on its way: its answer must land where the PM sees it
+                    disabled={isAddingManualMedia}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-60 ${
                       showManualMedia
                         ? 'border-purple-300 dark:border-purple-700 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
                         : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
@@ -4549,12 +4772,20 @@ export default function CampaignDetailPage() {
                         {locale === 'es' ? 'URL de la publicación' : 'Post URL'} *
                       </label>
                       <input
+                        ref={manualUrlInputRef}
                         type="url"
                         value={manualMediaForm.url}
-                        onChange={(e) => { setManualMediaForm(f => ({ ...f, url: e.target.value })); setManualMediaNeedsDate(false) }}
-                        onKeyDown={(e) => e.key === 'Enter' && handleAddManualMedia()}
+                        // A new link hides the date field and drops the date typed for the previous one
+                        onChange={(e) => { setManualMediaForm(f => ({ ...f, url: e.target.value, postedAt: '' })); setManualMediaNeedsDate(false) }}
+                        // Enter sends only what the button would send; while a link is processing it does nothing
+                        onKeyDown={(e) => {
+                          if (e.key !== 'Enter') return
+                          e.preventDefault()
+                          if (canSendManualMedia) void handleAddManualMedia()
+                        }}
+                        disabled={manualMediaBusy}
                         placeholder="https://www.instagram.com/reel/…  ·  instagram.com/stories/usuario/…  ·  tiktok.com/@usuario/video/…  ·  youtube.com/watch?v=…"
-                        className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                        className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 disabled:cursor-not-allowed disabled:opacity-60"
                       />
                     </div>
                     <div>
@@ -4564,7 +4795,8 @@ export default function CampaignDetailPage() {
                       <select
                         value={manualMediaForm.influencerId}
                         onChange={(e) => setManualMediaForm(f => ({ ...f, influencerId: e.target.value }))}
-                        className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                        disabled={manualMediaBusy}
+                        className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         <option value="">{locale === 'es' ? 'Detectar desde la URL' : 'Detect from the URL'}</option>
                         {influencers.filter(ci => ci.influencer).map(ci => (
@@ -4584,8 +4816,9 @@ export default function CampaignDetailPage() {
                             inputMode="numeric"
                             value={manualMediaForm[field.key]}
                             onChange={(e) => setManualMediaForm(f => ({ ...f, [field.key]: e.target.value }))}
+                            disabled={manualMediaBusy}
                             placeholder="—"
-                            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none placeholder:text-gray-400 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 disabled:cursor-not-allowed disabled:opacity-60"
                           />
                         </div>
                       ))}
@@ -4599,7 +4832,8 @@ export default function CampaignDetailPage() {
                           type="datetime-local"
                           value={manualMediaForm.postedAt}
                           onChange={(e) => setManualMediaForm(f => ({ ...f, postedAt: e.target.value }))}
-                          className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 md:max-w-xs"
+                          disabled={manualMediaBusy}
+                          className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 md:max-w-xs disabled:cursor-not-allowed disabled:opacity-60"
                         />
                         <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">{t.campaignDetail.manualPostedAtHelp}</p>
                       </div>
@@ -4616,8 +4850,9 @@ export default function CampaignDetailPage() {
                     <Button
                       variant="primary"
                       size="sm"
-                      onClick={handleAddManualMedia}
-                      disabled={isAddingManualMedia || !manualMediaForm.url.trim() || (showManualPostedAt && !manualMediaForm.postedAt)}
+                      onClick={() => { void handleAddManualMedia() }}
+                      disabled={!canSendManualMedia}
+                      aria-busy={isAddingManualMedia}
                     >
                       {isAddingManualMedia ? (
                         <>
@@ -4631,22 +4866,32 @@ export default function CampaignDetailPage() {
                         </>
                       )}
                     </Button>
-                    <Button variant="secondary" size="sm" onClick={() => { setShowManualMedia(false); setManualMediaResult(null) }}>
+                    <Button variant="secondary" size="sm" disabled={isAddingManualMedia} onClick={() => { setShowManualMedia(false); setManualMediaResult(null) }}>
                       {locale === 'es' ? 'Cancelar' : 'Cancel'}
                     </Button>
                   </div>
+                  {/* The link on its way: the form stays closed to a second one until this one is answered */}
+                  {isAddingManualMedia && manualMediaSending && (
+                    <p role="status" className="mt-2 flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                      {fillManualText(t.campaignDetail.manualSending, { link: manualMediaSending })}
+                    </p>
+                  )}
                   {manualMediaResult && (
-                    <div className={`mt-3 flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
+                    <div role={manualMediaResult.type === 'error' ? 'alert' : 'status'} className={`mt-3 flex items-start gap-2 rounded-lg px-3 py-2 text-sm ${
                       manualMediaResult.type === 'success'
                         ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300'
                         : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300'
                     }`}>
                       {manualMediaResult.type === 'success' ? (
-                        <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600" />
+                        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
                       ) : (
-                        <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
                       )}
-                      <span className="flex-1">{manualMediaResult.message}</span>
+                      <span className="min-w-0 flex-1 break-words">
+                        {manualMediaResult.title && <span className="block font-medium">{manualMediaResult.title}</span>}
+                        {manualMediaResult.message}
+                      </span>
                       <button onClick={() => setManualMediaResult(null)} className="text-gray-400 hover:text-gray-600">
                         <X className="h-3 w-3" />
                       </button>
@@ -5825,11 +6070,15 @@ export default function CampaignDetailPage() {
                               <div>
                                 <p className="font-semibold text-gray-900">{ci.influencer.displayName || ci.influencer.username}</p>
                                 <p className="text-xs text-gray-500">@{ci.influencer.username}</p>
-                                <div className="mt-1 flex items-center gap-2">
-                                  <Badge variant={platformBadge(ci.influencer.platform)}>
-                                    <PlatformIcon platform={ci.influencer.platform} />
-                                    {ci.influencer.platform.charAt(0) + ci.influencer.platform.slice(1).toLowerCase()}
-                                  </Badge>
+                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                  {/* One card per creator: her own network, plus every other one she published on with her pieces there */}
+                                  <CreatorNetworkList
+                                    networks={creatorNetworksOf(perInfluencer?.byPlatform, ci.influencer.platform, { includeOwn: true })}
+                                    ownPlatform={ci.influencer.platform}
+                                    texts={t.campaignReport}
+                                    locale={locale}
+                                    renderIcon={platform => <PlatformIcon platform={platform} />}
+                                  />
                                   <span className="text-[10px] text-gray-400 uppercase font-medium">{cpm.tier}</span>
                                 </div>
                                 {/* Item 7: gender — set by the PM ('manual') or inferred from the public name ('inferred', "(estimado)"); never from the networks */}
@@ -7464,6 +7713,32 @@ export default function CampaignDetailPage() {
           onDone={handleMoveDone}
         />
       )}
+
+      {/* «Añadir publicación por URL»: the author is not a registered profile of any creator of the campaign → whose is it? */}
+      <LinkProfileConfirm
+        campaignId={campaignId}
+        request={linkProfileRequest}
+        members={influencers}
+        // Every outcome names the link the question was about, and frees the form for the next one.
+        // Closed after a resend that failed: «Sin confirmar» (no answer) or the server's reason, never «sin responder»
+        onClose={(lastFailure) => {
+          const sentUrl = String(linkProfileRequest?.body.url ?? '')
+          const link = describeManualLink(sentUrl, t.campaignDetail, locale)
+          finishLinkProfileQuestion(closedQuestionResult(lastFailure, link, t.campaignDetail), sentUrl)
+        }}
+        onDone={(message, saved) => {
+          const sentUrl = String(linkProfileRequest?.body.url ?? '')
+          // Named from what was stored, as for a direct add; the URL when the answer lacks it
+          const link = describeAddedPiece(saved.media, t.campaignDetail, locale) ?? describeManualLink(sentUrl, t.campaignDetail, locale)
+          const title = fillManualText(saved.created === false ? t.campaignDetail.manualResultUpdated : t.campaignDetail.manualResultAdded, { link })
+          finishLinkProfileQuestion({ type: 'success', title, message }, sentUrl)
+        }}
+        onNeedsPostedAt={(message) => {
+          const sentUrl = String(linkProfileRequest?.body.url ?? '')
+          const link = describeManualLink(sentUrl, t.campaignDetail, locale)
+          finishLinkProfileQuestion({ type: 'error', title: fillManualText(t.campaignDetail.manualResultNotAdded, { link }), message }, sentUrl, true)
+        }}
+      />
 
       {/* Toast (revalidation result and other one-off notices) */}
       {toast && (

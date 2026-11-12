@@ -17,6 +17,7 @@
 import { z } from 'zod'
 import { prisma } from '@/lib/db'
 import { parsePostUrl, type ParsedPostUrl } from '@/lib/post-url'
+import { isShortPostUrl } from '@/lib/resolve-short-url'
 import { parseInstagramStoryUrl } from '@/lib/story-url'
 import { defineWriteTool, type WriteContext, type WriteTool } from '../../write-tool'
 import { ToolError, idInput, shortText } from '../shared'
@@ -71,12 +72,18 @@ interface PublicationsPlan {
 const publicationPlans = new WeakMap<WriteContext, PublicationsPlan>()
 
 async function resolvePublications(
-  args: { campaignId: string; publications: { url: string; influencerId?: string }[] },
+  args: { campaignId: string; publications: { url: string; influencerId?: string; linkProfileTo?: string }[] },
   ctx: WriteContext,
 ): Promise<PublicationsPlan> {
   const invalid: string[] = []
-  const parsedAll: { url: string; parsed: ParsedPostUrl; isStory: boolean; influencerId?: string }[] = []
+  const parsedAll: { url: string; parsed: ParsedPostUrl | null; isStory: boolean; influencerId?: string; linkProfileTo?: string }[] = []
   for (const p of args.publications) {
+    // A share link (vm.tiktok.com…, instagram.com/share/…) is opened by the
+    // platform itself before anything else; here it is only passed on
+    if (isShortPostUrl(p.url)) {
+      parsedAll.push({ url: p.url.trim(), parsed: null, isStory: false, influencerId: p.influencerId, linkProfileTo: p.linkProfileTo })
+      continue
+    }
     const story = parseInstagramStoryUrl(p.url)
     if (story?.isHighlight) {
       invalid.push(`${echo(p.url, 80)} (es un destacado, no una story con fecha)`)
@@ -98,29 +105,34 @@ async function resolvePublications(
       invalid.push(echo(p.url, 80))
       continue
     }
-    parsedAll.push({ url: parsed.canonicalUrl, parsed, isStory: parsed.isStory === true, influencerId: p.influencerId })
+    parsedAll.push({ url: parsed.canonicalUrl, parsed, isStory: parsed.isStory === true, influencerId: p.influencerId, linkProfileTo: p.linkProfileTo })
   }
   if (invalid.length > 0) {
     throw new ToolError(
-      `No son enlaces de publicación válidos: ${listText(invalid, 5)}. Valen posts y reels de Instagram (instagram.com/p/… o /reel/…), stories de Instagram (instagram.com/stories/usuario/…), vídeos de TikTok (tiktok.com/@usuario/video/…) y vídeos de YouTube; los enlaces acortados y los destacados no. No se ha hecho nada.`,
+      `No son enlaces de publicación válidos: ${listText(invalid, 5)}. Valen posts y reels de Instagram (instagram.com/p/… o /reel/…), stories de Instagram (instagram.com/stories/usuario/…), vídeos de TikTok (tiktok.com/@usuario/video/…) y vídeos de YouTube; los enlaces cortos de compartir (vm.tiktok.com, instagram.com/share) también; los destacados no. No se ha hecho nada.`,
     )
   }
   const seen = new Set<string>()
   for (const p of parsedAll) {
-    const key = `${p.parsed.platform}:${p.parsed.externalId}`
+    const key = p.parsed ? `${p.parsed.platform}:${p.parsed.externalId}` : `short:${p.url}`
     if (seen.has(key)) throw new ToolError(`La publicación ${p.url} está repetida en la llamada. No se ha hecho nada.`)
     seen.add(key)
   }
   const snapshot = await readCampaign(ctx, args.campaignId)
-  const given = parsedAll.map(p => p.influencerId).filter((id): id is string => !!id)
+  const given = parsedAll.flatMap(p => [p.influencerId, p.linkProfileTo]).filter((id): id is string => !!id)
   if (given.length > 0) requireMembers(snapshot, given)
   const items = parsedAll.map(p => {
     let member: CampaignMember | null = p.influencerId ? (snapshot.byInfluencer.get(p.influencerId) ?? null) : null
-    if (!member && p.parsed.ownerHint) {
-      const hint = p.parsed.ownerHint.toLowerCase().replace(/^@/, '')
-      member = snapshot.members.find(m => m.platform === p.parsed.platform && m.username.toLowerCase() === hint) ?? null
+    const parsed = p.parsed
+    if (!member && parsed?.ownerHint) {
+      const hint = parsed.ownerHint.toLowerCase().replace(/^@/, '')
+      member = snapshot.members.find(m => m.platform === parsed.platform && m.username.toLowerCase() === hint) ?? null
     }
-    return { url: p.url, parsed: p.parsed, isStory: p.isStory, member, authorText: member ? at(member.username) : 'autora por resolver' }
+    const linkTo = p.linkProfileTo ? (snapshot.byInfluencer.get(p.linkProfileTo) ?? null) : null
+    const authorText = linkTo
+      ? `${at(linkTo.username)} (su autor queda como otro perfil suyo)`
+      : member ? at(member.username) : 'autora por resolver'
+    return { url: p.url, parsed: parsed as ParsedPostUrl, isStory: p.isStory, member, authorText }
   })
   return { snapshot, items }
 }
@@ -132,9 +144,11 @@ export const addPublicationsByUrl = defineWriteTool({
     'Adds publications (post, reel, video, short or Instagram story) to a campaign from their public URL, one row each. ' +
     'The author must be a member of the campaign and the publication date must fall inside the campaign dates; hand-added pieces are exempt from the brand-reference rule. ' +
     'Each URL that is not a story costs one Apify single-post read (stories are never scraped and are free); a read figure greater than 0 wins over the typed one. ' +
-    'A TikTok video published by the TikTok account of an Instagram member (same username or linked in her bio) links that account to the campaign automatically. ' +
-    "Use for 'añade este reel'. Returns one result per URL with the platform's Spanish reason when refused (other author, outside the dates, publication date needed, already filed under another creator). " +
-    'It does NOT accept shortened links or highlights, does not add the author as a member and never retries a URL after a timeout.',
+    'A creator is ONE person with several profiles: a piece published from any of her profiles counts in her row. ' +
+    "When the author is not a registered profile of any creator of the campaign, that URL comes back as result 'needs_profile_link' with the author and suggested creators: ASK THE USER whose profile it is, then call again for that URL with linkProfileTo (the creator's influencerId), linkProfileAuthor and linkProfileAuthorPlatform exactly as returned, and confirmUnverified: true only when the user confirmed an author marked verified: false. It never creates a member. " +
+    'Share links (vm.tiktok.com, tiktok.com/t, instagram.com/share) are accepted: the platform opens them first. ' +
+    "Use for 'añade este reel'. Returns one result per URL with the platform's Spanish reason when refused (other author, outside the dates, publication date needed, already filed under another creator, a brand account). " +
+    'It does NOT accept highlights, does not add the author as a member and never retries a URL after a timeout.',
   input: {
     campaignId: idInput('The campaign id.'),
     publications: z
@@ -147,6 +161,10 @@ export const addPublicationsByUrl = defineWriteTool({
           views: countInput('Views, when they cannot be read.').optional(),
           reach: countInput('Reach (stories only).').optional(),
           postedAt: isoDateInput('Publication date, ISO 8601: needed when the date cannot be read.').optional(),
+          linkProfileTo: idInput("Only after a 'needs_profile_link' answer AND the user's word: the influencerId of the creator (a member) whose other profile published it.").optional(),
+          linkProfileAuthor: z.string().trim().min(1).max(100).describe("With linkProfileTo: the author handle exactly as the 'needs_profile_link' answer gave it.").optional(),
+          linkProfileAuthorPlatform: z.enum(['INSTAGRAM', 'TIKTOK', 'YOUTUBE']).describe('With linkProfileTo: the network of that author, as returned.').optional(),
+          confirmUnverified: z.boolean().describe('With linkProfileTo: true only when the answer said verified: false and the user confirmed the author anyway.').optional(),
         }),
       )
       .min(1)
@@ -203,8 +221,24 @@ export const addPublicationsByUrl = defineWriteTool({
         continue
       }
       const body: Json = { url: input.url }
-      for (const k of ['influencerId', 'likes', 'comments', 'views', 'reach', 'postedAt'] as const) if (input[k] !== undefined) body[k] = input[k]
+      for (const k of ['influencerId', 'likes', 'comments', 'views', 'reach', 'postedAt', 'linkProfileTo', 'linkProfileAuthor', 'linkProfileAuthorPlatform', 'confirmUnverified'] as const) {
+        if (input[k] !== undefined) body[k] = input[k]
+      }
       const out = await attempt(ctx, { method: 'POST', path: `/api/campaigns/${p.snapshot.id}/media/manual`, body, timeoutMs: budget.timeout(120_000) })
+      if (!out.ok && out.status === 409 && out.json.code === 'profile_not_linked') {
+        // Nothing was stored or linked: the user has to say whose profile it is
+        const author = asObject(out.json.author)
+        const suggestions = Array.isArray(out.json.suggestions) ? out.json.suggestions.map(x => asObject(x)) : []
+        results.push({
+          url: item.url,
+          result: 'needs_profile_link',
+          reason: asString(out.json.error) ?? 'El autor no es un perfil registrado de ninguna creadora de esta campaña.',
+          author: { handle: asString(author.handle), platform: asString(author.platform), verified: author.verified === true },
+          suggestions: suggestions.slice(0, 5).map(x => ({ influencerId: asString(x.influencerId), username: at(x.username), platform: asString(x.platform), reason: asString(x.reason) })),
+          next: 'Pregunta a la persona de quién es este perfil. Con su respuesta, vuelve a llamar solo con esta URL y linkProfileTo, linkProfileAuthor y linkProfileAuthorPlatform tal como vienen aquí.',
+        })
+        continue
+      }
       if (!out.ok) {
         if (out.timeout) stop = true
         results.push({

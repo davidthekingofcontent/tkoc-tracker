@@ -1275,3 +1275,58 @@ describe('fixes of 12 Nov 2026: confirmations bound to their class and state, Ap
     expect(callsTo('POST', '/api/campaigns/[id]/revalidate-media').length).toBe(revalidations + 1)
   })
 })
+
+// ============ One creator, several profiles (main line, 12 Nov 2026) ============
+
+describe('add_publications_by_url with a profile that is not registered yet', () => {
+  it('asks whose profile it is, then adds it to her row without creating a member', async () => {
+    const grant = await grantFor(fx.ada.id)
+    const start = new Date(Date.now() - 20 * DAY)
+    start.setUTCHours(0, 0, 0, 0)
+    const end = new Date(Date.now() + 20 * DAY)
+    end.setUTCHours(0, 0, 0, 0)
+    const camp = await prisma.campaign.create({
+      data: { name: `Campaña Perfiles ${tag}`, status: 'ACTIVE', type: 'INFLUENCER_TRACKING', platforms: ['INSTAGRAM', 'TIKTOK'], startDate: start, endDate: end, userId: fx.ada.id },
+    })
+    fx.more.push(camp.id)
+    const ig = await prisma.influencer.create({ data: { username: handle('sofia'), platform: 'INSTAGRAM', followers: 900 } })
+    const tk = await prisma.influencer.create({ data: { username: handle('sofia'), platform: 'TIKTOK', followers: 20_000 } })
+    created.influencers.push(ig.id, tk.id)
+    await prisma.campaignInfluencer.create({ data: { campaignId: camp.id, influencerId: ig.id, status: 'POSTED', agreedFee: 150 } })
+
+    // A TikTok video id carries its publication second in its high bits: five days ago
+    const videoId = ((BigInt(Math.floor((Date.now() - 5 * DAY) / 1000)) << BigInt(32)) + BigInt(777)).toString()
+    const url = `https://www.tiktok.com/@${handle('sofia')}/video/${videoId}`
+
+    // 1st: Apify reads it (paid) → confirmation first
+    const offer = await call(addPublicationsByUrl, grant, { campaignId: camp.id, publications: [{ url }] })
+    expect(offer.isError, offer.text).toBe(false)
+    expect(offer.data.needsConfirmation).toBe(true)
+    const asked = await call(addPublicationsByUrl, grant, { campaignId: camp.id, publications: [{ url }], confirmToken: offer.data.confirmToken })
+    expect(asked.isError, asked.text).toBe(false)
+    const r = asked.data.results[0]
+    expect(r.result).toBe('needs_profile_link')
+    expect(r.author).toMatchObject({ handle: handle('sofia'), platform: 'TIKTOK', verified: false })
+    expect(r.suggestions.map((s: { influencerId: string }) => s.influencerId)).toContain(ig.id)
+    expect(await prisma.media.count({ where: { campaignId: camp.id } })).toBe(0)
+
+    // 2nd: with the user's word, linked as her profile and stored in her row
+    const linkArgs = {
+      campaignId: camp.id,
+      publications: [{ url, linkProfileTo: ig.id, linkProfileAuthor: r.author.handle, linkProfileAuthorPlatform: r.author.platform, confirmUnverified: true }],
+    }
+    const offer2 = await call(addPublicationsByUrl, grant, linkArgs)
+    expect(offer2.data.needsConfirmation).toBe(true)
+    expect(offer2.data.preview).toContain('otro perfil suyo')
+    const done = await call(addPublicationsByUrl, grant, { ...linkArgs, confirmToken: offer2.data.confirmToken })
+    expect(done.isError, done.text).toBe(false)
+    expect(done.data.results[0].result).toBe('added')
+
+    expect(await prisma.campaignInfluencer.count({ where: { campaignId: camp.id } })).toBe(1)
+    const piece = await prisma.media.findFirstOrThrow({ where: { campaignId: camp.id } })
+    expect(piece).toMatchObject({ influencerId: ig.id, publishedByInfluencerId: tk.id, platform: 'TIKTOK' })
+    const both = await prisma.influencer.findMany({ where: { id: { in: [ig.id, tk.id] } }, select: { personId: true } })
+    expect(both[0].personId).toBeTruthy()
+    expect(both[0].personId).toBe(both[1].personId)
+  })
+})

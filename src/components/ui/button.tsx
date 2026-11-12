@@ -73,12 +73,18 @@ const Button = React.forwardRef<
   HTMLButtonElement | HTMLAnchorElement,
   ButtonProps
 >((props, ref) => {
+  // `rest` is what goes on to the DOM element: everything EXCEPT the props the
+  // kit consumes. Until Nov 2026 the element received `className={classes}`
+  // and then a spread of the ORIGINAL props, which still carried the caller's
+  // className (and disabled): a Button given `className="mt-4"` rendered with
+  // only "mt-4", none of the kit styles, and `loading` no longer disabled it.
   const {
     variant = 'primary',
     size = 'md',
     loading = false,
     className,
     children,
+    as: element,
     ...rest
   } = props
 
@@ -87,16 +93,18 @@ const Button = React.forwardRef<
     variantStyles[variant],
     sizeStyles[size],
     loading && 'pointer-events-none opacity-70',
+    // The caller's classes come last: twMerge lets them override the kit's
+    // (a different margin, width or padding) without dropping the rest
     className
   )
 
-  if (props.as === 'a') {
-    const { as, variant: _v, size: _s, loading: _l, ...anchorProps } = props
+  if (element === 'a') {
     return (
       <a
+        {...(rest as React.AnchorHTMLAttributes<HTMLAnchorElement>)}
         ref={ref as React.Ref<HTMLAnchorElement>}
         className={classes}
-        {...anchorProps}
+        aria-disabled={loading || undefined}
       >
         {loading && <Spinner />}
         {children}
@@ -104,14 +112,13 @@ const Button = React.forwardRef<
     )
   }
 
-  const { as, variant: _v, size: _s, loading: _l, ...buttonProps } =
-    props as ButtonAsButton
+  const { disabled, ...buttonRest } = rest as React.ButtonHTMLAttributes<HTMLButtonElement>
   return (
     <button
+      {...buttonRest}
       ref={ref as React.Ref<HTMLButtonElement>}
       className={classes}
-      disabled={(rest as ButtonAsButton).disabled || loading}
-      {...buttonProps}
+      disabled={disabled || loading}
     >
       {loading && <Spinner />}
       {children}
