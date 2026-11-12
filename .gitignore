@@ -45,3 +45,4 @@ next-env.d.ts
 # test tooling (own package, see tests/package.json)
 /tests/node_modules
 /tests/.pgdata
+/tests/rehearsal/.golden-*.json

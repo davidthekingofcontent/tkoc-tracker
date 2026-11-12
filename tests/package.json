@@ -4,7 +4,8 @@
   "description": "Test tooling kept OUT of the application's package.json on purpose: the production image is built from the root lockfile, which these packages must never touch.",
   "type": "module",
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --project unit --project db",
+    "rehearsal": "vitest run --project rehearsal",
     "test:unit": "vitest run --project unit",
     "test:db": "vitest run --project db"
   },

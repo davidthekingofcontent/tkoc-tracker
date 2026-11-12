@@ -11,8 +11,9 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..', '..')
-const dataDir = path.resolve(here, '..', '.pgdata')
 const PORT = Number(process.env.TEST_PG_PORT || 54331)
+// One data directory per port, so several runs (different TEST_PG_PORT) can coexist
+const dataDir = path.resolve(here, '..', '.pgdata', String(PORT))
 const URL = `postgresql://tkoc_test:local-only@localhost:${PORT}/tkoc_test`
 
 let pg: EmbeddedPostgres | null = null

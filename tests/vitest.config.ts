@@ -38,6 +38,20 @@ export default defineConfig({
           hookTimeout: 120_000,
         },
       },
+      {
+        // Rehearsal against the LOCAL COPY of production data (never production
+        // itself: rehearsal/guard.ts refuses anything that is not localhost).
+        // Not part of `vitest run` by default: run it with --project rehearsal.
+        extends: true,
+        test: {
+          name: 'rehearsal',
+          include: ['rehearsal/**/*.test.ts'],
+          environment: 'node',
+          setupFiles: ['./rehearsal/guard.ts'],
+          fileParallelism: false,
+          testTimeout: 300_000,
+        },
+      },
     ],
   },
 })
