@@ -5,6 +5,8 @@ import { scrapeSinglePost, isApifyExhausted, isApifyConfiguredAsync } from '@/li
 import type { ScrapedSinglePost } from '@/lib/apify'
 import { isWithinCampaignDates } from '@/lib/campaign-capture'
 import { parseInstagramStoryUrl } from '@/lib/story-url'
+import { parsePostUrl, PLATFORM_LABEL } from '@/lib/post-url'
+import type { ParsedPostUrl, UrlPlatform } from '@/lib/post-url'
 import { ensureTikTokTwin, tiktokCandidateHandle } from '@/lib/tiktok-autolink'
 import type { MediaType, Platform } from '@/generated/prisma/client'
 
@@ -21,109 +23,6 @@ import type { MediaType, Platform } from '@/generated/prisma/client'
 // Apify: they expire after 24 h and the single-post scraper does not read
 // story URLs. Their publication date is decoded from the id (snowflake) and
 // views/reach come only from the body — the creator is the only source.
-
-type UrlPlatform = 'INSTAGRAM' | 'TIKTOK' | 'YOUTUBE'
-
-interface ParsedPostUrl {
-  platform: UrlPlatform
-  /** URL-derived id: IG shortcode, TikTok video id, YouTube video id, IG story id */
-  externalId: string
-  mediaType: MediaType
-  /** Clean permalink (no query string / hash) */
-  canonicalUrl: string
-  /** Substring that identifies this post inside any permalink variant */
-  permalinkNeedle: string
-  /** Username embedded in the URL, when the platform includes it */
-  ownerHint: string | null
-  /** Instagram story: no Apify, date from the snowflake, metrics from the PM */
-  isStory?: boolean
-  /** Publication time decoded from the story id; null when it can't be trusted */
-  postedAtHint?: Date | null
-}
-
-function parsePostUrl(input: string): ParsedPostUrl | null {
-  let url: URL
-  try {
-    const trimmed = input.trim()
-    url = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`)
-  } catch {
-    return null
-  }
-
-  const host = url.hostname.toLowerCase().replace(/^www\./, '')
-  const path = url.pathname
-
-  // Instagram: /p/{code}, /reel/{code}, /reels/{code}, /tv/{code}, optionally
-  // prefixed by /{username}/ (newer share links)
-  if (host === 'instagram.com' || host.endsWith('.instagram.com') || host === 'instagr.am') {
-    const m = path.match(/^\/(?:([A-Za-z0-9_.]+)\/)?(p|reel|reels|tv)\/([A-Za-z0-9_-]+)\/?/)
-    if (!m) return null
-    const [, owner, kind, code] = m
-    const isReel = kind !== 'p'
-    return {
-      platform: 'INSTAGRAM',
-      externalId: code,
-      mediaType: isReel ? 'REEL' : 'POST',
-      canonicalUrl: `https://www.instagram.com/${isReel ? 'reel' : 'p'}/${code}/`,
-      permalinkNeedle: `/${code}`,
-      ownerHint: owner && !['p', 'reel', 'reels', 'tv'].includes(owner) ? owner : null,
-    }
-  }
-
-  // TikTok: /@user/video/{id} or /@user/photo/{id}. Short links (vm.tiktok.com,
-  // tiktok.com/t/...) carry no id, so they are rejected with a clear message.
-  if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
-    const m = path.match(/^\/(?:@([A-Za-z0-9_.]+)\/)?(video|photo)\/(\d+)\/?/)
-    if (!m) return null
-    const [, owner, kind, id] = m
-    return {
-      platform: 'TIKTOK',
-      externalId: id,
-      mediaType: kind === 'photo' ? 'POST' : 'VIDEO',
-      canonicalUrl: owner
-        ? `https://www.tiktok.com/@${owner}/${kind}/${id}`
-        : `https://www.tiktok.com/${kind}/${id}`,
-      permalinkNeedle: `/${kind}/${id}`,
-      ownerHint: owner || null,
-    }
-  }
-
-  // YouTube: watch?v=ID, youtu.be/ID, /shorts/ID, /embed/ID, /live/ID
-  if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') {
-    let id: string | null = null
-    let isShort = false
-    if (host === 'youtu.be') {
-      id = path.slice(1).split('/')[0] || null
-    } else if (path === '/watch') {
-      id = url.searchParams.get('v')
-    } else {
-      const m = path.match(/^\/(shorts|embed|live|v)\/([A-Za-z0-9_-]+)/)
-      if (m) {
-        id = m[2]
-        isShort = m[1] === 'shorts'
-      }
-    }
-    if (!id || !/^[A-Za-z0-9_-]{11}$/.test(id)) return null
-    return {
-      platform: 'YOUTUBE',
-      externalId: id,
-      mediaType: isShort ? 'SHORT' : 'VIDEO',
-      canonicalUrl: isShort
-        ? `https://www.youtube.com/shorts/${id}`
-        : `https://www.youtube.com/watch?v=${id}`,
-      permalinkNeedle: id,
-      ownerHint: null,
-    }
-  }
-
-  return null
-}
-
-const PLATFORM_LABEL: Record<UrlPlatform, string> = {
-  INSTAGRAM: 'Instagram',
-  TIKTOK: 'TikTok',
-  YOUTUBE: 'YouTube',
-}
 
 function normalizeHandle(s: string): string {
   return s.toLowerCase().replace(/^@/, '').trim()

@@ -1,0 +1,19 @@
+{
+  "name": "tkoc-tests",
+  "private": true,
+  "description": "Test tooling kept OUT of the application's package.json on purpose: the production image is built from the root lockfile, which these packages must never touch.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:db": "vitest run --project db"
+  },
+  "devDependencies": {
+    "embedded-postgres": "18.4.0-beta.17",
+    "vite": "7.3.7",
+    "vitest": "4.1.12"
+  },
+  "overrides": {
+    "vite": "7.3.7"
+  }
+}
