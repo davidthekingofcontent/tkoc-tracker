@@ -337,7 +337,17 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
         // Recipients: the campaign team (creator + assigned PMs), deduped 7 days
         // PER USER — a PM given access later still receives it.
         if (!existingMembership) {
-          if (influencer.followers >= 1000) {
+          // Another profile of a creator who IS in the campaign (same person)
+          // is not a new creator: the notice would invite the PM to add her a
+          // second time. Her content from that profile enters through "Añadir
+          // publicación por URL" and the daily TikTok pass.
+          const sameCreator = influencer.personId
+            ? await prisma.campaignInfluencer.findFirst({
+                where: { campaignId: campaign.id, influencer: { personId: influencer.personId } },
+                select: { id: true },
+              })
+            : null
+          if (!sameCreator && influencer.followers >= 1000) {
             await notifyCreatorDiscovered(
               campaign.id,
               influencer.id,

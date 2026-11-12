@@ -55,7 +55,17 @@ type PortalTotals = Omit<
   CampaignOverview['totals'],
   'cost' | 'membersWithCost' | 'emvBasic' | 'emvRatio' | 'cpm' | 'audience' | 'impressionsReal' | 'emvEstimatedStories' | 'emvEstimatedAudience'
 > & { audience: PortalAudience }
-type PortalInfluencer = Omit<CampaignOverview['perInfluencer'][number], 'cost' | 'emvBasic' | 'emvRatio' | 'cpm' | 'audience'> & { audience: PortalAudience }
+/**
+ * A creator's pieces by network (one row per creator, Nov 2026: a person with
+ * several profiles is one row and her pieces of every network add up in it).
+ * Only the piece count and the views of each network travel: both are already
+ * summed in her row. The engagement split stays on the server.
+ */
+type PortalNetworkBreakdown = { pieces: number; views: number }
+type PortalInfluencer = Omit<CampaignOverview['perInfluencer'][number], 'cost' | 'emvBasic' | 'emvRatio' | 'cpm' | 'audience' | 'byPlatform'> & {
+  audience: PortalAudience
+  byPlatform: Record<string, PortalNetworkBreakdown>
+}
 type PortalMedia = Omit<CampaignOverview['perMedia'][number], 'emvBasic'>
 
 interface PortalOverview {
@@ -85,6 +95,15 @@ interface PortalOverview {
 
 function toPortalAudience(a: AudienceTotals): PortalAudience {
   return { real: a.real, realPieces: a.realPieces, withoutBase: a.withoutBase, countsByBasis: a.countsByBasis }
+}
+
+/** Allow-list of a creator's breakdown by network: pieces and views, nothing else. */
+function toPortalByPlatform(byPlatform: CampaignOverview['perInfluencer'][number]['byPlatform']): Record<string, PortalNetworkBreakdown> {
+  const out: Record<string, PortalNetworkBreakdown> = {}
+  for (const [network, row] of Object.entries(byPlatform ?? {})) {
+    out[network] = { pieces: row.pieces, views: row.views }
+  }
+  return out
 }
 
 function toPortalOverview(full: CampaignOverview): PortalOverview {
@@ -130,6 +149,7 @@ function toPortalOverview(full: CampaignOverview): PortalOverview {
     deliverablesPlanned: p.deliverablesPlanned,
     status: p.status,
     vsBaseline: p.vsBaseline,
+    byPlatform: toPortalByPlatform(p.byPlatform),
   }))
   // An estimated per-piece audience never leaves the server: the value is
   // zeroed and the row keeps `audienceEstimated: true` (the report reads it as

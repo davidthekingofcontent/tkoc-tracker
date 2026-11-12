@@ -40,28 +40,52 @@ export async function campaignBrandId(campaignId: string): Promise<string | null
  * stories that carry REAL views (registered by a PM or from the API). Used
  * instead of the generic tier rate — after a few campaigns every creator has
  * her own benchmark.
+ *
+ * The rate belongs to the ACCOUNT THAT PUBLISHED the story (Nov 2026: a
+ * creator is a person with several profiles). A story credited to a member but
+ * published from another profile of hers (Media.publishedByInfluencerId) is
+ * divided by THAT profile's followers and teaches THAT profile's rate, never
+ * the member's: her second Instagram may have 8.000 followers where the
+ * profile she is a member with has 19. Rows with no publisher recorded (every
+ * row before Nov 2026) are read exactly as they always were.
  */
 export async function getCreatorStoryViewRates(influencerIds: string[]): Promise<Map<string, number>> {
   const out = new Map<string, number>()
   if (influencerIds.length === 0) return out
-  const rows = await prisma.media.findMany({
-    where: {
-      influencerId: { in: influencerIds },
-      platform: 'INSTAGRAM',
-      mediaType: 'STORY',
-      OR: [{ views: { gt: 0 } }, { reach: { gt: 0 } }, { impressions: { gt: 0 } }],
-    },
-    select: { influencerId: true, views: true, reach: true, impressions: true, influencer: { select: { followers: true } } },
-  })
+  const realStory = {
+    platform: 'INSTAGRAM' as const,
+    mediaType: 'STORY' as const,
+    OR: [{ views: { gt: 0 } }, { reach: { gt: 0 } }, { impressions: { gt: 0 } }],
+  }
+  const [credited, published] = await Promise.all([
+    // Stories filed under these accounts (the query of always)
+    prisma.media.findMany({
+      where: { influencerId: { in: influencerIds }, ...realStory },
+      select: { influencerId: true, publishedByInfluencerId: true, views: true, reach: true, impressions: true, influencer: { select: { followers: true } } },
+    }),
+    // Stories these accounts published that are credited to another profile of the same person
+    prisma.media.findMany({
+      where: { publishedByInfluencerId: { in: influencerIds }, ...realStory },
+      select: { influencerId: true, publishedByInfluencerId: true, views: true, reach: true, impressions: true, publishedBy: { select: { followers: true } } },
+    }),
+  ])
   const acc = new Map<string, { sum: number; n: number }>()
-  for (const r of rows) {
-    const followers = r.influencer?.followers || 0
+  const learn = (accountId: string, followers: number, r: { views: number; reach: number; impressions: number }) => {
     const audience = r.impressions || r.reach || r.views || 0
-    if (followers <= 0 || audience <= 0) continue
+    if (followers <= 0 || audience <= 0) return
     const ratio = Math.min(1, audience / followers)
-    const a = acc.get(r.influencerId) || { sum: 0, n: 0 }
+    const a = acc.get(accountId) || { sum: 0, n: 0 }
     a.sum += ratio; a.n++
-    acc.set(r.influencerId, a)
+    acc.set(accountId, a)
+  }
+  for (const r of credited) {
+    // Published from another profile: it is that profile's story (second loop)
+    if (r.publishedByInfluencerId && r.publishedByInfluencerId !== r.influencerId) continue
+    learn(r.influencerId, r.influencer?.followers || 0, r)
+  }
+  for (const r of published) {
+    if (!r.publishedByInfluencerId || r.publishedByInfluencerId === r.influencerId) continue
+    learn(r.publishedByInfluencerId, r.publishedBy?.followers || 0, r)
   }
   for (const [id, a] of acc) out.set(id, a.sum / a.n)
   return out

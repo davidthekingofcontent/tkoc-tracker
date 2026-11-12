@@ -354,7 +354,11 @@ export interface PerMediaMetrics {
   emvBasic: number
   emvExtended: number
   isDeleted: boolean
-  /** Creator of the piece (so consumers can group per creator without the rows). */
+  /**
+   * Creator of the piece (so consumers can group per creator without the rows).
+   * Since Nov 2026 this is the CREDITED member of the campaign: the piece counts
+   * in her row whichever of her profiles published it (see `publishedBy`).
+   */
   influencerId?: string
   /**
    * true when `views` is usable as REAL data (hasPlausibleViews: views > 0 and
@@ -362,6 +366,28 @@ export interface PerMediaMetrics {
    * figure below the likes. Optional only for old serialized overviews.
    */
   viewsPlausible?: boolean
+  /**
+   * The profile that PUBLISHED the piece when it is not the credited creator's
+   * own profile but another profile of the same person (her TikTok, a second
+   * Instagram): its handle and network. null = she published it from the
+   * profile she is a member with (`influencerId`), which is every piece before
+   * Nov 2026. Optional only for old serialized overviews.
+   */
+  publishedBy?: PublishingProfile | null
+}
+
+/** The account a piece was published from (Media.publishedByInfluencerId). */
+export interface PublishingProfile {
+  influencerId: string
+  username: string
+  platform: string
+}
+
+/** One network's share of a creator's pieces (real figures only, no estimates). */
+export interface PlatformBreakdown {
+  pieces: number
+  views: number
+  engagements: number
 }
 
 export interface PerInfluencerMetrics {
@@ -388,9 +414,20 @@ export interface PerInfluencerMetrics {
   /** Clicks on the creator's tracked link (CampaignInfluencer.trackedClicks; manual or integration). */
   trackedClicks?: number | null
   /**
+   * Her pieces split by the network OF THE PUBLICATION (Media.platform), keyed
+   * by network: a creator counts once and her row adds up every network she
+   * published on. The sums over the networks equal `media`, `views` and
+   * `engagements` above. {} without pieces. Optional only for old serialized
+   * overviews.
+   */
+  byPlatform?: Record<string, PlatformBreakdown>
+  /**
    * "×1,37 sobre su habitual": the creator's frozen baseline (median per piece)
    * compared with the MEDIAN per piece of the same format family published in
    * this campaign — never with the creator's total. null without baseline or pieces.
+   * The baseline is the habit of the profile she is a member with, so only the
+   * pieces published from THAT profile are compared: a TikTok video credited to
+   * an Instagram member never enters her Instagram comparison.
    */
   vsBaseline: {
     multiplier: number | null

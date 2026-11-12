@@ -193,6 +193,44 @@ model CampaignAssignment {
 
 // ============ INFLUENCERS / CREATORS ============
 
+/// A human creator. Profiles (Influencer rows) point at it through personId.
+/// Created lazily when a second profile is linked: a profile with no person
+/// is its own implicit person.
+model Person {
+  id            String   @id @default(cuid())
+  displayName   String?
+  createdById   String?
+  createdByName String?
+  profiles      Influencer[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("persons")
+}
+
+/// Audit trail of every identity change (link, unlink, later merge and undo).
+model PersonLog {
+  id         String    @id @default(cuid())
+  action     String    // link_profile | unlink_profile | merge | fold_membership | reanchor | dismiss_candidate | undo
+  personId   String?
+  actorId    String?
+  actorName  String?
+  evidence   String?   // scraped_owner | pm_confirmed | pm_confirmed_unverified | autolink_video | pm_manual
+  summary    String
+  before     Json
+  after      Json
+  undoneAt   DateTime?
+  undoneById String?
+  undoOfId   String?
+  createdAt  DateTime  @default(now())
+
+  @@index([personId])
+  @@index([createdAt])
+  @@map("person_logs")
+}
+
+/// One PROFILE (an account on one network). A creator is a Person with one or
+/// several profiles; personId null = a person with this single profile.
 model Influencer {
   id            String    @id @default(cuid())
   username      String
@@ -226,9 +264,21 @@ model Influencer {
   lastScraped   DateTime?
   dataSource    String?   // "api", "oauth", "marketplace", "apify"
 
+  // The person behind this profile (Nov 2026). Null = no other profile linked.
+  personId      String?
+  person        Person?   @relation(fields: [personId], references: [id], onDelete: SetNull)
+
+  // Who created this record by hand (null for scrapes and for rows before Nov 2026); createdAt says when
+  addedById     String?
+  addedByName   String?
+
   // Relations
   campaigns     CampaignInfluencer[]
-  media         Media[]
+  // Media CREDITED to this profile as campaign member (Media.influencerId)
+  media         Media[]   @relation("MediaMember")
+  // Media this profile PUBLISHED and that is credited to another profile of the
+  // same person (Media.publishedByInfluencerId)
+  publishedMedia Media[]  @relation("MediaPublishedBy")
   listItems     ListItem[]
   contactInfo   Contact[]
   socialTokens  SocialToken[]
@@ -238,6 +288,7 @@ model Influencer {
   updatedAt     DateTime  @updatedAt
 
   @@unique([username, platform])
+  @@index([personId])
   @@map("influencers")
 }
 
@@ -321,6 +372,10 @@ model CampaignInfluencer {
   shippingQty      Int?      @default(1)
   shippingComments String?
 
+  // Who added her to THIS campaign (null for rows before Nov 2026); createdAt says when
+  addedById     String?
+  addedByName   String?
+
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -397,8 +452,16 @@ model Media {
   discoveredAt  DateTime  @default(now())
 
   // Relations
+  // The CREDITED profile: for campaign content, the campaign member it counts for.
   influencerId  String
-  influencer    Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  influencer    Influencer @relation("MediaMember", fields: [influencerId], references: [id], onDelete: Cascade)
+
+  // The profile that actually PUBLISHED it when that is another profile of the
+  // same person (her TikTok, a second Instagram). Null = the credited profile
+  // itself, which is every row before Nov 2026. `platform` above is always the
+  // network of the publication.
+  publishedByInfluencerId String?
+  publishedBy   Influencer? @relation("MediaPublishedBy", fields: [publishedByInfluencerId], references: [id], onDelete: SetNull)
 
   campaignId    String?
   campaign      Campaign?  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
@@ -415,6 +478,7 @@ model Media {
   // dedupe with findFirst before creating.
   @@unique([externalId, platform, campaignId])
   @@index([externalId, platform])
+  @@index([publishedByInfluencerId])
   @@map("media")
   thumb         MediaThumb?
 }

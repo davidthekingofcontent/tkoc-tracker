@@ -55,7 +55,8 @@ export function parsePostUrl(input: string): ParsedPostUrl | null {
   }
 
   // TikTok: /@user/video/{id} or /@user/photo/{id}. Short links (vm.tiktok.com,
-  // tiktok.com/t/...) carry no id, so they are rejected with a clear message.
+  // tiktok.com/t/...) carry no id: they are not parsed here. The caller resolves
+  // them to the real link first (src/lib/resolve-short-url.ts).
   if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
     const m = path.match(/^\/(?:@([A-Za-z0-9_.]+)\/)?(video|photo)\/(\d+)\/?/)
     if (!m) return null

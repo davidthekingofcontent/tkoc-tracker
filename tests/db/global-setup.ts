@@ -43,4 +43,12 @@ export async function setup() {
 export async function teardown() {
   if (pg) await pg.stop().catch(() => {})
   fs.rmSync(dataDir, { recursive: true, force: true })
+  // embedded-postgres registers async-exit-hook, which calls process.exit(0)
+  // on 'beforeExit' and hid vitest's failure code: a failing run looked green.
+  // Keep the failure code when that hook exits with 0.
+  const realExit = process.exit.bind(process)
+  process.exit = ((code?: number | string | null) => {
+    const failed = typeof process.exitCode === 'number' && process.exitCode !== 0 ? process.exitCode : 0
+    return realExit(code === 0 || code === undefined || code === null ? failed : code)
+  }) as typeof process.exit
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { memberOfSamePerson } from '@/lib/person-profiles'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { InfluencerStatus, Prisma } from '@/generated/prisma/client'
@@ -165,6 +166,19 @@ export async function POST(
 
     if (existing) {
       return NextResponse.json({ error: 'Influencer is already in this campaign' }, { status: 409 })
+    }
+
+    // Another profile of a creator who is already here: one creator, one row
+    const sameCreator = await memberOfSamePerson(id, influencerId)
+    if (sameCreator) {
+      return NextResponse.json(
+        {
+          code: 'same_person',
+          error: `@${influencer.username} es otro perfil de @${sameCreator.username}, que ya está en esta campaña. Sus publicaciones se guardan en la fila de @${sameCreator.username}: añádelas con «Añadir publicación por URL».`,
+          memberUsername: sameCreator.username,
+        },
+        { status: 409 }
+      )
     }
 
     const item = await prisma.campaignInfluencer.create({

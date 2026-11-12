@@ -8,6 +8,8 @@ import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
 import { formatNumber, formatEur, formatPercent, cn } from '@/lib/utils'
 import { avatarSrcOf, mediaThumbUrl } from '@/lib/proxy-image'
+import { CreatorNetworkList, creatorNetworksOf, type CreatorByPlatform } from '@/components/campaign-report'
+import { useI18n } from '@/i18n/context'
 import {
   Loader2,
   ArrowLeft,
@@ -101,6 +103,8 @@ interface PortalOverview {
     views?: number | null
     media?: number | null
     er?: { value?: number | null; reason?: string | null } | null
+    /** Her pieces and views by network (a creator with several profiles is one row) */
+    byPlatform?: CreatorByPlatform | null
   }> | null
 }
 
@@ -217,6 +221,7 @@ function MediaCardThumb({ mediaId, src, alt }: { mediaId?: string | null; src?: 
 export default function PortalCampaignPage() {
   const params = useParams()
   const campaignId = params.id as string
+  const { t, locale } = useI18n()
 
   const [campaign, setCampaign] = useState<PortalCampaignDetail | null>(null)
   const [media, setMedia] = useState<PortalMedia[]>([])
@@ -321,6 +326,11 @@ export default function PortalCampaignPage() {
   }
   const campaignEr = (inf: PortalInfluencer): number | null => lookupCreator(erByCreator, inf)
   const campaignViews = (inf: PortalInfluencer): number | null => lookupCreator(viewsByCreator, inf)
+  // Her pieces by network: one row per creator, with every network she published on
+  const byPlatformOf = new Map<string, CreatorByPlatform>()
+  for (const p of overview?.perInfluencer || []) {
+    if (p?.influencerId && p.byPlatform) byPlatformOf.set(p.influencerId, p.byPlatform)
+  }
 
   return (
     <div className="space-y-8">
@@ -457,14 +467,16 @@ export default function PortalCampaignPage() {
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <span className="inline-flex items-center gap-1.5 text-gray-700 dark:text-gray-300">
-                            <PlatformIcon platform={inf.platform} />
-                            <span className="text-xs">
-                              {inf.platform
-                                ? inf.platform.charAt(0) + inf.platform.slice(1).toLowerCase()
-                                : '—'}
-                            </span>
-                          </span>
+                          {/* Every network she published on, with her pieces on each when there is more than one; her own network otherwise */}
+                          <CreatorNetworkList
+                            variant="plain"
+                            networks={creatorNetworksOf(inf.id ? byPlatformOf.get(inf.id) : null, inf.platform)}
+                            ownPlatform={inf.platform}
+                            texts={t.campaignReport}
+                            locale={locale}
+                            renderIcon={platform => <PlatformIcon platform={platform} />}
+                            className="gap-x-3"
+                          />
                         </td>
                         <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
                           {typeof inf.followers === 'number' && inf.followers > 0 ? formatNumber(inf.followers) : '—'}

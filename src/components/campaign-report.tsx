@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
@@ -260,6 +260,11 @@ interface ReportPerInfluencer {
   status: string
   /** Server-computed "×1,37 sobre su habitual" (median per piece vs frozen baseline). */
   vsBaseline?: (BaselineComparison & { piecesCompared?: number }) | null
+  /**
+   * Her pieces by the network of the publication (a creator with several profiles is
+   * one row). The portal carries pieces and views only. Absent in older responses.
+   */
+  byPlatform?: CreatorByPlatform | null
   /** Agency only */
   cost?: number
   emvBasic?: number
@@ -589,6 +594,137 @@ function fill(template: string, vars: Record<string, string | number>): string {
 
 function toggleId(list: string[], id: string): string[] {
   return list.includes(id) ? list.filter(x => x !== id) : [...list, id]
+}
+
+// ---------------------------------------------------------------------------
+// A creator's networks (one row per creator, Nov 2026). A creator is a person
+// with several profiles: every piece counts in her row, whichever of her
+// profiles published it, and overview.perInfluencer[].byPlatform splits her
+// pieces by the network OF THE PUBLICATION. Shared by the report's «Red»
+// column (also what the PDF prints), the portal's team table and the campaign
+// page (Elegir, Planificar). Display only: no count changes here.
+// ---------------------------------------------------------------------------
+
+/** One network of a creator's row and her pieces there. */
+export interface CreatorNetwork {
+  /** INSTAGRAM | TIKTOK | YOUTUBE */
+  platform: string
+  pieces: number
+  /** Views of those pieces (0 when there are none) */
+  views: number
+}
+
+/** overview.perInfluencer[].byPlatform as either API sends it (the portal carries pieces and views only). */
+export type CreatorByPlatform = Record<string, { pieces?: number | null; views?: number | null } | null | undefined>
+
+const NETWORK_LABELS: Record<string, string> = { INSTAGRAM: 'Instagram', TIKTOK: 'TikTok', YOUTUBE: 'YouTube' }
+
+/** Display name of a network: Instagram, TikTok, YouTube (anything else capitalised as it comes). */
+export function networkLabel(platform: string | null | undefined): string {
+  const p = (platform || '').toUpperCase()
+  if (!p) return ''
+  return NETWORK_LABELS[p] ?? p.charAt(0) + p.slice(1).toLowerCase()
+}
+
+/**
+ * The networks of a creator's row: those where she has pieces (byPlatform), her own
+ * network first and the rest alphabetically. With no piece at all (or an overview older
+ * than byPlatform) her own network, with 0. `includeOwn` keeps her own network on the
+ * list even when every piece of hers is on another one (a roster lists her profiles).
+ */
+export function creatorNetworksOf(
+  byPlatform: CreatorByPlatform | null | undefined,
+  ownPlatform: string | null | undefined,
+  options: { includeOwn?: boolean } = {},
+): CreatorNetwork[] {
+  const own = (ownPlatform || '').toUpperCase()
+  const byNetwork = new Map<string, CreatorNetwork>()
+  for (const [key, row] of Object.entries(byPlatform ?? {})) {
+    const platform = key.toUpperCase()
+    const pieces = typeof row?.pieces === 'number' && row.pieces > 0 ? row.pieces : 0
+    if (!platform || pieces === 0) continue
+    const views = typeof row?.views === 'number' && row.views > 0 ? row.views : 0
+    const prev = byNetwork.get(platform)
+    byNetwork.set(platform, { platform, pieces: (prev?.pieces ?? 0) + pieces, views: (prev?.views ?? 0) + views })
+  }
+  if (own && !byNetwork.has(own) && (byNetwork.size === 0 || options.includeOwn)) {
+    byNetwork.set(own, { platform: own, pieces: 0, views: 0 })
+  }
+  return Array.from(byNetwork.values()).sort((a, b) =>
+    a.platform === own ? -1 : b.platform === own ? 1 : a.platform.localeCompare(b.platform))
+}
+
+/** true when her row spans a network other than her own: only then is the count per network shown. */
+export function isMultiNetwork(networks: CreatorNetwork[], ownPlatform: string | null | undefined): boolean {
+  const own = (ownPlatform || '').toUpperCase()
+  return networks.some(n => n.platform !== own)
+}
+
+type NetworkTexts = Pick<ReportStrings, 'networkPiecesOne' | 'networkPiecesMany' | 'networkViews'>
+
+/** «2 piezas en Instagram · 12,3K vistas» (the hover text of one network of her row). */
+export function creatorNetworkTitle(n: CreatorNetwork, texts: NetworkTexts, locale: Locale): string {
+  const network = networkLabel(n.platform)
+  const pieces = n.pieces === 1
+    ? fill(texts.networkPiecesOne, { network })
+    : fill(texts.networkPiecesMany, { n: formatNumber(n.pieces, { locale }), network })
+  return n.views > 0 ? `${pieces} · ${fill(texts.networkViews, { n: formatNumber(n.views, { locale }) })}` : pieces
+}
+
+function networkBadgeVariant(platform: string): 'instagram' | 'tiktok' | 'youtube' | 'default' {
+  switch (platform) {
+    case 'INSTAGRAM': return 'instagram'
+    case 'TIKTOK': return 'tiktok'
+    case 'YOUTUBE': return 'youtube'
+    default: return 'default'
+  }
+}
+
+export interface CreatorNetworkListProps {
+  networks: CreatorNetwork[]
+  /** The network of the profile she is a member with */
+  ownPlatform: string | null | undefined
+  /** t.campaignReport */
+  texts: NetworkTexts
+  locale: Locale
+  /** badge = the house Badge (report, campaign page); plain = icon and text (portal team table) */
+  variant?: 'badge' | 'plain'
+  renderIcon?: (platform: string) => ReactNode
+  className?: string
+}
+
+/**
+ * Her networks as badges. A creator who only published on her own network looks as
+ * she always did (one badge, no count); a row that spans several networks shows the
+ * pieces of each one («Instagram · 2», «TikTok · 1»), with pieces and views on hover.
+ */
+export function CreatorNetworkList({ networks, ownPlatform, texts, locale, variant = 'badge', renderIcon, className }: CreatorNetworkListProps) {
+  if (networks.length === 0) return <span className="text-gray-400 dark:text-gray-500">—</span>
+  const multi = isMultiNetwork(networks, ownPlatform)
+  return (
+    <span className={cn('inline-flex flex-wrap items-center gap-1', className)}>
+      {networks.map(n => {
+        const showCount = multi && n.pieces > 0
+        const title = showCount ? creatorNetworkTitle(n, texts, locale) : undefined
+        const content = (
+          <>
+            {renderIcon?.(n.platform)}
+            {networkLabel(n.platform)}
+            {showCount && <span className="font-semibold tabular-nums">· {formatNumber(n.pieces, { locale })}</span>}
+          </>
+        )
+        return variant === 'badge' ? (
+          <Badge key={n.platform} variant={networkBadgeVariant(n.platform)} title={title} data-network={n.platform}>
+            {content}
+          </Badge>
+        ) : (
+          <span key={n.platform} title={title} data-network={n.platform} className="inline-flex items-center gap-1.5 text-xs text-gray-700 dark:text-gray-300">
+            {content}
+          </span>
+        )
+      })}
+    </span>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -2986,16 +3122,13 @@ export function CampaignReport({
                               </div>
                             </td>
                             <td className="px-3 py-2.5">
-                              <Badge
-                                variant={
-                                  c.inf.platform === 'INSTAGRAM' ? 'instagram'
-                                    : c.inf.platform === 'TIKTOK' ? 'tiktok'
-                                    : c.inf.platform === 'YOUTUBE' ? 'youtube'
-                                    : 'default'
-                                }
-                              >
-                                {c.inf.platform ? c.inf.platform.charAt(0) + c.inf.platform.slice(1).toLowerCase() : '—'}
-                              </Badge>
+                              {/* Every network she published on (her pieces of all her profiles are in this row); her own network when she has none */}
+                              <CreatorNetworkList
+                                networks={creatorNetworksOf(p?.byPlatform, c.inf.platform)}
+                                ownPlatform={c.inf.platform}
+                                texts={tr}
+                                locale={locale}
+                              />
                             </td>
                             {showCol('creators.posts') && <td className={num}>{p ? p.posts : '—'}</td>}
                             {showCol('creators.posts') && <td className={num}>{p ? p.stories : '—'}</td>}
@@ -3036,6 +3169,9 @@ export function CampaignReport({
               </div>
               <div className="mt-2 space-y-0.5 text-[11px] text-gray-400 dark:text-gray-500">
                 <p>{tr.creatorsFootnoteViews}</p>
+                {visibleCreators.some(c => isMultiNetwork(creatorNetworksOf(c.p?.byPlatform, c.inf.platform), c.inf.platform)) && (
+                  <p>{tr.creatorsFootnoteNetworks}</p>
+                )}
                 {report.hasBaseline && <p>{tr.baselineFootnote}</p>}
                 {(showCostCol || showCpmCol) && <p>{tr.costFootnoteViews}</p>}
               </div>

@@ -6,15 +6,15 @@ describe('parsePostUrl', () => {
   it('reads Instagram posts and reels, with or without the username in the path', () => {
     expect(parsePostUrl('https://www.instagram.com/p/DeKHOgcNODD/')).toMatchObject({ platform: 'INSTAGRAM', externalId: 'DeKHOgcNODD', mediaType: 'POST', ownerHint: null })
     expect(parsePostUrl('https://www.instagram.com/reels/DeKHOgcNODD/')).toMatchObject({ platform: 'INSTAGRAM', externalId: 'DeKHOgcNODD', mediaType: 'REEL', canonicalUrl: 'https://www.instagram.com/reel/DeKHOgcNODD/' })
-    expect(parsePostUrl('instagram.com/humordeamor_/reel/DeKHOgcNODD/?igsh=abc')).toMatchObject({ externalId: 'DeKHOgcNODD', ownerHint: 'humordeamor_' })
+    expect(parsePostUrl('instagram.com/risas_inventadas_/reel/DeKHOgcNODD/?igsh=abc')).toMatchObject({ externalId: 'DeKHOgcNODD', ownerHint: 'risas_inventadas_' })
   })
 
   it('reads TikTok videos and photos and keeps the handle', () => {
-    expect(parsePostUrl('https://www.tiktok.com/@gladys.sanchez_/video/7699205467465108768')).toMatchObject({
-      platform: 'TIKTOK', externalId: '7699205467465108768', mediaType: 'VIDEO', ownerHint: 'gladys.sanchez_',
-      canonicalUrl: 'https://www.tiktok.com/@gladys.sanchez_/video/7699205467465108768',
+    expect(parsePostUrl('https://www.tiktok.com/@gema.ficticia_/video/7699205467465108768')).toMatchObject({
+      platform: 'TIKTOK', externalId: '7699205467465108768', mediaType: 'VIDEO', ownerHint: 'gema.ficticia_',
+      canonicalUrl: 'https://www.tiktok.com/@gema.ficticia_/video/7699205467465108768',
     })
-    expect(parsePostUrl('https://www.tiktok.com/@alezweig/photo/7695852671042964758?lang=es')).toMatchObject({ mediaType: 'POST', externalId: '7695852671042964758' })
+    expect(parsePostUrl('https://www.tiktok.com/@ale_ficticia/photo/7695852671042964758?lang=es')).toMatchObject({ mediaType: 'POST', externalId: '7695852671042964758' })
   })
 
   it('reads YouTube watch, shorts and youtu.be links', () => {
@@ -24,7 +24,7 @@ describe('parsePostUrl', () => {
   })
 
   it('refuses what is not a publication', () => {
-    for (const bad of ['', 'hola', 'https://www.instagram.com/humordeamor_/', 'https://vm.tiktok.com/ZNabc123/', 'https://www.tiktok.com/@alezweig', 'https://example.com/p/abc']) {
+    for (const bad of ['', 'hola', 'https://www.instagram.com/risas_inventadas_/', 'https://vm.tiktok.com/ZNabc123/', 'https://www.tiktok.com/@ale_ficticia', 'https://example.com/p/abc']) {
       expect(parsePostUrl(bad)).toBeNull()
     }
   })
@@ -36,7 +36,7 @@ describe('short links', () => {
     expect(isShortPostUrl('vt.tiktok.com/ZSabc/')).toBe(true)
     expect(isShortPostUrl('https://www.tiktok.com/t/ZTabc123/')).toBe(true)
     expect(isShortPostUrl('https://www.instagram.com/share/reel/BAbc_123')).toBe(true)
-    expect(isShortPostUrl('https://www.tiktok.com/@alezweig/video/7695852671042964758')).toBe(false)
+    expect(isShortPostUrl('https://www.tiktok.com/@ale_ficticia/video/7695852671042964758')).toBe(false)
     expect(isShortPostUrl('https://www.instagram.com/reel/DeKHOgcNODD/')).toBe(false)
   })
 
@@ -46,10 +46,10 @@ describe('short links', () => {
     const calls: string[] = []
     const fake = (async (input: RequestInfo | URL) => {
       calls.push(String(input))
-      return redirect('https://www.tiktok.com/@alezweig/video/7695852671042964758?_r=1&_t=abc')
+      return redirect('https://www.tiktok.com/@ale_ficticia/video/7695852671042964758?_r=1&_t=abc')
     }) as typeof fetch
     const r = await resolveShortUrl('https://vm.tiktok.com/ZNabc123/', fake)
-    expect(r).toEqual({ ok: true, url: 'https://www.tiktok.com/@alezweig/video/7695852671042964758?_r=1&_t=abc' })
+    expect(r).toEqual({ ok: true, url: 'https://www.tiktok.com/@ale_ficticia/video/7695852671042964758?_r=1&_t=abc' })
     expect(calls).toEqual(['https://vm.tiktok.com/ZNabc123/'])
     // the resolved link parses to the same publication as the long one: duplicates are caught
     expect(parsePostUrl((r as { url: string }).url)?.externalId).toBe('7695852671042964758')
@@ -59,7 +59,7 @@ describe('short links', () => {
     let n = 0
     const fake = (async () => (++n === 1
       ? redirect('https://www.tiktok.com/t/ZTabc123/')
-      : redirect('https://www.tiktok.com/@alezweig/video/7695852671042964758'))) as typeof fetch
+      : redirect('https://www.tiktok.com/@ale_ficticia/video/7695852671042964758'))) as typeof fetch
     expect(await resolveShortUrl('https://vm.tiktok.com/ZNabc123/', fake)).toMatchObject({ ok: true })
     expect(n).toBe(2)
   })
