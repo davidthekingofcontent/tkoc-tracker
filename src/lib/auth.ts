@@ -17,6 +17,15 @@ interface SessionUser {
   role: string
 }
 
+/**
+ * Prisma's `mode: 'insensitive'` is ILIKE in PostgreSQL, where % and _ are
+ * wildcards and \ is the escape character. Escape a literal value before
+ * using it in such a lookup, and still compare the rows found in code.
+ */
+export function escapeForInsensitiveEquals(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&')
+}
+
 /** Agency staff. BRAND (client portal) and CREATOR sessions are never staff. */
 export function isStaffRole(role: string | null | undefined): boolean {
   return role === 'ADMIN' || role === 'EMPLOYEE'
@@ -67,15 +76,27 @@ export async function getSession(
 
     const payload = verifyToken(token)
 
-    const user = await prisma.user.findUnique({
+    const found = await prisma.user.findUnique({
       where: { id: payload.userId },
-      select: { id: true, email: true, name: true, role: true },
+      select: { id: true, email: true, name: true, role: true, isActive: true },
     })
 
-    if (!user) {
+    if (!found) {
+      return null
+    }
+    // A deactivated account has no session (isActive used to be checked only
+    // at login, so a 7-day token outlived the deactivation)
+    if (!found.isActive) {
+      return null
+    }
+    // The edge confines BRAND and CREATOR by the role CLAIM of the token while
+    // handlers trust the database role: a token minted before a role change
+    // would slip past the confinement with the new role. It forces a new login.
+    if (found.role !== payload.role) {
       return null
     }
 
+    const user: SessionUser = { id: found.id, email: found.email, name: found.name, role: found.role }
     return user
   } catch {
     return null

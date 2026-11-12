@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { hashPassword, generateToken } from '@/lib/auth'
+import { hashPassword, generateToken, escapeForInsensitiveEquals } from '@/lib/auth'
 import { UserRole } from '@/generated/prisma/client'
 import { canProceed, clientIp } from '@/lib/rate-limiter'
 
@@ -36,13 +36,13 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       )
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || password.length < 6 || password.length > 200 || name.trim().length > 120) {
+    if (!/^[^\s@%\\]+@[^\s@%\\]+\.[^\s@%\\]+$/.test(email) || email.length > 254 || password.length < 6 || password.length > 200 || name.trim().length > 120) {
       return NextResponse.json({ error: 'Invalid email, name or password' }, { status: 400 })
     }
 
     // Case-insensitive: Ana@x.com and ana@x.com are the same person
     // ("insensitive" is ILIKE, where _ and % are wildcards: compare again in code)
-    const sameAddress = await prisma.user.findMany({ where: { email: { equals: email, mode: 'insensitive' } }, select: { email: true } })
+    const sameAddress = await prisma.user.findMany({ where: { email: { equals: escapeForInsensitiveEquals(email), mode: 'insensitive' } }, select: { email: true }, take: 20 })
     const existing = sameAddress.some(u => u.email.toLowerCase() === email)
     if (existing) {
       return NextResponse.json(

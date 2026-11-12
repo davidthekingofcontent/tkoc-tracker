@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getSession } from '@/lib/auth'
+import { getSession, escapeForInsensitiveEquals } from '@/lib/auth'
 
 export async function GET(request: NextRequest) {
   try {
@@ -14,12 +14,22 @@ export async function GET(request: NextRequest) {
     }
 
     // Find the Influencer record matching this user's email
+    //
+    // ONLY for an account the agency has verified. Registration is public and
+    // does not prove the mailbox: without this, anyone could register with the
+    // business e-mail of a creator (they are public) and read that creator's
+    // fees and campaigns. An unverified account gets its own unlinked profile.
+    const account = await prisma.user.findUnique({ where: { id: session.id }, select: { isVerified: true } })
     // (ignoring case: self-registered accounts are stored in lowercase; ILIKE
-    // treats _ and % as wildcards, so the match is confirmed in code)
-    const sameEmail = await prisma.influencer.findMany({
-      where: { email: { equals: session.email, mode: 'insensitive' } },
-      orderBy: { createdAt: 'asc' },
-    })
+    // treats _ and % as wildcards, so the value is escaped and the match is
+    // confirmed in code)
+    const sameEmail = account?.isVerified
+      ? await prisma.influencer.findMany({
+          where: { email: { equals: escapeForInsensitiveEquals(session.email), mode: 'insensitive' } },
+          orderBy: { createdAt: 'asc' },
+          take: 20,
+        })
+      : []
     const influencer = sameEmail.find(i => i.email?.toLowerCase() === session.email.toLowerCase()) ?? null
 
     // Fetch campaigns separately if influencer exists

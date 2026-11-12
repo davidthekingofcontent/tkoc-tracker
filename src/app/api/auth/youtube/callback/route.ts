@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { exchangeGoogleCode } from '@/lib/youtube-analytics'
 import { encrypt } from '@/lib/crypto'
 import { prisma } from '@/lib/db'
+import { getSession, isStaffRole } from '@/lib/auth'
 
 export async function GET(request: NextRequest) {
   try {
@@ -35,6 +36,13 @@ export async function GET(request: NextRequest) {
       influencerId = stateData.influencerId || ''
     } catch {
       return NextResponse.redirect(`${baseUrl}/settings?youtube=error&reason=invalid_state`)
+    }
+
+    // The state is unsigned base64: the callback only acts for the staff
+    // member who is signed in and whose id the state carries.
+    const session = await getSession(request)
+    if (!session || !isStaffRole(session.role) || !userId || userId !== session.id) {
+      return NextResponse.redirect(`${baseUrl}/settings?youtube=error&reason=not_allowed`)
     }
 
     const clientId = process.env.GOOGLE_CLIENT_ID

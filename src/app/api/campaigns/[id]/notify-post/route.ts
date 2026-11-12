@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { createNotification } from '@/lib/notifications'
+import { getSession, isStaffRole } from '@/lib/auth'
 import { Resend } from 'resend'
 
 function getResend(): Resend | null {
@@ -14,6 +15,17 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    // It notifies and e-mails the campaign team with a link taken from the
+    // body: until 12 Nov 2026 anyone could call it without a session. Staff
+    // or the cron secret only (nothing in the app calls it today).
+    const cronSecret = process.env.CRON_SECRET
+    const bySecret = !!cronSecret && request.headers.get('x-cron-secret') === cronSecret
+    if (!bySecret) {
+      const session = await getSession(request)
+      if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+      if (!isStaffRole(session.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
     const { id: campaignId } = await params
 
     const body = await request.json()

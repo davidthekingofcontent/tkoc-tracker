@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { verifyPassword, generateToken } from '@/lib/auth'
+import { verifyPassword, generateToken, escapeForInsensitiveEquals } from '@/lib/auth'
 import { canProceed, clientIp } from '@/lib/rate-limiter'
 
 /** Brute-force brake: attempts per address and per account in a 15-minute window. */
@@ -43,10 +43,13 @@ export async function POST(request: NextRequest) {
       // "insensitive" is ILIKE in PostgreSQL, where _ and % are wildcards:
       // the candidates are compared again in code, exactly
       const candidates = await prisma.user.findMany({
-        where: { email: { equals: typed, mode: 'insensitive' } },
+        where: { email: { equals: escapeForInsensitiveEquals(typed), mode: 'insensitive' } },
+        select: { id: true, email: true },
         orderBy: { createdAt: 'asc' },
+        take: 20,
       })
-      user = candidates.find(u => u.email.toLowerCase() === typed.toLowerCase()) ?? null
+      const match = candidates.find(u => u.email.toLowerCase() === typed.toLowerCase())
+      user = match ? await prisma.user.findUnique({ where: { id: match.id } }) : null
     }
     if (!user) {
       return NextResponse.json(

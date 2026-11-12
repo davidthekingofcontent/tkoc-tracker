@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { exchangeCodeForToken, getLongLivedToken, discoverIGBusinessAccount, getPageAccessToken } from '@/lib/instagram-api'
 import { encrypt } from '@/lib/crypto'
 import { prisma } from '@/lib/db'
+import { getSession, isStaffRole } from '@/lib/auth'
 
 export async function GET(request: NextRequest) {
   try {
@@ -35,6 +36,14 @@ export async function GET(request: NextRequest) {
       userId = stateData.userId
     } catch {
       return NextResponse.redirect(`${baseUrl}/settings?meta=error&reason=invalid_state`)
+    }
+
+    // The state is unsigned base64: on its own it lets anyone attach a token
+    // to any user id. The callback only acts for the staff member who is
+    // signed in and whose id the state carries.
+    const session = await getSession(request)
+    if (!session || !isStaffRole(session.role) || !userId || userId !== session.id) {
+      return NextResponse.redirect(`${baseUrl}/settings?meta=error&reason=not_allowed`)
     }
 
     const appId = process.env.META_APP_ID

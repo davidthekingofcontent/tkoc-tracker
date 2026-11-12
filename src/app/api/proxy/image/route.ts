@@ -17,6 +17,8 @@ import { NextRequest, NextResponse } from 'next/server'
 const NEGATIVE_CACHE_HEADERS = { 'Cache-Control': 'public, max-age=21600' }
 const NO_STORE_HEADERS = { 'Cache-Control': 'no-store' }
 const DEAD_URL_STATUSES = new Set([401, 403, 404, 410])
+const MAX_REDIRECTS = 3
+const MAX_IMAGE_BYTES = 15 * 1024 * 1024
 export async function GET(request: NextRequest) {
   const url = request.nextUrl.searchParams.get('url')
 
@@ -48,30 +50,70 @@ export async function GET(request: NextRequest) {
     'pbs.twimg.com',
   ]
 
-  const isAllowed = allowedHosts.some(
-    (host) => parsedUrl.hostname.endsWith(host) || parsedUrl.hostname === host
-  )
+  // Exact host or a real subdomain of it, over https. Until 12 Nov 2026 the
+  // test was a bare endsWith(): "evil-fbcdn.net" passed as "fbcdn.net", the
+  // fetch followed redirects anywhere and the upstream Content-Type was
+  // relayed as-is, so this public route could serve someone else's HTML and
+  // scripts from the platform's own origin.
+  const hostAllowed = (hostname: string) =>
+    allowedHosts.some((host) => hostname === host || hostname.endsWith('.' + host))
 
-  if (!isAllowed) {
+  if (parsedUrl.protocol !== 'https:' || !hostAllowed(parsedUrl.hostname)) {
     return new NextResponse('Domain not allowed', { status: 403 })
   }
 
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-        'Referer': `https://${parsedUrl.hostname}/`,
-      },
-    })
+    // Redirects are followed by hand, and every hop must be an allowed https host
+    let current = parsedUrl
+    let response: Response | null = null
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      response = await fetch(current.toString(), {
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+          'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+          'Referer': `https://${current.hostname}/`,
+        },
+      })
+      if (response.status < 300 || response.status >= 400) break
+      const location = response.headers.get('location')
+      if (!location || hop === MAX_REDIRECTS) {
+        return new NextResponse('Too many redirects', { status: 502, headers: NO_STORE_HEADERS })
+      }
+      let next: URL
+      try {
+        next = new URL(location, current)
+      } catch {
+        return new NextResponse('Invalid redirect', { status: 502, headers: NO_STORE_HEADERS })
+      }
+      if (next.protocol !== 'https:' || !hostAllowed(next.hostname)) {
+        return new NextResponse('Domain not allowed', { status: 403 })
+      }
+      current = next
+    }
+    if (!response) {
+      return new NextResponse('Image fetch failed', { status: 502, headers: NO_STORE_HEADERS })
+    }
 
     if (!response.ok) {
       const status = response.status >= 400 && response.status <= 599 ? response.status : 502
       return new NextResponse('Failed to fetch image', { status, headers: DEAD_URL_STATUSES.has(status) ? NEGATIVE_CACHE_HEADERS : NO_STORE_HEADERS })
     }
 
-    const contentType = response.headers.get('content-type') || 'image/jpeg'
+    // Images only. SVG is a document that can carry scripts: never relayed.
+    // Some CDNs label image bytes as a generic binary (or not at all): those
+    // are served as image/jpeg, which with nosniff can only ever be drawn as
+    // an image. Anything that declares itself a document is refused.
+    const upstreamType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+    const genericBinary = upstreamType === '' || upstreamType === 'application/octet-stream' || upstreamType === 'binary/octet-stream'
+    if (!genericBinary && (!upstreamType.startsWith('image/') || upstreamType === 'image/svg+xml')) {
+      return new NextResponse('Not an image', { status: 415, headers: NO_STORE_HEADERS })
+    }
+    const contentType = genericBinary ? 'image/jpeg' : upstreamType
     const buffer = await response.arrayBuffer()
+    if (buffer.byteLength > MAX_IMAGE_BYTES) {
+      return new NextResponse('Image too large', { status: 413, headers: NO_STORE_HEADERS })
+    }
 
     return new NextResponse(buffer, {
       status: 200,
@@ -79,6 +121,9 @@ export async function GET(request: NextRequest) {
         'Content-Type': contentType,
         'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400',
         'Access-Control-Allow-Origin': '*',
+        // Never let a browser reinterpret the bytes as a page
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
       },
     })
   } catch {
