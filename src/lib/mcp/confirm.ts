@@ -6,7 +6,7 @@
  *
  * ============================== CONTRACT ==============================
  *
- * Classes (ConfirmationClass): 'none' | 'bulk' | 'money' | 'destructive' | 'outbound'.
+ * Classes (ConfirmationClass): 'none' | 'bulk' | 'money' | 'client' | 'destructive' | 'outbound'.
  * write-tool.ts applies them; a tool only says which class a call is.
  *
  * 1. money and bulk: TWO-STEP TOKEN, confirmed by the person in the chat.
@@ -66,14 +66,17 @@ import { sha256Hex, signConsentToken, verifyConsentToken } from './crypto'
 
 // ============ Classes and lifetimes ============
 
-export type ConfirmationClass = 'none' | 'bulk' | 'money' | 'destructive' | 'outbound'
-export const CONFIRMATION_CLASSES: readonly ConfirmationClass[] = ['none', 'bulk', 'money', 'destructive', 'outbound']
-/** Confirmed in the chat with a two-step token. */
-export type TokenClass = 'money' | 'bulk'
+export type ConfirmationClass = 'none' | 'bulk' | 'money' | 'client' | 'destructive' | 'outbound'
+export const CONFIRMATION_CLASSES: readonly ConfirmationClass[] = ['none', 'bulk', 'money', 'client', 'destructive', 'outbound']
+/**
+ * Confirmed in the chat with a two-step token. 'client': what the client sees at
+ * once (the texts of the report), decided by the owner on 12 Nov 2026.
+ */
+export type TokenClass = 'money' | 'bulk' | 'client'
 /** Confirmed in the platform by the administrator. */
 export type ApprovalClass = 'destructive' | 'outbound'
 
-export const isTokenClass = (c: ConfirmationClass): c is TokenClass => c === 'money' || c === 'bulk'
+export const isTokenClass = (c: ConfirmationClass): c is TokenClass => c === 'money' || c === 'bulk' || c === 'client'
 export const isApprovalClass = (c: ConfirmationClass): c is ApprovalClass => c === 'destructive' || c === 'outbound'
 
 /** A confirm token works for 5 minutes. */

@@ -65,8 +65,8 @@ export const CALL_RESULTS: readonly CallResult[] = [
 ]
 
 /** Confirmation class of a write call (src/lib/mcp/confirm.ts). */
-export type CallConfirmation = 'none' | 'bulk' | 'money' | 'destructive' | 'outbound'
-const CONFIRMATIONS: readonly CallConfirmation[] = ['none', 'bulk', 'money', 'destructive', 'outbound']
+export type CallConfirmation = 'none' | 'bulk' | 'money' | 'client' | 'destructive' | 'outbound'
+const CONFIRMATIONS: readonly CallConfirmation[] = ['none', 'bulk', 'money', 'client', 'destructive', 'outbound']
 
 export type ApprovalKind = 'destructive' | 'outbound'
 

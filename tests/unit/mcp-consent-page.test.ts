@@ -293,7 +293,7 @@ describe('GET /oauth/authorize: the consent screen', () => {
     expect(html).toContain('Qué puede hacer')
     expect(html).toContain('Leer y modificar campañas, creadoras, publicaciones, listas, informes y rastreos, con tu usuario.')
     expect(html).toContain('Qué te pedirá confirmar siempre')
-    expect(html).toContain('Borrar, gastar Apify, enviar correos y cambios en bloque.')
+    expect(html).toContain('Borrar, gastar Apify, enviar correos, cambios en bloque y los textos del informe que ve el cliente.')
     expect(html).toContain('Qué no puede tocar nunca')
     expect(html).toContain('Usuarios, permisos, claves e integraciones.')
     // The read-only promise would no longer be true
@@ -417,7 +417,7 @@ describe('GET /oauth/authorize: page settings and texts', () => {
     // The three sentences of the write layer (12 Nov 2026), in both languages
     const w = translations.es.mcp.write.consent
     expect(w.can).toBe('Leer y modificar campañas, creadoras, publicaciones, listas, informes y rastreos, con tu usuario.')
-    expect(w.confirm).toBe('Borrar, gastar Apify, enviar correos y cambios en bloque.')
+    expect(w.confirm).toBe('Borrar, gastar Apify, enviar correos, cambios en bloque y los textos del informe que ve el cliente.')
     expect(w.never).toBe('Usuarios, permisos, claves e integraciones.')
     expect(Object.keys(translations.en.mcp.write.consent).sort()).toEqual(Object.keys(w).sort())
     // The read-only sentences are gone

@@ -387,7 +387,7 @@ describe('end to end: a Claude client connects and reads, from the first 401 to 
     expect(text).toContain('claude.ai')
     // What the connection may do since the write layer (one consent for tkoc.read and tkoc.write)
     expect(text).toContain('Leer y modificar campañas, creadoras, publicaciones, listas, informes y rastreos, con tu usuario.')
-    expect(text).toContain('Borrar, gastar Apify, enviar correos y cambios en bloque.')
+    expect(text).toContain('Borrar, gastar Apify, enviar correos, cambios en bloque y los textos del informe que ve el cliente.')
     expect(text).toContain('Usuarios, permisos, claves e integraciones.')
     const consent = consentForm(html)
     expect(consent.method).toBe('post')

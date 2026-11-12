@@ -287,7 +287,7 @@ describe('card «Conexiones con Claude»: what the connection can do', () => {
     expect([...at].sort((a, b) => a - b)).toEqual(at)
     // The sentences the owner asked for (spec, 12 Nov 2026)
     expect(w.can).toBe('Leer y modificar campañas, creadoras, publicaciones, listas, informes y rastreos, con tu usuario.')
-    expect(w.confirm).toBe('Borrar, gastar Apify, enviar correos y cambios en bloque.')
+    expect(w.confirm).toBe('Borrar, gastar Apify, enviar correos, cambios en bloque y los textos del informe que ve el cliente.')
     expect(w.never).toBe('Usuarios, permisos, claves e integraciones.')
   })
 
@@ -389,7 +389,7 @@ describe('texts of the card', () => {
     }
     // Every result and every class the route can send has a label
     expect(Object.keys(es.activity.results).sort()).toEqual([...CALL_RESULTS].sort())
-    expect(Object.keys(es.activity.classes).sort()).toEqual(['bulk', 'destructive', 'money', 'outbound'])
+    expect(Object.keys(es.activity.classes).sort()).toEqual(['bulk', 'client', 'destructive', 'money', 'outbound'])
   })
 
   it('have no em-dash and keep their placeholders in both languages', () => {

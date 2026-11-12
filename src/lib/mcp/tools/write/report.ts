@@ -35,7 +35,7 @@ import { defineWriteTool, type WriteContext, type WritePlan, type WriteTool } fr
 import { ToolError, idInput, isoDay, shortText } from '@/lib/mcp/tools/shared'
 import { CAMPAIGN_NOT_FOUND, campaignIdInput, loadCampaignHead, quoted } from './campaigns'
 
-const refuse = (confirmation: 'none' | 'bulk', message: string): WritePlan => ({ confirmation, refuse: message })
+const refuse = (confirmation: 'none' | 'bulk' | 'client', message: string): WritePlan => ({ confirmation, refuse: message })
 
 // ============ The stored configuration ============
 
@@ -411,6 +411,43 @@ function mergedDelivery(current: ReportDeliveryConfig, given: NonNullable<z.infe
   return { overrides, extraRows }
 }
 
+const CONTENT_LABEL: Record<(typeof CONTENT_FIELDS)[number], string> = {
+  title: 'Título',
+  subtitle: 'Subtítulo',
+  intro: 'Introducción',
+  conclusions: 'Conclusiones',
+  highlightedComments: 'Comentarios destacados',
+  delivery: '«Prometido vs entregado»',
+}
+
+/** One line of the preview: what is there now and what there will be. */
+function describeContentChange(field: (typeof CONTENT_FIELDS)[number], now: unknown, next: unknown): string {
+  const label = CONTENT_LABEL[field]
+  const quote = (v: unknown) => {
+    const t = typeof v === 'string' ? v.trim() : ''
+    return t ? `«${shortText(t, 300)}»` : '(vacío)'
+  }
+  if (field === 'highlightedComments') {
+    const had = Array.isArray(now) ? now.length : 0
+    if (next === null) return `${label}: se quitan los ${had}.`
+    const list = Array.isArray(next) ? next : []
+    const texts = list.slice(0, 3).map(c => quote((c as { text?: unknown }).text)).join(', ')
+    return `${label}: ${had} ahora, quedarán ${list.length}${texts ? ` (${texts}${list.length > 3 ? '…' : ''})` : ''}.`
+  }
+  if (field === 'delivery') {
+    if (next === null) return `${label}: todas las filas vuelven a lo automático.`
+    const d = (next ?? {}) as { overrides?: Record<string, unknown>; extraRows?: unknown[] }
+    const rows = Object.keys(d.overrides ?? {})
+    const parts = [
+      rows.length ? `cambian las filas ${rows.join(', ')}` : '',
+      Array.isArray(d.extraRows) ? `las filas extra pasan a ser ${d.extraRows.length}` : '',
+    ].filter(Boolean)
+    return `${label}: ${parts.join('; ') || 'sin cambios en las filas'}.`
+  }
+  const nextText = next === null || next === '' ? '(vacío: vuelve al automático)' : quote(next)
+  return `${label}: ${quote(now)} pasa a ${nextText}.`
+}
+
 /** One field of a configuration as an answer shows it. */
 function contentOf(config: ReportConfig, field: (typeof CONTENT_FIELDS)[number]): unknown {
   if (field === 'highlightedComments') {
@@ -429,7 +466,8 @@ export const editReportContent = defineWriteTool({
     'Highlighted comments must be real comments supplied by the person or present among the campaign captured comments: never write or paraphrase them yourself. ' +
     'highlightedComments REPLACES the stored list as a whole (null clears it); the answer returns the previous list. ' +
     'delivery: each of the four rows given (creators, pieces, dates, disclosure) replaces that row and null returns it to automatic, rows left out are kept; extraRows, when given, replaces the extra rows; delivery: null returns everything to automatic. ' +
-    'Fields left out are not touched. Does NOT send the report and does not hide content (set_report_visibility).',
+    'Fields left out are not touched. Does NOT send the report and does not hide content (set_report_visibility). ' +
+    "ALWAYS asks first: the first call changes nothing and returns a preview with each text before and after; show it to the person and call again with the confirmToken only after their yes. If anyone edits those parts in between, the yes no longer applies and a new preview comes back.",
   input: {
     campaignId: campaignIdInput,
     title: reportText('Report title (replaces the campaign name on the cover).'),
@@ -444,7 +482,8 @@ export const editReportContent = defineWriteTool({
       .describe('The complete list of highlighted audience comments (at most 12). Replaces the stored list; null clears it.'),
     delivery: deliveryInput.describe("Edits of the 'Prometido vs entregado' checklist; null returns every row to automatic."),
   },
-  confirmations: ['none'],
+  // 'client': the client sees these texts at once, so the person always says yes first (owner, 12 Nov 2026)
+  confirmations: ['none', 'client'],
   // It overwrites texts and replaces the highlighted comments: not an additive update
   annotations: { destructiveHint: true, idempotentHint: true },
   summarize: a => ({
@@ -452,11 +491,11 @@ export const editReportContent = defineWriteTool({
     fields: CONTENT_FIELDS.filter(f => a[f] !== undefined).join(','),
     comments: a.highlightedComments === undefined ? undefined : (a.highlightedComments ?? []).length,
   }),
-  async plan(a) {
+  async plan(a, ctx) {
     if (!CONTENT_FIELDS.some(f => a[f] !== undefined)) {
       return refuse('none', `Indica al menos un apartado: ${CONTENT_FIELDS.join(', ')}.`)
     }
-    const head = await prisma.campaign.findUnique({ where: { id: a.campaignId }, select: { id: true } })
+    const head = await prisma.campaign.findUnique({ where: { id: a.campaignId }, select: { id: true, name: true } })
     if (!head) return refuse('none', CAMPAIGN_NOT_FOUND)
     const linked = unique((a.highlightedComments ?? []).map(c => c.mediaId).filter((v): v is string => !!v))
     if (linked.length) {
@@ -467,7 +506,16 @@ export const editReportContent = defineWriteTool({
         return refuse('none', `Estos comentarios enlazan publicaciones que no son de esta campaña: ${foreign.slice(0, 10).join(', ')}. No se ha cambiado nada.`)
       }
     }
-    return { confirmation: 'none' }
+    // What the client will see changes at once: always the person's yes first,
+    // bound to what is stored NOW (an edit in between voids that yes)
+    const before = await readConfig(ctx, head.id)
+    const fields = CONTENT_FIELDS.filter(f => a[f] !== undefined)
+    const lines = fields.map(f => describeContentChange(f, contentOf(before, f), a[f]))
+    return {
+      confirmation: 'client',
+      fingerprint: JSON.stringify(fields.map(f => [f, contentOf(before, f)])),
+      preview: `Vas a cambiar el informe de «${shortText(head.name, 120)}». ${lines.join(' ')} Lo verá el cliente al momento en el portal y en el PDF. ¿Confirmas?`,
+    }
   },
   async execute(a, ctx) {
     const head = await loadCampaignHead(a.campaignId)

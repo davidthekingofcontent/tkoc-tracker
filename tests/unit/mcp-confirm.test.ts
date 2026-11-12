@@ -305,7 +305,7 @@ describe('texts of the write scope', () => {
       createElement(ConsentScreen, { clientName: 'Claude', redirectKind: 'claude', redirectHost: 'claude.ai', adminName: 'Ada', consentToken: 't' }),
     )
     expect(html).toContain('Leer y modificar campañas, creadoras, publicaciones, listas, informes y rastreos, con tu usuario.')
-    expect(html).toContain('Borrar, gastar Apify, enviar correos y cambios en bloque.')
+    expect(html).toContain('Borrar, gastar Apify, enviar correos, cambios en bloque y los textos del informe que ve el cliente.')
     expect(html).toContain('Usuarios, permisos, claves e integraciones.')
     // The read-only promise is gone: it would no longer be true
     expect(html).not.toContain('No puede cambiar nada')

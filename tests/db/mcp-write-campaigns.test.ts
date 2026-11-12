@@ -38,7 +38,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { prisma } from '@/lib/db'
 import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
 import { MCP_RESOURCE } from '@/lib/mcp/config'
-import { decidePendingAction } from '@/lib/mcp/confirm'
+import { decidePendingAction, isTokenClass } from '@/lib/mcp/confirm'
 import { pkceChallengeS256, randomSecret } from '@/lib/mcp/crypto'
 import { createGrantAndCode, registerClient } from '@/lib/mcp/oauth'
 import { setPlatformTransport } from '@/lib/mcp/platform-client'
@@ -329,7 +329,7 @@ describe('the campaign, report and brand write tools', () => {
       // Every tool that may delete is announced as destructive
       if (tool.confirmations.includes('destructive')) expect(tool.annotations.destructiveHint).toBe(true)
       for (const field of WRITE_CONTROL_FIELDS) {
-        if (field === 'confirmToken') expect(field in tool.input).toBe(tool.confirmations.includes('bulk') || tool.confirmations.includes('money'))
+        if (field === 'confirmToken') expect(field in tool.input).toBe(tool.confirmations.some(isTokenClass))
         else if (field === 'actionId') expect(field in tool.input).toBe(tool.confirmations.includes('destructive') || tool.confirmations.includes('outbound'))
         else expect(field in tool.input).toBe(true)
       }
@@ -855,8 +855,45 @@ describe('set_report_visibility', () => {
 // ============ edit_report_content ============
 
 describe('edit_report_content', () => {
+  /** The client sees these texts at once: the first call only previews, the second (with the token) saves. */
+  async function edited(args: Record<string, unknown>) {
+    const offer = await asAda(editReportContent, args)
+    expect(offer.isError, offer.text).toBe(false)
+    expect(offer.data.needsConfirmation).toBe(true)
+    expect(offer.data.preview).toContain('Lo verá el cliente al momento')
+    return asAda(editReportContent, { ...args, confirmToken: offer.data.confirmToken })
+  }
+
+  it('always asks first: the preview shows each text before and after and nothing is saved until the yes', async () => {
+    const args = { campaignId: fx.main, subtitle: 'Resultados de octubre' }
+    const before = (await reportConfig(fx.main)).subtitle ?? null
+    const offer = await asAda(editReportContent, args)
+    expect(offer.isError).toBe(false)
+    expect(offer.data.needsConfirmation).toBe(true)
+    expect(offer.data.preview).toContain('Subtítulo')
+    expect(offer.data.preview).toContain('«Resultados de octubre»')
+    expect((await reportConfig(fx.main)).subtitle ?? null).toBe(before)
+    // Someone edits the subtitle in between: that yes no longer applies, a new preview comes back and nothing is saved
+    await prisma.setting.update({
+      where: { key: `campaign_report_${fx.main}` },
+      data: { value: JSON.stringify({ ...JSON.parse((await prisma.setting.findUniqueOrThrow({ where: { key: `campaign_report_${fx.main}` } })).value), subtitle: 'Editado por una PM' }) },
+    })
+    const stale = await asAda(editReportContent, { ...args, confirmToken: offer.data.confirmToken })
+    expect(stale.data.needsConfirmation).toBe(true)
+    expect(stale.data.preview).toContain('«Editado por una PM»')
+    expect((await reportConfig(fx.main)).subtitle).toBe('Editado por una PM')
+    // With the yes on the fresh preview it is saved, once
+    const done = await asAda(editReportContent, { ...args, confirmToken: stale.data.confirmToken })
+    expect(done.isError, done.text).toBe(false)
+    expect((await reportConfig(fx.main)).subtitle).toBe('Resultados de octubre')
+    const again = await asAda(editReportContent, { ...args, confirmToken: stale.data.confirmToken })
+    expect(again.data?.needsConfirmation === true || again.isError).toBe(true)
+    // Back to how it was for the next tests
+    await edited({ campaignId: fx.main, subtitle: null })
+  })
+
   it('saves texts and comments, returning what was there before', async () => {
-    const answer = await asAda(editReportContent, {
+    const answer = await edited({
       campaignId: fx.main,
       title: 'Zentolia, otoño 2026',
       intro: 'Resumen para el cliente.',
@@ -883,19 +920,19 @@ describe('edit_report_content', () => {
   })
 
   it("'Prometido vs entregado': a row given replaces that row, the rest is kept, null returns to automatic", async () => {
-    await asAda(editReportContent, { campaignId: fx.main, delivery: { overrides: { disclosure: { ok: true, note: 'Todas con #publi' } } } })
+    await edited({ campaignId: fx.main, delivery: { overrides: { disclosure: { ok: true, note: 'Todas con #publi' } } } })
     let d = (await reportConfig(fx.main)).delivery
     expect(d).toEqual({ overrides: { disclosure: { ok: true, note: 'Todas con #publi' } }, extraRows: [] })
 
-    await asAda(editReportContent, { campaignId: fx.main, delivery: { extraRows: [{ label: 'Exclusividad', value: '12 meses', ok: true }] } })
+    await edited({ campaignId: fx.main, delivery: { extraRows: [{ label: 'Exclusividad', value: '12 meses', ok: true }] } })
     d = (await reportConfig(fx.main)).delivery
     expect(d).toEqual({ overrides: { disclosure: { ok: true, note: 'Todas con #publi' } }, extraRows: [{ id: 'd1', label: 'Exclusividad', value: '12 meses', ok: true }] })
 
-    await asAda(editReportContent, { campaignId: fx.main, delivery: { overrides: { pieces: { planned: 12 }, disclosure: null } } })
+    await edited({ campaignId: fx.main, delivery: { overrides: { pieces: { planned: 12 }, disclosure: null } } })
     d = (await reportConfig(fx.main)).delivery
     expect(d).toEqual({ overrides: { pieces: { planned: 12 } }, extraRows: [{ id: 'd1', label: 'Exclusividad', value: '12 meses', ok: true }] })
 
-    const reset = await asAda(editReportContent, { campaignId: fx.main, delivery: null })
+    const reset = await edited({ campaignId: fx.main, delivery: null })
     expect(reset.data.before.delivery.overrides).toEqual({ pieces: { planned: 12 } })
     expect((await reportConfig(fx.main)).delivery).toEqual({ overrides: {}, extraRows: [] })
   })

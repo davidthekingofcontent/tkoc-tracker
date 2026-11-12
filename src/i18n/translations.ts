@@ -1593,7 +1593,7 @@ export const translations = {
         accessBadge: 'Reads and makes changes',
         introWrite: 'Claude can read and change data in the platform, as the administrator who connects it. It always asks you to confirm the sensitive things first. Only an administrator can connect it.',
         howConfirmLabel: 'How it asks you to confirm',
-        confirmInChat: 'Spending Apify and bulk changes: it shows you in the chat what it will do and waits for your yes.',
+        confirmInChat: 'Spending Apify, bulk changes and the report texts the client sees: it shows you in the chat what it will do and waits for your yes.',
         confirmInPlatform: 'Deleting, sending e-mails and changing what people outside the agency see: it gives you a link to this platform and you confirm here with your password.',
       },
       // What Claude did through the connector (GET /api/oauth/activity).
@@ -1632,6 +1632,7 @@ export const translations = {
         classes: {
           money: 'Spends Apify',
           bulk: 'Bulk',
+          client: 'The client sees it',
           destructive: 'Cannot be undone',
           outbound: 'Goes outside',
         },
@@ -1644,7 +1645,7 @@ export const translations = {
           canLabel: 'What it can do',
           can: 'Read and change campaigns, creators, publications, lists, reports and tracking, as you.',
           confirmLabel: 'What it always asks you to confirm',
-          confirm: 'Deleting, spending Apify, sending e-mails and bulk changes.',
+          confirm: 'Deleting, spending Apify, sending e-mails, bulk changes and the report texts the client sees.',
           neverLabel: 'What it can never touch',
           never: 'Users, permissions, keys and integrations.',
         },
@@ -3281,7 +3282,7 @@ export const translations = {
         accessBadge: 'Lee y hace cambios',
         introWrite: 'Claude puede leer y cambiar datos de la plataforma con el usuario del administrador que lo conecta. Lo delicado siempre te lo pide confirmar antes. Solo un administrador puede conectarlo.',
         howConfirmLabel: 'Cómo te pide confirmar',
-        confirmInChat: 'Gastar Apify y cambios en bloque: te enseña en el chat lo que va a hacer y espera tu sí.',
+        confirmInChat: 'Gastar Apify, cambios en bloque y los textos del informe que ve el cliente: te enseña en el chat lo que va a hacer y espera tu sí.',
         confirmInPlatform: 'Borrar, enviar correos y cambiar lo que ve gente de fuera de la agencia: te da un enlace a esta plataforma y lo confirmas aquí con tu contraseña.',
       },
       // Lo que Claude ha hecho con el conector (GET /api/oauth/activity).
@@ -3320,6 +3321,7 @@ export const translations = {
         classes: {
           money: 'Gasta Apify',
           bulk: 'En bloque',
+          client: 'Lo ve el cliente',
           destructive: 'No se puede deshacer',
           outbound: 'Sale fuera',
         },
@@ -3332,7 +3334,7 @@ export const translations = {
           canLabel: 'Qué puede hacer',
           can: 'Leer y modificar campañas, creadoras, publicaciones, listas, informes y rastreos, con tu usuario.',
           confirmLabel: 'Qué te pedirá confirmar siempre',
-          confirm: 'Borrar, gastar Apify, enviar correos y cambios en bloque.',
+          confirm: 'Borrar, gastar Apify, enviar correos, cambios en bloque y los textos del informe que ve el cliente.',
           neverLabel: 'Qué no puede tocar nunca',
           never: 'Usuarios, permisos, claves e integraciones.',
         },

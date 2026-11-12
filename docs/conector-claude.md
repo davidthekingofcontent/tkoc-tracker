@@ -90,7 +90,7 @@ Cada administrador queda con su propia conexión. Un empleado de la plataforma n
 Dice tres cosas, siempre las mismas:
 
 - Qué puede hacer: «Leer y modificar campañas, creadoras, publicaciones, listas, informes y rastreos, con tu usuario.»
-- Qué te pedirá confirmar siempre: «Borrar, gastar Apify, enviar correos y cambios en bloque.»
+- Qué te pedirá confirmar siempre: «Borrar, gastar Apify, enviar correos, cambios en bloque y los textos del informe que ve el cliente.»
 - Qué no puede tocar nunca: «Usuarios, permisos, claves e integraciones.»
 
 ### Después de conectar
@@ -145,9 +145,9 @@ Para lo que no tiene una herramienta propia hay una genérica de último recurso
 
 Hay dos maneras. Las decide la plataforma, no Claude: aunque Claude se equivoque o lo intente, no puede saltárselas.
 
-### 1. En el chat: gastar Apify y cambios en bloque
+### 1. En el chat: gastar Apify, cambios en bloque y textos del informe
 
-Para todo lo que gasta Apify y para los cambios en bloque (más de 5 elementos en una misma petición: campañas, creadoras, piezas o stories).
+Para todo lo que gasta Apify, para los cambios en bloque (más de 5 elementos en una misma petición: campañas, creadoras, piezas o stories) y para cambiar los textos del informe que ve el cliente (título, subtítulo, introducción, conclusiones, comentarios destacados y «Prometido vs entregado»). En estos te enseña el texto de antes y el de después.
 
 1. Claude pide la acción. La primera vez no se hace nada.
 2. Te enseña una vista previa en español: qué va a hacer, con qué y con cuántos. Si gasta Apify, qué lecturas hace y el porcentaje del plan usado. Nunca un importe en euros ni en dólares.
@@ -186,9 +186,9 @@ En el chat, la confirmación queda atada a lo que viste: si después cambia algo
 
 ### Lo que se hace sin preguntar
 
-Los cambios pequeños y que se pueden corregir: editar los datos de una campaña, sus objetivos, el fee de hasta 5 creadoras, notas, textos del informe, crear listas o marcas. Claude te dice después qué ha cambiado, con el valor de antes y el de después.
+Los cambios pequeños y que se pueden corregir: editar los datos de una campaña, sus objetivos, el fee de hasta 5 creadoras, notas, crear listas o marcas. Claude te dice después qué ha cambiado, con el valor de antes y el de después.
 
-Un aviso sobre los textos del informe: lo que Claude escribe ahí lo ve el cliente al momento, en el portal y en el PDF. Claude solo debe escribir lo que tú le dictes o apruebes en el chat, y la respuesta trae el texto de antes por si hay que volver atrás.
+Los textos del informe ya no entran aquí: lo que Claude escribe ahí lo ve el cliente al momento, en el portal y en el PDF, así que siempre te pide el sí en el chat antes (decidido el 12 de noviembre de 2026).
 
 Si pides algo en bloque, Claude lo manda de una vez y te pide el sí. No debe partirlo en trozos de 5 para que no te lo pregunte.
 
@@ -253,7 +253,7 @@ Los resultados:
 | En curso | Se está haciendo ahora. |
 | Sin terminar | Empezó y no llegó a terminar (por ejemplo, si el servidor se reinició). Comprueba en la plataforma si se llegó a hacer. |
 
-Algunas filas llevan además una etiqueta: «Gasta Apify», «En bloque», «No se puede deshacer» o «Sale fuera» (un correo a una persona o un cambio que ve gente de fuera de la agencia).
+Algunas filas llevan además una etiqueta: «Gasta Apify», «En bloque», «Lo ve el cliente», «No se puede deshacer» o «Sale fuera» (un correo a una persona o un cambio que ve gente de fuera de la agencia).
 
 Las consultas que Claude hace con la herramienta genérica salen como «Consulta», no como «Hecho».
 
@@ -294,7 +294,7 @@ Publicaciones e informe:
 - `correct_publication_metrics`: corregir las cifras de una pieza.
 - `tag_publications`: etiquetar piezas (en bloque si son más de 5).
 - `set_report_visibility`: ocultar o mostrar en el informe (en bloque si son más de 5).
-- `edit_report_content`: textos del informe.
+- `edit_report_content`: textos del informe (te pide el sí en el chat: lo ve el cliente).
 - `mark_report_sent`: anotar que se envió el informe.
 
 Rastreo y creadoras en la base:
