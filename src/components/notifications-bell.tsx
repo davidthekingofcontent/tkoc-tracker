@@ -24,6 +24,7 @@ const typeIcons: Record<string, string> = {
   note_added: '💬',
   invitation_sent: '✉️',
   team_joined: '🎉',
+  mcp_action: '🤖',
 }
 
 interface NotificationsBellProps {

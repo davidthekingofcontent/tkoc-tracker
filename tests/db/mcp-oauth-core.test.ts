@@ -140,22 +140,27 @@ describe('additive SQL against a real database', () => {
           // The hand-applied script runs in a scratch schema; `public` holds what `prisma db push` built
           await tx.$executeRawUnsafe('CREATE SCHEMA mcp_sql_check')
           await tx.$executeRawUnsafe('SET LOCAL search_path TO mcp_sql_check')
+          // The read layer's tables, then the write layer's (applied in this order at deploy)
           for (const s of statements('2026-11-12-mcp.sql')) await tx.$executeRawUnsafe(s)
+          for (const s of statements('2026-11-12-mcp-write.sql')) await tx.$executeRawUnsafe(s)
 
           const fromSql = await tx.$queryRawUnsafe<Record<string, unknown>[]>(columnsOf, 'mcp_sql_check')
           const fromPrisma = await tx.$queryRawUnsafe<Record<string, unknown>[]>(columnsOf, 'public')
-          expect(fromSql.length).toBe(43)
+          // 43 columns of the five read-layer tables + 17 of mcp_pending_actions (stateHash included)
+          expect(fromSql.length).toBe(60)
           expect(fromSql).toEqual(fromPrisma)
           const idxSql = await tx.$queryRawUnsafe<Record<string, unknown>[]>(indexesOf, 'mcp_sql_check')
           const idxPrisma = await tx.$queryRawUnsafe<Record<string, unknown>[]>(indexesOf, 'public')
-          expect(idxSql.length).toBe(11)
+          // 11 indexes of the read layer + 4 of mcp_pending_actions
+          expect(idxSql.length).toBe(15)
           expect(idxSql).toEqual(idxPrisma)
 
+          for (const s of statements('2026-11-12-mcp-write.down.sql')) await tx.$executeRawUnsafe(s)
           for (const s of statements('2026-11-12-mcp.down.sql')) await tx.$executeRawUnsafe(s)
           const left = await tx.$queryRawUnsafe<Record<string, unknown>[]>(columnsOf, 'mcp_sql_check')
           expect(left).toEqual([])
           // The rollback touched the scratch schema only
-          expect((await tx.$queryRawUnsafe<Record<string, unknown>[]>(columnsOf, 'public')).length).toBe(43)
+          expect((await tx.$queryRawUnsafe<Record<string, unknown>[]>(columnsOf, 'public')).length).toBe(60)
           compared = true
           throw new Rollback()
         },
@@ -186,7 +191,7 @@ describe('client registration', () => {
       token_endpoint_auth_method: 'none',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
-      scope: 'tkoc.read',
+      scope: 'tkoc.read tkoc.write',
     })
     expect(client.client_id_issued_at).toBeGreaterThanOrEqual(before - 1)
     expect(client).not.toHaveProperty('client_secret')
@@ -236,16 +241,16 @@ describe('client registration', () => {
     expect((await oauthError(() => registerClient({ redirect_uris: [CLAUDE_AI] }, neighbour))).status).toBe(429)
   }, 120_000)
 
-  it('ignores the scope a client asks for at registration and registers it for tkoc.read', async () => {
+  it('ignores the scope a client asks for at registration and registers it for tkoc.read tkoc.write', async () => {
     for (const scope of ['tkoc.read offline_access', 'tkoc.write', 'openid profile', '']) {
       const client = await registerClient({ redirect_uris: [CLAUDE_AI], scope }, nextIp())
-      expect(client.scope, scope).toBe('tkoc.read')
+      expect(client.scope, scope).toBe('tkoc.read tkoc.write')
     }
-    // Asking for more than tkoc.read is still refused where it would be granted
-    const client = await registerClient({ redirect_uris: [CLAUDE_AI], scope: 'tkoc.read tkoc.write' }, nextIp())
+    // A scope we do not have is still refused where it would be granted
+    const client = await registerClient({ redirect_uris: [CLAUDE_AI], scope: 'tkoc.read offline_access' }, nextIp())
     const asked = await validateAuthorizeRequest({
       response_type: 'code', client_id: client.client_id, redirect_uri: CLAUDE_AI,
-      code_challenge: pkceChallengeS256(randomSecret()), code_challenge_method: 'S256', scope: 'tkoc.read tkoc.write',
+      code_challenge: pkceChallengeS256(randomSecret()), code_challenge_method: 'S256', scope: 'tkoc.read offline_access',
     })
     expect(asked).toMatchObject({ ok: false, redirect: true, error: 'invalid_scope' })
   })
@@ -337,11 +342,15 @@ describe('authorization request', () => {
     const client = await registerClient({ client_name: '<b>Claude</b>', redirect_uris: [CLAUDE_AI] }, nextIp())
     const expected = {
       ok: true,
-      request: { clientId: client.client_id, redirectUri: CLAUDE_AI, codeChallenge: challenge, state: 'xyz', resource: MCP_RESOURCE, scope: 'tkoc.read' },
+      request: { clientId: client.client_id, redirectUri: CLAUDE_AI, codeChallenge: challenge, state: 'xyz', resource: MCP_RESOURCE, scope: 'tkoc.read tkoc.write' },
       client: { clientId: client.client_id, name: '<b>Claude</b>', redirectKind: 'claude' },
     }
     expect(await validateAuthorizeRequest(query(client.client_id))).toEqual(expected)
     expect(await validateAuthorizeRequest(query(client.client_id, { resource: MCP_RESOURCE, scope: 'tkoc.read' }))).toEqual(expected)
+    // Every known scope, alone or together: the request is always for both (one consent)
+    for (const scope of ['tkoc.write', 'tkoc.read tkoc.write', 'tkoc.write tkoc.read']) {
+      expect(await validateAuthorizeRequest(query(client.client_id, { scope })), scope).toEqual(expected)
+    }
     // The same from a query string, as the page receives it
     const qs = new URLSearchParams(query(client.client_id) as Record<string, string>)
     expect(await validateAuthorizeRequest(qs)).toEqual(expected)
@@ -389,8 +398,8 @@ describe('authorization request', () => {
       [query(client.client_id, { resource: 'https://other.example/api/mcp' }), 'invalid_target'],
       [query(client.client_id, { resource: `${MCP_RESOURCE}/` }), 'invalid_target'],
       [query(client.client_id, { resource: [MCP_RESOURCE, MCP_RESOURCE] }), 'invalid_target'],
-      [query(client.client_id, { scope: 'tkoc.write' }), 'invalid_scope'],
-      [query(client.client_id, { scope: 'tkoc.read tkoc.write' }), 'invalid_scope'],
+      [query(client.client_id, { scope: 'tkoc.admin' }), 'invalid_scope'],
+      [query(client.client_id, { scope: 'tkoc.read tkoc.admin' }), 'invalid_scope'],
       [query(client.client_id, { scope: 'openid' }), 'invalid_scope'],
     ]
     for (const [c, error] of cases) {
@@ -470,14 +479,27 @@ describe('who may approve', () => {
     expect((await oauthError(() => createGrantAndCode({ ...good, redirectUri: 'https://evil.example/cb' }))).code).toBe('invalid_request')
     expect((await oauthError(() => createGrantAndCode({ ...good, codeChallenge: 'plain-text' }))).code).toBe('invalid_request')
     expect((await oauthError(() => createGrantAndCode({ ...good, resource: 'https://other.example/api/mcp' }))).code).toBe('invalid_target')
-    expect((await oauthError(() => createGrantAndCode({ ...good, scope: 'tkoc.write' }))).code).toBe('invalid_scope')
+    expect((await oauthError(() => createGrantAndCode({ ...good, scope: 'tkoc.admin' }))).code).toBe('invalid_scope')
+    expect((await oauthError(() => createGrantAndCode({ ...good, scope: 'tkoc.read tkoc.admin' }))).code).toBe('invalid_scope')
     expect(await prisma.mcpGrant.count()).toBe(0)
 
     const { grantId, code, expiresAt } = await createGrantAndCode({ ...good, resource: MCP_RESOURCE, scope: 'tkoc.read' })
     expect(code).toMatch(/^[A-Za-z0-9_-]{43}$/)
     expect(expiresAt.getTime() - Date.now()).toBeGreaterThan(4 * MINUTE)
     expect(expiresAt.getTime() - Date.now()).toBeLessThanOrEqual(5 * MINUTE)
+    // The grant carries exactly what the consent described (fix of 12 Nov 2026): a consent token of
+    // the read-only screen of before (scope tkoc.read) never becomes write access
     expect(await grantRow(grantId)).toMatchObject({ clientId: client.client_id, userId: admin.id, scope: 'tkoc.read', resource: MCP_RESOURCE, revokedAt: null, lastUsedAt: null })
+    expect(await prisma.mcpAuthCode.findFirstOrThrow({ where: { grantId } })).toMatchObject({ scope: 'tkoc.read' })
+    // The consent screen of today signs both scopes, and gets both
+    const both = await createGrantAndCode({ ...good, scope: 'tkoc.read tkoc.write' })
+    expect(await grantRow(both.grantId)).toMatchObject({ scope: 'tkoc.read tkoc.write' })
+    expect(await prisma.mcpAuthCode.findFirstOrThrow({ where: { grantId: both.grantId } })).toMatchObject({ scope: 'tkoc.read tkoc.write' })
+    // tkoc.write alone, or the two in another order, is not what the screen signs: read only
+    expect(await grantRow((await createGrantAndCode({ ...good, scope: 'tkoc.write' })).grantId)).toMatchObject({ scope: 'tkoc.read' })
+    expect(await grantRow((await createGrantAndCode({ ...good, scope: 'tkoc.write tkoc.read' })).grantId)).toMatchObject({ scope: 'tkoc.read' })
+    // A direct call with no scope at all (never the consent route): both
+    expect(await grantRow((await createGrantAndCode(good)).grantId)).toMatchObject({ scope: 'tkoc.read tkoc.write' })
   })
 })
 
@@ -491,7 +513,7 @@ describe('the whole flow', () => {
       token_type: 'Bearer',
       expires_in: 3600,
       refresh_token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
-      scope: 'tkoc.read',
+      scope: 'tkoc.read tkoc.write',
     })
     expect(c.tokens.access_token).not.toBe(c.tokens.refresh_token)
 
@@ -499,7 +521,7 @@ describe('the whole flow', () => {
     expect(first).toEqual({
       ok: true,
       user: { id: admin.id, name: 'Ada Admin', role: 'ADMIN' },
-      grant: { id: c.grantId, clientId: c.clientId, userId: admin.id, scope: 'tkoc.read', resource: MCP_RESOURCE },
+      grant: { id: c.grantId, clientId: c.clientId, userId: admin.id, scope: 'tkoc.read tkoc.write', resource: MCP_RESOURCE },
       expiresAt: expect.any(Date),
     })
     // No contact data travels with the identity
@@ -511,7 +533,7 @@ describe('the whole flow', () => {
     const second = await handleTokenRequest(form({ grant_type: 'refresh_token', refresh_token: c.tokens.refresh_token, client_id: c.clientId }))
     expect(second.refresh_token).not.toBe(c.tokens.refresh_token)
     expect(second.access_token).not.toBe(c.tokens.access_token)
-    expect(second).toMatchObject({ token_type: 'Bearer', expires_in: 3600, scope: 'tkoc.read' })
+    expect(second).toMatchObject({ token_type: 'Bearer', expires_in: 3600, scope: 'tkoc.read tkoc.write' })
     expect((await bearer(second)).ok).toBe(true)
     expect((await bearer(c.tokens)).ok).toBe(true)
     const oldRefresh = await prisma.mcpToken.findUniqueOrThrow({ where: { tokenHash: sha256Hex(c.tokens.refresh_token) } })
@@ -671,7 +693,8 @@ describe('refresh token', () => {
     expect((await oauthError(() => refresh(form({ ...good, client_id: randomSecret() })))).code).toBe('invalid_client')
     expect((await oauthError(() => refresh(form({ refresh_token: c.tokens.refresh_token })))).code).toBe('invalid_request')
     expect((await oauthError(() => refresh(form({ client_id: c.clientId })))).code).toBe('invalid_request')
-    expect((await oauthError(() => refresh(form({ ...good, scope: 'tkoc.read tkoc.write' })))).code).toBe('invalid_scope')
+    expect((await oauthError(() => refresh(form({ ...good, scope: 'tkoc.read tkoc.admin' })))).code).toBe('invalid_scope')
+    expect((await oauthError(() => refresh(form({ ...good, scope: 'openid' })))).code).toBe('invalid_scope')
     expect((await oauthError(() => refresh(form({ ...good, resource: 'https://other.example/api/mcp' })))).code).toBe('invalid_target')
     expect((await oauthError(() => refresh(form({ ...good, refresh_token: randomSecret() })))).code).toBe('invalid_grant')
     // An access token is not a refresh token
@@ -680,6 +703,17 @@ describe('refresh token', () => {
     // None of that revoked or rotated anything
     expect((await grantRow(c.grantId)).revokedAt).toBe(null)
     expect((await bearer(await refresh(form(good)))).ok).toBe(true)
+  })
+
+  it('keeps the grant\'s own scope: a connection approved before tkoc.write renews and stays read-only', async () => {
+    const admin = await makeUser('ADMIN')
+    const c = await connect(admin.id)
+    await prisma.mcpGrant.update({ where: { id: c.grantId }, data: { scope: 'tkoc.read' } })
+    // Naming both does not widen it, and is not an error that would make Claude drop the connection
+    const renewed = await refresh(form({ refresh_token: c.tokens.refresh_token, client_id: c.clientId, scope: 'tkoc.read tkoc.write' }))
+    expect(renewed.scope).toBe('tkoc.read')
+    expect(await grantRow(c.grantId)).toMatchObject({ scope: 'tkoc.read', revokedAt: null })
+    expect(await bearer(renewed)).toMatchObject({ ok: true, grant: { scope: 'tkoc.read' } })
   })
 
   it('expires after 60 days, and an expired one is simply invalid_grant', async () => {
@@ -939,8 +973,8 @@ describe('connections for the administrator', () => {
 
     const list = await listGrants()
     expect(list).toEqual([
-      { id: second.grantId, clientId: second.clientId, clientName: 'Claude', userId: bob.id, userName: 'Bob Admin', scope: 'tkoc.read', createdAt: expect.any(Date), lastUsedAt: expect.any(Date) },
-      { id: first.grantId, clientId: first.clientId, clientName: 'Claude', userId: ada.id, userName: 'Ada Admin', scope: 'tkoc.read', createdAt: expect.any(Date), lastUsedAt: null },
+      { id: second.grantId, clientId: second.clientId, clientName: 'Claude', userId: bob.id, userName: 'Bob Admin', scope: 'tkoc.read tkoc.write', createdAt: expect.any(Date), lastUsedAt: expect.any(Date) },
+      { id: first.grantId, clientId: first.clientId, clientName: 'Claude', userId: ada.id, userName: 'Ada Admin', scope: 'tkoc.read tkoc.write', createdAt: expect.any(Date), lastUsedAt: null },
     ])
     const text = JSON.stringify(list)
     for (const secret of [first.tokens.access_token, second.tokens.refresh_token, ada.email, bob.email, 'tokenHash', 'email']) {

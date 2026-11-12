@@ -27,6 +27,7 @@ import {
   DECISION_DENY,
   DECISION_FIELD,
 } from './consent-form'
+import { MCP_WRITE_TEXTS } from './write-texts'
 
 /**
  * Fills one `{placeholder}` of a translation. The replacement goes through a
@@ -86,10 +87,14 @@ export interface ConsentScreenProps {
   consentToken: string
 }
 
-/** «Permitir» / «Cancelar»: who is asking, what it gets, what it never gets and where it is revoked. */
+/**
+ * «Permitir» / «Cancelar»: who is asking, what it can do, what it always asks
+ * to confirm, what it can never touch and where it is revoked.
+ */
 export function ConsentScreen({ clientName, redirectKind, redirectHost, adminName, consentToken }: ConsentScreenProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const c = t.mcp.consent
+  const w = MCP_WRITE_TEXTS[locale].consent
   const returnsTo = fill(redirectKind === 'claude' ? c.returnsToClaude : c.returnsToLoopback, 'host', redirectHost)
 
   return (
@@ -105,8 +110,10 @@ export function ConsentScreen({ clientName, redirectKind, redirectHost, adminNam
           <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{c.whoNameHint}</p>
           <p className="mt-1 break-words">{returnsTo}</p>
         </Row>
-        <Row label={c.getsLabel}>{c.gets}</Row>
-        <Row label={c.neverLabel}>{c.never}</Row>
+        {/* What the grant allows (tkoc.read tkoc.write, one consent) */}
+        <Row label={w.canLabel}>{w.can}</Row>
+        <Row label={w.confirmLabel}>{w.confirm}</Row>
+        <Row label={w.neverLabel}>{w.never}</Row>
         <Row label={c.revokeLabel}>{c.revoke}</Row>
       </dl>
 

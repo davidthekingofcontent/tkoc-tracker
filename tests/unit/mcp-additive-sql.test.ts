@@ -6,16 +6,19 @@ import { fileURLToPath } from 'node:url'
 /**
  * Guard of the hand-applied SQL of the MCP connector.
  *
- * The deploy does not push the schema: prisma/additive/2026-11-12-mcp.sql is
- * run by hand against production before the code ships. It may ONLY create
- * the new tables and their indexes. This test fails if the file ever contains
- * a DROP, a RENAME, an ALTER of a table that already exists, or anything else
- * that is not on the short list of allowed statements.
+ * The deploy does not push the schema: prisma/additive/2026-11-12-mcp.sql
+ * (read layer) and prisma/additive/2026-11-12-mcp-write.sql (write layer) are
+ * run by hand against production before the code ships. Each may ONLY create
+ * its own new tables and their indexes. This test fails if a file ever
+ * contains a DROP, a RENAME, an ALTER of a table that already exists, or
+ * anything else that is not on the short list of allowed statements.
  */
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..', '..')
 const UP = path.join(root, 'prisma', 'additive', '2026-11-12-mcp.sql')
 const DOWN = path.join(root, 'prisma', 'additive', '2026-11-12-mcp.down.sql')
+const UP_WRITE = path.join(root, 'prisma', 'additive', '2026-11-12-mcp-write.sql')
+const DOWN_WRITE = path.join(root, 'prisma', 'additive', '2026-11-12-mcp-write.down.sql')
 const SCHEMA = path.join(root, 'prisma', 'schema.prisma')
 
 /** The executable part of a SQL file: comments removed, one entry per statement. */
@@ -70,6 +73,8 @@ function connectorModels(): Map<string, string[]> {
 }
 
 const NEW_TABLES = ['mcp_clients', 'mcp_grants', 'mcp_auth_codes', 'mcp_tokens', 'mcp_call_logs']
+/** The write layer (12 Nov 2026): one more table, in its own file. */
+const WRITE_TABLES = ['mcp_pending_actions']
 
 describe('additive SQL of the MCP connector', () => {
   const up = fs.readFileSync(UP, 'utf8')
@@ -94,9 +99,10 @@ describe('additive SQL of the MCP connector', () => {
 
   it('matches the models of schema.prisma: same tables, every field a column', () => {
     const models = connectorModels()
-    expect([...models.keys()].sort()).toEqual([...NEW_TABLES].sort())
+    const upWrite = fs.readFileSync(UP_WRITE, 'utf8')
+    expect([...models.keys()].sort()).toEqual([...NEW_TABLES, ...WRITE_TABLES].sort())
     for (const [table, columns] of models) {
-      const create = statements(up).find(s => s.startsWith(`CREATE TABLE "${table}" (`))
+      const create = statements(WRITE_TABLES.includes(table) ? upWrite : up).find(s => s.startsWith(`CREATE TABLE "${table}" (`))
       expect(create, table).toBeTruthy()
       const inSql = [...(create as string).matchAll(/"([A-Za-z]+)" [A-Z]/g)].map(m => m[1]).filter(c => c !== `${table}_pkey`)
       expect(inSql.sort(), table).toEqual([...columns].sort())
@@ -107,6 +113,14 @@ describe('additive SQL of the MCP connector', () => {
     expect(models.get('mcp_auth_codes')).toEqual(['id', 'codeHash', 'clientId', 'userId', 'redirectUri', 'codeChallenge', 'resource', 'scope', 'expiresAt', 'usedAt', 'grantId'])
     expect(models.get('mcp_tokens')).toEqual(['id', 'grantId', 'kind', 'tokenHash', 'expiresAt', 'rotatedAt', 'createdAt'])
     expect(models.get('mcp_call_logs')).toEqual(['id', 'grantId', 'userId', 'tool', 'argsSummary', 'ok', 'ms', 'resultChars', 'createdAt'])
+    expect(models.get('mcp_pending_actions')).toEqual([
+      'id', 'kind', 'confirmation', 'grantId', 'userId', 'tool', 'argsJson', 'preview', 'status',
+      'createdAt', 'decidedAt', 'decidedById', 'expiresAt', 'executedAt', 'resultStatus', 'tokenHash', 'stateHash',
+    ])
+    // stateHash (fix of 12 Nov 2026) is nullable: a token row has none, and the table stays purely additive
+    const upWriteCreate = statements(upWrite).find(s => s.startsWith('CREATE TABLE "mcp_pending_actions" ('))
+    expect(upWriteCreate).toContain('"stateHash" TEXT,')
+    expect(upWriteCreate).not.toMatch(/"stateHash" TEXT NOT NULL/)
   })
 
   it('the models are decoupled: no relation to the existing schema', () => {
@@ -116,7 +130,7 @@ describe('additive SQL of the MCP connector', () => {
     }
     // And no existing model points at them
     const others = schema.replace(/^model Mcp\w+ \{\n[\s\S]*?^\}/gm, '')
-    expect(others).not.toMatch(/\bMcp(Client|Grant|AuthCode|Token|CallLog)\b/)
+    expect(others).not.toMatch(/\bMcp(Client|Grant|AuthCode|Token|CallLog|PendingAction)\b/)
   })
 
   it('the guard itself catches what it must', () => {
@@ -143,6 +157,28 @@ describe('additive SQL of the MCP connector', () => {
     for (const sql of poisoned) expect(violations(sql, NEW_TABLES), sql).not.toEqual([])
     // A statement hidden in a comment is not executed, so it is not a violation
     expect(violations('-- DROP TABLE "users";\n/* ALTER TABLE "users" */\nCREATE TABLE "mcp_clients" (\n "id" TEXT NOT NULL\n);', NEW_TABLES)).toEqual([])
+  })
+
+  it('the write layer only creates its one new table and its indexes, with no DROP, RENAME or ALTER', () => {
+    const upWrite = fs.readFileSync(UP_WRITE, 'utf8')
+    // Not even the read layer's tables may be touched from this file
+    expect(violations(upWrite, WRITE_TABLES)).toEqual([])
+    const created = statements(upWrite)
+      .map(s => /^CREATE TABLE "([^"]+)"/.exec(s)?.[1])
+      .filter(Boolean)
+    expect(created).toEqual(WRITE_TABLES)
+    expect(statements(upWrite).filter(s => /^CREATE (UNIQUE )?INDEX/.test(s))).toHaveLength(3)
+    expect(statements(upWrite)).toHaveLength(4)
+    const executable = statements(upWrite).join(';\n')
+    expect(executable).not.toMatch(/\b(DROP|RENAME|ALTER)\b/i)
+    // And the guard catches a write-layer file that reaches into the read layer
+    expect(violations('CREATE INDEX "x" ON "mcp_grants"("scope");', WRITE_TABLES)).not.toEqual([])
+    expect(violations('ALTER TABLE "mcp_call_logs" ADD CONSTRAINT "x" UNIQUE ("id");', WRITE_TABLES)).not.toEqual([])
+  })
+
+  it('the rollback of the write layer drops its one table and nothing else', () => {
+    const drops = statements(fs.readFileSync(DOWN_WRITE, 'utf8'))
+    expect(drops).toEqual(['DROP TABLE IF EXISTS "mcp_pending_actions"'])
   })
 
   it('the rollback drops the five new tables and nothing else', () => {

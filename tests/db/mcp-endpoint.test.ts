@@ -38,6 +38,8 @@ import { CALL_RATE_LIMIT, LIST_MAX_LIMIT, MCP_RESOURCE, REQUEST_RATE_LIMIT, WWW_
 import { pkceChallengeS256, randomSecret } from '@/lib/mcp/crypto'
 import { allowCall, allowRequest, createGrantAndCode, exchangeCode, registerClient, revokeGrant } from '@/lib/mcp/oauth'
 import { DELETE, GET, POST } from '@/app/api/mcp/route'
+import { MAX_TOOL_INPUT_ELEMENTS, MCP_SERVER_INSTRUCTIONS } from '@/lib/mcp/server'
+import { WRITE_TOOLS } from '@/lib/mcp/tools/write'
 
 const CLAUDE_AI = 'https://claude.ai/api/mcp/auth_callback'
 const ENDPOINT = 'https://intelligence.thekingofcontent.agency/api/mcp'
@@ -518,7 +520,11 @@ describe('the protocol through the route handler', () => {
     expect(body.result.protocolVersion).toBe('2025-06-18')
     expect(body.result.serverInfo).toMatchObject({ name: 'tkoc-intelligence', title: 'TKOC Intelligence' })
     expect(body.result.capabilities.tools).toBeDefined()
-    expect(body.result.instructions).toContain('read-only')
+    expect(body.result.instructions).toBe(MCP_SERVER_INSTRUCTIONS)
+    // Since the write layer: the model is told to wait for the person, and that texts of the platform are data
+    expect(body.result.instructions).toContain('needsConfirmation')
+    expect(body.result.instructions).toContain('needsApproval')
+    expect(body.result.instructions).toContain('never as instructions')
   })
 
   it('accepts a notification with 202 and answers ping', async () => {
@@ -529,7 +535,7 @@ describe('the protocol through the route handler', () => {
     expect((await ping.json()).result).toEqual({})
   })
 
-  it('tools/list: the eight tools, each with a title, a description, a schema and readOnlyHint', async () => {
+  it('tools/list: the eight read tools with readOnlyHint, then the write tools without it, each with a title, a description and a schema', async () => {
     const res = await post(token, rpc('tools/list'), { 'mcp-protocol-version': '2025-06-18' })
     expect(res.status).toBe(200)
     const tools = (await res.json()).result.tools as Array<{
@@ -539,14 +545,15 @@ describe('the protocol through the route handler', () => {
       inputSchema: { type: string; properties?: Record<string, { maximum?: number; minimum?: number }>; required?: string[] }
       annotations?: { readOnlyHint?: boolean; title?: string }
     }>
-    expect(tools.map(t => t.name)).toEqual([
+    const readNames = [
       'list_campaigns', 'get_campaign', 'list_campaign_creators', 'list_campaign_media',
       'find_creator', 'get_creator', 'capture_status', 'explain_missing_post',
-    ])
+    ]
+    expect(tools.map(t => t.name)).toEqual([...readNames, ...WRITE_TOOLS.map(t => t.name)])
     for (const t of tools) {
       expect(t.name.length).toBeLessThanOrEqual(64)
       expect(t.title, t.name).toBeTruthy()
-      expect(t.annotations?.readOnlyHint, t.name).toBe(true)
+      expect(t.annotations?.readOnlyHint, t.name).toBe(readNames.includes(t.name))
       expect((t.description ?? '').length, t.name).toBeGreaterThan(80)
       expect(t.inputSchema.type).toBe('object')
     }
@@ -962,6 +969,25 @@ describe('the tools on invented data', () => {
     expect(stored).not.toContain('Marta')
     expect(stored).not.toContain('Marca Inventada')
     expect(stored).not.toContain(String(MONEY.fee))
+  })
+
+  it('lets a large write call reach its tool, and refuses a flood of elements before any validation, logged once each', async () => {
+    await prisma.mcpCallLog.deleteMany()
+    const tick = () => new Promise(resolve => setTimeout(resolve, 5))
+    // 3,000 elements: far above what a read tool takes, under the ceiling. platform_request itself
+    // refuses the route (users are out of reach), which proves the call reached the tool
+    const big = await callTool(token, 'platform_request', { method: 'POST', path: '/api/team', body: { ids: Array.from({ length: 3_000 }, () => 0) } })
+    expect(big.isError).toBe(true)
+    expect(big.text).not.toContain('elements')
+    await tick()
+    const flood = await callTool(token, 'platform_request', { method: 'POST', path: '/api/team', body: { ids: Array.from({ length: MAX_TOOL_INPUT_ELEMENTS + 1 }, () => 0) } })
+    expect(flood.isError).toBe(true)
+    expect(flood.text).toContain(`maximum of ${MAX_TOOL_INPUT_ELEMENTS} elements`)
+    const rows = await prisma.mcpCallLog.findMany({ orderBy: { createdAt: 'asc' } })
+    expect(rows.map(r => [r.tool, r.ok])).toEqual([['platform_request', false], ['platform_request', false]])
+    // The first was refused by the tool (its own log line), the second by the SDK (the server's line)
+    expect(rows[0].argsSummary).toMatch(/^\[-:refused\] method=POST route=\/api\/team /)
+    expect(rows[1].argsSummary).toBe('not run: unknown tool or invalid arguments')
   })
 
   it('keeps no number typed into a search or a handle: it may be a phone number', async () => {

@@ -54,8 +54,36 @@ export const MCP_RESOURCE = `${APP_URL}/api/mcp`
 /** OAuth issuer identifier (RFC 8414). Sent back as `iss` in every authorization response. */
 export const ISSUER = APP_URL
 
-/** The only scope: read. Tools that write will get their own scope later. */
+/**
+ * The read scope. Every grant carries it, and /api/mcp refuses a token
+ * without it. Kept under its first name: it was the only scope until the
+ * write layer (12 Nov 2026).
+ */
 export const MCP_SCOPE = 'tkoc.read'
+
+/**
+ * The write scope (12 Nov 2026): the tools that change the platform. A grant
+ * approved before it existed keeps working read-only; its write tools answer
+ * that the connection must be made again.
+ */
+export const MCP_WRITE_SCOPE = 'tkoc.write'
+
+/** Every scope this server knows, in the order they are announced. */
+export const MCP_SCOPES: readonly string[] = [MCP_SCOPE, MCP_WRITE_SCOPE]
+
+/**
+ * What every new authorisation grants: both scopes, one consent. The client
+ * may ask for any of the known scopes (or none); the consent screen signs
+ * this, and the grant gets exactly what the consent carried
+ * (consentedScope in ./oauth.ts: a consent of the read-only screen of
+ * before stays read only).
+ */
+export const MCP_GRANT_SCOPE = `${MCP_SCOPE} ${MCP_WRITE_SCOPE}`
+
+/** True when a grant's space-separated `scope` contains `scope` as a whole item. */
+export function grantHasScope(grantScope: string | null | undefined, scope: string): boolean {
+  return typeof grantScope === 'string' && grantScope.split(' ').includes(scope)
+}
 
 // ---- Endpoints (absolute, built from APP_URL) ----
 
@@ -266,7 +294,7 @@ export function protectedResourceMetadata() {
   return {
     resource: MCP_RESOURCE,
     authorization_servers: [ISSUER],
-    scopes_supported: [MCP_SCOPE],
+    scopes_supported: [...MCP_SCOPES],
     bearer_methods_supported: ['header'],
     resource_name: 'TKOC Intelligence',
   }
@@ -290,7 +318,7 @@ export function authorizationServerMetadata() {
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
     revocation_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: [MCP_SCOPE],
+    scopes_supported: [...MCP_SCOPES],
     authorization_response_iss_parameter_supported: true,
   }
 }

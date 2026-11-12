@@ -4,3 +4,6 @@ if (!/^postgres(ql)?:\/\/[^@]+@(localhost|127\.0\.0\.1):\d+\//.test(url)) {
   throw new Error('Refusing to run the rehearsal: REHEARSAL_DATABASE_URL must be a local database')
 }
 process.env.DATABASE_URL = url
+
+// A module of its own, so its `url` never clashes with the other guard when the tests are type-checked together
+export {}

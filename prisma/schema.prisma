@@ -1409,3 +1409,35 @@ model McpCallLog {
   @@index([createdAt])
   @@map("mcp_call_logs")
 }
+
+/// An action of Claude that needs a confirmation (write layer, 12 Nov 2026).
+/// kind 'approval': a destructive or outbound action. It waits as 'pending'
+///   until the administrator who authorised the grant confirms or cancels it
+///   in the platform (/mcp/confirmar/<id>), then runs ONCE with the arguments
+///   stored here when Claude calls the tool again with its id.
+/// kind 'token': the single use of a two-step confirm token (money, bulk).
+///   Created already 'executed' the moment the token is redeemed; the unique
+///   tokenHash is what makes a token work once.
+model McpPendingAction {
+  id           String    @id @default(cuid())
+  kind         String    // 'approval' | 'token'
+  confirmation String    // 'money' | 'bulk' | 'destructive' | 'outbound'
+  grantId      String    // McpGrant.id that asked for it
+  userId       String    // User.id of the administrator who authorised that grant
+  tool         String
+  argsJson     String    // the validated arguments, canonical JSON: exactly what runs
+  preview      String    // plain Spanish text shown before confirming
+  status       String    // 'pending' | 'approved' | 'denied' | 'executed' | 'expired'
+  createdAt    DateTime  @default(now())
+  decidedAt    DateTime?
+  decidedById  String?   // User.id of the administrator who confirmed or cancelled it
+  expiresAt    DateTime
+  executedAt   DateTime?
+  resultStatus Int?      // HTTP status of the last platform call of the run (0: no answer)
+  tokenHash    String?   @unique // kind 'token': SHA-256 of the confirm token
+  stateHash    String?   // kind 'approval': SHA-256 of the class and the state the preview described; the run is refused when it changed
+
+  @@index([grantId, status])
+  @@index([status, expiresAt])
+  @@map("mcp_pending_actions")
+}

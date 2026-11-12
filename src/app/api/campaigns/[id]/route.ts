@@ -16,6 +16,9 @@ import type { CampaignOverview } from '@/lib/metrics'
 // Objective + at least one target are mandatory in the UI; here we sanitize and
 // freeze/log. A target that is not filled in is stored as null, never as 0.
 const TARGET_KEYS = ['targetViews', 'targetReach', 'targetEngagement', 'targetER', 'targetCpmMax'] as const
+
+/** Longest new campaign name (a longer name already stored can be saved again unchanged). */
+const CAMPAIGN_NAME_MAX_CHARS = 200
 type TargetKey = (typeof TARGET_KEYS)[number]
 
 function toPositiveInt(value: unknown): number | null {
@@ -423,6 +426,41 @@ export async function PUT(
       businessResultsNotes?: string | null
     } = {}
     const invalid = (message: string) => NextResponse.json({ error: message }, { status: 400 })
+
+    // ---- Plain fields: a wrong value is a 400, never stored as received nor
+    // ignored in silence (an empty name was stored; an unknown status was
+    // dropped while the answer said 200, 12 Nov 2026) ----
+    let nextName: string | undefined
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim()) return invalid('El nombre de la campaña no puede estar vacío.')
+      nextName = name.trim()
+      if (nextName.length > CAMPAIGN_NAME_MAX_CHARS && nextName !== existing.name) {
+        return invalid(`El nombre de la campaña no puede pasar de ${CAMPAIGN_NAME_MAX_CHARS} caracteres.`)
+      }
+    }
+    if (status !== undefined && !Object.values(CampaignStatus).includes(status)) {
+      return invalid(`Estado no válido. Usa uno de: ${Object.values(CampaignStatus).join(', ')}.`)
+    }
+    const nextBudget = budget !== undefined ? parseNonNegativeFloat(budget) : undefined
+    if (budget !== undefined && nextBudget === undefined) return invalid('budget debe ser un número mayor o igual que 0, o null.')
+    if (isPinned !== undefined && typeof isPinned !== 'boolean') return invalid('isPinned debe ser true o false.')
+    if (
+      briefFiles !== undefined &&
+      (!Array.isArray(briefFiles) || briefFiles.length > 100 || !briefFiles.every((f: unknown) => typeof f === 'string' && f.length <= 1000))
+    ) {
+      return invalid('briefFiles debe ser una lista de textos.')
+    }
+    let nextManualROI: number | null | undefined
+    if (manualROI !== undefined) {
+      if (manualROI === null || manualROI === '') {
+        nextManualROI = null
+      } else {
+        const n = typeof manualROI === 'number' ? manualROI : typeof manualROI === 'string' ? Number(manualROI.trim()) : NaN
+        if (!Number.isFinite(n)) return invalid('manualROI debe ser un número, o null para quitarlo.')
+        nextManualROI = n
+      }
+    }
+
     // normalizeTargets maps any non-array to [] — reject instead of silently clearing the campaign's targets
     if (targetAccounts !== undefined && targetAccounts !== null && !Array.isArray(targetAccounts)) {
       return invalid('targetAccounts must be an array of strings')
@@ -606,9 +644,9 @@ export async function PUT(
     const campaign = await prisma.campaign.update({
       where: { id },
       data: {
-        ...(name !== undefined && { name }),
+        ...(nextName !== undefined && { name: nextName }),
         ...(status !== undefined && Object.values(CampaignStatus).includes(status) && { status }),
-        ...(budget !== undefined && { budget }),
+        ...(nextBudget !== undefined && { budget: nextBudget }),
         ...(isPinned !== undefined && { isPinned }),
         ...(nextStartDate && { startDate: nextStartDate }),
         ...(nextEndDate && { endDate: nextEndDate }),
@@ -622,7 +660,7 @@ export async function PUT(
         ...(briefText !== undefined && { briefText: briefText || null }),
         ...(briefFiles !== undefined && { briefFiles }),
         ...(nextObjective !== undefined && { objective: nextObjective }),
-        ...(manualROI !== undefined && { manualROI: manualROI !== null ? parseFloat(manualROI) : null }),
+        ...(nextManualROI !== undefined && { manualROI: nextManualROI }),
         ...(manualROINotes !== undefined && { manualROINotes: manualROINotes || null }),
         // Numeric targets (decision 1B)
         ...incomingTargets,

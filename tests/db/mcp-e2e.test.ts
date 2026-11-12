@@ -50,6 +50,7 @@ import * as authorizationServerRoute from '@/app/.well-known/oauth-authorization
 import * as registerRoute from '@/app/api/oauth/register/route'
 import * as decisionRoute from '@/app/api/oauth/authorize/route'
 import * as tokenRoute from '@/app/api/oauth/token/route'
+import { WRITE_TOOLS } from '@/lib/mcp/tools/write'
 import * as grantsRoute from '@/app/api/oauth/grants/route'
 
 /**
@@ -384,8 +385,10 @@ describe('end to end: a Claude client connects and reads, from the first 401 to 
     expect(text).toContain('Claude')
     expect(text).toContain(admin.name)
     expect(text).toContain('claude.ai')
-    expect(text).toContain('Leer campañas, creadoras, publicaciones y el estado de la captura. No puede cambiar nada.')
-    expect(text).toContain('No recibe correos, teléfonos, direcciones ni contraseñas.')
+    // What the connection may do since the write layer (one consent for tkoc.read and tkoc.write)
+    expect(text).toContain('Leer y modificar campañas, creadoras, publicaciones, listas, informes y rastreos, con tu usuario.')
+    expect(text).toContain('Borrar, gastar Apify, enviar correos y cambios en bloque.')
+    expect(text).toContain('Usuarios, permisos, claves e integraciones.')
     const consent = consentForm(html)
     expect(consent.method).toBe('post')
     expect(consent.buttons.map(b => b.label)).toEqual(['Cancelar', 'Permitir'])
@@ -445,13 +448,15 @@ describe('end to end: a Claude client connects and reads, from the first 401 to 
     const listed = await mcp(tokens.access_token, rpc('tools/list'), version)
     expect(listed.status).toBe(200)
     const tools = (((await listed.json()) as RpcAnswer).result as { tools: { name: string; title?: string; inputSchema: { type: string }; annotations?: { readOnlyHint?: boolean } }[] }).tools
-    expect(tools.map(t => t.name)).toEqual([
+    const readNames = [
       'list_campaigns', 'get_campaign', 'list_campaign_creators', 'list_campaign_media',
       'find_creator', 'get_creator', 'capture_status', 'explain_missing_post',
-    ])
+    ]
+    expect(tools.map(t => t.name)).toEqual([...readNames, ...WRITE_TOOLS.map(t => t.name)])
     for (const tool of tools) {
       expect(tool.title, tool.name).toEqual(expect.any(String))
-      expect(tool.annotations?.readOnlyHint, tool.name).toBe(true)
+      // Only the read tools say they only read
+      expect(tool.annotations?.readOnlyHint, tool.name).toBe(readNames.includes(tool.name))
       expect(tool.inputSchema.type, tool.name).toBe('object')
     }
 

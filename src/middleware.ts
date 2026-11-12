@@ -97,6 +97,8 @@ const creatorPages = ['/', '/dashboard']
 
 // Consent screen of the MCP connector for Claude (OAuth authorization endpoint)
 const OAUTH_AUTHORIZE_PATH = '/oauth/authorize'
+// Confirmation pages of the actions Claude asks for (/mcp/confirmar/<id>)
+const MCP_CONFIRM_PREFIX = '/mcp/confirmar/'
 
 /**
  * The two image routes that are public by design (session-less, served by
@@ -209,6 +211,24 @@ export function middleware(request: NextRequest) {
       return NextResponse.redirect(loginUrl)
     }
     // The «Permitir» button must never be shown inside somebody else's page
+    const response = NextResponse.next()
+    response.headers.set('X-Frame-Options', 'DENY')
+    response.headers.set('Content-Security-Policy', "frame-ancestors 'none'")
+    return response
+  }
+
+  // Confirmation page of an action Claude asked for: the same rules as the
+  // consent screen. BRAND and CREATOR were already sent home above. Without
+  // the cookie, sign in first and come back to this very page (the login
+  // honours `next` only for /mcp/confirmar/<id>, without query). Whether the
+  // session is the right ADMIN is decided by the page, against the database.
+  if (pathname.startsWith(MCP_CONFIRM_PREFIX)) {
+    if (!cookieToken) {
+      const loginUrl = new URL('/login', request.url)
+      loginUrl.searchParams.set('next', pathname)
+      return NextResponse.redirect(loginUrl)
+    }
+    // «Confirmar» must never be shown inside somebody else's page
     const response = NextResponse.next()
     response.headers.set('X-Frame-Options', 'DENY')
     response.headers.set('Content-Security-Policy', "frame-ancestors 'none'")

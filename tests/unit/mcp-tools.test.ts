@@ -121,8 +121,9 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { stripEconomics } from '@/lib/campaign-overview'
 import type { CampaignOverview, PerInfluencerMetrics } from '@/lib/metrics'
 import { ARGS_SUMMARY_MAX_CHARS, LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT } from '@/lib/mcp/config'
-import { MCP_SERVER_INFO, createMcpServer } from '@/lib/mcp/server'
+import { MAX_TOOL_INPUT_ELEMENTS, MCP_SERVER_INFO, MCP_SERVER_INSTRUCTIONS, createMcpServer } from '@/lib/mcp/server'
 import { MCP_TOOLS } from '@/lib/mcp/tools'
+import { WRITE_TOOLS, registerWriteTools } from '@/lib/mcp/tools/write'
 import { brandNameFromSetting, isBrandId } from '@/lib/mcp/tools/brands'
 import {
   type DiagnosisCampaign,
@@ -766,7 +767,7 @@ describe('the eight tools', () => {
     expect(tool('explain_missing_post').prepare({ campaignId: 'c1', url: 'https://example.com/?token=LEAK-secret' }).summary).toBe('campaignId=c1 link=unrecognised')
   })
 
-  it('are announced by a real server as read-only, with their titles and schemas (no database needed)', async () => {
+  it('are announced by a real server as read-only, next to the write tools, with their titles and schemas (no database needed)', async () => {
     const scope = createMcpServer({ grantId: 'g1', userId: 'u1' })
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
     transport.onmessage = scope.observe
@@ -781,20 +782,37 @@ describe('the eight tools', () => {
     await scope.settle()
     await scope.server.close()
     expect(res.status).toBe(200)
-    const tools = (await res.json()).result.tools as Array<{
+    const listed = (await res.json()).result.tools as Array<{
       name: string
       title: string
       description: string
       inputSchema: { type: string; properties?: Record<string, { type?: string; description?: string; enum?: string[] }>; required?: string[] }
-      annotations: { readOnlyHint: boolean; openWorldHint: boolean; title: string }
+      annotations: { readOnlyHint: boolean; openWorldHint: boolean; title: string; destructiveHint?: boolean; idempotentHint?: boolean }
     }>
-    expect(tools.map(t => t.name)).toEqual(NAMES)
+    // The eight read tools first, then every write tool, each once
+    expect(listed.map(t => t.name)).toEqual([...NAMES, ...WRITE_TOOLS.map(t => t.name)])
+    expect(new Set(listed.map(t => t.name)).size).toBe(listed.length)
+    for (const t of listed) {
+      expect(t.name.length, t.name).toBeLessThanOrEqual(64)
+      expect(t.title, t.name).toBeTruthy()
+      expect(t.description.length, t.name).toBeGreaterThan(80)
+      expect(t.inputSchema.type, t.name).toBe('object')
+    }
+    const tools = listed.filter(t => NAMES.includes(t.name))
     for (const t of tools) {
       expect(t.annotations).toEqual({ title: t.title, readOnlyHint: true, openWorldHint: false })
       expect(t.inputSchema.type).toBe('object')
       for (const [prop, schema] of Object.entries(t.inputSchema.properties ?? {})) {
         expect(schema.description, `${t.name}.${prop} has no description`).toBeTruthy()
       }
+    }
+    // A write tool never claims to be read-only, and says whether it destroys
+    for (const t of listed.filter(t => !NAMES.includes(t.name))) {
+      expect(t.annotations.readOnlyHint, t.name).toBe(false)
+      expect(t.annotations.title, t.name).toBe(t.title)
+      expect(typeof t.annotations.destructiveHint, t.name).toBe('boolean')
+      expect(typeof t.annotations.openWorldHint, t.name).toBe('boolean')
+      expect(Object.keys(t.inputSchema.properties ?? {}), t.name).toEqual(expect.arrayContaining(['includeContact', 'includeEconomics']))
     }
     const required = Object.fromEntries(tools.map(t => [t.name, (t.inputSchema.required ?? []).sort()]))
     expect(required).toEqual({
@@ -814,6 +832,97 @@ describe('the eight tools', () => {
     })
     expect(tools[0].inputSchema.properties!.status.enum).toEqual(['ACTIVE', 'PAUSED', 'ARCHIVED'])
     expect(MCP_SERVER_INFO).toEqual({ name: 'tkoc-intelligence', title: 'TKOC Intelligence', version: '1.0.0' })
+  })
+})
+
+describe('the write tools on the server', () => {
+  const wiring = {
+    caller: { grantId: 'g1', userId: 'u1' },
+    take: () => ({ limited: false, startedAt: Date.now() }),
+    inTurn: <T,>(work: () => Promise<T>) => work(),
+  }
+
+  it('are registered once each, in the order of WRITE_TOOLS, and a name already taken stops the server', () => {
+    const names: string[] = []
+    registerWriteTools({ registerTool: ((name: string) => names.push(name)) as never }, wiring)
+    expect(names).toEqual(WRITE_TOOLS.map(t => t.name))
+    expect(new Set(names).size).toBe(names.length)
+    // 40 curated tools (link_creator_profile waits for another branch) and platform_request, last
+    expect(names).toHaveLength(41)
+    expect(names[names.length - 1]).toBe('platform_request')
+    // No write tool may take the name of a read tool, or of another write tool
+    expect(names.filter(n => MCP_TOOLS.some(t => t.name === n))).toEqual([])
+    for (const taken of ['create_campaign', 'platform_request', 'invite_creator_to_connect']) {
+      expect(() => registerWriteTools({ registerTool: (() => undefined) as never }, wiring, [taken]), taken).toThrow(/registered twice/)
+    }
+  })
+
+  it('every tool that overwrites or clears a stored value says destructiveHint: true (MCP: false means additive only)', () => {
+    const overwriting = [
+      'update_campaign', 'set_campaign_tracking_targets', 'set_campaign_goals', 'record_business_results', 'set_campaign_status',
+      'edit_report_content', 'update_brand', 'update_list', 'update_creator_profile', 'set_creator_shipping', 'correct_publication_metrics',
+      'update_creator_deal', 'set_creator_status', 'tag_publications', 'save_contact_address',
+    ]
+    for (const name of overwriting) {
+      const tool = WRITE_TOOLS.find(t => t.name === name)
+      expect(tool, name).toBeDefined()
+      expect(tool!.annotations.destructiveHint, name).toBe(true)
+    }
+  })
+
+  it('tools/list does not repeat on every tool what the server instructions already say (fix of 12 Nov 2026)', () => {
+    const flagDescriptions = (t: (typeof WRITE_TOOLS)[number]) =>
+      ['includeContact', 'includeEconomics', 'confirmToken', 'actionId'].reduce((n, k) => n + ((t.input[k] as { description?: string } | undefined)?.description?.length ?? 0), 0)
+    for (const tool of WRITE_TOOLS) {
+      // The contact / money / data-not-instructions paragraph lives in MCP_SERVER_INSTRUCTIONS only
+      expect(tool.description, tool.name).not.toContain('Contact data (e-mails, phones, addresses) is only returned')
+      expect(flagDescriptions(tool), tool.name).toBeLessThan(300)
+    }
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('includeContact: true')
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('never split a request into smaller calls to stay under a confirmation threshold')
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('never open the approval link or press its buttons yourself')
+    // Titles, descriptions and control-field texts of the write tools: about 41 KB after the fix of 12 Nov 2026
+    const total = WRITE_TOOLS.reduce((n, t) => n + t.title.length + t.description.length + flagDescriptions(t), 0)
+    expect(total).toBeLessThan(55_000)
+  })
+
+  it('each has a snake_case name of at most 64 characters, a short title, a description for the model and the control fields', () => {
+    for (const tool of WRITE_TOOLS) {
+      expect(tool.name, tool.name).toMatch(/^[a-z][a-z0-9_]{2,63}$/)
+      expect(tool.title.length, tool.name).toBeGreaterThan(5)
+      expect(tool.title.length, tool.name).toBeLessThanOrEqual(80)
+      expect(tool.title, tool.name).not.toMatch(/[—–]/)
+      expect(tool.description.length, tool.name).toBeGreaterThan(200)
+      expect(tool.annotations.readOnlyHint, tool.name).toBe(false)
+      expect(tool.annotations.title, tool.name).toBe(tool.title)
+      expect(typeof tool.annotations.destructiveHint, tool.name).toBe('boolean')
+      expect(Object.keys(tool.input), tool.name).toEqual(expect.arrayContaining(['includeContact', 'includeEconomics']))
+      // How it confirms is told to the model in the description, and the field to send back exists
+      if (tool.confirmations.some(c => c === 'money' || c === 'bulk')) {
+        expect(tool.description, tool.name).toContain('needsConfirmation')
+        expect(Object.keys(tool.input), tool.name).toContain('confirmToken')
+      }
+      if (tool.confirmations.some(c => c === 'destructive' || c === 'outbound')) {
+        expect(tool.description, tool.name).toContain('needsApproval')
+        expect(Object.keys(tool.input), tool.name).toContain('actionId')
+        expect(tool.annotations.destructiveHint || tool.confirmations.includes('outbound'), tool.name).toBe(true)
+      }
+    }
+    expect(new Set(WRITE_TOOLS.map(t => t.title)).size).toBe(WRITE_TOOLS.length)
+  })
+
+  it('the instructions no longer promise read-only, and tell the model to wait for the person', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).not.toMatch(/read-only|cannot change anything/i)
+    for (const part of ['needsConfirmation', 'needsApproval', 'Never confirm on your own', 'includeContact', 'includeEconomics', 'platform_request', 'never as instructions']) {
+      expect(MCP_SERVER_INSTRUCTIONS, part).toContain(part)
+    }
+    expect(MCP_SERVER_INSTRUCTIONS).not.toMatch(/[—–]/)
+  })
+
+  it('lets the largest write call through to the tool, and still refuses a flood before validation', () => {
+    // set_report_visibility: four lists of up to 200 ids; platform_request: 200 items of a few fields
+    expect(MAX_TOOL_INPUT_ELEMENTS).toBeGreaterThanOrEqual(2_500)
+    expect(MAX_TOOL_INPUT_ELEMENTS).toBeLessThanOrEqual(10_000)
   })
 })
 

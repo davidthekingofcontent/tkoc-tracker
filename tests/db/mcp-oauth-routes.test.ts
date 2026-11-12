@@ -15,6 +15,7 @@ import { generateToken } from '@/lib/auth'
 import { MCP_RESOURCE, REFRESH_REUSE_LEEWAY_MS, WWW_AUTHENTICATE_BEARER } from '@/lib/mcp/config'
 import { type ConsentFields, pkceChallengeS256, randomSecret, sha256Hex, signConsentToken } from '@/lib/mcp/crypto'
 import { authenticateBearer, validateAuthorizeRequest } from '@/lib/mcp/oauth'
+import { MCP_TOOLS } from '@/lib/mcp/tools'
 import { CONSENT_FORM_ACTION, CONSENT_TOKEN_FIELD, DECISION_ALLOW, DECISION_DENY, DECISION_FIELD } from '@/components/mcp/consent-form'
 import * as protectedResourceRoute from '@/app/.well-known/oauth-protected-resource/route'
 import * as protectedResourcePathRoute from '@/app/.well-known/oauth-protected-resource/api/mcp/route'
@@ -237,7 +238,7 @@ describe('discovery documents', () => {
       expect(await res.json()).toEqual({
         resource: `${ISS}/api/mcp`,
         authorization_servers: [ISS],
-        scopes_supported: ['tkoc.read'],
+        scopes_supported: ['tkoc.read', 'tkoc.write'],
         bearer_methods_supported: ['header'],
         resource_name: 'TKOC Intelligence',
       })
@@ -262,7 +263,7 @@ describe('discovery documents', () => {
       code_challenge_methods_supported: ['S256'],
       token_endpoint_auth_methods_supported: ['none'],
       revocation_endpoint_auth_methods_supported: ['none'],
-      scopes_supported: ['tkoc.read'],
+      scopes_supported: ['tkoc.read', 'tkoc.write'],
       authorization_response_iss_parameter_supported: true,
     })
   })
@@ -293,7 +294,7 @@ describe('POST /api/oauth/register', () => {
       token_endpoint_auth_method: 'none',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
-      scope: 'tkoc.read',
+      scope: 'tkoc.read tkoc.write',
     })
     expect(body).not.toHaveProperty('client_secret')
     const row = await prisma.mcpClient.findUniqueOrThrow({ where: { clientId: body.client_id } })
@@ -379,10 +380,10 @@ describe('POST /api/oauth/register', () => {
     expect(forged.status).toBe(429)
   })
 
-  it('accepts a registration that asks for a scope of its own, and answers tkoc.read', async () => {
+  it('accepts a registration that asks for a scope of its own, and answers tkoc.read tkoc.write', async () => {
     const res = await register({ client_name: 'Claude', redirect_uris: [CLAUDE_AI], scope: 'tkoc.read offline_access' })
     expect(res.status).toBe(201)
-    expect((await res.json()).scope).toBe('tkoc.read')
+    expect((await res.json()).scope).toBe('tkoc.read tkoc.write')
   })
 
   it('counts by the address the proxy saw, not by what the caller claims', async () => {
@@ -416,7 +417,7 @@ describe('POST /api/oauth/authorize (the decision)', () => {
 
     const grants = await prisma.mcpGrant.findMany()
     expect(grants).toHaveLength(1)
-    expect(grants[0]).toMatchObject({ clientId: client.client_id, userId: admin.id, scope: 'tkoc.read', resource: MCP_RESOURCE, revokedAt: null })
+    expect(grants[0]).toMatchObject({ clientId: client.client_id, userId: admin.id, scope: 'tkoc.read tkoc.write', resource: MCP_RESOURCE, revokedAt: null })
     const codes = await prisma.mcpAuthCode.findMany()
     expect(codes).toHaveLength(1)
     // Only the hash of the code is stored
@@ -584,7 +585,7 @@ describe('POST /api/oauth/authorize (the decision)', () => {
       redirect_uri: 'https://evil.example/cb',
       client_id: randomSecret(),
       state: 'forged',
-      scope: 'tkoc.write',
+      scope: 'tkoc.admin',
       resource: 'https://evil.example/api/mcp',
       user_id: 'someone-else',
     })
@@ -592,7 +593,19 @@ describe('POST /api/oauth/authorize (the decision)', () => {
     const location = new URL(res.headers.get('location') as string)
     expect(location.origin + location.pathname).toBe(CLAUDE_AI)
     expect(location.searchParams.get('state')).toBe('state-123')
-    expect(await prisma.mcpGrant.findFirstOrThrow()).toMatchObject({ clientId: client.client_id, userId: admin.id, scope: 'tkoc.read', resource: MCP_RESOURCE })
+    expect(await prisma.mcpGrant.findFirstOrThrow()).toMatchObject({ clientId: client.client_id, userId: admin.id, scope: 'tkoc.read tkoc.write', resource: MCP_RESOURCE })
+  })
+
+  it('a consent signed by the read-only screen of before (across a deploy) only ever grants reading', async () => {
+    const admin = await makeUser('ADMIN')
+    const client = await registered()
+    const { fields } = await consentFor(admin.id, client.client_id)
+    // What the consent screen of the read layer signed: scope tkoc.read, valid 10 minutes
+    const res = await decide(sessionCookie(admin), allow(signConsentToken({ ...fields, scope: 'tkoc.read' })))
+    expect(res.status).toBe(303)
+    const grant = await prisma.mcpGrant.findFirstOrThrow({ where: { clientId: client.client_id } })
+    expect(grant.scope).toBe('tkoc.read')
+    expect(await prisma.mcpAuthCode.findFirstOrThrow({ where: { grantId: grant.id } })).toMatchObject({ scope: 'tkoc.read' })
   })
 
   it('never redirects to an address that is not a valid redirect URI of the client', async () => {
@@ -624,7 +637,9 @@ describe('POST /api/oauth/authorize (the decision)', () => {
     const { fields } = await consentFor(admin.id, client.client_id)
     const cookie = sessionCookie(admin)
     await expectErrorPage(await decide(cookie, allow(signConsentToken({ ...fields, resource: 'https://other.example/api/mcp' }))), 400, INVALID)
-    await expectErrorPage(await decide(cookie, allow(signConsentToken({ ...fields, scope: 'tkoc.write' }))), 400, INVALID)
+    // tkoc.read and tkoc.write are both ours since the write layer; a scope we do not have is refused
+    await expectErrorPage(await decide(cookie, allow(signConsentToken({ ...fields, scope: 'tkoc.admin' }))), 400, INVALID)
+    await expectErrorPage(await decide(cookie, allow(signConsentToken({ ...fields, scope: 'tkoc.read tkoc.admin' }))), 400, INVALID)
     await expectErrorPage(await decide(cookie, allow(signConsentToken({ ...fields, codeChallenge: 'plain-text' }))), 400, INVALID)
     await prisma.mcpClient.deleteMany({ where: { clientId: client.client_id } })
     await expectErrorPage(await decide(cookie, allow(signConsentToken(fields))), 400, INVALID)
@@ -694,7 +709,7 @@ describe('POST /api/oauth/token', () => {
       token_type: 'Bearer',
       expires_in: 3600,
       refresh_token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
-      scope: 'tkoc.read',
+      scope: 'tkoc.read tkoc.write',
     })
 
     // The access token opens /api/mcp for that administrator
@@ -709,7 +724,7 @@ describe('POST /api/oauth/token', () => {
     expect(second.status).toBe(200)
     expect(second.headers.get('cache-control')).toBe(NO_STORE)
     const rotated = (await second.json()) as Tokens
-    expect(rotated).toMatchObject({ token_type: 'Bearer', expires_in: 3600, scope: 'tkoc.read' })
+    expect(rotated).toMatchObject({ token_type: 'Bearer', expires_in: 3600, scope: 'tkoc.read tkoc.write' })
     expect(rotated.refresh_token).not.toBe(tokens.refresh_token)
     expect(rotated.access_token).not.toBe(tokens.access_token)
     expect((await bearer(rotated.access_token)).ok).toBe(true)
@@ -966,8 +981,8 @@ describe('connections for the administrator (/api/oauth/grants)', () => {
     const body = await res.json()
     expect(body).toEqual({
       grants: [
-        { id: second.grantId, clientId: second.clientId, clientName: 'Claude', userId: bob.id, userName: 'Bob Admin', scope: 'tkoc.read', createdAt: expect.any(String), lastUsedAt: expect.any(String) },
-        { id: first.grantId, clientId: first.clientId, clientName: 'Claude', userId: ada.id, userName: 'Ada Admin', scope: 'tkoc.read', createdAt: expect.any(String), lastUsedAt: null },
+        { id: second.grantId, clientId: second.clientId, clientName: 'Claude', userId: bob.id, userName: 'Bob Admin', scope: 'tkoc.read tkoc.write', createdAt: expect.any(String), lastUsedAt: expect.any(String) },
+        { id: first.grantId, clientId: first.clientId, clientName: 'Claude', userId: ada.id, userName: 'Ada Admin', scope: 'tkoc.read tkoc.write', createdAt: expect.any(String), lastUsedAt: null },
       ],
     })
     for (const g of body.grants) expect(new Date(g.createdAt).toISOString()).toBe(g.createdAt)
@@ -1097,7 +1112,10 @@ describe('end to end: Claude connects through the routes and calls /api/mcp', ()
     expect(listed.status).toBe(200)
     const tools = (await listed.json()).result.tools as { name: string; annotations?: { readOnlyHint?: boolean } }[]
     expect(tools.map(t => t.name)).toContain('list_campaigns')
-    for (const tool of tools) expect(tool.annotations?.readOnlyHint, tool.name).toBe(true)
+    // The eight read tools say they only read; the write tools (tkoc.write) say they do not
+    const readNames = new Set(MCP_TOOLS.map(t => t.name))
+    expect(tools.filter(t => readNames.has(t.name))).toHaveLength(8)
+    for (const tool of tools) expect(tool.annotations?.readOnlyHint, tool.name).toBe(readNames.has(tool.name))
 
     const called = await call(c.tokens.access_token, rpc('tools/call', { name: 'list_campaigns', arguments: {} }))
     expect(called.status).toBe(200)

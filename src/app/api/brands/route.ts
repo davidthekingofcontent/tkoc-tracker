@@ -43,6 +43,28 @@ interface BrandData {
   createdAt: string
 }
 
+// ============ WHICH SETTING IS A BRAND ============
+// The settings table also holds stored keys, report configurations and cron
+// stamps. PATCH and DELETE used to rewrite or delete ANY row whose key they
+// were given as brandId (12 Nov 2026). A brand is a `brand_` key outside the
+// other `brand_` families whose JSON document carries that same id and a name.
+
+const NOT_A_BRAND_PREFIXES = ['brand_assignment_', 'brand_user_', 'brand_ig_', 'brand_connect']
+
+async function findBrandSetting(brandId: unknown): Promise<BrandData | null> {
+  if (typeof brandId !== 'string' || !brandId.startsWith('brand_') || NOT_A_BRAND_PREFIXES.some((p) => brandId.startsWith(p))) {
+    return null
+  }
+  const row = await prisma.setting.findUnique({ where: { key: brandId } })
+  if (!row) return null
+  try {
+    const data = JSON.parse(row.value) as BrandData | null
+    return data && typeof data === 'object' && data.id === brandId && typeof data.name === 'string' ? data : null
+  } catch {
+    return null
+  }
+}
+
 // GET: Returns all brands with their campaign count and assigned employees
 export async function GET(request: NextRequest) {
   try {
@@ -120,6 +142,9 @@ export async function GET(request: NextRequest) {
     for (const setting of brandEntries) {
       try {
         const data: BrandData = JSON.parse(setting.value)
+        // A document without a name is not a brand: listing it made the sort
+        // below throw, and every brand list answered 500 to everybody
+        if (!data || typeof data !== 'object' || typeof data.name !== 'string') continue
 
         // ADMIN sees all brands
         // EMPLOYEE sees only brands they're assigned to or created
@@ -258,20 +283,45 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'brandId is required' }, { status: 400 })
     }
 
-    // Find existing brand
-    const existing = await prisma.setting.findUnique({
-      where: { key: brandId },
-    })
-
-    if (!existing) {
+    // Only a brand document (never another settings row)
+    const found = await findBrandSetting(brandId)
+    if (!found) {
       return NextResponse.json({ error: 'Brand not found' }, { status: 404 })
     }
+    const brandData: BrandData = found
 
-    let brandData: BrandData
-    try {
-      brandData = JSON.parse(existing.value) as BrandData
-    } catch {
-      return NextResponse.json({ error: 'Corrupted brand data' }, { status: 500 })
+    // Types first: nothing is saved before every field is valid
+    if (name !== undefined && name !== null && typeof name !== 'string') {
+      return NextResponse.json({ error: 'El nombre de la marca debe ser texto.' }, { status: 400 })
+    }
+    if (website !== undefined && website !== null && typeof website !== 'string') {
+      return NextResponse.json({ error: 'La web de la marca debe ser texto.' }, { status: 400 })
+    }
+    if (
+      assignedEmployees !== undefined &&
+      (!Array.isArray(assignedEmployees) || assignedEmployees.length > 200 || !assignedEmployees.every((id: unknown) => typeof id === 'string' && id.length > 0 && id.length <= 64))
+    ) {
+      return NextResponse.json({ error: 'assignedEmployees debe ser una lista de ids de usuarios.' }, { status: 400 })
+    }
+    // Newly assigned people must be real users of the agency or the client (never a creator account)
+    if (assignedEmployees !== undefined) {
+      const before = new Set(brandData.assignedEmployees || [])
+      const added = Array.from(new Set((assignedEmployees as string[]).filter((id) => !before.has(id))))
+      if (added.length > 0) {
+        const valid = await prisma.user.count({ where: { id: { in: added }, role: { in: ['ADMIN', 'EMPLOYEE', 'BRAND'] } } })
+        if (valid !== added.length) {
+          return NextResponse.json({ error: 'Alguno de los usuarios asignados no existe o no es del equipo.' }, { status: 400 })
+        }
+      }
+    }
+    // The client login linked to the brand must be a BRAND user
+    if (brandUserId !== undefined && brandUserId !== null && brandUserId !== '') {
+      const brandUser = typeof brandUserId === 'string' && brandUserId.length <= 64
+        ? await prisma.user.findUnique({ where: { id: brandUserId }, select: { role: true } })
+        : null
+      if (!brandUser || brandUser.role !== 'BRAND') {
+        return NextResponse.json({ error: 'brandUserId debe ser un usuario cliente (rol BRAND).' }, { status: 400 })
+      }
     }
 
     // If renaming, check uniqueness
@@ -371,12 +421,8 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'brandId is required' }, { status: 400 })
     }
 
-    // Check if brand exists
-    const existing = await prisma.setting.findUnique({
-      where: { key: brandId },
-    })
-
-    if (!existing) {
+    // Only a brand document (never another settings row)
+    if (!(await findBrandSetting(brandId))) {
       return NextResponse.json({ error: 'Brand not found' }, { status: 404 })
     }
 

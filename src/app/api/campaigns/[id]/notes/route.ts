@@ -3,6 +3,9 @@ import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { notifyCampaignTeam } from '@/lib/notifications'
 
+/** Longest note. */
+const NOTE_MAX_CHARS = 5000
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -58,12 +61,30 @@ export async function POST(
     const body = await request.json()
     const { influencerId, text } = body
 
-    if (!influencerId) {
+    if (!influencerId || typeof influencerId !== 'string') {
       return NextResponse.json({ error: 'influencerId is required' }, { status: 400 })
     }
 
     if (!text || typeof text !== 'string' || text.trim().length === 0) {
       return NextResponse.json({ error: 'text is required' }, { status: 400 })
+    }
+    if (text.trim().length > NOTE_MAX_CHARS) {
+      return NextResponse.json({ error: `La nota no puede pasar de ${NOTE_MAX_CHARS} caracteres.` }, { status: 400 })
+    }
+
+    // A note must land where someone can see it: on a real campaign and a
+    // creator of that campaign (a wrong id used to create a note nobody
+    // could ever see or delete, 12 Nov 2026)
+    const campaign = await prisma.campaign.findUnique({ where: { id }, select: { name: true } })
+    if (!campaign) {
+      return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
+    }
+    const member = await prisma.campaignInfluencer.findUnique({
+      where: { campaignId_influencerId: { campaignId: id, influencerId } },
+      select: { id: true },
+    })
+    if (!member) {
+      return NextResponse.json({ error: 'Esta creadora no está en la campaña: la nota no se ha guardado.' }, { status: 400 })
     }
 
     const note = await prisma.campaignNote.create({
@@ -77,15 +98,12 @@ export async function POST(
     })
 
     // Notify the campaign team (creator + assigned PMs), not the whole agency
-    const campaign = await prisma.campaign
-      .findUnique({ where: { id }, select: { name: true } })
-      .catch(() => null)
     notifyCampaignTeam(
       id,
       {
         type: 'note_added',
         title: 'Nota nueva',
-        message: campaign?.name
+        message: campaign.name
           ? `${session.name} ha añadido una nota en la campaña "${campaign.name}"`
           : `${session.name} ha añadido una nota en la campaña`,
         link: `/campaigns/${id}`,

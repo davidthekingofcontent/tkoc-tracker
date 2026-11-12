@@ -1818,7 +1818,9 @@ export default function SettingsPage() {
             </div>
 
             {/* Section: Conexiones con Claude (MCP connector). ADMIN only, like the
-                whole tab. Self-contained: the card loads, lists and revokes on its own. */}
+                whole tab. Self-contained: the card says what Claude can do, loads,
+                lists and revokes the connections, and shows Claude's activity
+                (actions waiting for confirmation first, then the last 50 calls). */}
             {isAdmin && <ClaudeConnectionsCard />}
           </div>
           )}

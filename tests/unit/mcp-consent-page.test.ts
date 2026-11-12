@@ -66,7 +66,7 @@ import {
 } from '@/components/mcp/consent-form'
 import { translations } from '@/i18n/translations'
 import { generateToken } from '@/lib/auth'
-import { ISSUER, MCP_RESOURCE, MCP_SCOPE } from '@/lib/mcp/config'
+import { ISSUER, MCP_GRANT_SCOPE, MCP_RESOURCE, MCP_SCOPE } from '@/lib/mcp/config'
 import { pkceChallengeS256, randomSecret, verifyConsentToken } from '@/lib/mcp/crypto'
 
 const CLAUDE_CALLBACK = 'https://claude.ai/api/mcp/auth_callback'
@@ -259,7 +259,9 @@ describe('GET /oauth/authorize: what is being asked', () => {
       [validQuery(client.clientId, { code_challenge_method: 'plain' }), 'invalid_request'],
       [validQuery(client.clientId, { response_type: 'token' }), 'unsupported_response_type'],
       [validQuery(client.clientId, { resource: 'https://example.com/api/mcp' }), 'invalid_target'],
-      [validQuery(client.clientId, { scope: 'tkoc.write' }), 'invalid_scope'],
+      // tkoc.read and tkoc.write are both known since the write layer; anything else is not
+      [validQuery(client.clientId, { scope: 'tkoc.admin' }), 'invalid_scope'],
+      [validQuery(client.clientId, { scope: 'tkoc.read offline_access' }), 'invalid_scope'],
     ]
     for (const [query, error] of cases) {
       const result = await open(query)
@@ -287,8 +289,15 @@ describe('GET /oauth/authorize: the consent screen', () => {
     expect(html).toContain('Has iniciado sesión como Ana Admin.')
     expect(html).toContain('<bdi>Claude</bdi>')
     expect(html).toContain('Al terminar volverás a claude.ai.')
-    expect(html).toContain('Leer campañas, creadoras, publicaciones y el estado de la captura. No puede cambiar nada.')
-    expect(html).toContain('No recibe correos, teléfonos, direcciones ni contraseñas.')
+    // What the grant allows since the write layer (tkoc.read tkoc.write, one consent)
+    expect(html).toContain('Qué puede hacer')
+    expect(html).toContain('Leer y modificar campañas, creadoras, publicaciones, listas, informes y rastreos, con tu usuario.')
+    expect(html).toContain('Qué te pedirá confirmar siempre')
+    expect(html).toContain('Borrar, gastar Apify, enviar correos y cambios en bloque.')
+    expect(html).toContain('Qué no puede tocar nunca')
+    expect(html).toContain('Usuarios, permisos, claves e integraciones.')
+    // The read-only promise would no longer be true
+    expect(html).not.toContain('No puede cambiar nada')
     expect(html).toContain('Puedes revocar la conexión cuando quieras en Ajustes, pestaña Integraciones.')
     expect(html).toContain('Permite solo si acabas de iniciar tú esta conexión desde Claude.')
   })
@@ -341,7 +350,7 @@ describe('GET /oauth/authorize: the consent screen', () => {
       codeChallenge: CHALLENGE,
       state: 'st-123',
       resource: MCP_RESOURCE,
-      scope: MCP_SCOPE,
+      scope: MCP_GRANT_SCOPE,
     })
     expect(check.expiresAt).toBeGreaterThanOrEqual(before + 10 * 60 * 1000)
     expect(check.expiresAt).toBeLessThanOrEqual(Date.now() + 10 * 60 * 1000)
@@ -356,6 +365,14 @@ describe('GET /oauth/authorize: the consent screen', () => {
     signIn(other)
     const third = verifyConsentToken(consentTokenOf((await open(validQuery(client.clientId))).html!))
     expect(third.ok && third.fields.userId).toBe(other.id)
+
+    // Whatever known scope the client names, the consent is for both scopes
+    for (const scope of ['tkoc.read', 'tkoc.write', 'tkoc.read tkoc.write', 'tkoc.write tkoc.read']) {
+      const shown = await open(validQuery(client.clientId, { scope }))
+      expect(shown.redirect, scope).toBeNull()
+      const signed = verifyConsentToken(consentTokenOf(shown.html!))
+      expect(signed.ok && signed.fields.scope, scope).toBe(MCP_GRANT_SCOPE)
+    }
   })
 
   it('escapes everything that comes from the client registration and from the user name', async () => {
@@ -397,8 +414,15 @@ describe('GET /oauth/authorize: page settings and texts', () => {
 
   it('keeps the sentences of the specification verbatim', () => {
     expect(es.forbidden).toBe('Solo un administrador puede conectar Claude con la plataforma.')
-    expect(es.gets).toBe('Leer campañas, creadoras, publicaciones y el estado de la captura. No puede cambiar nada.')
-    expect(es.never).toBe('No recibe correos, teléfonos, direcciones ni contraseñas.')
+    // The three sentences of the write layer (12 Nov 2026), in both languages
+    const w = translations.es.mcp.write.consent
+    expect(w.can).toBe('Leer y modificar campañas, creadoras, publicaciones, listas, informes y rastreos, con tu usuario.')
+    expect(w.confirm).toBe('Borrar, gastar Apify, enviar correos y cambios en bloque.')
+    expect(w.never).toBe('Usuarios, permisos, claves e integraciones.')
+    expect(Object.keys(translations.en.mcp.write.consent).sort()).toEqual(Object.keys(w).sort())
+    // The read-only sentences are gone
+    expect(es).not.toHaveProperty('gets')
+    expect(es).not.toHaveProperty('never')
     expect(es.allow).toBe('Permitir')
     expect(es.cancel).toBe('Cancelar')
     expect(translations.es.mcp.connections.title).toBe('Conexiones con Claude')

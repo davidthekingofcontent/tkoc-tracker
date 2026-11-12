@@ -57,6 +57,7 @@ import * as authorizationServerRoute from '@/app/.well-known/oauth-authorization
 import * as registerRoute from '@/app/api/oauth/register/route'
 import * as decisionRoute from '@/app/api/oauth/authorize/route'
 import * as tokenRoute from '@/app/api/oauth/token/route'
+import { WRITE_TOOLS } from '@/lib/mcp/tools/write'
 
 /**
  * The connection made by the MCP SDK's OWN client, the code Claude Code runs:
@@ -273,7 +274,8 @@ describe('the MCP SDK client (what Claude Code runs) against the real routes', (
       redirect_uri: LOOPBACK,
       code_challenge_method: 'S256',
       state: provider.fixedState,
-      scope: 'tkoc.read',
+      // The SDK asks for every scope the metadata announces
+      scope: 'tkoc.read tkoc.write',
       // checkResourceAllowed passed: the resource announced is the address typed, to the letter
       resource: TYPED_IN_CLAUDE,
     })
@@ -298,7 +300,7 @@ describe('the MCP SDK client (what Claude Code runs) against the real routes', (
 
     // ===== 3. Claude Code receives the code and the SDK exchanges it =====
     await first.finishAuth(callback.searchParams.get('code') as string)
-    expect(provider.saved).toMatchObject({ token_type: expect.stringMatching(/^bearer$/i), scope: 'tkoc.read', refresh_token: expect.any(String) })
+    expect(provider.saved).toMatchObject({ token_type: expect.stringMatching(/^bearer$/i), scope: 'tkoc.read tkoc.write', refresh_token: expect.any(String) })
     const grant = await prisma.mcpGrant.findFirstOrThrow({ where: { userId: admin.id, revokedAt: null } })
     expect(grant.resource).toBe(TYPED_IN_CLAUDE)
 
@@ -307,9 +309,11 @@ describe('the MCP SDK client (what Claude Code runs) against the real routes', (
     await client.connect(newTransport(provider))
     expect(client.getServerVersion()).toMatchObject({ name: 'tkoc-intelligence' })
     const { tools } = await client.listTools()
+    // The SDK client accepts every tool the server announces: the eight read tools, then the write tools
     expect(tools.map(t => t.name)).toEqual([
       'list_campaigns', 'get_campaign', 'list_campaign_creators', 'list_campaign_media',
       'find_creator', 'get_creator', 'capture_status', 'explain_missing_post',
+      ...WRITE_TOOLS.map(t => t.name),
     ])
     const listed = await client.callTool({ name: 'list_campaigns', arguments: { status: 'ACTIVE', limit: 200 } })
     expect(listed.isError ?? false).toBe(false)

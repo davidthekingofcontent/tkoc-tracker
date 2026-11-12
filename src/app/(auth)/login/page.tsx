@@ -40,10 +40,11 @@ export default function LoginPage() {
         localStorage.setItem('user', JSON.stringify(data.user))
       }
 
-      // Signing in on the way to the consent screen of the Claude connector:
-      // go back to that request. `next` is honoured ONLY for /oauth/authorize
-      // on this site (safeNextPath); anything else is ignored. A full page
-      // load, so the screen is rendered on the server with the new session.
+      // Signing in on the way to a page of the Claude connector: go back to
+      // it. `next` is honoured ONLY for /oauth/authorize (the consent screen,
+      // with its query) and /mcp/confirmar/<id> (the confirmation of an
+      // action) on this site (safeNextPath); anything else is ignored. A full
+      // page load, so the page is rendered on the server with the new session.
       const next = safeNextPath(new URLSearchParams(window.location.search).get('next'))
       if (next) {
         window.location.assign(next)

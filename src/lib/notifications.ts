@@ -13,6 +13,8 @@ export type NotificationType =
   | 'team_joined'
   | 'apify_budget'
   | 'cron_stale'
+  // Claude ran a change through the connector that the administrator confirmed (platform_request)
+  | 'mcp_action'
 
 export interface CreateNotificationParams {
   userId: string

@@ -166,7 +166,7 @@ describe('mcp metadata documents', () => {
     expect(protectedResourceMetadata()).toEqual({
       resource: `${PROD}/api/mcp`,
       authorization_servers: [PROD],
-      scopes_supported: ['tkoc.read'],
+      scopes_supported: ['tkoc.read', 'tkoc.write'],
       bearer_methods_supported: ['header'],
       resource_name: 'TKOC Intelligence',
     })
@@ -186,7 +186,7 @@ describe('mcp metadata documents', () => {
       code_challenge_methods_supported: ['S256'],
       token_endpoint_auth_methods_supported: ['none'],
       revocation_endpoint_auth_methods_supported: ['none'],
-      scopes_supported: ['tkoc.read'],
+      scopes_supported: ['tkoc.read', 'tkoc.write'],
       authorization_response_iss_parameter_supported: true,
     })
     // Dynamic registration only: Claude must not be told to use a client id metadata document

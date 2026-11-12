@@ -4,14 +4,18 @@
  * Ajustes → Integraciones → «Conexiones con Claude» (ADMIN only).
  *
  * Self-contained: it loads its own data and needs no props.
+ *   - what the connection can do, what it always asks to confirm (and how),
+ *     and what it can never touch: the same sentences as the consent screen;
  *   - the address of the MCP server, with a copy button;
  *   - three short steps to connect from Claude (and the Claude Code command);
  *   - the active connections of ALL administrators (GET /api/oauth/grants);
- *   - «Revocar», confirmed inside the page (DELETE /api/oauth/grants/<id>).
+ *   - «Revocar», confirmed inside the page (DELETE /api/oauth/grants/<id>);
+ *   - «Actividad de Claude» (./claude-activity.tsx): the actions waiting for
+ *     a confirmation, then the last 50 calls (GET /api/oauth/activity).
  *
  * The routes enforce the ADMIN session themselves: this card only shows what
- * they answer (see ./connections-api.ts for the contract). It never sees a
- * token, only names and dates.
+ * they answer (see ./connections-api.ts and ./activity-api.ts for the
+ * contracts). It never sees a token, only names, tool names and dates.
  *
  * SECURITY: the client name is text typed by whoever registered the client.
  * It is only ever rendered as a React text node (escaped).
@@ -23,26 +27,19 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { MCP_RESOURCE } from '@/lib/mcp/config'
-import { formatDate, type EurLocale } from '@/lib/utils'
+import { formatDate } from '@/lib/utils'
+import { ClaudeActivity } from './claude-activity'
 import { loadConnections, loadServerUrl, revokeConnection, type Connection, type RevokeOutcome } from './connections-api'
+import { formatDateTime } from './format'
+import { MCP_WRITE_TEXTS } from './write-texts'
 
 type LoadState = 'loading' | 'ready' | 'error'
-
-/** House date (formatDate, Europe/Madrid) plus the time of day. */
-function formatDateTime(value: string, locale: EurLocale): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return formatDate(value, { locale })
-  const time = new Intl.DateTimeFormat(locale === 'es' ? 'es-ES' : 'en-GB', {
-    timeZone: 'Europe/Madrid',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date)
-  return `${formatDate(date, { locale })}, ${time}`
-}
 
 export function ClaudeConnectionsCard() {
   const { t, locale } = useI18n()
   const c = t.mcp.connections
+  // What the grant allows: the very sentences of the consent screen
+  const w = MCP_WRITE_TEXTS[locale].consent
 
   // The bundled address is shown at once and replaced by the server's own if
   // the two ever differ (see loadServerUrl)
@@ -120,12 +117,37 @@ export function ClaudeConnectionsCard() {
     <div>
       <div className="mb-1 flex flex-wrap items-center gap-2">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{c.title}</h3>
-        <Badge variant="default">{c.readOnly}</Badge>
+        <Badge variant="default">{c.accessBadge}</Badge>
       </div>
-      <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">{c.intro}</p>
+      <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">{c.introWrite}</p>
 
       <Card variant="elevated">
         <CardContent>
+          {/* ---- What the connection can do (tkoc.read tkoc.write) ---- */}
+          <dl className="space-y-3 text-sm">
+            <div>
+              <dt className="font-medium text-gray-900 dark:text-white">{w.canLabel}</dt>
+              <dd className="mt-0.5 text-gray-700 dark:text-gray-300">{w.can}</dd>
+            </div>
+            <div>
+              <dt className="font-medium text-gray-900 dark:text-white">{w.confirmLabel}</dt>
+              <dd className="mt-0.5 text-gray-700 dark:text-gray-300">{w.confirm}</dd>
+            </div>
+            <div>
+              <dt className="font-medium text-gray-900 dark:text-white">{c.howConfirmLabel}</dt>
+              <dd className="mt-0.5 space-y-1 text-gray-700 dark:text-gray-300">
+                <p>{c.confirmInChat}</p>
+                <p>{c.confirmInPlatform}</p>
+              </dd>
+            </div>
+            <div>
+              <dt className="font-medium text-gray-900 dark:text-white">{w.neverLabel}</dt>
+              <dd className="mt-0.5 text-gray-700 dark:text-gray-300">{w.never}</dd>
+            </div>
+          </dl>
+
+          <hr className="my-5 border-gray-100 dark:border-gray-700" />
+
           {/* ---- Server address ---- */}
           <label htmlFor="mcp-server-url" className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
             {c.serverUrl}
@@ -206,7 +228,13 @@ export function ClaudeConnectionsCard() {
                     <div className="min-w-0">
                       <p className="break-words font-semibold text-gray-900 dark:text-white">
                         <bdi>{conn.clientName ?? c.unknownClient}</bdi>
+                        {conn.readOnly && (
+                          <Badge variant="default" className="ml-2 align-middle">
+                            {c.readOnlyBadge}
+                          </Badge>
+                        )}
                       </p>
+                      {conn.readOnly && <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">{c.readOnlyHint}</p>}
                       <div className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-gray-500 dark:text-gray-400">
                         <span>
                           {c.authorisedBy}: <span className="text-gray-700 dark:text-gray-300">{conn.userName ?? c.unknownUser}</span>
@@ -264,6 +292,9 @@ export function ClaudeConnectionsCard() {
           )}
         </CardContent>
       </Card>
+
+      {/* ---- What Claude did, and what waits for a confirmation ---- */}
+      <ClaudeActivity />
     </div>
   )
 }

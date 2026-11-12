@@ -8,6 +8,40 @@ function normalizeHandle(s: string): string {
   return s.toLowerCase().replace(/^@/, '').trim()
 }
 
+/** Largest figure a story count may carry (the columns are 32-bit integers). */
+const STORY_COUNT_MAX = 2_000_000_000
+/** Longest mentions / hashtags list, and longest item. */
+const STORY_LIST_MAX = 50
+const STORY_LIST_ITEM_MAX = 100
+
+/** A count typed by the PM: empty/absent → 0; a number (or numeric text) 0..STORY_COUNT_MAX, rounded. undefined = invalid. */
+function parseStoryCount(v: unknown): number | undefined {
+  if (v === undefined || v === null || v === '') return 0
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v.trim()) : NaN
+  if (!Number.isFinite(n) || n < 0 || n > STORY_COUNT_MAX) return undefined
+  return Math.round(n)
+}
+
+/** mentions / hashtags: absent → []; a list of short texts. undefined = invalid. */
+function parseStringList(v: unknown): string[] | undefined {
+  if (v === undefined || v === null) return []
+  if (!Array.isArray(v) || v.length > STORY_LIST_MAX) return undefined
+  if (!v.every((s) => typeof s === 'string' && s.length <= STORY_LIST_ITEM_MAX)) return undefined
+  return v as string[]
+}
+
+/** mediaUrl / thumbnailUrl: absent or empty → null; an absolute http(s) URL. undefined = invalid. */
+function parseOptionalHttpUrl(v: unknown): string | null | undefined {
+  if (v === undefined || v === null || v === '') return null
+  if (typeof v !== 'string' || v.length > 2000) return undefined
+  try {
+    const url = new URL(v)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -138,11 +172,39 @@ export async function POST(
       postedAt,
       mentions,
       hashtags,
+      allowDuplicate,
+      dedupe,
     } = body
 
-    if (!influencerId) {
+    if (!influencerId || typeof influencerId !== 'string') {
       return NextResponse.json(
         { error: 'influencerId is required' },
+        { status: 400 }
+      )
+    }
+
+    // Counts typed by the PM (empty/absent → 0). Text or a negative number used
+    // to become 0 in silence (12 Nov 2026): now it is a 400.
+    const counts = [views, reach, impressions, replies].map(parseStoryCount)
+    if (counts.some((c) => c === undefined)) {
+      return NextResponse.json(
+        { error: `Las cifras de la story (vistas, alcance, impresiones, respuestas) deben ser números entre 0 y ${STORY_COUNT_MAX}.` },
+        { status: 400 }
+      )
+    }
+    const cleanMentions = parseStringList(mentions)
+    const cleanHashtags = parseStringList(hashtags)
+    if (cleanMentions === undefined || cleanHashtags === undefined) {
+      return NextResponse.json(
+        { error: `mentions y hashtags deben ser listas de como mucho ${STORY_LIST_MAX} textos cortos.` },
+        { status: 400 }
+      )
+    }
+    const cleanMediaUrl = parseOptionalHttpUrl(mediaUrl)
+    const cleanThumbnailUrl = parseOptionalHttpUrl(thumbnailUrl)
+    if (cleanMediaUrl === undefined || cleanThumbnailUrl === undefined) {
+      return NextResponse.json(
+        { error: 'mediaUrl y thumbnailUrl deben ser direcciones http(s) completas.' },
         { status: 400 }
       )
     }
@@ -216,17 +278,50 @@ export async function POST(
       )
     }
 
-    // Counts typed by the PM (empty/absent → 0). A story has no likes; the
-    // "replies" field lands in `comments`.
-    const count = (v: unknown) => Math.max(0, Math.round(Number(v) || 0))
-    const nViews = count(views)
-    const nReach = count(reach)
-    const nImpressions = count(impressions)
-    const nReplies = count(replies)
+    // Counts (validated above). A story has no likes; the "replies" field lands in `comments`.
+    const [nViews, nReach, nImpressions, nReplies] = counts as number[]
 
     const linkStory = parsedStory && !parsedStory.isHighlight ? parsedStory : null
     const storyId = linkStory?.storyId ?? null
     const canonicalPermalink = linkStory ? linkStory.canonicalUrl : (rawPermalink || null)
+
+    // Without a story id nothing below de-duplicates, so a retry (a client that
+    // timed out and sends again) added the same story twice and inflated the
+    // campaign totals. A caller that ASKS for it with `dedupe: true` (the
+    // Claude connector does) gets the same creator + date + link + figures
+    // already in the campaign refused as that retry, unless allowDuplicate is
+    // true. Without a date ("now") two calls never share a date.
+    // The form of the platform does not ask for it on purpose: two stories of
+    // the same minute with the same figures (0 until the creator sends her
+    // statistics) are two stories, and the form has no way to say "it is
+    // another one". A double click there is prevented by the form itself.
+    if (!storyId && dateSource !== 'now' && dedupe === true && allowDuplicate !== true) {
+      const twin = await prisma.media.findFirst({
+        where: {
+          campaignId: id,
+          influencerId,
+          mediaType: 'STORY',
+          externalId: null,
+          permalink: canonicalPermalink,
+          postedAt: resolvedPostedAt,
+          views: nViews,
+          reach: nReach,
+          impressions: nImpressions,
+          comments: nReplies,
+        },
+        select: { id: true },
+      })
+      if (twin) {
+        return NextResponse.json(
+          {
+            error: 'Esta story ya está registrada (misma creadora, misma fecha y mismas cifras). Si es otra story, indica su enlace o su hora exacta.',
+            duplicate: true,
+            storyId: twin.id,
+          },
+          { status: 409 }
+        )
+      }
+    }
 
     // Dedupe by story id INSIDE this campaign: the same link may already be a
     // row from the cron (externalId = id) or from Media → "Añadir publicación
@@ -283,15 +378,15 @@ export async function POST(
           platform: ci.influencer.platform,
           mediaType: 'STORY',
           permalink: canonicalPermalink,
-          mediaUrl: mediaUrl || null,
-          thumbnailUrl: thumbnailUrl || null,
+          mediaUrl: cleanMediaUrl,
+          thumbnailUrl: cleanThumbnailUrl,
           views: nViews,
           reach: nReach,
           impressions: nImpressions,
           comments: nReplies,
           postedAt: resolvedPostedAt,
-          mentions: mentions || [],
-          hashtags: hashtags || [],
+          mentions: cleanMentions,
+          hashtags: cleanHashtags,
           source: 'manual',
           dataSource: 'manual',
           influencerId,

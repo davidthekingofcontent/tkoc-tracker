@@ -12,6 +12,8 @@
  * Both routes check the ADMIN session themselves. Nothing here ever carries a
  * token: only names and dates.
  */
+import { MCP_WRITE_SCOPE, grantHasScope } from '@/lib/mcp/config'
+
 export const GRANTS_ENDPOINT = '/api/oauth/grants'
 
 /** One active connection, as the card shows it. */
@@ -25,6 +27,13 @@ export interface Connection {
   createdAt: string | null
   /** ISO date of the last call, or null when it has not been used yet. */
   lastUsedAt: string | null
+  /**
+   * true when the grant does not carry tkoc.write: an authorisation of before
+   * the write layer, or one whose scope the route did not send. Claude can
+   * only read through it; the card says so, so the administrator can tell it
+   * from the new one before revoking.
+   */
+  readOnly: boolean
 }
 
 export type RevokeOutcome = 'revoked' | 'alreadyGone' | 'revokeError'
@@ -53,6 +62,7 @@ export function toConnections(data: unknown): Connection[] {
       userName: text(row.userName),
       createdAt: text(row.createdAt),
       lastUsedAt: text(row.lastUsedAt),
+      readOnly: !grantHasScope(text(row.scope), MCP_WRITE_SCOPE),
     })
   }
   return rows

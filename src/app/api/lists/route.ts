@@ -58,10 +58,14 @@ export async function POST(request: NextRequest) {
     if (!name) {
       return NextResponse.json({ error: 'List name is required' }, { status: 400 })
     }
+    // Text only, trimmed, with a ceiling (a number or an object used to end in a 500)
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 200) {
+      return NextResponse.json({ error: 'El nombre de la lista debe tener entre 1 y 200 caracteres.' }, { status: 400 })
+    }
 
     const list = await prisma.list.create({
       data: {
-        name,
+        name: name.trim(),
         userId: session.id,
       },
       include: {

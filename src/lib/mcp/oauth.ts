@@ -40,8 +40,10 @@ import {
   LAST_USED_WRITE_INTERVAL_MS,
   MAX_CLIENTS,
   MAX_REDIRECT_URIS,
+  MCP_GRANT_SCOPE,
   MCP_RESOURCE,
   MCP_SCOPE,
+  MCP_SCOPES,
   REFRESH_REUSE_LEEWAY_MS,
   REFRESH_TOKEN_TTL_MS,
   REGISTRATION_RATE_LIMIT,
@@ -146,11 +148,32 @@ function requiredFormParam(src: ParamSource, name: string): string {
   return v
 }
 
-/** `scope` absent, or a space-separated list in which every item is our only scope. */
+/**
+ * `scope` absent, or a space-separated list in which every item is one of our
+ * scopes (tkoc.read, tkoc.write). A new grant gets what the consent screen
+ * showed: MCP_GRANT_SCOPE (one consent, both) for the screen of today, which
+ * always signs it, and read only for any other consent (consentedScope). A
+ * renewal keeps the grant's own.
+ */
 function isAcceptableScope(scope: string | null): boolean {
   if (scope === null) return true
   const items = scope.split(' ').filter(Boolean)
-  return items.length > 0 && items.every(s => s === MCP_SCOPE)
+  return items.length > 0 && items.every(s => MCP_SCOPES.includes(s))
+}
+
+const SCOPE_ERROR = `The scopes are ${MCP_SCOPES.join(' and ')}`
+
+/**
+ * The scope a grant gets from the scope its consent carried: exactly what the
+ * administrator saw. The consent screen of the write layer signs
+ * MCP_GRANT_SCOPE and describes both; a consent token signed by the read-only
+ * screen of before (scope tkoc.read, still valid for 10 minutes across a
+ * deploy) only ever gets tkoc.read. No scope at all (a direct call, never the
+ * consent route) gets MCP_GRANT_SCOPE.
+ */
+export function consentedScope(scope: string | null | undefined): string {
+  if (scope == null || scope === MCP_GRANT_SCOPE) return MCP_GRANT_SCOPE
+  return MCP_SCOPE
 }
 
 // ============ The administrator ============
@@ -239,7 +262,7 @@ function isSubset(value: unknown, allowed: readonly string[]): boolean {
  * clients only; `grant_types` ⊆ {authorization_code, refresh_token};
  * `response_types` ⊆ {code}; every redirect URI is one of Claude's two
  * callbacks or a loopback URL. A requested `scope` is ignored (the client is
- * always registered for tkoc.read). Throws OAuthError `invalid_redirect_uri`
+ * always registered for MCP_GRANT_SCOPE). Throws OAuthError `invalid_redirect_uri`
  * or `invalid_client_metadata`. The name is plain text: escape it when shown.
  */
 export function parseClientRegistration(input: unknown): ClientRegistration {
@@ -277,7 +300,7 @@ export function parseClientRegistration(input: unknown): ClientRegistration {
     throw new OAuthError('invalid_client_metadata', 'response_types may only contain code')
   }
   // The scope a client asks for at registration grants nothing: every grant is
-  // tkoc.read (createGrantAndCode), the answer says so, and the scope is
+  // MCP_GRANT_SCOPE (createGrantAndCode), the answer says so, and the scope is
   // checked strictly where it matters, at /oauth/authorize and at renewal.
   // RFC 7591 §2 lets the server replace it, so an unknown or extra value
   // (offline_access, a scope of the client's own) must not stop Claude from
@@ -400,7 +423,7 @@ export async function registerClient(input: unknown, ip: string): Promise<Regist
     token_endpoint_auth_method: 'none',
     grant_types: [...GRANT_TYPES],
     response_types: [...RESPONSE_TYPES],
-    scope: MCP_SCOPE,
+    scope: MCP_GRANT_SCOPE,
   }
 }
 
@@ -454,7 +477,9 @@ export function buildAuthorizeRedirect(
  * its redirect URI are checked first, and while either is wrong nothing is
  * ever redirected. After that every error travels back to the client.
  * Requires `response_type=code`, PKCE with `code_challenge_method=S256`,
- * `resource` absent or equal to MCP_RESOURCE, `scope` absent or `tkoc.read`.
+ * `resource` absent or equal to MCP_RESOURCE, `scope` absent or made of
+ * known scopes (tkoc.read, tkoc.write). The request always asks for
+ * MCP_GRANT_SCOPE: one consent, both scopes.
  * It does NOT look at the session: call checkAdminSession as well.
  */
 export async function validateAuthorizeRequest(params: ParamSource): Promise<AuthorizeValidation> {
@@ -501,11 +526,11 @@ export async function validateAuthorizeRequest(params: ParamSource): Promise<Aut
   if (resource !== null && resource !== MCP_RESOURCE) return back('invalid_target', 'Unknown resource')
 
   const scope = readParam(params, 'scope')
-  if (scope === INVALID || !isAcceptableScope(scope)) return back('invalid_scope', `The only scope is ${MCP_SCOPE}`)
+  if (scope === INVALID || !isAcceptableScope(scope)) return back('invalid_scope', SCOPE_ERROR)
 
   return {
     ok: true,
-    request: { clientId, redirectUri, codeChallenge, state, resource: MCP_RESOURCE, scope: MCP_SCOPE },
+    request: { clientId, redirectUri, codeChallenge, state, resource: MCP_RESOURCE, scope: MCP_GRANT_SCOPE },
     client: {
       clientId,
       name: client.name,
@@ -550,13 +575,15 @@ export async function createGrantAndCode(input: GrantInput): Promise<{ grantId: 
   }
   if (!isValidCodeChallenge(input.codeChallenge)) throw new OAuthError('invalid_request', 'code_challenge is required (PKCE, S256)')
   if (input.resource != null && input.resource !== MCP_RESOURCE) throw new OAuthError('invalid_target', 'Unknown resource')
-  if (input.scope != null && !isAcceptableScope(input.scope)) throw new OAuthError('invalid_scope', `The only scope is ${MCP_SCOPE}`)
+  if (input.scope != null && !isAcceptableScope(input.scope)) throw new OAuthError('invalid_scope', SCOPE_ERROR)
 
   const code = randomSecret()
   const expiresAt = new Date(Date.now() + CODE_TTL_MS)
+  // Exactly what the consent screen described: never write access on a read-only consent
+  const scope = consentedScope(input.scope)
   const grantId = await prisma.$transaction(async tx => {
     const grant = await tx.mcpGrant.create({
-      data: { clientId: client.clientId, userId: admin.id, scope: MCP_SCOPE, resource: MCP_RESOURCE },
+      data: { clientId: client.clientId, userId: admin.id, scope, resource: MCP_RESOURCE },
     })
     await tx.mcpAuthCode.create({
       data: {
@@ -566,7 +593,7 @@ export async function createGrantAndCode(input: GrantInput): Promise<{ grantId: 
         redirectUri: input.redirectUri,
         codeChallenge: input.codeChallenge,
         resource: MCP_RESOURCE,
-        scope: MCP_SCOPE,
+        scope,
         expiresAt,
         grantId: grant.id,
       },
@@ -750,7 +777,10 @@ export async function refresh(form: ParamSource): Promise<TokenResponse> {
     throw invalidGrant('The refresh token belongs to another client')
   }
   if (resource !== null && resource !== MCP_RESOURCE) throw new OAuthError('invalid_target', 'Unknown resource')
-  if (!isAcceptableScope(scope)) throw new OAuthError('invalid_scope', `The only scope is ${MCP_SCOPE}`)
+  // Any known scope may be named; the new pair always carries the grant's own
+  // scope. A grant approved before tkoc.write existed stays read-only (the
+  // answer's `scope` says so) instead of being cut off at renewal
+  if (!isAcceptableScope(scope)) throw new OAuthError('invalid_scope', SCOPE_ERROR)
 
   const tokens = await prisma.$transaction(async tx => {
     const rotated = await tx.mcpToken.updateMany({ where: { id: row.id, rotatedAt: null }, data: { rotatedAt: now } })

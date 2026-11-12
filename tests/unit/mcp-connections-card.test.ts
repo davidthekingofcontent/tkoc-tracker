@@ -52,19 +52,30 @@ const ROW = {
 
 describe('card «Conexiones con Claude»: reading the grants API', () => {
   it('accepts { grants: [...] } or a bare array and keeps only what the card shows', () => {
+    // ROW is an authorisation of before the write layer: the card says it is read only
     const expected = [
-      { id: 'grant_1', clientName: 'Claude', userName: 'Ana Admin', createdAt: '2026-11-12T09:30:00.000Z', lastUsedAt: null },
+      { id: 'grant_1', clientName: 'Claude', userName: 'Ana Admin', createdAt: '2026-11-12T09:30:00.000Z', lastUsedAt: null, readOnly: true },
     ]
     expect(toConnections({ grants: [ROW] })).toEqual(expected)
     expect(toConnections([ROW])).toEqual(expected)
-    // Anything else a row might carry never reaches the page
+    // Anything else a row might carry never reaches the page (the scope itself neither: only whether it writes)
     const leaky = { ...ROW, email: 'ana@example.com', accessToken: 'secret', tokenHash: 'abc' }
     expect(toConnections([leaky])).toEqual(expected)
   })
 
+  it('tells a read-only connection from one that can make changes (fix of 12 Nov 2026)', () => {
+    const rows = toConnections([
+      { ...ROW, id: 'old', scope: 'tkoc.read' },
+      { ...ROW, id: 'new', scope: 'tkoc.read tkoc.write' },
+      { ...ROW, id: 'odd', scope: 'tkoc.readtkoc.write' },
+      { ...ROW, id: 'none', scope: undefined },
+    ])
+    expect(Object.fromEntries(rows.map(r => [r.id, r.readOnly]))).toEqual({ old: true, new: false, odd: true, none: true })
+  })
+
   it('drops malformed rows and never throws on a surprising answer', () => {
     expect(toConnections({ grants: [null, 7, 'x', {}, { id: '' }, { id: 5 }, { id: 'ok', clientName: 9, userName: '  ', lastUsedAt: '2026-11-12T10:00:00.000Z' }] })).toEqual([
-      { id: 'ok', clientName: null, userName: null, createdAt: null, lastUsedAt: '2026-11-12T10:00:00.000Z' },
+      { id: 'ok', clientName: null, userName: null, createdAt: null, lastUsedAt: '2026-11-12T10:00:00.000Z', readOnly: true },
     ])
     for (const odd of [null, undefined, 'text', 42, {}, { grants: 'no' }, { error: 'Forbidden' }]) {
       expect(toConnections(odd)).toEqual([])
@@ -137,7 +148,9 @@ describe('card «Conexiones con Claude»: what it shows before any data arrives'
 
   it('has the title, the server address to copy and the copy button', () => {
     expect(html).toContain('<h3 class="text-lg font-semibold text-gray-900 dark:text-white">Conexiones con Claude</h3>')
-    expect(html).toContain('Solo lectura')
+    // Since the write layer (12 Nov 2026) the connection reads and changes data
+    expect(html).toContain('Lee y hace cambios')
+    expect(html).not.toContain('Solo lectura')
     expect(html).toMatch(new RegExp(`<input[^>]*readOnly=""[^>]*value="${SERVER_URL}"`))
     expect(html).toContain('Copiar')
   })

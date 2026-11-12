@@ -1,7 +1,7 @@
 /**
- * The tools of the MCP connector, in the order Claude lists them. All of them
- * read; none writes. A tool that writes will be a new entry here, behind its
- * own scope, added one by one.
+ * The READ tools of the MCP connector, in the order Claude lists them. None of
+ * them writes. The tools that change the platform live in ./write (behind the
+ * tkoc.write scope) and are listed after these.
  *
  *   list_campaigns          campaigns.ts
  *   get_campaign            campaigns.ts

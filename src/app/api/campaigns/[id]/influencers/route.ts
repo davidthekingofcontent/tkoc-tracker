@@ -46,6 +46,36 @@ function parseMoney(v: unknown): number | null | undefined {
   return n
 }
 
+/**
+ * cost / agreedFee: null, '' or blank stay 0 as before (the fee input sends ''
+ * when emptied); a number or numeric text >= 0 is kept. undefined = invalid
+ * (text that is not a number, a negative, another type).
+ */
+function parseFee(v: unknown): number | undefined {
+  if (v === null || (typeof v === 'string' && !v.trim())) return 0
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v.trim()) : NaN
+  if (!Number.isFinite(n) || n < 0) return undefined
+  return n
+}
+
+const MEMBER_NOTES_MAX_CHARS = 5000
+const SHIPPING_TEXT_MAX_CHARS = 1000
+const SHIPPING_COMMENTS_MAX_CHARS = 2000
+const SHIPPING_QTY_MAX = 1_000_000
+
+/**
+ * shippingQty: an empty value (0, '', null, false) clears it as before; a
+ * whole number (parseInt, as before) between 0 and SHIPPING_QTY_MAX is kept.
+ * undefined = invalid (it used to reach the database as NaN and fail with a 500).
+ */
+function parseShippingQty(v: unknown): number | null | undefined {
+  if (!v) return null
+  if (typeof v !== 'number' && typeof v !== 'string') return undefined
+  const n = parseInt(String(v), 10)
+  if (!Number.isInteger(n) || n < 0 || n > SHIPPING_QTY_MAX) return undefined
+  return n
+}
+
 /** Optional non-negative integer (deliverables, clicks): null/'' clears; undefined = invalid. */
 function parseCount(v: unknown): number | null | undefined {
   if (v === null || v === '') return null
@@ -280,6 +310,42 @@ export async function PATCH(
       return NextResponse.json({ error: 'trackedClicks must be a non-negative integer' }, { status: 400 })
     }
 
+    // ---- Money, notes and shipping (12 Nov 2026): text used to become a fee of
+    // 0 in silence, negatives were stored, and any value went into notes and
+    // the shipping fields. Empty/null keep their old meaning (fee 0, field cleared). ----
+    const newCost = cost !== undefined ? parseFee(cost) : undefined
+    if (cost !== undefined && newCost === undefined) {
+      return NextResponse.json({ error: 'cost debe ser un número mayor o igual que 0.' }, { status: 400 })
+    }
+    const parsedAgreedFee = agreedFee !== undefined ? parseFee(agreedFee) : undefined
+    if (agreedFee !== undefined && parsedAgreedFee === undefined) {
+      return NextResponse.json({ error: 'agreedFee debe ser un número mayor o igual que 0.' }, { status: 400 })
+    }
+    if (notes !== undefined && notes !== null && (typeof notes !== 'string' || notes.length > MEMBER_NOTES_MAX_CHARS)) {
+      return NextResponse.json({ error: `notes debe ser texto de como mucho ${MEMBER_NOTES_MAX_CHARS} caracteres.` }, { status: 400 })
+    }
+    const shippingTexts: [string, unknown, number][] = [
+      ['shippingName', shippingName, SHIPPING_TEXT_MAX_CHARS],
+      ['shippingAddress1', shippingAddress1, SHIPPING_TEXT_MAX_CHARS],
+      ['shippingAddress2', shippingAddress2, SHIPPING_TEXT_MAX_CHARS],
+      ['shippingCity', shippingCity, SHIPPING_TEXT_MAX_CHARS],
+      ['shippingPostCode', shippingPostCode, SHIPPING_TEXT_MAX_CHARS],
+      ['shippingCountry', shippingCountry, SHIPPING_TEXT_MAX_CHARS],
+      ['shippingPhone', shippingPhone, SHIPPING_TEXT_MAX_CHARS],
+      ['shippingEmail', shippingEmail, SHIPPING_TEXT_MAX_CHARS],
+      ['shippingProduct', shippingProduct, SHIPPING_TEXT_MAX_CHARS],
+      ['shippingComments', shippingComments, SHIPPING_COMMENTS_MAX_CHARS],
+    ]
+    for (const [field, value, max] of shippingTexts) {
+      if (value !== undefined && value !== null && (typeof value !== 'string' || value.length > max)) {
+        return NextResponse.json({ error: `${field} debe ser texto de como mucho ${max} caracteres.` }, { status: 400 })
+      }
+    }
+    const qty = shippingQty !== undefined ? parseShippingQty(shippingQty) : undefined
+    if (shippingQty !== undefined && qty === undefined) {
+      return NextResponse.json({ error: `shippingQty debe ser un número entero entre 0 y ${SHIPPING_QTY_MAX}.` }, { status: 400 })
+    }
+
     // ---- Manual baseline validation (staff only; null = clear) ----
     let baselineInput: BaselineManualInput | null | undefined
     if (baselineManual !== undefined) {
@@ -322,7 +388,7 @@ export async function PATCH(
     }
 
     // The deal closes the first time agreedFee goes from empty/0 to > 0 (never re-stamped).
-    const newAgreedFee = agreedFee !== undefined ? (parseFloat(agreedFee) || 0) : undefined
+    const newAgreedFee = parsedAgreedFee
     const closesDeal =
       newAgreedFee !== undefined &&
       newAgreedFee > 0 &&
@@ -332,7 +398,7 @@ export async function PATCH(
     const updated = await prisma.campaignInfluencer.update({
       where: { id: existing.id },
       data: {
-        ...(cost !== undefined && { cost: parseFloat(cost) || 0 }),
+        ...(newCost !== undefined && { cost: newCost }),
         ...(newAgreedFee !== undefined && { agreedFee: newAgreedFee }),
         ...(closesDeal && { dealClosedAt: new Date() }),
         // Deal terms
@@ -362,7 +428,7 @@ export async function PATCH(
         ...(shippingPhone !== undefined && { shippingPhone: shippingPhone || null }),
         ...(shippingEmail !== undefined && { shippingEmail: shippingEmail || null }),
         ...(shippingProduct !== undefined && { shippingProduct: shippingProduct || null }),
-        ...(shippingQty !== undefined && { shippingQty: shippingQty ? parseInt(shippingQty) : null }),
+        ...(qty !== undefined && { shippingQty: qty }),
         ...(shippingComments !== undefined && { shippingComments: shippingComments || null }),
       },
       include: { influencer: true },
