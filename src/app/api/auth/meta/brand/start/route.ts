@@ -4,7 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getSession } from '@/lib/auth'
+import { getSession, isStaffRole } from '@/lib/auth'
 import {
   buildAuthorizeUrl,
   encodeMetaState,
@@ -20,6 +20,11 @@ export async function GET(request: NextRequest) {
   const session = await getSession(request)
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  // /api/auth is reachable by BRAND and CREATOR sessions: this connection is
+  // agency-wide (the cron syncs every 'brand' token), so it is staff-only
+  if (!isStaffRole(session.role)) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
   const appId = process.env.META_APP_ID

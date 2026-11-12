@@ -5,7 +5,12 @@
 
 interface RateLimitWindow {
   timestamps: number[]
+  /** Window length of the last check, so idle buckets can be swept. */
+  windowMs?: number
 }
+
+/** Above this many buckets, expired ones are swept before adding more. */
+const MAX_BUCKETS = 5_000
 
 class RateLimiter {
   private windows = new Map<string, RateLimitWindow>()
@@ -28,9 +33,24 @@ class RateLimiter {
       return false
     }
 
+    // Public endpoints key buckets on caller-supplied values: never let the
+    // map grow without bound
+    if (!this.windows.has(key) && this.windows.size >= MAX_BUCKETS) this.sweep(now)
+
     window.timestamps.push(now)
+    window.windowMs = windowMs
     this.windows.set(key, window)
     return true
+  }
+
+  /** Drop every bucket whose newest request is older than its own window. */
+  private sweep(now: number): void {
+    for (const [k, w] of this.windows) {
+      const newest = w.timestamps.length > 0 ? w.timestamps[w.timestamps.length - 1] : 0
+      if (now - newest > (w.windowMs ?? 60 * 60 * 1000)) this.windows.delete(k)
+    }
+    // Still full of live buckets (a flood): start over rather than grow
+    if (this.windows.size >= MAX_BUCKETS) this.windows.clear()
   }
 
   /**
@@ -105,6 +125,18 @@ export function canCallFBDiscoveryAPI(userId: string): boolean {
 /** YouTube Analytics API — be conservative: 100 req/hour per channel */
 export function canCallYouTubeAnalytics(channelId: string): boolean {
   return limiter.canProceed(`yt_analytics:${channelId}`, 100, HOUR)
+}
+
+/**
+ * Best-effort client address for rate limiting public endpoints. Behind the
+ * Railway proxy the real address is in x-real-ip; the LAST x-forwarded-for hop
+ * is the one the proxy appended (the first can be forged by the caller).
+ */
+export function clientIp(headers: Headers): string {
+  const real = headers.get('x-real-ip')?.trim()
+  if (real) return real
+  const hops = (headers.get('x-forwarded-for') || '').split(',').map(h => h.trim()).filter(Boolean)
+  return hops.length > 0 ? hops[hops.length - 1] : 'unknown'
 }
 
 /** Generic rate limit check */

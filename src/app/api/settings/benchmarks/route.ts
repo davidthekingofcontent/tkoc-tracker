@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getSession } from '@/lib/auth'
+import { getSession, isStaffRole } from '@/lib/auth'
 import { DEFAULT_EMV_RATES as EMV_DEFAULTS, mergeEmvRates } from '@/lib/emv'
 import { mergeBenchmarkConfig } from '@/lib/benchmarks'
 import { loadBenchmarkConfig, loadInternalStats, invalidateBenchmarkCaches } from '@/lib/benchmarks-server'
@@ -143,6 +143,9 @@ export async function GET(request: NextRequest) {
     const session = await getSession(request)
     if (!session) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+    if (!isStaffRole(session.role)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
     const { searchParams } = new URL(request.url)

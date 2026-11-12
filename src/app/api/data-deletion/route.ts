@@ -11,6 +11,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { notifyAdmins } from '@/lib/notifications'
 import { prisma } from '@/lib/db'
 import * as crypto from 'crypto'
 
@@ -74,19 +75,20 @@ export async function POST(request: NextRequest) {
       const metaUserId = data.user_id
       const confirmationCode = crypto.randomBytes(16).toString('hex')
 
-      // Delete all social tokens for this Meta user
-      try {
-        await prisma.socialToken.deleteMany({
-          where: {
-            platform: 'INSTAGRAM',
-            // Meta user IDs are stored as part of token metadata
-          },
-        })
-      } catch {
-        // Best effort deletion
-      }
+      // NOTHING is deleted here. Until 12 Nov 2026 this ran
+      // socialToken.deleteMany({ platform: 'INSTAGRAM' }) with no user
+      // condition: one person removing the app in Facebook would have wiped
+      // EVERY Instagram connection of the platform (brands, creators, staff).
+      // The request is recorded for the ADMINs, who process it by hand (house
+      // rule: no automatic deletion). The per-user webhook that removes only
+      // that person's token and synced data is /api/meta/webhooks/deletion.
+      await notifyAdmins({
+        type: 'cron_stale',
+        title: 'Solicitud de borrado de datos de Meta',
+        message: `Meta ha enviado una solicitud de borrado de datos del usuario de Meta ${metaUserId} (código de confirmación ${confirmationCode}). No se ha borrado nada automáticamente: hay que localizar su conexión de Instagram y tramitarla a mano.`,
+      })
 
-      console.log(`[Data Deletion] Processed deletion request for Meta user: ${metaUserId}, code: ${confirmationCode}`)
+      console.log(`[Data Deletion] Recorded deletion request for Meta user: ${metaUserId}, code: ${confirmationCode} (nothing deleted automatically; ADMINs notified)`)
 
       // Meta expects this response format
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://tkoc-tracker-production.up.railway.app'

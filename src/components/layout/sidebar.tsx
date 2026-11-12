@@ -171,7 +171,9 @@ export function Sidebar() {
       .catch(() => {})
   }, [])
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // The session cookie is HttpOnly: only the server can remove it
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
     document.cookie = 'token=; path=/; max-age=0'
     localStorage.removeItem('user')
     router.push('/login')

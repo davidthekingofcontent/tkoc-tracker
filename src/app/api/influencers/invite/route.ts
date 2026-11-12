@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getSession } from '@/lib/auth'
+import { getSession, isStaffRole } from '@/lib/auth'
 import { sendInfluencerInviteEmail } from '@/lib/email'
 import crypto from 'crypto'
 
@@ -11,6 +11,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  if (!isStaffRole(session.role)) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  }
+
   const { searchParams } = new URL(request.url)
   const campaignId = searchParams.get('campaignId')
 
@@ -18,13 +22,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'campaignId is required' }, { status: 400 })
   }
 
+  // Never the one-time `token`: whoever holds it can create the account
   const invitations = await prisma.invitation.findMany({
     where: {
       role: 'CREATOR',
       accepted: false,
       expiresAt: { gt: new Date() },
     },
-    include: { user: { select: { name: true } } },
+    select: { id: true, email: true, role: true, expiresAt: true, accepted: true, createdAt: true, user: { select: { name: true } } },
     orderBy: { createdAt: 'desc' },
   })
 
@@ -104,5 +109,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to send invitation email' }, { status: 500 })
   }
 
-  return NextResponse.json({ invitation, message: 'Invitation sent successfully' })
+  return NextResponse.json({
+    invitation: { id: invitation.id, email: invitation.email, role: invitation.role, expiresAt: invitation.expiresAt, createdAt: invitation.createdAt },
+    message: 'Invitation sent successfully',
+  })
 }

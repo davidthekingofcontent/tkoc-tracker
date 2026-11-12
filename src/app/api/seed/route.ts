@@ -5,6 +5,11 @@ import { UserRole, CampaignType, CampaignStatus, Platform } from '@/generated/pr
 
 export async function POST(request: NextRequest) {
   try {
+    // Demo data with fixed, well-known passwords: a development tool. In
+    // production it would (re)create accounts anybody could log into.
+    if (process.env.NODE_ENV === 'production') {
+      return NextResponse.json({ error: 'Endpoint disabled' }, { status: 410 })
+    }
     const { secret } = await request.json()
 
     if (!process.env.SEED_SECRET || secret !== process.env.SEED_SECRET) {

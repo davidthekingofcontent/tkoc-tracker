@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getSession } from '@/lib/auth'
+import { getSession, isStaffRole } from '@/lib/auth'
 import { isApifyConfigured } from '@/lib/apify'
 
 // GET - check current configuration status
@@ -10,11 +10,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
+    if (!isStaffRole(session.role)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    // No part of the key itself is returned (it used to send its first 8 characters)
     return NextResponse.json({
       apifyConfigured: isApifyConfigured(),
-      apifyKeyHint: process.env.APIFY_API_KEY
-        ? `${process.env.APIFY_API_KEY.slice(0, 8)}...`
-        : null,
+      apifyKeyHint: null,
     })
   } catch (error) {
     console.error('Settings error:', error)

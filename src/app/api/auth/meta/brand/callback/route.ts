@@ -4,7 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getSession } from '@/lib/auth'
+import { getSession, isStaffRole } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { encrypt } from '@/lib/encryption'
 import {
@@ -26,6 +26,9 @@ export async function GET(request: NextRequest) {
 
   if (!session) {
     return NextResponse.redirect(`${base}/login`)
+  }
+  if (!isStaffRole(session.role)) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
   const url = request.nextUrl

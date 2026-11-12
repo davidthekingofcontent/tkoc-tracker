@@ -17,6 +17,11 @@ interface SessionUser {
   role: string
 }
 
+/** Agency staff. BRAND (client portal) and CREATOR sessions are never staff. */
+export function isStaffRole(role: string | null | undefined): boolean {
+  return role === 'ADMIN' || role === 'EMPLOYEE'
+}
+
 export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, 12)
 }

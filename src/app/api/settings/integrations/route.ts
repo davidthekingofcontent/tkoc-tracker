@@ -44,23 +44,35 @@ export async function GET(request: NextRequest) {
       settingsMap[s.key] = s.value
     }
 
-    // Apify: check DB first, then env var
-    const apifyKey = settingsMap['apify_api_key'] || process.env.APIFY_API_KEY || ''
-    const apifyConnected = !!apifyKey
+    // Internal screen: staff only
+    if (session.role !== 'ADMIN' && session.role !== 'EMPLOYEE') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+    const isAdmin = session.role === 'ADMIN'
+
+    // SECRETS NEVER LEAVE THE SERVER. Until 12 Nov 2026 this answered any
+    // logged-in user with the Apify and YouTube keys in full, including the
+    // ones that only exist as environment variables. Now: `connected` says
+    // whether a key exists (database or environment); the value itself is
+    // returned only to an ADMIN and only when the ADMIN typed it in this
+    // screen (stored in the database), never the environment secret.
+    const apifyConnected = !!(settingsMap['apify_api_key'] || process.env.APIFY_API_KEY)
+    const apifyKey = isAdmin ? (settingsMap['apify_api_key'] || '') : ''
 
     // Platform connections from DB
     const instagramConnected = settingsMap['instagram_connected'] === 'true'
     const tiktokConnected = settingsMap['tiktok_connected'] === 'true'
     const youtubeConnected = settingsMap['youtube_connected'] === 'true'
 
-    // YouTube API key from DB or env
-    const youtubeApiKey = settingsMap['youtube_api_key'] || process.env.YOUTUBE_API_KEY || ''
+    // YouTube API key: same rule
+    const youtubeKeyConfigured = !!(settingsMap['youtube_api_key'] || process.env.YOUTUBE_API_KEY)
+    const youtubeApiKey = isAdmin ? (settingsMap['youtube_api_key'] || '') : ''
 
     return NextResponse.json({
       integrations: {
         instagram: { connected: instagramConnected },
         tiktok: { connected: tiktokConnected },
-        youtube: { connected: youtubeConnected, apiKey: youtubeApiKey },
+        youtube: { connected: youtubeConnected, apiKey: youtubeApiKey, keyConfigured: youtubeKeyConfigured },
         apify: { connected: apifyConnected, key: apifyKey },
       },
     })
@@ -96,9 +108,13 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid setting key' }, { status: 400 })
     }
 
-    await upsertSetting(key, value)
+    if ((key === 'apify_api_key' || key === 'youtube_api_key') && (typeof value !== 'string' || !value.trim())) {
+      return NextResponse.json({ error: 'Empty key' }, { status: 400 })
+    }
 
-    return NextResponse.json({ success: true, key, value })
+    await upsertSetting(key, typeof value === 'string' ? value.trim() : value)
+
+    return NextResponse.json({ success: true, key })
   } catch (error) {
     console.error('Failed to update integration:', error)
     return NextResponse.json({ error: 'Failed to update integration' }, { status: 500 })

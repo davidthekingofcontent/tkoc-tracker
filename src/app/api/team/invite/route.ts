@@ -22,9 +22,10 @@ export async function GET(request: NextRequest) {
       select: { id: true, name: true, email: true, role: true, avatar: true, isActive: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     }),
+    // Never the one-time `token`: whoever holds it can create the account
     prisma.invitation.findMany({
       where: { accepted: false, expiresAt: { gt: new Date() } },
-      include: { user: { select: { name: true } } },
+      select: { id: true, email: true, role: true, expiresAt: true, accepted: true, createdAt: true, user: { select: { name: true } } },
       orderBy: { createdAt: 'desc' },
     }),
   ])
@@ -135,7 +136,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to send invitation email' }, { status: 500 })
   }
 
-  return NextResponse.json({ invitation, message: 'Invitation sent successfully' })
+  return NextResponse.json({
+    invitation: { id: invitation.id, email: invitation.email, role: invitation.role, expiresAt: invitation.expiresAt, createdAt: invitation.createdAt },
+    message: 'Invitation sent successfully',
+  })
 }
 
 // DELETE - Revoke invitation

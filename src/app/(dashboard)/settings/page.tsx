@@ -272,6 +272,16 @@ export default function SettingsPage() {
   // Integrations state
   const [integrations, setIntegrations] = useState(mockIntegrations)
   const [apifyKey, setApifyKey] = useState("")
+  // Change password (profile tab)
+  const [pwCurrent, setPwCurrent] = useState("")
+  const [pwNew, setPwNew] = useState("")
+  const [pwRepeat, setPwRepeat] = useState("")
+  const [pwSaving, setPwSaving] = useState(false)
+  const [pwMessage, setPwMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  // The keys themselves no longer reach the browser unless an ADMIN typed them
+  // here: these two flags say whether one exists on the server at all
+  const [apifyConfigured, setApifyConfigured] = useState(false)
+  const [youtubeKeyConfigured, setYoutubeKeyConfigured] = useState(false)
   const [apifySaving, setApifySaving] = useState(false)
   const [apifySaved, setApifySaved] = useState(false)
   const [integrationsLoading, setIntegrationsLoading] = useState(true)
@@ -401,6 +411,8 @@ export default function SettingsPage() {
             return i
           })
         )
+        setApifyConfigured(Boolean(intData.apify?.connected))
+        setYoutubeKeyConfigured(Boolean(intData.youtube?.keyConfigured))
         // Load API keys from DB
         if (intData.apify?.key) {
           setApifyKey(intData.apify.key)
@@ -805,7 +817,40 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleChangePassword() {
+    setPwMessage(null)
+    if (!pwCurrent || !pwNew) return
+    if (pwNew.length < 10) { setPwMessage({ ok: false, text: t.settings.passwordTooShort }); return }
+    if (pwNew !== pwRepeat) { setPwMessage({ ok: false, text: t.settings.passwordMismatch }); return }
+    setPwSaving(true)
+    try {
+      const res = await fetch('/api/auth/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: pwCurrent, newPassword: pwNew }),
+      })
+      if (res.ok) {
+        setPwCurrent(""); setPwNew(""); setPwRepeat("")
+        setPwMessage({ ok: true, text: t.settings.passwordChanged })
+        return
+      }
+      const data = await res.json().catch(() => ({}))
+      const byCode: Record<string, string> = {
+        wrong_current: t.settings.passwordWrongCurrent,
+        too_short: t.settings.passwordTooShort,
+        same: t.settings.passwordSame,
+        rate_limited: t.settings.passwordRateLimited,
+      }
+      setPwMessage({ ok: false, text: byCode[data?.code as string] || t.settings.passwordError })
+    } catch {
+      setPwMessage({ ok: false, text: t.settings.passwordError })
+    } finally {
+      setPwSaving(false)
+    }
+  }
+
   async function handleSaveApifyKey() {
+    if (!apifyKey.trim()) return // nothing typed: never store an empty key
     setApifySaving(true)
     setApifySaved(false)
     try {
@@ -824,6 +869,7 @@ export default function SettingsPage() {
   }
 
   async function handleSaveYoutubeKey() {
+    if (!youtubeApiKey.trim()) return // nothing typed: never store an empty key
     setYoutubeKeySaving(true)
     setYoutubeKeySaved(false)
     try {
@@ -1116,6 +1162,38 @@ export default function SettingsPage() {
                   </button>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card variant="elevated" className="mt-6">
+            <CardHeader>
+              <CardTitle>{t.settings.changePassword}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form
+                className="max-w-md space-y-4"
+                onSubmit={(e) => { e.preventDefault(); handleChangePassword() }}
+              >
+                <p className="text-sm text-gray-500">{t.settings.changePasswordHint}</p>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{t.settings.currentPassword}</label>
+                  <Input type="password" autoComplete="current-password" value={pwCurrent} onChange={(e) => setPwCurrent(e.target.value)} />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{t.settings.newPassword}</label>
+                  <Input type="password" autoComplete="new-password" value={pwNew} onChange={(e) => setPwNew(e.target.value)} />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{t.settings.repeatNewPassword}</label>
+                  <Input type="password" autoComplete="new-password" value={pwRepeat} onChange={(e) => setPwRepeat(e.target.value)} />
+                </div>
+                {pwMessage && (
+                  <p role="status" className={cn("text-sm", pwMessage.ok ? "text-green-600" : "text-red-600")}>{pwMessage.text}</p>
+                )}
+                <Button type="submit" size="sm" loading={pwSaving} disabled={!pwCurrent || !pwNew || !pwRepeat}>
+                  <Key className="h-3.5 w-3.5" /> {t.settings.changePassword}
+                </Button>
+              </form>
             </CardContent>
           </Card>
         </TabsContent>
@@ -1424,8 +1502,8 @@ export default function SettingsPage() {
                           <p className="mt-0.5 text-xs text-gray-400">Public channel & video data. No OAuth needed.</p>
                         </div>
                       </div>
-                      <Badge variant={youtubeApiKey ? "active" : "archived"}>
-                        {youtubeApiKey ? t.settings.configured : t.settings.notConfigured}
+                      <Badge variant={youtubeApiKey || youtubeKeyConfigured ? "active" : "archived"}>
+                        {youtubeApiKey || youtubeKeyConfigured ? t.settings.configured : t.settings.notConfigured}
                       </Badge>
                     </div>
                     <div className="mt-4 flex items-end gap-2">
@@ -1444,7 +1522,7 @@ export default function SettingsPage() {
                         ) : t.common.save}
                       </Button>
                     </div>
-                    {youtubeApiKey && (
+                    {(youtubeApiKey || youtubeKeyConfigured) && (
                       <div className="mt-3">
                         <Button size="sm" variant="ghost" onClick={() => handleTestConnection('youtube')} loading={testingConnection === 'youtube'}>
                           {t.settings.testConnection || 'Test Connection'}
@@ -1677,8 +1755,8 @@ export default function SettingsPage() {
                           <p className="mt-0.5 text-xs text-gray-400">{t.settings.scrapingEngine}</p>
                         </div>
                       </div>
-                      <Badge variant={apifyKey ? "active" : "archived"}>
-                        {apifyKey ? t.settings.configured : t.settings.notConfigured}
+                      <Badge variant={apifyKey || apifyConfigured ? "active" : "archived"}>
+                        {apifyKey || apifyConfigured ? t.settings.configured : t.settings.notConfigured}
                       </Badge>
                     </div>
                     <div className="mt-4 flex items-end gap-2">

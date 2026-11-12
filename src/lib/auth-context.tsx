@@ -78,8 +78,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [router]
   )
 
-  const logout = useCallback(() => {
-    // Clear the token cookie
+  const logout = useCallback(async () => {
+    // The session cookie is HttpOnly: only the server can remove it
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
     document.cookie = 'token=; path=/; max-age=0'
     setUser(null)
     router.push('/login')

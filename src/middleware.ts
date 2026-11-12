@@ -62,6 +62,34 @@ const brandApiWhitelist = [
   '/api/invite',
 ]
 
+// API prefixes a CREATOR user may call. Everything else under /api/ is 403
+// for CREATOR at the edge. Until 12 Nov 2026 a creator session was not
+// confined at all: the internal routes only special-case EMPLOYEE and BRAND,
+// so a creator (and creators can self-register) could read every campaign
+// with its fees, every creator's e-mail and phone, and change or delete
+// them. Exact sub-paths only where the parent lists other people's data
+// (/api/influencers/invite returns every pending invitation and its token).
+const creatorApiWhitelist = [
+  // Only the auth routes a creator needs: the rest of /api/auth holds the
+  // agency's own Meta and YouTube connection flows
+  '/api/auth/login',
+  '/api/auth/register',
+  '/api/auth/me',
+  '/api/auth/password',
+  '/api/auth/logout',
+  '/api/auth/meta/creator',
+  '/api/dashboard/creator',
+  '/api/notifications',
+  '/api/proxy',
+  '/api/invite',
+  '/api/influencers/invite/validate',
+  '/api/influencers/invite/accept',
+]
+
+// Pages a CREATOR may open besides the public ones. The creator view lives
+// inside /dashboard (the page swaps to the creator dashboard by role).
+const creatorPages = ['/', '/dashboard']
+
 /**
  * Base64-decode the JWT payload WITHOUT signature verification.
  * jsonwebtoken does not run on the edge; an unverified decode is safe here
@@ -101,6 +129,7 @@ export function middleware(request: NextRequest) {
   const headerRole = headerToken ? decodeRoleUnverified(headerToken) : null
   const cookieRole = cookieToken ? decodeRoleUnverified(cookieToken) : null
   const isBrand = headerRole === 'BRAND' || cookieRole === 'BRAND'
+  const isCreator = headerRole === 'CREATOR' || cookieRole === 'CREATOR'
 
   // BRAND users are confined to the portal + a small API whitelist
   // (defense in depth — real enforcement lives in the route handlers).
@@ -124,6 +153,27 @@ export function middleware(request: NextRequest) {
       return NextResponse.next()
     }
     return NextResponse.redirect(new URL('/portal', request.url))
+  }
+
+  // CREATOR users are confined to their own dashboard + a small API whitelist
+  // (deny-only, same reasoning as BRAND above).
+  if (isCreator) {
+    if (pathname.startsWith('/api/')) {
+      const allowed =
+        creatorApiWhitelist.some(
+          (prefix) => pathname === prefix || pathname.startsWith(prefix + '/')
+        ) ||
+        // Profile pictures are public by design (session-less route)
+        /^\/api\/influencers\/[a-z0-9]{10,40}\/avatar$/i.test(pathname)
+      if (!allowed) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+      return NextResponse.next()
+    }
+    if (isPublicPath(pathname) || creatorPages.includes(pathname)) {
+      return NextResponse.next()
+    }
+    return NextResponse.redirect(new URL('/dashboard', request.url))
   }
 
   if (isPublicPath(pathname)) {

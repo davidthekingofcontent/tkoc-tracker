@@ -5,7 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getGoogleAuthUrl } from '@/lib/youtube-analytics'
-import { getSession } from '@/lib/auth'
+import { getSession, isStaffRole } from '@/lib/auth'
 
 export async function GET(request: NextRequest) {
   try {
@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     }
     // /api/auth is on the BRAND edge whitelist: connecting a Meta/YouTube
     // account (and the SocialToken the callback persists) is agency-only.
-    if (session.role === 'BRAND') {
+    if (!isStaffRole(session.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 

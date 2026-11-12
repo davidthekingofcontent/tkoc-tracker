@@ -14,9 +14,13 @@ export async function GET(request: NextRequest) {
     }
 
     // Find the Influencer record matching this user's email
-    const influencer = await prisma.influencer.findFirst({
-      where: { email: session.email },
+    // (ignoring case: self-registered accounts are stored in lowercase; ILIKE
+    // treats _ and % as wildcards, so the match is confirmed in code)
+    const sameEmail = await prisma.influencer.findMany({
+      where: { email: { equals: session.email, mode: 'insensitive' } },
+      orderBy: { createdAt: 'asc' },
     })
+    const influencer = sameEmail.find(i => i.email?.toLowerCase() === session.email.toLowerCase()) ?? null
 
     // Fetch campaigns separately if influencer exists
     const campaignInfluencers = influencer
