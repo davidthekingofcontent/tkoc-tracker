@@ -91,6 +91,18 @@ const creatorApiWhitelist = [
 const creatorPages = ['/', '/dashboard']
 
 /**
+ * The two image routes that are public by design (session-less, served by
+ * Media / Influencer id): /api/media/<id>/thumb and /api/influencers/<id>/avatar.
+ * A confined session must reach them too: until 12 Nov 2026 they were missing
+ * from the BRAND whitelist, so every thumbnail and profile picture of the
+ * client portal answered 403 to a logged-in client while working for anyone
+ * without a session.
+ */
+function isPublicImageApi(pathname: string): boolean {
+  return /^\/api\/(media\/[a-z0-9]{10,40}\/thumb|influencers\/[a-z0-9]{10,40}\/avatar)$/i.test(pathname)
+}
+
+/**
  * Base64-decode the JWT payload WITHOUT signature verification.
  * jsonwebtoken does not run on the edge; an unverified decode is safe here
  * because it is only used for DENY-ONLY decisions (a forged role claim still
@@ -135,9 +147,10 @@ export function middleware(request: NextRequest) {
   // (defense in depth — real enforcement lives in the route handlers).
   if (isBrand) {
     if (pathname.startsWith('/api/')) {
-      const allowed = brandApiWhitelist.some(
-        (prefix) => pathname === prefix || pathname.startsWith(prefix + '/')
-      )
+      const allowed =
+        brandApiWhitelist.some(
+          (prefix) => pathname === prefix || pathname.startsWith(prefix + '/')
+        ) || isPublicImageApi(pathname)
       if (!allowed) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
@@ -162,9 +175,7 @@ export function middleware(request: NextRequest) {
       const allowed =
         creatorApiWhitelist.some(
           (prefix) => pathname === prefix || pathname.startsWith(prefix + '/')
-        ) ||
-        // Profile pictures are public by design (session-less route)
-        /^\/api\/influencers\/[a-z0-9]{10,40}\/avatar$/i.test(pathname)
+        ) || isPublicImageApi(pathname)
       if (!allowed) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
