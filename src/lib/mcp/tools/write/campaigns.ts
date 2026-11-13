@@ -32,7 +32,7 @@
 import { z } from 'zod'
 import { prisma } from '@/lib/db'
 import type { Prisma } from '@/generated/prisma/client'
-import { campaignHasTargets, isWithinCampaignDates, itemReferencesBrand, normalizeTargets } from '@/lib/campaign-capture'
+import { campaignHasTargets, normalizeTargets, revalidationVerdict } from '@/lib/campaign-capture'
 import { normalizeKeywords } from '@/lib/campaign-targets'
 import { APP_URL } from '@/lib/mcp/config'
 import { isEconomicsKey } from '@/lib/mcp/output-filter'
@@ -818,10 +818,11 @@ interface RevalidationProjection {
 
 /**
  * What POST /api/campaigns/[id]/revalidate-media WOULD take out now, with the
- * same rule functions (src/lib/campaign-capture.ts revalidateCampaignMedia):
- * not a member or outside the dates → out (hand-added pieces too); scraped
- * pieces that do not reference a brand target → out. A piece that goes is
- * deleted when another copy of the post exists, otherwise detached.
+ * same rule function (src/lib/campaign-capture.ts revalidationVerdict):
+ * not a member or outside the dates → out (hand-added pieces too, except a
+ * late piece added by hand up to 30 days after the end); scraped pieces that
+ * do not reference a brand target → out. A piece that goes is deleted when
+ * another copy of the post exists, otherwise detached.
  */
 export async function projectRevalidation(campaignId: string): Promise<RevalidationProjection & { name: string; window: string; members: number; targets: { accounts: string[]; hashtags: string[]; productKeywords: string[] } }> {
   const campaign = await prisma.campaign.findUnique({
@@ -829,6 +830,7 @@ export async function projectRevalidation(campaignId: string): Promise<Revalidat
     select: {
       id: true,
       name: true,
+      type: true,
       targetAccounts: true,
       targetHashtags: true,
       targetKeywords: true,
@@ -857,21 +859,13 @@ export async function projectRevalidation(campaignId: string): Promise<Revalidat
   })
   let manual = 0
   const out: { row: (typeof rows)[number]; why: string }[] = []
+  // The platform's own verdict per row (src/lib/campaign-capture.ts): a hand-added
+  // late piece («fuera de plazo», up to 30 days after the end) stays, like the platform keeps it
+  const WHY = { out_member: 'ya no es creadora de la campaña', out_dates: 'fuera de fechas', out_brand: 'no menciona la marca' } as const
   for (const row of rows) {
-    if (!members.has(row.influencerId)) {
-      out.push({ row, why: 'ya no es creadora de la campaña' })
-      continue
-    }
-    if (!isWithinCampaignDates(campaign, row.postedAt)) {
-      out.push({ row, why: 'fuera de fechas' })
-      continue
-    }
-    const isManual = row.source === 'manual' || (row.mediaType === 'STORY' && !row.externalId)
-    if (isManual) {
-      manual++
-      continue
-    }
-    if (!itemReferencesBrand(campaign, row)) out.push({ row, why: 'no menciona la marca' })
+    const verdict = revalidationVerdict(campaign, members, row)
+    if (verdict === 'keep_manual' || verdict === 'keep_late_manual') manual++
+    else if (verdict !== 'keep_rules') out.push({ row, why: WHY[verdict] })
   }
 
   // Which of the leaving pieces have another copy of the same post (deleted) and which are the only one (detached)
@@ -941,7 +935,7 @@ export const revalidateCampaignMedia = defineWriteTool({
   title: 'Revalidar los contenidos de la campaña',
   description:
     'Re-checks every captured piece of a campaign against its current rules (the creator is a member, the date is inside the campaign, the piece references the brand unless it was added by hand) ' +
-    'and takes out those that fail: detached when it is the only copy of the post, deleted when another copy exists elsewhere. Hand-added pieces are also removed when their creator is no longer a member or their date is outside the campaign. ' +
+    'and takes out those that fail: detached when it is the only copy of the post, deleted when another copy exists elsewhere. Hand-added pieces are also removed when their creator is no longer a member or their date is outside the campaign, except a late piece added by hand up to 30 days after the end, which stays. ' +
     'Use after changing dates or tracking rules, or when the person asks to clean the campaign. The preview says how many pieces would leave with the data of that moment; ' +
     'the real result is computed when it runs. Does NOT scrape and does not touch other campaigns.',
   input: { campaignId: campaignIdInput },

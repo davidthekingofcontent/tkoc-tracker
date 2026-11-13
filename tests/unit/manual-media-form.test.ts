@@ -257,7 +257,8 @@ describe('what the form says, and when (review of delivery 1b)', () => {
   })
 
   it('an answer that lands after the PM left is kept and shown when she is back; a question left open says nothing was saved', () => {
-    expect(source).toMatch(/function showManualResult\(outcome: ManualOutcome\) \{\s*if \(manualMediaOpenFor\.current === campaignId\) setManualMediaResult\(outcome\)\s*else postManualOutcome\(campaignId, outcome\)/)
+    // (13 Nov 2026: `lead` puts «Añadida fuera de plazo: …» before the message; the routing is the same)
+    expect(source).toMatch(/function showManualResult\(outcome: ManualOutcome, lead\?: string \| null\) \{\s*const shown = lead \? \{ \.\.\.outcome, message: `\$\{lead\} \$\{outcome\.message\}` \} : outcome\s*if \(manualMediaOpenFor\.current === campaignId\) setManualMediaResult\(shown\)\s*else postManualOutcome\(campaignId, shown\)/)
     // the 409 that would open the question, with the page gone
     expect(handler).toMatch(/if \(manualMediaOpenFor\.current !== campaignId\) \{\s*\/\/[^\n]*\n\s*notAdded\(cd\.manualDetailQuestionLeft\)\s*return/)
     // the page going away with the question open

@@ -10,7 +10,9 @@
  * The rules, as the capture applies them. A publication belongs to a campaign
  * only if (1) its author is a member, (2) it is dated inside the campaign
  * dates and (3) it references the brand (a brand account, a brand hashtag or
- * a product keyword). A piece added by hand is exempt from (3) only.
+ * a product keyword). A piece added by hand is exempt from (3), and from (2)
+ * only as a late piece («fuera de plazo», src/lib/assignment-rules.ts): up to
+ * 30 days after the end, for a member who still owed a piece.
  */
 import { z } from 'zod'
 import { prisma } from '@/lib/db'
@@ -21,6 +23,7 @@ import {
   itemReferencesBrand,
   storiesCampaignSkipReason,
 } from '@/lib/campaign-capture'
+import { LATE_ACCEPT_MAX_DAYS, keepsLateHandAddedRow, lateDaysOf } from '@/lib/assignment-rules'
 import { parsePostUrl } from '@/lib/post-url'
 import { parseInstagramStoryUrl } from '@/lib/story-url'
 import type { Prisma } from '@/generated/prisma/client'
@@ -323,12 +326,31 @@ export function diagnosePost(input: {
       explanation: `Published on ${isoInstant(postedAt)} (from ${dateFrom}), inside the campaign dates, ${windowText(campaign)}.`,
     })
   } else {
-    checks.push({
-      rule: 'dates',
-      decides: 'belongs',
-      result: 'fail',
-      explanation: `Published on ${isoInstant(postedAt)} (from ${dateFrom}), outside the campaign dates, ${windowText(campaign)}. Publications outside the dates are never kept, also when added by hand.`,
-    })
+    // After the end: a piece added by hand may count as a LATE piece (src/lib/assignment-rules.ts)
+    const lateDays = lateDaysOf(postedAt, campaign.endDate)
+    const keptLate = !!known && here.length > 0 && keepsLateHandAddedRow(campaign, known)
+    if (keptLate) {
+      checks.push({
+        rule: 'dates',
+        decides: 'belongs',
+        result: 'pass',
+        explanation: `Published on ${isoInstant(postedAt)} (from ${dateFrom}), ${lateDays} day${lateDays === 1 ? '' : 's'} after the end of the campaign, ${windowText(campaign)}. It was added by hand as a late piece («fuera de plazo», shown to the team only): it is kept.`,
+      })
+    } else {
+      const late = lateDays === null
+        ? 'Publications before the start never count, also when added by hand.'
+        : campaign.type === 'SOCIAL_LISTENING'
+          ? 'A Social Listening campaign only counts what is published inside its dates, also when added by hand.'
+          : lateDays > LATE_ACCEPT_MAX_DAYS
+            ? `It is ${lateDays} days late: more than ${LATE_ACCEPT_MAX_DAYS} days after the end it never counts.`
+            : `It is ${lateDays} day${lateDays === 1 ? '' : 's'} late. The automatic capture never keeps it. A person can add it by hand as a late piece («fuera de plazo», team only) while the campaign is ACTIVE and its creator is a member who still owes a piece (Agreed to Posted, below her number of deliverables, or with none yet without a number), up to ${LATE_ACCEPT_MAX_DAYS} days after the end; it then counts in this campaign only, never in another one as well.`
+      checks.push({
+        rule: 'dates',
+        decides: 'belongs',
+        result: 'fail',
+        explanation: `Published on ${isoInstant(postedAt)} (from ${dateFrom}), outside the campaign dates, ${windowText(campaign)}. ${late}`,
+      })
+    }
   }
 
   // ----- Rule 3: it references the brand -----

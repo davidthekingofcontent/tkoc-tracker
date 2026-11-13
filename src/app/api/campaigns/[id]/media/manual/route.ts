@@ -3,7 +3,10 @@ import { prisma } from '@/lib/db'
 import { getSession, isStaffRole } from '@/lib/auth'
 import { scrapeSinglePost, isApifyExhausted, isApifyConfiguredAsync } from '@/lib/apify'
 import type { ScrapedSinglePost } from '@/lib/apify'
-import { isWithinCampaignDates, loadCampaignBrandAccounts, withCampaignMembership } from '@/lib/campaign-capture'
+import { findLateCopyElsewhere, findPostCopiesInOtherCampaigns, loadCampaignBrandAccounts, lockPostForCampaignChoice, withCampaignMembership } from '@/lib/campaign-capture'
+import type { CampaignPostCopy, PostIdentity } from '@/lib/campaign-capture'
+import { countedElsewhereMessage, decideLateWindow, decideManualLate, lateDaysOf, outsideWindowMessage } from '@/lib/assignment-rules'
+import type { LateDecision } from '@/lib/assignment-rules'
 import { loadCampaignRoster } from '@/lib/campaign-roster'
 import type { Roster, RosterMember } from '@/lib/campaign-roster'
 import { isBrandAccount } from '@/lib/campaign-targets'
@@ -22,7 +25,7 @@ import type { ParsedPostUrl, UrlPlatform } from '@/lib/post-url'
 import { isShortPostUrl, resolveShortUrl } from '@/lib/resolve-short-url'
 import { tiktokCandidateHandle } from '@/lib/tiktok-autolink'
 import { tiktokIdPostedAt } from '@/lib/tiktok-id'
-import type { Platform } from '@/generated/prisma/client'
+import type { Platform, Prisma } from '@/generated/prisma/client'
 
 // POST /api/campaigns/[id]/media/manual
 // Add ONE post / reel / video / story to a campaign by pasting its public URL.
@@ -33,6 +36,19 @@ import type { Platform } from '@/generated/prisma/client'
 // 0) and the publication date comes from the id in the link (stories and
 // TikTok) or from the body (`postedAt`) — an undated row can't be proven
 // inside the window and is rejected.
+//
+// LATE PIECES (Nov 2026, src/lib/assignment-rules.ts): content published
+// AFTER the end is accepted, marked late (the answer carries `lateDays`), when
+// the campaign is an ACTIVE collaboration (not Social Listening), it is at
+// most LATE_ACCEPT_MAX_DAYS (30) days late, the member still owes a piece
+// (AGREED…POSTED; her number of deliverables, or one piece without a number)
+// and the same post does not have a row in another campaign (a late piece
+// counts in ONE campaign: 409 `counted_elsewhere`). What she has delivered is
+// counted inside the membership lock, held exclusively for a late piece, so
+// two late adds for a creator who owes one cannot both pass. Content before
+// the start is refused as always. «Fuera de plazo» is team only. The other
+// way round too: content inside this window whose post already counts LATE in
+// another campaign is refused with the same 409 (it counts there).
 //
 // Instagram STORIES (instagram.com/stories/{user}/{id}/) are never sent to
 // Apify: they expire after 24 h and the single-post scraper does not read
@@ -127,6 +143,67 @@ function suggestMembers(roster: Roster, platform: Platform, authorHandle: string
     if (m.platform !== platform && normalizeHandle(m.username) === authorHandle) add(m, 'same_handle')
   }
   return suggestions
+}
+
+type LateRefusal = Extract<LateDecision, { ok: false }>
+
+/** A late piece refused inside the membership lock: answered as it is, nothing written. */
+class LateRefused extends Error {
+  constructor(readonly status: number, readonly body: Record<string, unknown>) {
+    super('late piece refused')
+  }
+}
+
+/** The answer of a refused late piece: { code, error, postedAt, lateDays? } */
+function lateRefusalBody(decision: LateRefusal, postedAt: Date): Record<string, unknown> {
+  return {
+    code: decision.code,
+    error: decision.message,
+    postedAt: postedAt.toISOString(),
+    ...(decision.lateDays !== undefined && { lateDays: decision.lateDays }),
+  }
+}
+
+/**
+ * 409 of a piece that counts in another campaign: a late piece whose post
+ * already has a row there, or (lateThere) a post that already counts LATE there.
+ */
+function countedElsewhereBody(copy: CampaignPostCopy, subject: 'post' | 'story', lateThere = false): Record<string, unknown> {
+  return {
+    code: 'counted_elsewhere',
+    error: countedElsewhereMessage(copy.campaign.name, { subject, lateThere }),
+    campaign: { id: copy.campaign.id, name: copy.campaign.name },
+  }
+}
+
+/**
+ * The whole late decision for `member`: what she has delivered in the campaign
+ * (pieces credited to her) and her status/deliverables, read with `db` (inside
+ * her membership lock when it matters). Not a member any more → ok: the write
+ * finds no membership and the caller answers that.
+ */
+async function decideForMember(
+  db: Prisma.TransactionClient | typeof prisma,
+  campaignId: string,
+  campaign: { name: string; type: string; status: string; startDate: Date; endDate: Date | null },
+  member: RosterMember,
+  postedAt: Date,
+  subject: 'post' | 'story'
+): Promise<LateDecision> {
+  const membership = await db.campaignInfluencer.findUnique({
+    where: { campaignId_influencerId: { campaignId, influencerId: member.influencerId } },
+    select: { status: true, deliverablesPlanned: true },
+  })
+  if (!membership) return { ok: true, lateDays: null }
+  const delivered = await db.media.count({ where: { campaignId, influencerId: member.influencerId } })
+  return decideManualLate(
+    {
+      campaign,
+      member: { status: membership.status, deliverablesPlanned: membership.deliverablesPlanned, delivered, handle: member.username },
+      postedAt,
+    },
+    { subject }
+  )
 }
 
 async function otherPersonResponse(args: {
@@ -260,15 +337,12 @@ export async function POST(
     // ===== Campaign + roster (members and the other profiles of their persons) =====
     const campaign = await prisma.campaign.findUnique({
       where: { id },
-      select: { id: true, startDate: true, endDate: true, targetAccounts: true },
+      select: { id: true, name: true, type: true, status: true, startDate: true, endDate: true, targetAccounts: true },
     })
 
     if (!campaign) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
     }
-
-    const fmtDate = (d: Date) => d.toISOString().slice(0, 10)
-    const windowLabel = `${fmtDate(campaign.startDate)} – ${campaign.endDate ? fmtDate(campaign.endDate) : 'sin fecha de fin'}`
 
     // The brand's accounts: never a creator's profile (see the guard below)
     const brandAccounts = (await loadCampaignBrandAccounts([campaign])).get(campaign.id) ?? { targets: [], own: [] }
@@ -528,14 +602,53 @@ export async function POST(
       )
     }
 
-    if (!isWithinCampaignDates(campaign, postedAt)) {
+    // Inside the window as always; AFTER it, a late piece when the campaign
+    // allows it (the creator's part is checked once she is known, below).
+    // Before the start: refused with the same answer as always.
+    const wording = { subject: isStory ? 'story' as const : 'post' as const }
+    const window = decideLateWindow({ campaign, postedAt }, wording)
+    if (!window.ok) {
       return NextResponse.json(
-        {
-          error: `El contenido se publicó el ${fmtDate(postedAt)}, fuera del periodo de la campaña (${windowLabel}).`,
-          postedAt: postedAt.toISOString(),
-        },
+        window.code === 'before_start'
+          ? { error: outsideWindowMessage(campaign, postedAt), postedAt: postedAt.toISOString() }
+          : lateRefusalBody(window, postedAt),
         { status: 400 }
       )
+    }
+    /** Days after the end of the campaign; null = inside the window */
+    const lateDays = window.lateDays
+    /** A row of this post already in this campaign is refreshed: it is not a new piece */
+    const refreshesOwnRow = !!existing && existing.campaignId === id
+    // A refresh never turns a piece the campaign holds INSIDE its dates into a
+    // late one (a date typed or read after the end): that would skip whether
+    // she still owes it. Refused as before the late rule; the stored date stays.
+    if (refreshesOwnRow && lateDays !== null && lateDaysOf(existing!.postedAt, campaign.endDate) === null) {
+      return NextResponse.json({ error: outsideWindowMessage(campaign, postedAt, wording), postedAt: postedAt.toISOString() }, { status: 400 })
+    }
+    /** The post, by every key it may be stored under in another campaign */
+    const identity: PostIdentity = {
+      platform,
+      externalIds: [externalId, parsed.externalId],
+      permalinks: [parsed.canonicalUrl],
+      shortcode: platform === 'INSTAGRAM' && !isStory ? parsed.externalId : null,
+    }
+
+    if (lateDays !== null && !refreshesOwnRow) {
+      // A late piece counts in ONE campaign: not here when the post already has a row in another
+      const elsewhere = await findPostCopiesInOtherCampaigns(identity, id)
+      if (elsewhere.length > 0) return NextResponse.json(countedElsewhereBody(elsewhere[0], wording.subject), { status: 409 })
+      // Her part (does she still owe a piece?), before anything is linked. Checked
+      // again, authoritatively, inside her membership lock when the row is written.
+      if (member && !askWhoseProfile) {
+        const decision = await decideForMember(prisma, id, campaign, member, postedAt, wording.subject)
+        if (!decision.ok) return NextResponse.json(lateRefusalBody(decision, postedAt), { status: 400 })
+      }
+    } else if (!refreshesOwnRow) {
+      // Inside the window as always, unless the post already counts LATE in another
+      // campaign: a late piece counts in one campaign only (the other way round of
+      // the check above; the automatic capture skips it the same way)
+      const lateThere = await findLateCopyElsewhere(identity, id)
+      if (lateThere) return NextResponse.json(countedElsewhereBody(lateThere, wording.subject, true), { status: 409 })
     }
 
     // ===== The author is nobody's registered profile: ask, create nothing =====
@@ -598,13 +711,32 @@ export async function POST(
       },
     }
 
+    /** A new late piece: her part and the exclusivity are checked again inside her (exclusive) membership lock */
+    const checksLate = lateDays !== null && !refreshesOwnRow
+
     /**
      * The row, written for `credited` (published by `publishedBy`) only while
      * she is a member of the campaign: withCampaignMembership holds her
      * membership until the write is done. null = she is not a member any more.
+     * A late piece that is no longer acceptable throws LateRefused (nothing written).
      */
     const writeRow = (credited: RosterMember, publishedBy: string | null) =>
       withCampaignMembership(id, credited.influencerId, async db => {
+        if (!refreshesOwnRow) {
+          // One campaign only for a late piece: two adds of this post to two
+          // campaigns at once wait for each other here, so the second one sees
+          // the row of the first (checked again below, inside this lock)
+          await lockPostForCampaignChoice(db, platform, parsed.externalId)
+        }
+        if (checksLate) {
+          const elsewhere = await findPostCopiesInOtherCampaigns(identity, id, db)
+          if (elsewhere.length > 0) throw new LateRefused(409, countedElsewhereBody(elsewhere[0], wording.subject))
+          const decision = await decideForMember(db, id, campaign, credited, postedAt, wording.subject)
+          if (!decision.ok) throw new LateRefused(400, lateRefusalBody(decision, postedAt))
+        } else if (!refreshesOwnRow) {
+          const lateThere = await findLateCopyElsewhere(identity, id, db)
+          if (lateThere) throw new LateRefused(409, countedElsewhereBody(lateThere, wording.subject, true))
+        }
         if (existing) {
           // An unattached row is credited to the member and remembers who published
           // it. A row already in the campaign keeps the member it has; who PUBLISHED
@@ -636,8 +768,11 @@ export async function POST(
               ...(scraped && scraped.hashtags.length > 0 && { hashtags: scraped.hashtags }),
               ...(scraped && scraped.mentions.length > 0 && { mentions: scraped.mentions }),
               // Mark as manual so revalidation keeps it, but never downgrade a Meta
-              // Graph API row (real reach/impressions) to 'manual'.
-              ...(existing.source !== 'meta_api' && { source: 'manual' }),
+              // Graph API row (real reach/impressions) to 'manual'. A LATE piece
+              // is the exception: only a hand-added row is kept after the end
+              // (keepsLateHandAddedRow), so a Meta row claimed late becomes
+              // 'manual' (it keeps its Meta figures; only its origin badge changes)
+              ...((existing.source !== 'meta_api' || checksLate) && { source: 'manual' }),
             },
             include,
           })
@@ -665,7 +800,7 @@ export async function POST(
           },
           include,
         })
-      })
+      }, { exclusive: checksLate })
 
     let media
     try {
@@ -683,6 +818,9 @@ export async function POST(
         }
       }
     } catch (err) {
+      // A late piece that stopped being acceptable while it was read (another late
+      // piece of hers, or of this post in another campaign, was stored meanwhile)
+      if (err instanceof LateRefused) return NextResponse.json(err.body, { status: err.status })
       // Concurrent add of the same post → unique (externalId, platform, campaignId) violation
       if ((err as { code?: string })?.code === 'P2002') {
         return NextResponse.json(
@@ -702,8 +840,9 @@ export async function POST(
 
     // New in the campaign: a row created now, or an unattached one this request attached
     const created = !existing || claimsLooseRow
+    // lateDays: days after the end of the campaign (team only), null inside the window
     return NextResponse.json(
-      { media, enriched, created, isStory, linkedProfile },
+      { media, enriched, created, isStory, linkedProfile, lateDays },
       { status: created ? 201 : 200 }
     )
   } catch (error) {

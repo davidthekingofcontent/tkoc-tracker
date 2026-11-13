@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getSession } from '@/lib/auth'
-import { isWithinCampaignDates } from '@/lib/campaign-capture'
+import { getSession, isStaffRole } from '@/lib/auth'
+import { findLateCopyElsewhere, findPostCopiesInOtherCampaigns, lockPostForCampaignChoice, withCampaignMembership } from '@/lib/campaign-capture'
+import { countedElsewhereMessage, decideLateWindow, decideManualLate, outsideWindowMessage } from '@/lib/assignment-rules'
+import type { LateDecision } from '@/lib/assignment-rules'
 import { parseInstagramStoryUrl } from '@/lib/story-url'
+import type { Prisma } from '@/generated/prisma/client'
 
 function normalizeHandle(s: string): string {
   return s.toLowerCase().replace(/^@/, '').trim()
@@ -28,6 +31,49 @@ function parseStringList(v: unknown): string[] | undefined {
   if (!Array.isArray(v) || v.length > STORY_LIST_MAX) return undefined
   if (!v.every((s) => typeof s === 'string' && s.length <= STORY_LIST_ITEM_MAX)) return undefined
   return v as string[]
+}
+
+type LateRefusal = Extract<LateDecision, { ok: false }>
+
+/** A late story refused inside the membership lock: answered as it is, nothing written. */
+class LateStoryRefused extends Error {
+  constructor(readonly status: number, readonly body: Record<string, unknown>) {
+    super('late story refused')
+  }
+}
+
+function lateRefusalBody(decision: LateRefusal, postedAt: Date): Record<string, unknown> {
+  return {
+    code: decision.code,
+    error: decision.message,
+    postedAt: postedAt.toISOString(),
+    ...(decision.lateDays !== undefined && { lateDays: decision.lateDays }),
+  }
+}
+
+/**
+ * Does the creator still owe a piece? Her status and deliverables, and the
+ * pieces of the campaign credited to her, read with `db` (inside her
+ * exclusive membership lock when the story is written).
+ */
+async function decideForCreator(
+  db: Prisma.TransactionClient | typeof prisma,
+  campaignId: string,
+  influencerId: string,
+  handle: string,
+  campaign: { name: string; type: string; status: string; startDate: Date; endDate: Date | null },
+  postedAt: Date
+): Promise<LateDecision> {
+  const membership = await db.campaignInfluencer.findUnique({
+    where: { campaignId_influencerId: { campaignId, influencerId } },
+    select: { status: true, deliverablesPlanned: true },
+  })
+  if (!membership) return { ok: true, lateDays: null }
+  const delivered = await db.media.count({ where: { campaignId, influencerId } })
+  return decideManualLate(
+    { campaign, member: { status: membership.status, deliverablesPlanned: membership.deliverablesPlanned, delivered, handle }, postedAt },
+    { subject: 'story' }
+  )
 }
 
 /** mediaUrl / thumbnailUrl: absent or empty → null; an absolute http(s) URL. undefined = invalid. */
@@ -147,7 +193,18 @@ export async function GET(
   }
 }
 
-// Manually add a story record
+// Manually add a story record ("Registrar Story"). Agency staff only.
+//
+// LATE STORIES (Nov 2026, src/lib/assignment-rules.ts): a story dated AFTER
+// the end of the campaign (from its link or the date typed) is accepted,
+// marked late (`lateDays` in the answer, team only), when the campaign is an
+// ACTIVE collaboration, the story is at most 30 days late, the creator still
+// owes a piece, and the same story (by its id) has no row in another campaign
+// (409 `counted_elsewhere`). The pieces she has delivered are counted inside
+// her membership lock, held exclusively. A story before the start, or one
+// without a date once the campaign has ended, is refused as always. A story
+// inside the window whose id already counts LATE in another campaign gets the
+// same 409.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -156,6 +213,10 @@ export async function POST(
     const session = await getSession(request)
     if (!session) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+    // Checked here and not left to the middleware
+    if (!isStaffRole(session.role)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
     const { id } = await params
@@ -214,7 +275,7 @@ export async function POST(
       where: { campaignId: id, influencerId },
       include: {
         influencer: { select: { platform: true, username: true } },
-        campaign: { select: { startDate: true, endDate: true } },
+        campaign: { select: { name: true, type: true, status: true, startDate: true, endDate: true } },
       },
     })
 
@@ -263,20 +324,30 @@ export async function POST(
       dateSource = 'now'
     }
 
-    if (!isWithinCampaignDates(ci.campaign, resolvedPostedAt)) {
+    // Inside the window as always. After it: a late story when the campaign and
+    // the creator allow it (decideLateWindow here, her part below). Before the
+    // start, or "now" once the campaign has ended: refused as always.
+    const wording = { subject: 'story' as const, dateNote: dateSource === 'link' ? ' (según el enlace)' : '' }
+    const window = decideLateWindow({ campaign: ci.campaign, postedAt: resolvedPostedAt }, wording)
+    if (!window.ok || (window.lateDays !== null && dateSource === 'now')) {
       const fmt = (d: Date) => d.toISOString().slice(0, 10)
-      const window = `${fmt(ci.campaign.startDate)} – ${ci.campaign.endDate ? fmt(ci.campaign.endDate) : 'sin fecha de fin'}`
-      return NextResponse.json(
-        {
-          error: dateSource === 'now'
-            ? `La campaña ya terminó (${window}): indica la fecha de publicación de la story.`
-            : `La story se publicó el ${fmt(resolvedPostedAt)}${dateSource === 'link' ? ' (según el enlace)' : ''}, fuera del periodo de la campaña (${window}).`,
-          needsPostedAt: dateSource === 'now',
-          postedAt: resolvedPostedAt.toISOString(),
-        },
-        { status: 400 }
-      )
+      const span = `${fmt(ci.campaign.startDate)} – ${ci.campaign.endDate ? fmt(ci.campaign.endDate) : 'sin fecha de fin'}`
+      if (dateSource === 'now' || window.ok || window.code === 'before_start') {
+        return NextResponse.json(
+          {
+            error: dateSource === 'now'
+              ? `La campaña ya terminó (${span}): indica la fecha de publicación de la story.`
+              : outsideWindowMessage(ci.campaign, resolvedPostedAt, wording),
+            needsPostedAt: dateSource === 'now',
+            postedAt: resolvedPostedAt.toISOString(),
+          },
+          { status: 400 }
+        )
+      }
+      return NextResponse.json(lateRefusalBody(window, resolvedPostedAt), { status: 400 })
     }
+    /** Days after the end of the campaign; null = inside the window */
+    const lateDays = window.lateDays
 
     // Counts (validated above). A story has no likes; the "replies" field lands in `comments`.
     const [nViews, nReach, nImpressions, nReplies] = counts as number[]
@@ -284,6 +355,24 @@ export async function POST(
     const linkStory = parsedStory && !parsedStory.isHighlight ? parsedStory : null
     const storyId = linkStory?.storyId ?? null
     const canonicalPermalink = linkStory ? linkStory.canonicalUrl : (rawPermalink || null)
+
+    /** A late story counts in ONE campaign: the rows of the same story (by its id) in other campaigns */
+    const storyElsewhere = (db: Prisma.TransactionClient | typeof prisma = prisma) =>
+      storyId ? findPostCopiesInOtherCampaigns({ platform: ci.influencer.platform, externalIds: [storyId] }, id, db) : Promise.resolve([])
+    const countedElsewhere = (copy: { campaign: { id: string; name: string } }, lateThere = false) => ({
+      code: 'counted_elsewhere',
+      error: countedElsewhereMessage(copy.campaign.name, { subject: 'story', lateThere }),
+      campaign: { id: copy.campaign.id, name: copy.campaign.name },
+    })
+    // Inside the window as always, unless the same story already counts LATE in
+    // another campaign: a late piece counts in one campaign only
+    if (lateDays === null && storyId) {
+      const lateThere = await findLateCopyElsewhere({ platform: ci.influencer.platform, externalIds: [storyId] }, id)
+      const ownRow = lateThere
+        ? await prisma.media.findFirst({ where: { campaignId: id, platform: ci.influencer.platform, externalId: storyId }, select: { id: true } })
+        : null
+      if (lateThere && !ownRow) return NextResponse.json(countedElsewhere(lateThere, true), { status: 409 })
+    }
 
     // Without a story id nothing below de-duplicates, so a retry (a client that
     // timed out and sends again) added the same story twice and inflated the
@@ -364,36 +453,58 @@ export async function POST(
           ...(existing.source !== 'meta_api' && { source: 'manual' }),
         },
       })
-      return NextResponse.json({ story, updated: true }, { status: 200 })
+      // Already a piece of this campaign: a late one is refreshed, not counted again
+      return NextResponse.json({ story, updated: true, lateDays }, { status: 200 })
     }
 
     // Manual additions are exempt from the brand-keyword rule only (the PM
     // asserts relevance); `source: 'manual'` is what keeps revalidation from
     // detaching a hand-added story that carries no mentions/hashtags.
+    const data = {
+      externalId: storyId,
+      platform: ci.influencer.platform,
+      mediaType: 'STORY' as const,
+      permalink: canonicalPermalink,
+      mediaUrl: cleanMediaUrl,
+      thumbnailUrl: cleanThumbnailUrl,
+      views: nViews,
+      reach: nReach,
+      impressions: nImpressions,
+      comments: nReplies,
+      postedAt: resolvedPostedAt,
+      mentions: cleanMentions,
+      hashtags: cleanHashtags,
+      source: 'manual',
+      dataSource: 'manual',
+      influencerId,
+      campaignId: id,
+    }
     let story
     try {
-      story = await prisma.media.create({
-        data: {
-          externalId: storyId,
-          platform: ci.influencer.platform,
-          mediaType: 'STORY',
-          permalink: canonicalPermalink,
-          mediaUrl: cleanMediaUrl,
-          thumbnailUrl: cleanThumbnailUrl,
-          views: nViews,
-          reach: nReach,
-          impressions: nImpressions,
-          comments: nReplies,
-          postedAt: resolvedPostedAt,
-          mentions: cleanMentions,
-          hashtags: cleanHashtags,
-          source: 'manual',
-          dataSource: 'manual',
-          influencerId,
-          campaignId: id,
-        },
-      })
+      if (lateDays === null) {
+        story = await prisma.media.create({ data })
+      } else {
+        // A late story: the same story in another campaign, and whether she still
+        // owes a piece, are read inside her membership lock (held exclusively), so
+        // two late stories for a creator who owes one cannot both be stored.
+        story = await withCampaignMembership(id, influencerId, async tx => {
+          // Two late adds of this story to two campaigns at once wait for each other here
+          await lockPostForCampaignChoice(tx, ci.influencer.platform, storyId)
+          const elsewhere = await storyElsewhere(tx)
+          if (elsewhere.length > 0) throw new LateStoryRefused(409, countedElsewhere(elsewhere[0]))
+          const decision = await decideForCreator(tx, id, influencerId, ci.influencer.username, ci.campaign, resolvedPostedAt)
+          if (!decision.ok) throw new LateStoryRefused(400, lateRefusalBody(decision, resolvedPostedAt))
+          return tx.media.create({ data })
+        }, { exclusive: true })
+        if (story === null) {
+          return NextResponse.json(
+            { error: `@${ci.influencer.username} ya no está en esta campaña. Recarga la página y vuelve a registrar la story.` },
+            { status: 409 }
+          )
+        }
+      }
     } catch (err) {
+      if (err instanceof LateStoryRefused) return NextResponse.json(err.body, { status: err.status })
       // Concurrent "Registrar Story" for the same link → unique (externalId, platform, campaignId)
       if ((err as { code?: string })?.code === 'P2002') {
         return NextResponse.json({ error: 'Esta story ya está registrada.' }, { status: 409 })
@@ -401,7 +512,8 @@ export async function POST(
       throw err
     }
 
-    return NextResponse.json({ story, updated: false }, { status: 201 })
+    // lateDays: days after the end of the campaign (team only), null inside the window
+    return NextResponse.json({ story, updated: false, lateDays }, { status: 201 })
   } catch (error) {
     console.error('Add story error:', error)
     return NextResponse.json(

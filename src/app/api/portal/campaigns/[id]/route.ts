@@ -44,7 +44,9 @@ async function resolveCampaignBrand(
 // real ones only (real, realPieces, counts per basis); an estimate never
 // reaches the client. The "Prometido vs entregado" checklist (overview.delivery,
 // real data, unaffected by stripEconomics) does travel; the four-dimension
-// balance is agency-only and stays out.
+// balance is agency-only and stays out. Late pieces («fuera de plazo»: days
+// late, late pieces, the team's delivery summary) are team only: dropped by
+// stripEconomics and absent from every allow-list below.
 // Field names match what GET /api/campaigns/[id] exposes so the shared
 // report component can read both responses with the same code.
 // ---------------------------------------------------------------------------
@@ -175,7 +177,14 @@ function toPortalOverview(full: CampaignOverview): PortalOverview {
     // The CPM target compares against cost: not for brands.
     targets: ov.targets.filter(t => t.key !== 'cpm'),
     business: ov.business,
-    delivery: ov.delivery,
+    // Allow-list: the team's delivery summary (late pieces, «fuera de plazo») never travels
+    delivery: {
+      creators: ov.delivery.creators,
+      pieces: ov.delivery.pieces,
+      dates: ov.delivery.dates,
+      disclosure: ov.delivery.disclosure,
+      allOk: ov.delivery.allOk,
+    },
     totalMedia: totals.media,
     totalLikes: totals.likes,
     totalComments: totals.comments,

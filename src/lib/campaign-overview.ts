@@ -21,9 +21,19 @@
  *  - "vs su habitual" only compares pieces from the member's own profile;
  *  - perMedia.publishedBy and perInfluencer.byPlatform say where each piece is.
  * With no linked profile every figure is the one it was before.
+ *
+ * LATE PIECES (Nov 2026, src/lib/assignment-rules.ts). Team figures only, on
+ * top of the existing keys (whose values do not change):
+ *  - perMedia[].lateDays: days after the end of the campaign, null inside it;
+ *  - perInfluencer[].latePieces / maxLateDays;
+ *  - delivery.summary: { expected, delivered, late, notPublished, inProgress }.
+ * «Fuera de plazo» never reaches the client: stripTeamOnly() removes the four
+ * keys and stripEconomics() (every brand projection) calls it; the portal and
+ * the exports project without them.
  */
 
 import { prisma } from '@/lib/db'
+import { campaignWindowEndExclusive, keepsLateHandAddedRow, lateDaysOf } from '@/lib/assignment-rules'
 import { calculateCampaignEMV, type EmvRates } from '@/lib/emv'
 import { loadEmvRates, campaignBrandId, getCreatorStoryViewRates } from '@/lib/emv-server'
 import { compareWithBaseline, familyOf, parseBaseline } from '@/lib/creator-baseline'
@@ -66,6 +76,42 @@ export interface ComputeOverviewOptions {
    * passes this and sees everything.
    */
   exclude?: { mediaIds?: string[]; influencerIds?: string[] }
+  /** The instant "has the campaign ended?" is judged at (delivery.summary). Default: now. */
+  now?: Date
+}
+
+/**
+ * The team's delivery summary over the members with status AGREED or later
+ * (COMPLETED included). Each one is in exactly one bucket, so the four add up
+ * to `expected`:
+ *   delivered    her commitment (her number of deliverables, or 1 without a
+ *                number) is met and no piece of hers is late;
+ *   late         at least one late piece, or the campaign has ended and she
+ *                published part of a defined number;
+ *   notPublished no piece;
+ *   inProgress   the campaign is still running and she published part of a
+ *                defined number.
+ * TEAM ONLY: never in the portal, the client report, the PDF or the exports.
+ */
+export interface DeliverySummary {
+  expected: number
+  delivered: number
+  late: number
+  notPublished: number
+  inProgress: number
+}
+
+/** A publication of the team overview: days after the end of the campaign, null inside it. */
+export type TeamPerMediaMetrics = PerMediaMetrics & { lateDays: number | null }
+/** A creator of the team overview: her late pieces and the most days late of them (null without any). */
+export type TeamPerInfluencerMetrics = PerInfluencerMetrics & { latePieces: number; maxLateDays: number | null }
+export type TeamDeliveryChecklist = DeliveryChecklist & { summary: DeliverySummary }
+
+/** What computeCampaignOverview returns: the shared overview plus the team-only late figures. */
+export interface TeamCampaignOverview extends Omit<CampaignOverview, 'perMedia' | 'perInfluencer' | 'delivery'> {
+  perMedia: TeamPerMediaMetrics[]
+  perInfluencer: TeamPerInfluencerMetrics[]
+  delivery: TeamDeliveryChecklist
 }
 
 const MEDIA_SELECT = {
@@ -73,6 +119,8 @@ const MEDIA_SELECT = {
   views: true, reach: true, impressions: true, postedAt: true, influencerId: true, isDeleted: true,
   caption: true, isAdDisclosed: true, isPaidPartnership: true,
   publishedByInfluencerId: true,
+  // How the row was added: a late piece the rule keeps counts as inside the dates (delivery.dates)
+  source: true, externalId: true,
 } as const
 
 const CLOSED_STATUSES = new Set(['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'])
@@ -86,11 +134,11 @@ function otherPublisherOf(m: { influencerId: string; publishedByInfluencerId: st
   return m.publishedByInfluencerId && m.publishedByInfluencerId !== m.influencerId ? m.publishedByInfluencerId : null
 }
 
-export async function computeCampaignOverview(campaignId: string, options: ComputeOverviewOptions = {}): Promise<CampaignOverview | null> {
+export async function computeCampaignOverview(campaignId: string, options: ComputeOverviewOptions = {}): Promise<TeamCampaignOverview | null> {
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
     select: {
-      id: true, startDate: true, endDate: true,
+      id: true, startDate: true, endDate: true, type: true,
       targetViews: true, targetReach: true, targetEngagement: true, targetER: true, targetCpmMax: true,
       promoCode: true, codeRedemptions: true, clientReportedSales: true, clientReportedLeads: true,
       clientReportedRevenue: true, businessResultsSource: true, businessResultsReportedAt: true, businessResultsNotes: true,
@@ -164,9 +212,12 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
     { rates, storyViewRates }
   )
 
+  // Days after the end of the campaign of each piece (null inside the window): team only
+  const lateDaysByIdx = media.map(m => lateDaysOf(m.postedAt, campaign.endDate))
+
   // Per publication
   const audienceResults: AudienceResult[] = []
-  const perMedia: PerMediaMetrics[] = []
+  const perMedia: TeamPerMediaMetrics[] = []
   media.forEach((m, i) => {
     const a = audienceOf(m, { followers: followersOf(m), emvItem: emv.items[i], rates })
     audienceResults.push(a)
@@ -186,6 +237,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
       influencerId: m.influencerId,
       viewsPlausible: hasPlausibleViews(m),
       publishedBy: publisher ? { influencerId: publisher.id, username: publisher.username, platform: publisher.platform } : null,
+      lateDays: lateDaysByIdx[i],
     })
   })
 
@@ -225,10 +277,11 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
     arr.push(i)
     mediaByInfluencer.set(m.influencerId, arr)
   })
-  const perInfluencer: PerInfluencerMetrics[] = campaign.influencers
+  const perInfluencer: TeamPerInfluencerMetrics[] = campaign.influencers
     .filter(ci => ci.influencer)
     .map(ci => {
       const idxs = mediaByInfluencer.get(ci.influencerId) || []
+      const lateOwn = idxs.map(i => lateDaysByIdx[i]).filter((d): d is number => d !== null)
       const own = idxs.map(i => media[i])
       const ownAudience = sumAudience(idxs.map(i => audienceResults[i]))
       const ownEng = own.reduce((s, m) => s + engagementsOf(m), 0)
@@ -294,6 +347,8 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
         trackedClicks: ci.trackedClicks ?? null,
         vsBaseline,
         byPlatform,
+        latePieces: lateOwn.length,
+        maxLateDays: lateOwn.length > 0 ? Math.max(...lateOwn) : null,
       }
     })
 
@@ -332,13 +387,34 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
   const start = campaign.startDate ? new Date(campaign.startDate).getTime() : null
   const end = campaign.endDate ? new Date(campaign.endDate).getTime() + 24 * 60 * 60 * 1000 : null
   const dated = media.filter(m => m.postedAt)
+  // A piece published after the end that the late rule accepted (added by hand
+  // «fuera de plazo», at most LATE_ACCEPT_MAX_DAYS late, not Social Listening)
+  // keeps the agreed terms: it counts as inside the dates. Otherwise the row
+  // «Fechas» would fail for a piece the rule accepted, and that failure is
+  // what the client sees (portal, client report, PDF): «fuera de plazo» is
+  // team only. Nothing else changes: other rows after the end still fail it.
   const inWindow = dated.filter(m => {
     const t = new Date(m.postedAt as Date).getTime()
-    return (start === null || t >= start) && (end === null || t < end)
+    return ((start === null || t >= start) && (end === null || t < end)) || keepsLateHandAddedRow(campaign, m)
   }).length
   const feed = media.filter(m => !isStoryType(m.mediaType))
   const disclosedRows = feed.filter(m => isDisclosed(m))
-  const delivery: DeliveryChecklist = {
+
+  // Team summary (see DeliverySummary): one bucket per member in AGREED or later
+  const windowEnd = campaignWindowEndExclusive(campaign.endDate)
+  const ended = windowEnd !== null && (options.now ?? new Date()).getTime() >= windowEnd.getTime()
+  const summary: DeliverySummary = { expected: plannedMembers.length, delivered: 0, late: 0, notPublished: 0, inProgress: 0 }
+  for (const ci of plannedMembers) {
+    const idxs = mediaByInfluencer.get(ci.influencerId) ?? []
+    const planned = typeof ci.deliverablesPlanned === 'number' && ci.deliverablesPlanned > 0 ? ci.deliverablesPlanned : null
+    if (idxs.length === 0) summary.notPublished++
+    else if (idxs.some(i => lateDaysByIdx[i] !== null)) summary.late++
+    else if (idxs.length >= (planned ?? 1)) summary.delivered++
+    else if (ended) summary.late++
+    else summary.inProgress++
+  }
+
+  const delivery: TeamDeliveryChecklist = {
     creators: { planned: creatorsPlanned, delivered: creatorsDelivered, ok: creatorsPlanned > 0 && creatorsDelivered >= creatorsPlanned },
     pieces: {
       planned: hasPlannedPieces ? plannedPieces : null,
@@ -353,6 +429,7 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
       missingMediaIds: feed.filter(m => !isDisclosed(m)).map(m => m.id),
     },
     allOk: false,
+    summary,
   }
   delivery.allOk = delivery.creators.ok && delivery.pieces.ok && delivery.dates.ok && delivery.disclosure.ok
 
@@ -412,12 +489,40 @@ export async function computeCampaignOverview(campaignId: string, options: Compu
 }
 
 /**
+ * The overview without the team-only late figures (perMedia[].lateDays,
+ * perInfluencer[].latePieces / maxLateDays, delivery.summary): what may leave
+ * the team (anything a brand reads, the exports). «Fuera de plazo» is team
+ * only (owner's decision, Nov 2026). Every other key is untouched.
+ */
+export function stripTeamOnly(overview: CampaignOverview): CampaignOverview {
+  const { summary: _summary, ...delivery } = overview.delivery as DeliveryChecklist & { summary?: unknown }
+  void _summary
+  return {
+    ...overview,
+    perMedia: overview.perMedia.map(m => {
+      const { lateDays: _lateDays, ...rest } = m as PerMediaMetrics & { lateDays?: unknown }
+      void _lateDays
+      return rest
+    }),
+    perInfluencer: overview.perInfluencer.map(p => {
+      const { latePieces: _latePieces, maxLateDays: _maxLateDays, ...rest } = p as PerInfluencerMetrics & { latePieces?: unknown; maxLateDays?: unknown }
+      void _latePieces
+      void _maxLateDays
+      return rest
+    }),
+    delivery,
+  }
+}
+
+/**
  * Strip every economic figure for brand-portal consumers when fees must not be
  * shown: cost, ratio, CPM (totals, per creator, the CPM target row) and the
  * cost-derived business figures. Basic EMV is internal too (David 8A: the
- * client sees ONE EMV, the extended one).
+ * client sees ONE EMV, the extended one). Every brand projection goes through
+ * here, so it also drops the team-only late figures (stripTeamOnly).
  */
-export function stripEconomics(overview: CampaignOverview): CampaignOverview {
+export function stripEconomics(full: CampaignOverview): CampaignOverview {
+  const overview = stripTeamOnly(full)
   return {
     ...overview,
     totals: { ...overview.totals, cost: 0, membersWithCost: 0, emvRatio: null, cpm: null, emvBasic: 0 },
@@ -437,8 +542,8 @@ export function stripEconomics(overview: CampaignOverview): CampaignOverview {
 export async function computeCampaignOverviews(
   campaignIds: string[],
   options: ComputeOverviewOptions & { concurrency?: number } = {}
-): Promise<Map<string, CampaignOverview>> {
-  const out = new Map<string, CampaignOverview>()
+): Promise<Map<string, TeamCampaignOverview>> {
+  const out = new Map<string, TeamCampaignOverview>()
   const ids = Array.from(new Set(campaignIds))
   const size = Math.max(1, options.concurrency ?? 5)
   for (let i = 0; i < ids.length; i += size) {

@@ -26,6 +26,7 @@ import { prisma } from '@/lib/db'
 import type { ScrapedPost } from '@/lib/apify'
 import type { MediaType, Platform } from '@/generated/prisma/client'
 import { computeCampaignOverview, stripEconomics } from '@/lib/campaign-overview'
+import type { TeamCampaignOverview } from '@/lib/campaign-overview'
 import { sanitizeCampaignForBrand } from '@/lib/brand-scope'
 import { DEFAULT_EMV_RATES } from '@/lib/emv'
 import { getCreatorStoryViewRates } from '@/lib/emv-server'
@@ -653,7 +654,7 @@ describe('a campaign with no linked profile gives the figures it always gave', (
     expect(await overviewOf(f.campaign.id)).toEqual(before)
   })
 
-  it('the overview only gained two keys: publishedBy per piece and byPlatform per creator', async () => {
+  it('the overview only gained publishedBy per piece and byPlatform per creator, plus the team-only late keys (Nov 2026)', async () => {
     const f = await legacyCampaign()
     const o = await overviewOf(f.campaign.id)
 
@@ -661,13 +662,17 @@ describe('a campaign with no linked profile gives the figures it always gave', (
     expect(o.definitionsVersion).toBe(2)
     expect(Object.keys(o.perMedia[0]).sort()).toEqual([
       'audience', 'audienceBasis', 'audienceEstimated', 'emvBasic', 'emvExtended', 'engagements', 'id', 'influencerId',
-      'isDeleted', 'mediaType', 'publishedBy', 'views', 'viewsPlausible',
+      'isDeleted', 'lateDays', 'mediaType', 'publishedBy', 'views', 'viewsPlausible',
     ])
     expect(Object.keys(o.perInfluencer[0]).sort()).toEqual([
       'audience', 'byPlatform', 'cost', 'cpm', 'deleted', 'deliverablesPlanned', 'displayName', 'emvBasic', 'emvExtended', 'emvRatio',
-      'engagements', 'er', 'followers', 'influencerId', 'media', 'platform', 'posts', 'status', 'stories', 'trackedClicks',
+      'engagements', 'er', 'followers', 'influencerId', 'latePieces', 'maxLateDays', 'media', 'platform', 'posts', 'status', 'stories', 'trackedClicks',
       'username', 'views', 'vsBaseline',
     ])
+    // Nothing late in this campaign: the late keys are empty (src/lib/assignment-rules.ts)
+    const team = o as unknown as TeamCampaignOverview
+    expect(team.perMedia.every(m => m.lateDays === null)).toBe(true)
+    expect(team.perInfluencer.every(p => p.latePieces === 0 && p.maxLateDays === null)).toBe(true)
     expect(Object.keys(o.totals).sort()).toEqual([
       'audience', 'comments', 'cost', 'cpm', 'creatorsActive', 'emvBasic', 'emvEstimatedAudience', 'emvEstimatedStories', 'emvExtended',
       'emvRatio', 'emvRealStories', 'emvTrustMultiplier', 'engagements', 'er', 'impressionsReal', 'likes', 'media', 'mediaCounts',

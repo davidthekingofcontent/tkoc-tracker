@@ -10,6 +10,8 @@ import {
   normalizeTargets,
   scrapedPostToRuleItem,
   upsertCampaignPost,
+  newCaptureSkips,
+  skippedForLateCopy,
 } from '@/lib/campaign-capture'
 import { loadCampaignRoster } from '@/lib/campaign-roster'
 import { isBrandAccount, keywordNeedles } from '@/lib/campaign-targets'
@@ -209,6 +211,12 @@ export interface TikTokAutolinkSummary {
   notLinked: Array<{ campaignId: string; campaign: string; member: string; handle: string; reason: 'other_person' | 'brand_account' }>
   /** Accounts whose linking or storing failed: not recorded as read, the next pass reads them again */
   failed: Array<{ campaignId: string; campaign: string; member: string; handle: string }>
+  /**
+   * Videos of the campaign NOT stored because they already count late («fuera
+   * de plazo») in another campaign: a late piece counts in one campaign only.
+   * A skip with its reason (also logged), never a failure: the pair is read.
+   */
+  skippedLateElsewhere: number
   partial: boolean
   skipped?: string
 }
@@ -301,7 +309,9 @@ const dayOf = (d: Date) => d.toISOString().slice(0, 10)
  */
 export async function runTikTokAutolink(opts: { campaignId?: string; now?: Date } = {}): Promise<TikTokAutolinkSummary> {
   const now = opts.now ?? new Date()
-  const summary: TikTokAutolinkSummary = { at: now.toISOString(), campaigns: [], handlesScanned: 0, answered: 0, notFound: 0, linked: 0, videos: 0, truncated: [], notLinked: [], failed: [], partial: false }
+  const summary: TikTokAutolinkSummary = { at: now.toISOString(), campaigns: [], handlesScanned: 0, answered: 0, notFound: 0, linked: 0, videos: 0, truncated: [], notLinked: [], failed: [], skippedLateElsewhere: 0, partial: false }
+  /** Videos not stored because they count late in another campaign (summary.skippedLateElsewhere) */
+  const skips = newCaptureSkips()
   try {
     const campaigns = await prisma.campaign.findMany({
       where: { status: 'ACTIVE', platforms: { has: 'TIKTOK' }, ...(opts.campaignId ? { id: opts.campaignId } : {}) },
@@ -570,9 +580,23 @@ export async function runTikTokAutolink(opts: { campaignId?: string; now?: Date 
       if (!incomplete.has(c.handle)) checked[key] = `${now.toISOString()}|${fingerprints[c.campaignIndex]}`
       if (!scraped) continue
 
-      const matching: ScrapedPost[] = scraped.recentPosts.filter(
+      const ofTheCampaign: ScrapedPost[] = scraped.recentPosts.filter(
         post => !!post.externalId && mediaMatchesCampaignRules(campaign, scrapedPostToRuleItem(post))
       )
+      // A video that already counts LATE in another campaign is not this
+      // campaign's: it is neither stored nor the evidence that links the account
+      // (skipped with its reason, counted in the summary)
+      const matching: ScrapedPost[] = []
+      for (const post of ofTheCampaign) {
+        const lateElsewhere = await skippedForLateCopy(
+          { platform: 'TIKTOK', externalIds: [post.externalId], permalinks: [post.permalink], label: `TIKTOK:${post.externalId}` },
+          campaign.id,
+          skips,
+          'TikTokAutolink'
+        )
+        if (!lateElsewhere) matching.push(post)
+      }
+      summary.skippedLateElsewhere = skips.lateElsewhere
 
       try {
         let profile: { id: string; username: string }
@@ -630,7 +654,11 @@ export async function runTikTokAutolink(opts: { campaignId?: string; now?: Date 
         let notStored = 0
         for (const post of matching) {
           const held = await prisma.media.count({ where: { externalId: post.externalId, platform: 'TIKTOK', campaignId: campaign.id } })
-          const ok = await upsertCampaignPost(campaign.id, memberId, 'TIKTOK', post, { publishedByInfluencerId: publishedBy })
+          const skippedBefore = skips.lateElsewhere
+          const ok = await upsertCampaignPost(campaign.id, memberId, 'TIKTOK', post, { publishedByInfluencerId: publishedBy, skips })
+          summary.skippedLateElsewhere = skips.lateElsewhere
+          // Not stored because it counts late elsewhere (stored there meanwhile): a skip, not a failure
+          if (!ok && skips.lateElsewhere > skippedBefore) continue
           if (!ok) { notStored++; continue }
           // Already in the campaign (added by hand, or by an earlier pass): refreshed, not new
           if (held > 0) continue

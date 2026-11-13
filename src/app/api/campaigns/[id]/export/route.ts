@@ -34,7 +34,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession, isStaffRole } from '@/lib/auth'
-import { computeCampaignOverview } from '@/lib/campaign-overview'
+import { computeCampaignOverview, stripTeamOnly } from '@/lib/campaign-overview'
 import { madridDayKey, type CampaignOverview } from '@/lib/metrics'
 import { parseBaseline } from '@/lib/creator-baseline'
 
@@ -85,8 +85,11 @@ async function handle(request: NextRequest, id: string, format: Format) {
   const campaign = await loadCampaign(id)
   if (!campaign) return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
 
-  const overview = await computeCampaignOverview(id)
-  if (!overview) return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
+  const full = await computeCampaignOverview(id)
+  if (!full) return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
+  // «Fuera de plazo» (days late, late pieces, the team's delivery summary) is
+  // team only and never travels in a file: the export carries the shared keys.
+  const overview = stripTeamOnly(full)
 
   const filename = `${slug(campaign.name)}-${madridDayKey(new Date())}`
   return format === 'csv'

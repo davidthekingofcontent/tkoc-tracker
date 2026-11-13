@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
 import { Platform, MediaType } from '@/generated/prisma/client'
-import { isWithinCampaignDates, itemReferencesBrand, normalizeBrandToken, findStoryTwin } from '@/lib/campaign-capture'
+import { isWithinCampaignDates, itemReferencesBrand, normalizeBrandToken, findStoryTwin, newCaptureSkips, skippedForLateCopy } from '@/lib/campaign-capture'
 
 /**
  * Materialize Meta Graph API content (MetaMedia + MetaStoryMention) into the
@@ -14,6 +14,13 @@ import { isWithinCampaignDates, itemReferencesBrand, normalizeBrandToken, findSt
  *   by Instagram shortcode (Apify and Meta use different external IDs for the
  *   same post, but permalinks share the /p/{shortcode}/ or /reel/{shortcode}/
  *   segment) and upgrades that row in place with Meta's real metrics.
+ * - Never brings into this campaign a post (or story) that already counts
+ *   LATE in another campaign (a piece a PM added «fuera de plazo» counts in
+ *   one campaign only): skipped, logged, counted in `skippedLateElsewhere`.
+ *   A story is also matched by its creator and time (±5 min), since a story
+ *   mention's id is not the id of the story's link.
+ *   Only content inside this campaign's dates is ever written (inRange), so
+ *   nothing here detaches or removes a late row of this campaign.
  */
 /**
  * ACTIVE campaigns in materialization order: the most
@@ -36,8 +43,15 @@ export async function listCampaignsForMaterialize(): Promise<string[]> {
     .map(c => c.id)
 }
 
-export async function materializeMetaContent(campaignId: string): Promise<{ created: number; updated: number }> {
-  const stats = { created: 0, updated: 0 }
+export async function materializeMetaContent(campaignId: string): Promise<{ created: number; updated: number; skippedLateElsewhere: number }> {
+  const stats = { created: 0, updated: 0, skippedLateElsewhere: 0 }
+  const skips = newCaptureSkips()
+  /** The guard of every write that brings a Meta row INTO this campaign (counted in stats) */
+  const lateElsewhere = async (post: { externalIds: Array<string | null>; permalinks?: Array<string | null>; label: string; story?: { influencerId: string; postedAt: Date | null } }) => {
+    const skipped = await skippedForLateCopy({ platform: 'INSTAGRAM', ...post }, campaignId, skips, 'meta-materialize')
+    stats.skippedLateElsewhere = skips.lateElsewhere
+    return skipped
+  }
 
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
@@ -168,6 +182,15 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
       const storyTwin = !existing && mm.mediaType === 'STORY'
         ? await findStoryTwin(campaignId, member.id, mm.postedAt, mm.igMediaId)
         : null
+      // A row that is already this campaign's is only enriched; anything else JOINS it
+      const ours = existing?.campaignId ?? storyTwin?.campaignId ?? null
+      if (!ours && (await lateElsewhere({
+        externalIds: [mm.igMediaId],
+        permalinks: [mm.permalink],
+        label: `INSTAGRAM:${mm.igMediaId}`,
+        // A story has another id in each source: also the same creator's late story elsewhere at the same time
+        ...(mm.mediaType === 'STORY' ? { story: { influencerId: member.id, postedAt: mm.postedAt } } : {}),
+      }))) continue
       if (storyTwin) {
         await prisma.media.update({
           where: { id: storyTwin.id },
@@ -246,11 +269,17 @@ export async function materializeMetaContent(campaignId: string): Promise<{ crea
         orderBy: { campaignId: { sort: 'desc', nulls: 'last' } },
         select: { id: true, campaignId: true },
       })
+      // The mention's Graph id is not the id of the story's link: also the same
+      // creator's story counted late elsewhere at the same time
+      const storyKeys = { externalIds: [sm.mentionMediaId], label: `INSTAGRAM:${sm.mentionMediaId} (story)`, story: { influencerId: member.id, postedAt: sm.mentionedAt } }
       if (existing) {
-        if (!existing.campaignId) await prisma.media.update({ where: { id: existing.id }, data: { campaignId } })
+        if (!existing.campaignId && !(await lateElsewhere(storyKeys))) {
+          await prisma.media.update({ where: { id: existing.id }, data: { campaignId } })
+        }
         continue // stories carry no new metrics — nothing else to upgrade
       }
       const twin = await findStoryTwin(campaignId, member.id, sm.mentionedAt, sm.mentionMediaId)
+      if (!twin?.campaignId && (await lateElsewhere(storyKeys))) continue
       if (twin) {
         await prisma.media.update({
           where: { id: twin.id },

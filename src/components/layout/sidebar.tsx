@@ -24,11 +24,13 @@ import {
   Building2,
   Briefcase,
   UserCheck,
+  GitMerge,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { NotificationsBell } from '@/components/notifications-bell'
 import { useI18n } from '@/i18n/context'
 import { useTheme } from '@/components/theme-provider'
+import { useRole } from '@/hooks/use-role'
 
 interface NavItem {
   key: string
@@ -54,6 +56,13 @@ const secondaryNavItems: NavItem[] = [
   { key: "clientBase", icon: Briefcase, href: "/client-base" },
   { key: "pipeline", icon: Kanban, href: "/pipeline" },
   { key: "settings", icon: Settings, href: "/settings" },
+]
+
+// ADMIN only, after the secondary items: «Fichas duplicadas» (the merge tool).
+// The role comes from the session (/api/auth/me), never from localStorage; the
+// page and its API check it again on the server.
+const adminNavItems: NavItem[] = [
+  { key: "duplicates", icon: GitMerge, href: "/creators/duplicadas" },
 ]
 
 // Simplified nav for CREATOR role
@@ -108,6 +117,7 @@ function getNavLabel(key: string, t: ReturnType<typeof useI18n>['t']): string {
     case 'clientBase': return (t as Record<string, unknown> as { clientBase?: { title?: string } }).clientBase?.title || 'My Client Base'
     case 'pipeline': return t.nav.pipeline
     case 'portal': return t.nav.portal || 'Portal'
+    case 'duplicates': return t.nav.duplicates
     case 'settings': return t.settings?.title || t.nav.settings
     default: return key
   }
@@ -126,6 +136,8 @@ export function Sidebar() {
 
   const isCreator = user.role === 'CREATOR'
   const isBrand = user.role === 'BRAND'
+  // From the session, not from localStorage (whose default is ADMIN while it loads)
+  const { isAdmin: sessionIsAdmin } = useRole()
 
   useEffect(() => {
     // Load user from localStorage
@@ -135,6 +147,8 @@ export function Sidebar() {
       if (userData) {
         const parsed = JSON.parse(userData)
         role = parsed.role || 'ADMIN'
+        // Pre-existing pattern: localStorage only exists after mount (not during the server render)
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setUser({
           name: parsed.name || 'User',
           email: parsed.email || '',
@@ -191,7 +205,11 @@ export function Sidebar() {
     (href !== '/' && (pathname === href || pathname?.startsWith(href + "/")))
 
   const navMainItems = isBrand ? brandMainNavItems : isCreator ? creatorMainNavItems : mainNavItems
-  const navSecondaryItems = isBrand ? brandSecondaryNavItems : isCreator ? creatorSecondaryNavItems : secondaryNavItems
+  const navSecondaryItems = isBrand
+    ? brandSecondaryNavItems
+    : isCreator
+      ? creatorSecondaryNavItems
+      : sessionIsAdmin ? [...secondaryNavItems, ...adminNavItems] : secondaryNavItems
 
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-[260px] flex-col border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 transition-colors">

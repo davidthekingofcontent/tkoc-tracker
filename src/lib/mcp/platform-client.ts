@@ -180,6 +180,7 @@ export const PLATFORM_FORBIDDEN_PREFIXES: readonly string[] = [
   '/api/live-capture/collect', // public widget endpoints on client websites
   '/api/live-capture/widget-config',
   '/api/admin/cleanup-auto-added', // disabled on purpose
+  '/api/admin/person-merge', // merging and un-merging creators' records: an ADMIN in the platform only, never through the connector
   '/api/dashboard/creator', // creator-only view
   '/api/proxy', // binary image relays
   '/api/ai', // a second assistant that spends AI credit

@@ -6,13 +6,42 @@
  *
  * "The figures of campaigns already delivered must not change": with no
  * profile linked, the overview of every campaign has to be identical.
+ *
+ *   REHEARSAL_UNDO_MERGES=1 → first undoes the merges the merge rehearsal
+ *                             (merge-and-late.test.ts) leaves on the copy, and
+ *                             nothing else (it refuses any other merge): the
+ *                             snapshot of before the merges compares with the
+ *                             copy as it was. Run merge-and-late.test.ts after
+ *                             it to leave the copy merged again.
  */
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
+
+// Nothing here may reach the network (the undo reads and writes the copy only)
+vi.mock('@/lib/apify', () => {
+  const blocked = (name: string) => vi.fn(async () => { throw new Error(`${name}: the network is mocked in the rehearsal`) })
+  return {
+    scrapeSinglePost: blocked('scrapeSinglePost'),
+    scrapeProfile: blocked('scrapeProfile'),
+    scrapeStories: blocked('scrapeStories'),
+    scrapeTikTokProfilesBatch: blocked('scrapeTikTokProfilesBatch'),
+    isApifyExhausted: vi.fn(() => false),
+    isApifyConfiguredAsync: vi.fn(async () => false),
+  }
+})
+
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { prisma } from '@/lib/db'
 import { computeCampaignOverview } from '@/lib/campaign-overview'
+import { assertOnTheCopy, rehearsalAdmin, undoRehearsalMerges } from './merge-pairs'
+
+beforeAll(async () => {
+  if (process.env.REHEARSAL_UNDO_MERGES !== '1') return
+  await assertOnTheCopy()
+  const undone = await undoRehearsalMerges(await rehearsalAdmin())
+  console.log(`[overviews] undid ${undone} merges of the merge rehearsal before comparing`)
+})
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const GOLDEN = process.env.GOLDEN_FILE || path.join(here, '.golden-overviews.json')
@@ -33,6 +62,25 @@ function stable(value: unknown): unknown {
   return value
 }
 
+/**
+ * The arrays whose order comes from a query without ORDER BY are compared as
+ * sets: creators by influencerId, pieces by id, the ids missing a disclosure.
+ * An undone merge puts a membership row back as a new heap tuple, so the
+ * database may return the same rows in another order.
+ */
+function unordered(overview: unknown): unknown {
+  if (!overview || typeof overview !== 'object') return overview
+  const o = JSON.parse(JSON.stringify(overview)) as {
+    perInfluencer?: Array<{ influencerId: string }>
+    perMedia?: Array<{ id: string }>
+    delivery?: { disclosure?: { missingMediaIds?: string[] } }
+  }
+  o.perInfluencer?.sort((a, b) => a.influencerId.localeCompare(b.influencerId))
+  o.perMedia?.sort((a, b) => a.id.localeCompare(b.id))
+  o.delivery?.disclosure?.missingMediaIds?.sort()
+  return o
+}
+
 describe('campaign overviews on the local copy', () => {
   it('are identical to the stored snapshot', async () => {
     const campaigns = await prisma.campaign.findMany({ select: { id: true, name: true }, orderBy: { createdAt: 'asc' } })
@@ -50,8 +98,9 @@ describe('campaign overviews on the local copy', () => {
     }
     const golden = JSON.parse(fs.readFileSync(GOLDEN, 'utf8'))
     for (const key of Object.keys(golden)) {
-      expect(current[key], key).toEqual(JSON.parse(JSON.stringify(stable(golden[key]))))
+      expect(unordered(current[key]), key).toEqual(unordered(JSON.parse(JSON.stringify(stable(golden[key])))))
     }
+    console.log(`[overviews] ${Object.keys(golden).length} campaigns identical to the snapshot (ignoring ${Array.from(ADDED_KEYS).join(', ') || 'nothing'})`)
     expect(Object.keys(current).sort()).toEqual(Object.keys(golden).sort())
   })
 })

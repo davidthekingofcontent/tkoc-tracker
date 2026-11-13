@@ -36,7 +36,8 @@ import { CampaignTeamButton } from '@/components/campaign-team'
 import { InfluencerHistoryButton } from '@/components/influencer-history'
 import { MoveCreatorsModal, type MoveCreatorsResult } from '@/components/move-creators-modal'
 import { LinkProfileConfirm, closedQuestionResult, noClearAnswer, profileNotLinkedFrom, type LinkProfileRequest } from '@/components/link-profile-confirm'
-import { CreatorNetworkList, creatorNetworksOf } from '@/components/campaign-report'
+import { CreatorNetworkList, creatorNetworksOf, LateBadge, DeliverySummaryLine, campaignIsRunning, deliverySummaryOf, lateDaysByMediaId, lateDaysForDisplay, lateDaysText } from '@/components/campaign-report'
+import { DuplicatesNotice } from '@/components/person-merge/duplicates-notice'
 import { parsePostUrl } from '@/lib/post-url'
 import { tiktokIdPostedAt } from '@/lib/tiktok-id'
 import type { TranslationKeys } from '@/i18n/translations'
@@ -828,7 +829,7 @@ function sortInfluencers(
 export default function CampaignDetailPage() {
   const params = useParams()
   const { t, locale } = useI18n()
-  const { isBrand, canEdit } = useRole()
+  const { isBrand, canEdit, isAdmin } = useRole()
   const campaignId = params.id as string
   const [campaign, setCampaign] = useState<CampaignData | null>(null)
   // Benchmarks from Ajustes (brand override when the campaign has a brand) so the CPM row,
@@ -1047,10 +1048,11 @@ export default function CampaignDetailPage() {
     // The texts of the first render are the ones used (the language does not change mid-visit); only the campaign matters
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campaignId])
-  /** A message about a link: to the form while the page is open; kept for later if the PM has left */
-  function showManualResult(outcome: ManualOutcome) {
-    if (manualMediaOpenFor.current === campaignId) setManualMediaResult(outcome)
-    else postManualOutcome(campaignId, outcome)
+  /** A message about a link: to the form while the page is open; kept for later if the PM has left. `lead` goes first («Añadida fuera de plazo: …»). */
+  function showManualResult(outcome: ManualOutcome, lead?: string | null) {
+    const shown = lead ? { ...outcome, message: `${lead} ${outcome.message}` } : outcome
+    if (manualMediaOpenFor.current === campaignId) setManualMediaResult(shown)
+    else postManualOutcome(campaignId, shown)
   }
 
   // Drag & drop state for pipeline kanban
@@ -1453,6 +1455,10 @@ export default function CampaignDetailPage() {
 
       // Named from what was stored (network, the profile that published, type, date); the URL when the answer lacks it
       const piece = describeAddedPiece(data.media, cd, locale) ?? link
+      // Published after the end and accepted because she still owed a piece: said first (team only)
+      const late = data.created !== false && typeof data.lateDays === 'number' && data.lateDays >= 1
+        ? fillManualText(cd.manualDetailLate, { days: lateDaysText(data.lateDays, t.campaignReport) })
+        : null
       showManualResult({
         type: 'success',
         title: fillManualText(data.created === false ? cd.manualResultUpdated : cd.manualResultAdded, { link: piece }),
@@ -1463,7 +1469,7 @@ export default function CampaignDetailPage() {
           : data.isStory
             ? cd.manualStoryAdded
             : data.enriched ? cd.manualDetailEnriched : cd.manualDetailNotEnriched,
-      })
+      }, late)
       // Cleared only if the form still holds the link that was sent
       setManualMediaForm(f => (f.url.trim() === url ? MANUAL_EMPTY_FORM : f))
       setManualMediaNeedsDate(false)
@@ -2485,6 +2491,8 @@ export default function CampaignDetailPage() {
     for (const p of overview?.perInfluencer ?? []) map.set(p.influencerId, p)
     return map
   }, [overview])
+  /** Days late of each piece (team overview only; a brand's overview has none): «Fuera de plazo · N días». */
+  const lateDaysById = useMemo(() => lateDaysByMediaId(overview), [overview])
 
   // Numeric targets the PM actually filled in (only these are ever shown) and their frozen state.
   const definedTargets = TARGET_FIELD_DEFS.filter(def => (campaign?.[def.key] ?? null) !== null)
@@ -2876,6 +2884,10 @@ export default function CampaignDetailPage() {
 
           {/* Prometido vs entregado: green check only when true, amber warning otherwise */}
           <h3 className="mt-5 mb-2 text-sm font-semibold text-gray-700">{d.deliveryTitle}</h3>
+          {/* Team only: «Han entregado X · Con retraso Y · Sin publicar Z» (+ «En curso W» while it runs) */}
+          {canEdit && (
+            <DeliverySummaryLine summary={deliverySummaryOf(delivery)} running={campaignIsRunning(campaign.endDate)} tr={t.campaignReport} className="mb-2" />
+          )}
           <ul className="divide-y divide-gray-100 rounded-lg border border-gray-200">
             {rows.map(r => (
               <li key={r.key} className="flex items-start gap-3 px-3 py-2.5">
@@ -3994,6 +4006,9 @@ export default function CampaignDetailPage() {
         </div>
       )}
 
+      {/* ADMIN only: «Hay N posibles fichas duplicadas en esta campaña. Revisarlas» */}
+      <DuplicatesNotice campaignId={campaignId} isAdmin={isAdmin} />
+
       {/* Tabs - 5 Campaign Phases */}
       <Tabs defaultValue="planificar">
         <TabsList>
@@ -5093,6 +5108,8 @@ export default function CampaignDetailPage() {
                           </p>
                         </div>
                       </div>
+                      {/* Team only: published after the end of the campaign */}
+                      {canEdit && <LateBadge days={lateDaysById.get(m.id)} tr={t.campaignReport} className="mt-2" />}
                       {m.caption && (
                         <p className="mt-2 line-clamp-2 text-xs text-gray-500 dark:text-gray-400">{m.caption}</p>
                       )}
@@ -5263,6 +5280,10 @@ export default function CampaignDetailPage() {
                                 <p className="text-[10px] text-gray-400">
                                   {formatDate(postedDate, { locale })} {postedDate.toLocaleTimeString(locale === 'es' ? 'es-ES' : 'en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' })}
                                 </p>
+                              )}
+                              {/* Team only: published after the end of the campaign */}
+                              {canEdit && lateDaysById.has(story.id) && (
+                                <LateBadge days={lateDaysById.get(story.id)} tr={t.campaignReport} className="mt-1" />
                               )}
                             </div>
                           </div>
@@ -7731,7 +7752,11 @@ export default function CampaignDetailPage() {
           // Named from what was stored, as for a direct add; the URL when the answer lacks it
           const link = describeAddedPiece(saved.media, t.campaignDetail, locale) ?? describeManualLink(sentUrl, t.campaignDetail, locale)
           const title = fillManualText(saved.created === false ? t.campaignDetail.manualResultUpdated : t.campaignDetail.manualResultAdded, { link })
-          finishLinkProfileQuestion({ type: 'success', title, message }, sentUrl)
+          // Published after the end (the same rule as the server, from the stored date): said first, team only
+          const posted = typeof saved.media?.postedAt === 'string' ? saved.media.postedAt : null
+          const lateDays = saved.created !== false ? lateDaysForDisplay(posted, campaign?.endDate ?? null) : null
+          const late = lateDays !== null ? `${fillManualText(t.campaignDetail.manualDetailLate, { days: lateDaysText(lateDays, t.campaignReport) })} ` : ''
+          finishLinkProfileQuestion({ type: 'success', title, message: late + message }, sentUrl)
         }}
         onNeedsPostedAt={(message) => {
           const sentUrl = String(linkProfileRequest?.body.url ?? '')

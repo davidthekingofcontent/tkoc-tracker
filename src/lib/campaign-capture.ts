@@ -5,6 +5,7 @@ import type { MediaType, Platform, Prisma } from '@/generated/prisma/client'
 import { computeBaseline } from '@/lib/creator-baseline'
 import { afterInfluencerUpsert, scrapedProfileUpdate } from '@/lib/influencer-upsert'
 import { accountCoreStems, captionWords, keywordNeedles, normalizeStem, tagCarriesKeyword, textTokens, tokensContain, tokensContainWords } from '@/lib/campaign-targets'
+import { campaignWindowEndExclusive, isHandAddedRow, keepsLateHandAddedRow, lateCopyElsewhere } from '@/lib/assignment-rules'
 
 /**
  * PRECISE CONTENT CAPTURE — the single source of truth for "does this piece
@@ -29,13 +30,20 @@ import { accountCoreStems, captionWords, keywordNeedles, normalizeStem, tagCarri
  *       brand's handle in mentions[], so the same rule applies to them.
  *
  * Content a PM attaches by hand (source 'manual') is exempt from rule (3)
- * ONLY — the PM asserts relevance — but rules (1) and (2) still apply.
+ * — the PM asserts relevance — and rules (1) and (2) still apply, with ONE
+ * exception to (2) (Nov 2026, src/lib/assignment-rules.ts): a piece added by
+ * hand up to LATE_ACCEPT_MAX_DAYS after the end, for a member who still owed
+ * one, counts in the campaign marked late («fuera de plazo», team only).
+ * Nothing before the start ever counts, and the automatic capture never files
+ * anything after the end.
  *
  * A post counts in EVERY campaign whose rules it satisfies: there is one Media
  * row per (post, campaign) — unique on (externalId, platform, campaignId).
  * The date window and the creator's membership decide, never the order in
  * which campaigns were scraped. Rows a PM attached by hand ('manual') are
- * never re-tagged by a scrape.
+ * never re-tagged by a scrape. A LATE piece is the exception: it counts in
+ * one campaign only, so no automatic path files it in another campaign
+ * (findLateCopyElsewhere).
  *
  * A campaign with NO targetAccounts and NO targetHashtags captures NOTHING
  * from scraped sources — the UI warns the PM to configure targets.
@@ -201,17 +209,11 @@ export async function loadCampaignBrandAccounts(
 }
 
 /**
- * Exclusive upper bound of the campaign window: the start of the UTC day
- * AFTER endDate. The campaign forms send a date-only value that is stored as
- * midnight UTC, so a plain `posted > endDate` would reject (and detach)
- * everything published during the campaign's last day.
+ * Exclusive upper bound of the campaign window (the start of the UTC day after
+ * endDate). It lives in src/lib/assignment-rules.ts, the one source of truth
+ * of the window and of the late rule; re-exported here for its old callers.
  */
-export function campaignWindowEndExclusive(endDate: Date | string | null | undefined): Date | null {
-  if (!endDate) return null
-  const end = endDate instanceof Date ? endDate : new Date(endDate)
-  if (Number.isNaN(end.getTime())) return null
-  return new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate() + 1))
-}
+export { campaignWindowEndExclusive }
 
 /** Rule (2): dated, inside the campaign window (endDate's whole day included). */
 export function isWithinCampaignDates(
@@ -492,16 +494,28 @@ type CaptureDb = Prisma.TransactionClient | typeof prisma
  * deleted or locked FOR UPDATE: a PM editing the member's status or fee is
  * never kept waiting by a capture.
  *
+ * `exclusive` (a LATE piece added by hand, Nov 2026): the membership is held
+ * FOR NO KEY UPDATE instead, which two such writes cannot hold at once. The
+ * caller reads what the creator has delivered INSIDE `write`, so two late adds
+ * for a creator who owes one piece run one after the other and the second one
+ * sees the first piece (READ COMMITTED: each statement reads what is
+ * committed when it starts). It still does not wait for a capture (FOR KEY
+ * SHARE) and a fold (FOR UPDATE) still waits for it.
+ *
  * null = not a member (any more): nothing was written.
  */
 export async function withCampaignMembership<T>(
   campaignId: string,
   influencerId: string,
-  write: (db: Prisma.TransactionClient) => Promise<T>
+  write: (db: Prisma.TransactionClient) => Promise<T>,
+  options: { exclusive?: boolean } = {}
 ): Promise<T | null> {
   return prisma.$transaction(async tx => {
-    const held = await tx.$queryRaw<Array<{ id: string }>>`
-      SELECT id FROM campaign_influencers WHERE "campaignId" = ${campaignId} AND "influencerId" = ${influencerId} FOR KEY SHARE`
+    const held = options.exclusive
+      ? await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM campaign_influencers WHERE "campaignId" = ${campaignId} AND "influencerId" = ${influencerId} FOR NO KEY UPDATE`
+      : await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM campaign_influencers WHERE "campaignId" = ${campaignId} AND "influencerId" = ${influencerId} FOR KEY SHARE`
     if (held.length === 0) return null
     return write(tx)
   }, { maxWait: 10_000, timeout: 30_000 })
@@ -568,6 +582,191 @@ export async function findMediaBySameLink(
 }
 
 /**
+ * The keys a post is known by. The same Instagram post has a numeric id in
+ * Apify, another id in Meta's Graph API and a shortcode in its link (an
+ * un-enriched manual add stores the shortcode as externalId): the shortcode
+ * in the permalink is the key they share. Other networks share the id.
+ */
+export interface PostIdentity {
+  platform: Platform
+  externalIds: ReadonlyArray<string | null | undefined>
+  permalinks?: ReadonlyArray<string | null | undefined>
+  /** The shortcode of an Instagram link, when the caller has it */
+  shortcode?: string | null
+}
+
+export interface CampaignPostCopy {
+  id: string
+  campaignId: string
+  postedAt: Date | null
+  influencerId: string
+  source: string
+  mediaType: string
+  externalId: string | null
+  campaign: { id: string; name: string; endDate: Date | null; status: string; type: string }
+}
+
+/**
+ * Rows of the same post attached to campaigns OTHER than `campaignId`
+ * (unattached rows are not a campaign), with the campaign they are in.
+ * Matched on the externalId, and on Instagram also on the shortcode.
+ */
+export async function findPostCopiesInOtherCampaigns(
+  post: PostIdentity,
+  campaignId: string,
+  db: CaptureDb = prisma
+): Promise<CampaignPostCopy[]> {
+  const ids = Array.from(new Set(post.externalIds.filter((id): id is string => typeof id === 'string' && id.trim() !== '')))
+  const codes = new Set<string>()
+  if (post.platform === 'INSTAGRAM') {
+    if (post.shortcode && /^[A-Za-z0-9_-]{5,}$/.test(post.shortcode)) codes.add(post.shortcode)
+    for (const link of post.permalinks ?? []) {
+      const code = instagramShortcode(link)
+      if (code) codes.add(code)
+    }
+  }
+  if (ids.length === 0 && codes.size === 0) return []
+  // An un-enriched manual add stores the shortcode itself as externalId
+  const keys = Array.from(new Set([...ids, ...codes]))
+  const rows = await db.media.findMany({
+    where: {
+      platform: post.platform,
+      AND: [{ campaignId: { not: null } }, { campaignId: { not: campaignId } }],
+      OR: [
+        { externalId: { in: keys } },
+        ...Array.from(codes).map(code => ({ permalink: { contains: `/${code}` } })),
+      ],
+    },
+    select: {
+      id: true, campaignId: true, postedAt: true, influencerId: true, source: true, externalId: true, permalink: true, mediaType: true,
+      campaign: { select: { id: true, name: true, endDate: true, status: true, type: true } },
+    },
+    orderBy: { createdAt: 'asc' },
+  })
+  const out: CampaignPostCopy[] = []
+  for (const r of rows) {
+    if (!r.campaignId || !r.campaign) continue
+    // `contains '/CODE'` also matches '/CODEx': keep exact shortcodes only
+    const sameId = !!r.externalId && keys.includes(r.externalId)
+    const sameCode = codes.size > 0 && codes.has(instagramShortcode(r.permalink) ?? '')
+    if (!sameId && !sameCode) continue
+    out.push({ id: r.id, campaignId: r.campaignId, postedAt: r.postedAt, influencerId: r.influencerId, source: r.source, mediaType: r.mediaType, externalId: r.externalId, campaign: r.campaign })
+  }
+  return out
+}
+
+/**
+ * The row of the same post that counts LATE in another campaign (a piece a PM
+ * added there «fuera de plazo»: hand-added, at most LATE_ACCEPT_MAX_DAYS after
+ * that campaign's end), or null. A late piece counts in one campaign only:
+ * the automatic capture never files the post in `campaignId` while such a row
+ * exists (assignment-rules.ts, lateCopyElsewhere).
+ */
+export async function findLateCopyElsewhere(post: PostIdentity, campaignId: string, db: CaptureDb = prisma): Promise<CampaignPostCopy | null> {
+  const copies = await findPostCopiesInOtherCampaigns(post, campaignId, db)
+  const late = lateCopyElsewhere(copies.map(c => ({ ...c, campaignEndDate: c.campaign.endDate, campaignType: c.campaign.type })), campaignId)
+  return late ? copies.find(c => c.id === late.id) ?? null : null
+}
+
+/**
+ * Serialises, until the end of the transaction `db` belongs to, every
+ * manual write that decides whether ONE post counts in one campaign only
+ * (a late piece, or an in-window add of a post that may count late
+ * elsewhere): two such adds of the same post to two campaigns at once run
+ * one after the other, so the second one sees the first one's row. The key
+ * is the post as both requests know it: the Instagram shortcode of a feed
+ * post, else its id. Must be called inside a transaction.
+ */
+export async function lockPostForCampaignChoice(db: Prisma.TransactionClient, platform: Platform, key: string | null | undefined): Promise<void> {
+  if (!key) return
+  await db.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(${`late-post:${platform}:${key}`}))) AS l`
+}
+
+/**
+ * A STORY that counts LATE in another campaign for the same creator (her
+ * member profile or any profile of her person) published within
+ * STORY_TWIN_TOLERANCE_MS of `postedAt`: the same story reaching another
+ * campaign under another id (a Meta story mention has a Graph id; a story
+ * registered from its link keeps the id of the link). Only rows that count
+ * late there (keepsLateHandAddedRow). `onlyWithoutInstagramId`: for the
+ * Apify story pass, which shares the id of the link and treats a row that
+ * carries an Instagram id as ANOTHER slide (upsertCampaignStory's twin rule).
+ */
+export async function findLateStoryElsewhere(
+  campaignId: string,
+  influencerId: string,
+  postedAt: Date | null,
+  options: { onlyWithoutInstagramId?: boolean } = {}
+): Promise<{ id: string; campaignId: string; campaign: { id: string; name: string } } | null> {
+  if (!postedAt) return null
+  const me = await prisma.influencer.findUnique({ where: { id: influencerId }, select: { personId: true } })
+  const profileIds = me?.personId
+    ? (await prisma.influencer.findMany({ where: { personId: me.personId }, select: { id: true } })).map(p => p.id)
+    : [influencerId]
+  if (!profileIds.includes(influencerId)) profileIds.push(influencerId)
+  const rows = await prisma.media.findMany({
+    where: {
+      platform: 'INSTAGRAM',
+      mediaType: 'STORY',
+      postedAt: { gte: new Date(postedAt.getTime() - STORY_TWIN_TOLERANCE_MS), lte: new Date(postedAt.getTime() + STORY_TWIN_TOLERANCE_MS) },
+      AND: [{ campaignId: { not: null } }, { campaignId: { not: campaignId } }],
+      OR: [{ influencerId: { in: profileIds } }, { publishedByInfluencerId: { in: profileIds } }],
+    },
+    select: { id: true, campaignId: true, source: true, mediaType: true, externalId: true, postedAt: true, campaign: { select: { id: true, name: true, endDate: true, type: true } } },
+    orderBy: { createdAt: 'asc' },
+  })
+  for (const r of rows) {
+    if (!r.campaignId || !r.campaign) continue
+    if (options.onlyWithoutInstagramId && isInstagramMediaId(r.externalId)) continue
+    if (keepsLateHandAddedRow(r.campaign, r)) return { id: r.id, campaignId: r.campaignId, campaign: { id: r.campaign.id, name: r.campaign.name } }
+  }
+  return null
+}
+
+/**
+ * What an automatic path did NOT store and why, for its run summary. Every
+ * skip is also logged with its reason: a skip is never silent.
+ */
+export interface CaptureSkips {
+  /** Posts not filed here because a late row of them counts in another campaign */
+  lateElsewhere: number
+  /** A few of them, "PLATFORM:id → «campaign»", for the summary */
+  examples: string[]
+}
+
+export function newCaptureSkips(): CaptureSkips {
+  return { lateElsewhere: 0, examples: [] }
+}
+
+/**
+ * The guard of every automatic write that brings a post INTO a campaign:
+ * true (and logged with the reason, and counted in `skips`) when a late row of
+ * it counts in another campaign. `path` names the caller in the log.
+ */
+export async function skippedForLateCopy(
+  post: PostIdentity & {
+    label: string
+    /** A story: also the same creator's late story elsewhere at the same time (findLateStoryElsewhere) */
+    story?: { influencerId: string; postedAt: Date | null; onlyWithoutInstagramId?: boolean }
+  },
+  campaignId: string,
+  skips: CaptureSkips | undefined,
+  path: string
+): Promise<boolean> {
+  const late = (await findLateCopyElsewhere(post, campaignId)) ??
+    (post.story ? await findLateStoryElsewhere(campaignId, post.story.influencerId, post.story.postedAt, { onlyWithoutInstagramId: post.story.onlyWithoutInstagramId }) : null)
+  if (!late) return false
+  if (skips) {
+    skips.lateElsewhere++
+    if (skips.examples.length < 10) skips.examples.push(`${post.label} → «${late.campaign.name}»`)
+  }
+  console.warn(
+    `[${path}] ${post.label} not stored in campaign ${campaignId}: it already counts late («fuera de plazo») in «${late.campaign.name}» (${late.campaignId}); a late piece counts in one campaign only`
+  )
+  return true
+}
+
+/**
  * Which row a scrape for `campaignId` should write:
  *   claim   → this campaign already has a row for the post (refresh + keep
  *             attached), or an unattached row exists (attach it here)
@@ -601,6 +800,11 @@ export interface UpsertPostOptions {
    * which is what every caller did before Nov 2026.
    */
   publishedByInfluencerId?: string | null
+  /**
+   * The run summary of the calling path: a post not stored because a LATE row
+   * of it counts in another campaign is counted here (and always logged).
+   */
+  skips?: CaptureSkips
 }
 
 /**
@@ -613,6 +817,12 @@ export interface UpsertPostOptions {
  *   options.publishedByInfluencerId → that other profile (see UpsertPostOptions)
  *
  * Without options the behaviour is exactly the one before Nov 2026.
+ *
+ * A post never JOINS this campaign (a new row, or an unattached one claimed
+ * here) while a row of it counts LATE in another campaign: a piece a PM added
+ * «fuera de plazo» counts in that campaign only. It answers false, logs the
+ * reason and counts it in options.skips. Rows already in this campaign are
+ * refreshed as always.
  */
 export async function upsertCampaignPost(
   campaignId: string,
@@ -690,23 +900,41 @@ export async function upsertCampaignPost(
     }
     return true
   }
+  /** The guard of every write that brings the post INTO this campaign (see the doc above) */
+  const lateElsewhere = () =>
+    skippedForLateCopy(
+      { platform, externalIds: [post.externalId], permalinks: [post.permalink], label: `${platform}:${post.externalId}` },
+      campaignId,
+      options.skips,
+      'campaign-capture'
+    )
   try {
     // Every write is AWAITED inside this try: a refused write (a duplicate, a value the
     // database does not take) answers false, as it always did, and never throws to the caller
     const decision = await decideClaim(post.externalId, platform, campaignId)
-    switch (decision.kind) {
+    // An unattached row of this id is claimed only when the campaign does not
+    // already hold the post under ANOTHER id (Meta's and Apify's ids of one
+    // Instagram post differ): that is the duplicate a merge or a revalidation
+    // detached, and attaching it again would count the post twice. The
+    // campaign's own row is refreshed instead (the 'create' path below).
+    const ownTwin = decision.kind === 'claim' && decision.loose ? await findMediaBySameLink(platform, post.permalink, campaignId) : null
+    const chosen: ClaimDecision = ownTwin?.campaignId === campaignId ? { kind: 'create' } : decision
+    switch (chosen.kind) {
       case 'refresh':
-        await prisma.media.update({ where: { id: decision.rowId }, data: await raiseOnly(decision.rowId) })
+        await prisma.media.update({ where: { id: chosen.rowId }, data: await raiseOnly(chosen.rowId) })
         return true
       case 'claim': {
-        const data = { ...(await raiseOnly(decision.rowId)), ...freshRuleInputs, campaignId, ...(decision.loose ? creditLoose(decision.loose) : {}) }
-        return await write(!!decision.loose, db => db.media.update({ where: { id: decision.rowId }, data }))
+        if (chosen.loose && (await lateElsewhere())) return false
+        const data = { ...(await raiseOnly(chosen.rowId)), ...freshRuleInputs, campaignId, ...(chosen.loose ? creditLoose(chosen.loose) : {}) }
+        return await write(!!chosen.loose, db => db.media.update({ where: { id: chosen.rowId }, data }))
       }
       case 'create': {
         // Same post already stored for this campaign under another source's
         // externalId (Meta materialized it first)? Upgrade that row instead of
         // creating a twin that would double-count in the campaign.
-        const twin = await findMediaBySameLink(platform, post.permalink, campaignId)
+        const twin = ownTwin ?? await findMediaBySameLink(platform, post.permalink, campaignId)
+        // Only a row that is already this campaign's stays out of the guard
+        if (!twin?.campaignId && (await lateElsewhere())) return false
         if (twin) {
           if (twin.source === 'manual') {
             // A detached manual row may be re-claimed by this campaign (rules
@@ -785,13 +1013,33 @@ export async function findStoryTwin(
   })
 }
 
+/**
+ * Store a scraped story for a campaign. Like upsertCampaignPost, a story never
+ * JOINS this campaign while a row of it counts LATE in another campaign (the
+ * same story id, or a story of hers registered by hand without an id at the
+ * same time): false, logged, counted in options.skips.
+ */
 export async function upsertCampaignStory(
   campaignId: string,
   influencerId: string,
   story: ScrapedStory,
-  verdict?: Pick<StoryVerdict, 'mentions' | 'hashtags' | 'caption'>
+  verdict?: Pick<StoryVerdict, 'mentions' | 'hashtags' | 'caption'>,
+  options: { skips?: CaptureSkips } = {}
 ): Promise<boolean> {
   if (!story.externalId) return false
+  const lateElsewhere = () =>
+    skippedForLateCopy(
+      {
+        platform: 'INSTAGRAM',
+        externalIds: [story.externalId],
+        label: `INSTAGRAM:${story.externalId} (story)`,
+        // The same story registered by hand without its link (no id) late elsewhere: matched by time, as the twin rule below does here
+        story: { influencerId, postedAt: toDate(story.postedAt), onlyWithoutInstagramId: true },
+      },
+      campaignId,
+      options.skips,
+      'campaign-capture'
+    )
   // What the row must carry for rule (3) to hold on revalidation: the sticker
   // mentions/hashtags plus, for a story captured through a link or a shared
   // post, the brand tokens; the link / shared post as the caption (a story has none).
@@ -817,6 +1065,7 @@ export async function upsertCampaignStory(
         await prisma.media.update({ where: { id: decision.rowId }, data: await raiseViews(decision.rowId) })
         return true
       case 'claim':
+        if (decision.loose && (await lateElsewhere())) return false
         await prisma.media.update({
           where: { id: decision.rowId },
           data: {
@@ -838,7 +1087,10 @@ export async function upsertCampaignStory(
         // two SLIDES of the creator's story, and merging them (Oct 2026) lost
         // two of every three slides and re-announced the same stories daily.
         const twin = await findStoryTwin(campaignId, influencerId, toDate(story.postedAt))
-        if (twin && twin.source !== 'apify' && !isInstagramMediaId(twin.externalId)) {
+        const upgradesTwin = !!twin && twin.source !== 'apify' && !isInstagramMediaId(twin.externalId)
+        // A twin already in this campaign is refreshed; anything else joins it
+        if (!(upgradesTwin && twin?.campaignId) && (await lateElsewhere())) return false
+        if (twin && upgradesTwin) {
           await prisma.media.update({
             where: { id: twin.id },
             data: {
@@ -947,8 +1199,10 @@ export async function captureMemberContent(
   campaignId: string,
   influencerId: string,
   options: CaptureOptions = {}
-): Promise<{ captured: number; skipped: number }> {
-  const result = { captured: 0, skipped: 0 }
+): Promise<{ captured: number; skipped: number; skippedLateElsewhere: number }> {
+  const result = { captured: 0, skipped: 0, skippedLateElsewhere: 0 }
+  // Posts left out because a late row of them counts in another campaign (also in `skipped`)
+  const skips = newCaptureSkips()
 
   try {
     const membership = await prisma.campaignInfluencer.findUnique({
@@ -1008,7 +1262,7 @@ export async function captureMemberContent(
       for (const post of scraped.recentPosts || []) {
         if (!post.externalId) { result.skipped++; continue }
         if (!mediaMatchesCampaignRules(campaign, scrapedPostToRuleItem(post))) { result.skipped++; continue }
-        const ok = await upsertCampaignPost(campaign.id, influencer.id, influencer.platform, post)
+        const ok = await upsertCampaignPost(campaign.id, influencer.id, influencer.platform, post, { skips })
         if (ok) result.captured++
         else result.skipped++
       }
@@ -1048,7 +1302,7 @@ export async function captureMemberContent(
             if (!story.externalId) { result.skipped++; continue }
             const verdict = await storyMatchesCampaign(campaign, influencer.id, story)
             if (!verdict.ok) { result.skipped++; continue }
-            const ok = await upsertCampaignStory(campaign.id, influencer.id, story, verdict)
+            const ok = await upsertCampaignStory(campaign.id, influencer.id, story, verdict, { skips })
             if (ok) result.captured++
             else result.skipped++
           }
@@ -1058,8 +1312,13 @@ export async function captureMemberContent(
       }
     }
 
-    console.log(`[campaign-capture] @${influencer.username} in "${campaign.name}": ${result.captured} captured, ${result.skipped} skipped`)
+    result.skippedLateElsewhere = skips.lateElsewhere
+    console.log(
+      `[campaign-capture] @${influencer.username} in "${campaign.name}": ${result.captured} captured, ${result.skipped} skipped` +
+        (skips.lateElsewhere > 0 ? ` (${skips.lateElsewhere} already counted late in another campaign: ${skips.examples.join(', ')})` : '')
+    )
   } catch (err) {
+    result.skippedLateElsewhere = skips.lateElsewhere
     console.error('[campaign-capture] captureMemberContent failed:', err instanceof Error ? err.message : err)
   }
 
@@ -1084,7 +1343,36 @@ export async function captureMemberContent(
  * Stories added by hand before `source` existed carry the schema default
  * 'apify' but no externalId (every scraped/Meta row has one), so a STORY
  * without externalId is treated as manual rather than detached.
+ *
+ * A hand-added row dated AFTER the window is a piece a PM added «fuera de
+ * plazo» (src/lib/assignment-rules.ts): it is kept while it is at most
+ * LATE_ACCEPT_MAX_DAYS days late (Social Listening keeps the strict window).
+ * Whether the creator still owed it is not re-checked: that piece is what
+ * completed her. Scraped rows after the window, and rows before the start or
+ * undated, go as always.
  */
+export type RevalidationVerdict = 'keep_rules' | 'keep_manual' | 'keep_late_manual' | 'out_member' | 'out_dates' | 'out_brand'
+
+/**
+ * The verdict of the revalidation for one row (pure): shared by
+ * revalidateCampaignMedia and every preview of it (the Claude connector), so
+ * they can never disagree.
+ */
+export function revalidationVerdict(
+  campaign: Pick<CampaignRules, 'targetAccounts' | 'targetHashtags' | 'targetKeywords' | 'startDate' | 'endDate'> & { type?: string | null },
+  memberIds: ReadonlySet<string>,
+  row: Pick<RuleItem, 'caption' | 'hashtags' | 'mentions' | 'postedAt'> & { influencerId: string; source: string; mediaType: string; externalId: string | null }
+): RevalidationVerdict {
+  // Rules (1) and (2) hold for EVERY row, manual included (but a hand-added late piece)
+  if (!memberIds.has(row.influencerId)) return 'out_member'
+  if (!isWithinCampaignDates(campaign, row.postedAt)) {
+    return keepsLateHandAddedRow(campaign, row) ? 'keep_late_manual' : 'out_dates'
+  }
+  if (isHandAddedRow(row)) return 'keep_manual'
+  // Rule (3) only for scraped rows
+  return itemReferencesBrand(campaign, row) ? 'keep_rules' : 'out_brand'
+}
+
 export async function revalidateCampaignMedia(campaignId: string): Promise<{ kept: number; detached: number }> {
   const result = { kept: 0, detached: 0 }
 
@@ -1092,6 +1380,7 @@ export async function revalidateCampaignMedia(campaignId: string): Promise<{ kep
     where: { id: campaignId },
     select: {
       id: true,
+      type: true,
       targetAccounts: true,
       targetHashtags: true,
       targetKeywords: true,
@@ -1122,15 +1411,7 @@ export async function revalidateCampaignMedia(campaignId: string): Promise<{ kep
 
   const toDetach: string[] = []
   for (const row of rows) {
-    // Rules (1) and (2) hold for EVERY row, manual included
-    if (!memberIds.has(row.influencerId)) { toDetach.push(row.id); continue }
-    if (!isWithinCampaignDates(campaign, row.postedAt)) { toDetach.push(row.id); continue }
-
-    const isManual = row.source === 'manual' || (row.mediaType === 'STORY' && !row.externalId)
-    if (isManual) { result.kept++; continue }
-
-    // Rule (3) only for scraped rows
-    if (itemReferencesBrand(campaign, row)) result.kept++
+    if (revalidationVerdict(campaign, memberIds, row).startsWith('keep')) result.kept++
     else toDetach.push(row.id)
   }
 

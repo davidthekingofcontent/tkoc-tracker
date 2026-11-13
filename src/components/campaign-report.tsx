@@ -40,6 +40,9 @@ import type {
   TargetKey,
   TargetVerdict,
 } from '@/lib/metrics'
+// Types only: '@/lib/campaign-overview' imports Prisma. The late keys are TEAM
+// ONLY: the server strips them from every brand projection (stripTeamOnly).
+import type { DeliverySummary } from '@/lib/campaign-overview'
 import {
   ArrowLeft,
   ArrowRight,
@@ -153,6 +156,8 @@ interface ReportMediaMetrics {
   engagements: number
   emvExtended: number
   isDeleted?: boolean
+  /** TEAM ONLY: days after the end of the campaign (null inside it). Absent for a brand. */
+  lateDays?: number | null
 }
 
 interface ReportMedia {
@@ -861,6 +866,111 @@ function DeletedBadge({ label }: { label: string }) {
       <Trash2 className="h-3 w-3 shrink-0" />
       {label}
     </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Late pieces («fuera de plazo», Nov 2026) — TEAM ONLY.
+// A piece published after the end of the campaign and added by hand while the
+// creator still owed one (src/lib/assignment-rules.ts). The client never sees
+// it: the server strips the keys from every brand projection, and these marks
+// render only in the agency view on screen (never in the client view, the
+// print or the PDF). Shared with the campaign page.
+// ---------------------------------------------------------------------------
+
+/** «5 días» / «1 día». */
+export function lateDaysText(days: number, tr: ReportStrings): string {
+  return days === 1 ? tr.lateDayOne : fill(tr.lateDayMany, { n: days })
+}
+
+/** «Fuera de plazo · 5 días»; nothing without a positive number of days. */
+export function LateBadge({ days, tr, className }: { days: number | null | undefined; tr: ReportStrings; className?: string }) {
+  if (typeof days !== 'number' || !Number.isFinite(days) || days < 1) return null
+  return (
+    <span
+      title={tr.lateBadgeTitle}
+      data-late-days={days}
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+        className
+      )}
+    >
+      <CalendarDays className="h-3 w-3 shrink-0" aria-hidden="true" />
+      {fill(tr.lateBadge, { days: lateDaysText(days, tr) })}
+    </span>
+  )
+}
+
+/** perMedia[].lateDays of a TEAM overview, by media id (empty for a brand overview, which has none). */
+export function lateDaysByMediaId(overview: unknown): Map<string, number> {
+  const out = new Map<string, number>()
+  const perMedia = overview && typeof overview === 'object' ? (overview as { perMedia?: unknown }).perMedia : null
+  if (!Array.isArray(perMedia)) return out
+  for (const m of perMedia) {
+    if (!m || typeof m !== 'object') continue
+    const { id, lateDays } = m as { id?: unknown; lateDays?: unknown }
+    if (typeof id === 'string' && typeof lateDays === 'number' && Number.isFinite(lateDays) && lateDays >= 1) out.set(id, lateDays)
+  }
+  return out
+}
+
+/** delivery.summary of a TEAM overview; null when absent (a brand, an older answer) or malformed. */
+export function deliverySummaryOf(delivery: unknown): DeliverySummary | null {
+  const s = delivery && typeof delivery === 'object' ? (delivery as { summary?: unknown }).summary : null
+  if (!s || typeof s !== 'object') return null
+  const r = s as Record<string, unknown>
+  const keys = ['expected', 'delivered', 'late', 'notPublished', 'inProgress'] as const
+  if (!keys.every(k => typeof r[k] === 'number' && Number.isFinite(r[k] as number))) return null
+  return { expected: r.expected as number, delivered: r.delivered as number, late: r.late as number, notPublished: r.notPublished as number, inProgress: r.inProgress as number }
+}
+
+/**
+ * Display-only mirror of campaignWindowEndExclusive / lateDaysOf of
+ * src/lib/assignment-rules.ts (the rule itself): the start of the UTC day
+ * after endDate. Repeated here so this client component does not load that
+ * module, which reads a server environment variable when it loads;
+ * tests/unit/late-marks.test.ts keeps both in step.
+ */
+function windowEndExclusive(endDate: string | Date | null | undefined): Date | null {
+  if (endDate === null || endDate === undefined || endDate === '') return null
+  const end = endDate instanceof Date ? endDate : new Date(endDate)
+  if (Number.isNaN(end.getTime())) return null
+  return new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate() + 1))
+}
+
+/** Days after the end of the campaign (from 1), or null inside the window, undated, or without an end date. */
+export function lateDaysForDisplay(postedAt: string | Date | null | undefined, endDate: string | Date | null | undefined): number | null {
+  const end = windowEndExclusive(endDate)
+  const posted = postedAt === null || postedAt === undefined || postedAt === '' ? null : postedAt instanceof Date ? postedAt : new Date(postedAt)
+  if (!end || !posted || Number.isNaN(posted.getTime())) return null
+  const t = posted.getTime() - end.getTime()
+  return t < 0 ? null : Math.floor(t / 86_400_000) + 1
+}
+
+/** The campaign is still running at `now`: no end date, or before the start of the day after it. */
+export function campaignIsRunning(endDate: string | Date | null | undefined, now: Date = new Date()): boolean {
+  const end = windowEndExclusive(endDate)
+  return end === null || now.getTime() < end.getTime()
+}
+
+/** «Han entregado X · Con retraso Y · Sin publicar Z» (+ «En curso W» while the campaign runs). */
+export function deliverySummaryText(summary: DeliverySummary, running: boolean, tr: ReportStrings): string {
+  const line = fill(tr.deliverySummary, { delivered: summary.delivered, late: summary.late, notPublished: summary.notPublished })
+  return running ? `${line} · ${fill(tr.deliverySummaryInProgress, { n: summary.inProgress })}` : line
+}
+
+/** The team line under «Prometido vs entregado»; nothing without a summary. */
+export function DeliverySummaryLine({ summary, running, tr, className }: { summary: DeliverySummary | null; running: boolean; tr: ReportStrings; className?: string }) {
+  if (!summary) return null
+  return (
+    <p
+      title={fill(tr.deliverySummaryTitle, { expected: summary.expected })}
+      data-delivery-summary=""
+      className={cn('flex flex-wrap items-center gap-2 text-xs tabular-nums text-gray-600 dark:text-gray-300', className)}
+    >
+      <span>{deliverySummaryText(summary, running, tr)}</span>
+      <span className="rounded border border-amber-300 px-1.5 py-0 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:border-amber-700 dark:text-amber-400">{tr.teamOnly}</span>
+    </p>
   )
 }
 
@@ -2913,6 +3023,15 @@ export function CampaignReport({
                       </span>
                     )}
                   </div>
+                  {/* Team only, screen only: who delivered, late, not published (never in the client view, the print or the PDF) */}
+                  {!clientView && (
+                    <DeliverySummaryLine
+                      summary={deliverySummaryOf(overview?.delivery)}
+                      running={campaignIsRunning(campaign.endDate)}
+                      tr={tr}
+                      className="no-print border-b border-gray-100 px-4 py-2 print:hidden dark:border-gray-800"
+                    />
+                  )}
                   <ul className="divide-y divide-gray-100 dark:divide-gray-800">
                     {shownDeliveryRows.map(row => (
                       <li key={row.key} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
@@ -3042,6 +3161,8 @@ export function CampaignReport({
                             <div className="mt-1 flex flex-wrap items-center gap-1.5">
                               <AudienceLabel metrics={metrics} tr={tr} />
                               {deleted && <DeletedBadge label={tr.deletedBadge} />}
+                              {/* Team only, screen only */}
+                              {!clientView && <LateBadge days={metrics?.lateDays} tr={tr} className="no-print print:hidden" />}
                             </div>
                           </div>
                         </div>
@@ -3515,6 +3636,8 @@ export function CampaignReport({
                     const deleted = m.isDeleted === true || metrics?.isDeleted === true
                     const cell = cn(tdNum, deleted ? 'text-gray-400 dark:text-gray-500' : 'text-gray-700 dark:text-gray-300')
                     const posted = reportDate(m.postedAt, locale)
+                    // Team only, screen only: never in the client view, the print or the PDF
+                    const lateDays = !clientView && typeof metrics?.lateDays === 'number' && metrics.lateDays >= 1 ? metrics.lateDays : null
                     return (
                       <tr
                         key={m.id}
@@ -3547,10 +3670,11 @@ export function CampaignReport({
                             <p className={cn('line-clamp-1 text-[11px]', deleted ? 'text-gray-400 dark:text-gray-500' : 'text-gray-600 dark:text-gray-300')}>
                               {m.caption || 'Sin descripción'}
                             </p>
-                            {(deleted || hidden) && (
+                            {(deleted || hidden || lateDays !== null) && (
                               <div className="mt-1 flex flex-wrap gap-1">
                                 {deleted && <DeletedBadge label={tr.deletedBadge} />}
                                 {hidden && <HiddenBadge label={tr.hiddenRow} />}
+                                {lateDays !== null && <LateBadge days={lateDays} tr={tr} className="no-print print:hidden" />}
                               </div>
                             )}
                           </div>

@@ -179,9 +179,12 @@ describe('nothing tells a PM to add a TikTok account as another creator any more
 })
 
 describe('later deliveries are not announced', () => {
-  it('no late posts, no tray, no merge tool, no per-network breakdown in the texts', () => {
+  // «fuera de plazo» (manual paths) and the merge tool («fusionar») shipped on
+  // 13 Nov 2026 and are stated now: see tests/unit/merge-late-texts.test.ts.
+  // The tray and the automatic capture of late posts are still to come.
+  it('no tray, no per-network breakdown in the texts', () => {
     for (const text of [PLATFORM_KNOWLEDGE, MANUAL_TEXT, assistantRole]) {
-      for (const phrase of ['fuera de plazo', 'pendientes de asignar', 'desglose por plataforma', 'desglose por red', 'fusionar']) {
+      for (const phrase of ['pendientes de asignar', 'desglose por plataforma', 'desglose por red']) {
         expect(text, phrase).not.toContain(phrase)
       }
     }

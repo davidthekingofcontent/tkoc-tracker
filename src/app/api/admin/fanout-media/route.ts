@@ -6,12 +6,16 @@
  * the post is inside the campaign's dates and (for scraped rows) it references
  * a brand target. Idempotent: existing (externalId, platform, campaignId) rows
  * are skipped. POST { dryRun?: boolean } — ADMIN only.
+ *
+ * A post with a LATE row in some campaign (a piece a PM added «fuera de
+ * plazo», which counts in one campaign only) is never copied into another:
+ * skipped, logged and counted in `skippedLateElsewhere`.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { mediaMatchesCampaignRules, instagramShortcode } from '@/lib/campaign-capture'
+import { mediaMatchesCampaignRules, instagramShortcode, newCaptureSkips, skippedForLateCopy } from '@/lib/campaign-capture'
 
 export async function POST(request: NextRequest) {
   const session = await getSession(request)
@@ -53,6 +57,7 @@ export async function POST(request: NextRequest) {
   const byCampaign: Record<string, number> = {}
   let created = 0
   let candidates = 0
+  const skips = newCaptureSkips()
 
   for (const row of rows) {
     const item = {
@@ -68,6 +73,8 @@ export async function POST(request: NextRequest) {
       if (!mediaMatchesCampaignRules(c, item)) continue
       const keys = postKeys(row, c.id)
       if (keys.some(k => existing.has(k))) continue
+      const post = { platform: row.platform, externalIds: [row.externalId], permalinks: [row.permalink], label: `${row.platform}:${row.externalId}` }
+      if (await skippedForLateCopy(post, c.id, skips, 'Admin/FanOut')) continue
       candidates++
       byCampaign[c.name] = (byCampaign[c.name] || 0) + 1
       if (dryRun) continue
@@ -83,5 +90,8 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ dryRun, scanned: rows.length, campaigns: campaigns.length, candidates, created, byCampaign })
+  return NextResponse.json({
+    dryRun, scanned: rows.length, campaigns: campaigns.length, candidates, created, byCampaign,
+    skippedLateElsewhere: skips.lateElsewhere, skippedLateExamples: skips.examples,
+  })
 }

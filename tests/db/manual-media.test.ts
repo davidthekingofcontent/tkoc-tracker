@@ -496,16 +496,20 @@ describe('a refused request leaves nothing behind', () => {
     const before = await state()
     const alba = fx.instagram['alba_prueba'].id
 
+    // After the end it could only count as a late piece (Nov 2026), and
+    // @alba_prueba is COMPLETED: she owes nothing. Refused before anything is linked.
     for (const body of [
-      { url: late.url },
       { url: late.url, linkProfileTo: alba },
       { url: late.url, influencerId: alba, linkProfileTo: alba, confirmUnverified: true },
     ]) {
       const res = await add(body)
       expect(res.status).toBe(400)
-      expect(res.body.error).toBe('El contenido se publicó el 2026-11-05, fuera del periodo de la campaña (2026-10-01 – 2026-10-31).')
+      expect(res.body.code).toBe('nothing_pending')
+      expect(res.body.error).toBe('@alba_prueba está en Completado: no le queda nada por entregar en esta campaña. Si aún le falta, cambia su estado o pon sus entregables.')
       expect(res.body.postedAt).toBe('2026-11-05T10:00:00.000Z')
     }
+    // Without her answer the author is asked about first: nothing is created either
+    expect((await add({ url: late.url })).body.code).toBe('profile_not_linked')
 
     const tooEarly = await add({ url: early.url, linkProfileTo: alba })
     expect(tooEarly.status).toBe(400)
@@ -523,9 +527,10 @@ describe('a refused request leaves nothing behind', () => {
     const lastDay = `https://www.tiktok.com/@alba_prueba/video/${tiktokIdAt('2026-10-31T23:59:59.000Z', 43)}`
     const dayAfter = `https://www.tiktok.com/@alba_prueba/video/${tiktokIdAt('2026-11-01T00:00:00.000Z', 44)}`
 
+    // The day after is 1 day late: only a late piece, and @alba_prueba (COMPLETED) owes nothing
     const refused = await add({ url: dayAfter, linkProfileTo: alba, confirmUnverified: true })
     expect(refused.status).toBe(400)
-    expect(refused.body.error).toContain('2026-11-01, fuera del periodo de la campaña')
+    expect(refused.body).toMatchObject({ code: 'nothing_pending', lateDays: 1, postedAt: '2026-11-01T00:00:00.000Z' })
     expect(await prisma.person.count()).toBe(0)
 
     const ok = await add({ url: lastDay, linkProfileTo: alba, confirmUnverified: true })

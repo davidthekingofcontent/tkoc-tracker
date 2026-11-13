@@ -116,6 +116,8 @@ describe('what the platform client refuses before sending anything', () => {
       '/api/influencers/invite/accept', '/api/influencers/invite/validate', '/api/admin/meta-subscribe', '/api/brand-connect/invite',
       '/api/ai/chat', '/api/proxy/image', '/api/data-deletion', '/api/live-capture/collect', '/api/live-capture/widget-config',
       '/api/meta/webhooks/instagram', '/api/admin/cleanup-auto-added', '/api/dashboard/creator',
+      // Merging creators' records (and undoing a merge): an ADMIN in the platform only
+      '/api/admin/person-merge',
     ]
     for (const path of forbidden) {
       for (const method of ['GET', 'POST', 'DELETE'] as PlatformMethod[]) {

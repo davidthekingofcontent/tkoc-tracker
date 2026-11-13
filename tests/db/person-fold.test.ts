@@ -478,7 +478,8 @@ describe('foldTwinMembership', () => {
       expect(without(o.totals, 'members', 'creatorsActive')).toEqual(without(o0.totals, 'members', 'creatorsActive'))
       expect(o.timeline).toEqual(o0.timeline)
       expect(o.targets).toEqual(o0.targets)
-      expect(without(o.delivery, 'creators', 'allOk')).toEqual(without(o0.delivery, 'creators', 'allOk'))
+      // creators and the team's delivery summary (Nov 2026) count members: they follow the fold
+      expect(without(o.delivery, 'creators', 'allOk', 'summary')).toEqual(without(o0.delivery, 'creators', 'allOk', 'summary'))
       const strip = (m: object) => without(m, 'influencerId', 'publishedBy')
       expect(o.perMedia.map(strip)).toEqual(o0.perMedia.map(strip))
     }

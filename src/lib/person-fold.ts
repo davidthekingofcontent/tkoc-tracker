@@ -49,6 +49,11 @@
  *     Media and follow publishedByInfluencerId: nothing stored to re-point
  *   - notification metadata { influencerId, campaignId } only de-duplicates old
  *     notices: nothing to re-point
+ *
+ * The general merge of two profiles (src/lib/person-merge.ts) is built on the
+ * helpers exported below (row snapshots as the database stores them, writing a
+ * row back from such a snapshot, the hidden-creators list of the client report,
+ * who reads a folded TikTok account): one implementation for both.
  */
 import { prisma } from '@/lib/db'
 import { Prisma } from '@/generated/prisma/client'
@@ -63,7 +68,7 @@ import { normalizeReportConfig, reportConfigKey } from '@/lib/report-config'
 export const TWIN_SOURCE_PREFIX = 'tiktok_link:'
 
 /** Statuses of a confirmed member (STORY_SCAN_STATUSES in src/lib/campaign-capture.ts): the daily TikTok pass only reads the linked profiles of these. */
-const CONFIRMED_STATUSES = new Set(['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'])
+export const CONFIRMED_STATUSES: ReadonlySet<string> = new Set(['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'])
 
 /** The influencer id a twin membership was created from, or null when the source is not a twin's. */
 export function twinOriginalId(source: string | null | undefined): string | null {
@@ -161,7 +166,7 @@ export interface UndoFoldResult {
 // What a twin carries of its own
 // ---------------------------------------------------------------------------
 
-const NETWORK_LABEL: Record<string, string> = { INSTAGRAM: 'Instagram', TIKTOK: 'TikTok', YOUTUBE: 'YouTube' }
+export const NETWORK_LABEL: Readonly<Record<string, string>> = { INSTAGRAM: 'Instagram', TIKTOK: 'TikTok', YOUTUBE: 'YouTube' }
 
 const BLOCKER_TEXT: Record<FoldBlockerCode, string> = {
   original_missing: 'la creadora original ya no es miembro de esta campaña',
@@ -189,16 +194,25 @@ function blocker(code: FoldBlockerCode, reason: string = BLOCKER_TEXT[code]): Fo
 /** The columns of a membership row that matter here, as Prisma or the database (row_to_json) gives them. */
 type MembershipFields = Record<string, unknown>
 
-const filled = (v: unknown) => v !== null && v !== undefined && String(v).trim() !== ''
-const positive = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0
+/** A value somebody typed: not null, not blank. */
+export const filled = (v: unknown) => v !== null && v !== undefined && String(v).trim() !== ''
+/** An amount of money (or a count) that is really there: a finite number above zero. */
+export const positive = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0
+
+/** The text columns of a membership's shipping block (shippingQty, a number defaulting to 1, apart). */
+export const SHIPPING_TEXT_FIELDS = ['shippingName', 'shippingAddress1', 'shippingAddress2', 'shippingCity', 'shippingPostCode', 'shippingCountry', 'shippingPhone', 'shippingEmail', 'shippingProduct', 'shippingComments'] as const
+
+/** The membership carries shipping data of its own (an address, or a quantity other than the default 1). Pure. */
+export function hasShippingData(row: MembershipFields): boolean {
+  return SHIPPING_TEXT_FIELDS.some(k => filled(row[k])) || (row.shippingQty !== null && row.shippingQty !== undefined && row.shippingQty !== 1)
+}
 
 /** What on the twin's own row would be lost by deleting it. Pure. */
 export function rowBlockers(row: MembershipFields): FoldBlocker[] {
   const out: FoldBlocker[] = []
   if (positive(row.agreedFee) || positive(row.cost) || positive(row.commission) || positive(row.askingFee)) out.push(blocker('fee'))
   if (filled(row.notes)) out.push(blocker('notes'))
-  const shipping = ['shippingName', 'shippingAddress1', 'shippingAddress2', 'shippingCity', 'shippingPostCode', 'shippingCountry', 'shippingPhone', 'shippingEmail', 'shippingProduct', 'shippingComments']
-  if (shipping.some(k => filled(row[k])) || (row.shippingQty !== null && row.shippingQty !== undefined && row.shippingQty !== 1)) out.push(blocker('shipping'))
+  if (hasShippingData(row)) out.push(blocker('shipping'))
   if (row.deliverablesPlanned !== null && row.deliverablesPlanned !== undefined) out.push(blocker('deliverables'))
   if (filled(row.trackedLink) || positive(row.trackedClicks)) out.push(blocker('tracked_link'))
   if ((row.baselineSnapshot !== null && row.baselineSnapshot !== undefined) || (row.baselineAt !== null && row.baselineAt !== undefined)) out.push(blocker('baseline'))
@@ -211,7 +225,9 @@ export function rowBlockers(row: MembershipFields): FoldBlocker[] {
   return out
 }
 
-type Db = Prisma.TransactionClient | typeof prisma
+/** The client of a read: inside a transaction or not. */
+export type IdentityDb = Prisma.TransactionClient | typeof prisma
+type Db = IdentityDb
 
 /** Client-report visibility and ad permissions: the places outside the membership row keyed by (campaign, influencer). */
 async function keyedBlockers(db: Db, campaignId: string, twinId: string, originalId: string): Promise<FoldBlocker[]> {
@@ -245,8 +261,33 @@ async function keyedBlockers(db: Db, campaignId: string, twinId: string, origina
   return out
 }
 
-function describe(p: { username: string; platform: string }): string {
+/** "@user (Network)", the way every identity text names a profile. */
+export function describeProfileLabel(p: { username: string; platform: string }): string {
   return `@${p.username} (${NETWORK_LABEL[p.platform] ?? p.platform})`
+}
+const describe = describeProfileLabel
+
+/**
+ * Who reads a TikTok account once its membership has been folded into another
+ * profile's row of the same person: check-posts reads only members' accounts,
+ * and the daily TikTok pass reads the linked TikTok profiles of a CONFIRMED
+ * member, only in a campaign that includes TikTok. Said before the fold, never
+ * a silent pause of the capture. null = nothing to warn about. Pure.
+ */
+export function foldedTikTokReadWarning(args: {
+  campaignStatus: string
+  campaignPlatforms: readonly string[]
+  folded: { username: string; platform: string }
+  survivor: { username: string; platform: string; status: string }
+}): string | null {
+  if (args.campaignStatus !== 'ACTIVE' || args.folded.platform !== 'TIKTOK') return null
+  if (!args.campaignPlatforms.includes('TIKTOK')) {
+    return `después de fusionarla nadie lee ${describe(args.folded)}: la campaña no incluye TikTok en sus plataformas (Aprender → "Editar Campaña" → "Plataformas")`
+  }
+  if (!CONFIRMED_STATUSES.has(args.survivor.status)) {
+    return `${describe(args.survivor)} no está confirmada en la campaña: mientras no lo esté, el pase diario de TikTok no leerá ${describe(args.folded)}`
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -293,12 +334,14 @@ export async function listTwinMemberships(campaignId?: string): Promise<TwinMemb
     // later) in every active campaign. Once folded, only the daily TikTok pass
     // reads it, and only for a confirmed original in a campaign that includes
     // TikTok: say so before, never a silent pause of the capture.
-    if (originalRow && t.campaign.status === 'ACTIVE' && t.influencer.platform === 'TIKTOK') {
-      if (!t.campaign.platforms.includes('TIKTOK')) {
-        warnings.push(`después de fusionarla nadie lee ${describe(t.influencer)}: la campaña no incluye TikTok en sus plataformas (Aprender → "Editar Campaña" → "Plataformas")`)
-      } else if (!CONFIRMED_STATUSES.has(originalRow.status)) {
-        warnings.push(`${describe(originalRow.influencer)} no está confirmada en la campaña: mientras no lo esté, el pase diario de TikTok no leerá ${describe(t.influencer)}`)
-      }
+    if (originalRow) {
+      const readWarning = foldedTikTokReadWarning({
+        campaignStatus: t.campaign.status,
+        campaignPlatforms: t.campaign.platforms,
+        folded: t.influencer,
+        survivor: { ...originalRow.influencer, status: originalRow.status },
+      })
+      if (readWarning) warnings.push(readWarning)
     }
 
     const [pieces, notes] = await Promise.all([
@@ -336,9 +379,10 @@ export async function listTwinMemberships(campaignId?: string): Promise<TwinMemb
 // ---------------------------------------------------------------------------
 
 /** pg returns json columns parsed; a string is parsed here so either way gives an object. */
-function asObject<T>(value: unknown): T {
+export function asJsonObject<T>(value: unknown): T {
   return (typeof value === 'string' ? JSON.parse(value) : value) as T
 }
+const asObject = asJsonObject
 
 interface MediaSnapshot { id: string; influencerId: string; publishedByInfluencerId: string | null; updatedAt: string }
 interface NoteSnapshot { id: string; influencerId: string }
@@ -360,15 +404,61 @@ interface FoldBefore {
 }
 
 /** The hidden-creators list of a report configuration as stored (raw JSON), or null when it is not a list. */
-function rawHiddenList(config: unknown): unknown[] | null {
+export function rawHiddenList(config: unknown): unknown[] | null {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return null
   const list = (config as Record<string, unknown>).hiddenInfluencerIds
   return Array.isArray(list) ? list : null
 }
-const isId = (entry: unknown, id: string) => typeof entry === 'string' && entry.trim() === id
+/** An entry of a stored id list is this id (the editor may have stored it with spaces). */
+export const isSameId = (entry: unknown, id: string) => typeof entry === 'string' && entry.trim() === id
+const isId = isSameId
 
 /** Interactive transactions: room for lock waits, never forever. */
-const TX_OPTIONS = { maxWait: 10_000, timeout: 30_000 } as const
+export const IDENTITY_TX_OPTIONS = { maxWait: 10_000, timeout: 30_000 } as const
+const TX_OPTIONS = IDENTITY_TX_OPTIONS
+
+/** Tables whose rows an identity operation snapshots and writes back. */
+export type IdentityTable = 'campaign_influencers' | 'media' | 'campaign_notes'
+
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/** The columns the table has today. */
+export async function tableColumns(db: Db, table: IdentityTable): Promise<Set<string>> {
+  const rows = await db.$queryRaw<Array<{ column_name: string }>>`
+    SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ${table}`
+  return new Set(rows.map(c => c.column_name))
+}
+
+/** The keys of a row snapshot that are columns of the table today (and safe identifiers). */
+export function storableColumns(row: Record<string, unknown>, columns: ReadonlySet<string>): string[] {
+  return Object.keys(row).filter(k => columns.has(k) && IDENTIFIER.test(k))
+}
+
+function columnList(columns: string[]): Prisma.Sql {
+  if (columns.length === 0 || !columns.every(k => IDENTIFIER.test(k))) throw new Error('columnList: invalid column list')
+  return Prisma.raw(columns.map(k => `"${k}"`).join(', '))
+}
+
+/**
+ * Insert a row exactly as row_to_json gave it: its id, its timestamps and
+ * every listed column, parsed back by the database itself (json_populate_record),
+ * so dates without time zone, json and enums come back byte for byte.
+ */
+export async function insertRowAsItWas(tx: Prisma.TransactionClient, table: IdentityTable, row: Record<string, unknown>, columns: string[]): Promise<void> {
+  const list = columnList(columns)
+  await tx.$executeRaw`
+    INSERT INTO ${Prisma.raw(table)} (${list})
+    SELECT ${list} FROM json_populate_record(NULL::${Prisma.raw(table)}, ${JSON.stringify(row)}::json)`
+}
+
+/** Write the listed columns of one row (by id) from a row_to_json-shaped object, parsed by the database. Returns the rows written (0 or 1). */
+export async function writeRowColumns(tx: Prisma.TransactionClient, table: IdentityTable, id: string, row: Record<string, unknown>, columns: string[]): Promise<number> {
+  if (columns.length === 0) return 0
+  const list = columnList(columns)
+  return tx.$executeRaw`
+    UPDATE ${Prisma.raw(table)} AS t SET (${list}) = (SELECT ${list} FROM json_populate_record(NULL::${Prisma.raw(table)}, ${JSON.stringify(row)}::json))
+    WHERE t.id = ${id}`
+}
 
 /**
  * Fold ONE twin membership into its original member. Throws FoldError when it
@@ -560,8 +650,6 @@ export async function foldTwins(args: { campaignId?: string; membershipIds?: str
 // Undo
 // ---------------------------------------------------------------------------
 
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
-
 /**
  * Put a folded twin back exactly as it was: the membership row (every column,
  * its id and timestamps included), the pieces (credited member, publisher and
@@ -595,19 +683,11 @@ export async function undoFold(logId: string, actor: Actor): Promise<UndoFoldRes
     if (taken) throw new FoldError('blocked', 'Ese perfil vuelve a ser miembro de la campaña: no hay nada que deshacer.')
 
     // The row exactly as it was: every stored column that still exists in the table
-    const columns = new Set(
-      (await tx.$queryRaw<Array<{ column_name: string }>>`
-        SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'campaign_influencers'`)
-        .map(c => c.column_name)
-    )
-    const keep = Object.keys(membership).filter(k => columns.has(k) && IDENTIFIER.test(k))
+    const keep = storableColumns(membership, await tableColumns(tx, 'campaign_influencers'))
     if (!keep.includes('id') || !keep.includes('campaignId') || !keep.includes('influencerId')) {
       throw new FoldError('not_found', 'Esa fusión no guarda lo necesario para deshacerla.')
     }
-    const list = Prisma.raw(keep.map(k => `"${k}"`).join(', '))
-    await tx.$executeRaw`
-      INSERT INTO campaign_influencers (${list})
-      SELECT ${list} FROM json_populate_record(NULL::campaign_influencers, ${JSON.stringify(membership)}::json)`
+    await insertRowAsItWas(tx, 'campaign_influencers', membership, keep)
 
     // Pieces and notes still credited to the original go back to the twin, as they were
     const restoredPieces = before.media.length === 0 ? 0 : await tx.$executeRaw`

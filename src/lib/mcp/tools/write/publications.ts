@@ -143,11 +143,12 @@ export const addPublicationsByUrl = defineWriteTool({
   description:
     'Adds publications (post, reel, video, short or Instagram story) to a campaign from their public URL, one row each. ' +
     'The author must be a member of the campaign and the publication date must fall inside the campaign dates; hand-added pieces are exempt from the brand-reference rule. ' +
+    "After the end it may count as a late piece ('lateDays' in its result, team only): campaign ACTIVE and not Social Listening, at most 30 days late, the creator still owes a piece, and the publication is in no other campaign. Before the start: always refused. " +
     'Each URL that is not a story costs one Apify single-post read (stories are never scraped and are free); a read figure greater than 0 wins over the typed one. ' +
     'A creator is ONE person with several profiles: a piece published from any of her profiles counts in her row. ' +
     "When the author is not a registered profile of any creator of the campaign, that URL comes back as result 'needs_profile_link' with the author and suggested creators: ASK THE USER whose profile it is, then call again for that URL with linkProfileTo (the creator's influencerId), linkProfileAuthor and linkProfileAuthorPlatform exactly as returned, and confirmUnverified: true only when the user confirmed an author marked verified: false. It never creates a member. " +
     'Share links (vm.tiktok.com, tiktok.com/t, instagram.com/share) are accepted: the platform opens them first. ' +
-    "Use for 'añade este reel'. Returns one result per URL with the platform's Spanish reason when refused (other author, outside the dates, publication date needed, already filed under another creator, a brand account). " +
+    "Use for 'añade este reel'. Returns one result per URL with the platform's Spanish reason when refused (other author, outside the dates, too late, nothing left to deliver, already counted in another campaign, publication date needed, already filed under another creator, a brand account). " +
     'It does NOT accept highlights, does not add the author as a member and never retries a URL after a timeout.',
   input: {
     campaignId: idInput('The campaign id.'),
@@ -180,7 +181,7 @@ export const addPublicationsByUrl = defineWriteTool({
     const stories = p.items.length - paid
     const lines = p.items.map(i => `${i.url} → ${i.authorText}`)
     const rules =
-      'Solo entran si la autora es integrante y la fecha cae dentro de la campaña; cuentan desde ya en los totales, el informe y el portal del cliente. ¿Confirmas?'
+      'Solo entran si la autora es integrante y la fecha cae dentro de la campaña (o, si es posterior al fin, como pieza fuera de plazo: hasta 30 días después y solo si le falta entregar); cuentan desde ya en los totales, el informe y el portal del cliente. ¿Confirmas?'
     const head = `Vas a añadir ${plural(p.items.length, 'publicación', 'publicaciones')} a ${named(p.snapshot.name)}: ${listText(lines, 10)}.`
     const base = { urls: p.items.map(i => i.url), members: p.snapshot.members.length }
     let fingerprint = JSON.stringify(base)
@@ -264,6 +265,8 @@ export const addPublicationsByUrl = defineWriteTool({
         comments: asNumber(media.comments),
         views: asNumber(media.views),
         ...(item.isStory ? { reach: asNumber(media.reach) } : {}),
+        // Added after the end of the campaign: days late (team only)
+        ...(typeof out.json.lateDays === 'number' ? { lateDays: out.json.lateDays } : {}),
       })
     }
     const added = results.filter(r => r.result === 'added' || r.result === 'updated').length
@@ -396,7 +399,7 @@ export const registerStories = defineWriteTool({
           reach: countInput('Reach.').optional(),
           impressions: countInput('Impressions.').optional(),
           replies: countInput('Replies.').optional(),
-          postedAt: isoDateInput('Date and time of publication, ISO 8601. Required without a link; inside the campaign dates.').optional(),
+          postedAt: isoDateInput('Date and time of publication, ISO 8601. Required without a link; inside the campaign dates, or up to 30 days after the end as a late story when the creator still owes a piece.').optional(),
           mentions: z.array(z.string().trim().min(1).max(100)).max(20).optional().describe('Accounts mentioned in the story.'),
           hashtags: z.array(z.string().trim().min(1).max(100)).max(30).optional().describe('Hashtags of the story.'),
           allowDuplicate: z.boolean().optional().describe('true only when the person confirms it is a different story with the same time and figures.'),
@@ -456,6 +459,8 @@ export const registerStories = defineWriteTool({
         reach: asNumber(story.reach),
         impressions: asNumber(story.impressions),
         replies: asNumber(story.comments),
+        // Registered after the end of the campaign: days late (team only)
+        ...(typeof out.json.lateDays === 'number' ? { lateDays: out.json.lateDays } : {}),
       })
     }
     return {
