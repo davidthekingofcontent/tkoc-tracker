@@ -223,7 +223,54 @@ async function otherPersonResponse(args: {
   )
 }
 
+/**
+ * Every 400/409 of «Añadir publicación por URL» is written to the server log
+ * (`[manual-refusal]`, Railway), so the Monday review can see what the PMs
+ * tried without a new table (16 Nov 2026: the refusals left no trace and a
+ * "the link does not work" complaint could not be checked). Nothing personal
+ * beyond the public username in the message and the link pasted: never the
+ * figures typed. The body is read from a clone so the handler reads its own.
+ */
 export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  let asked: { influencerId: string | null; url: string | null } = { influencerId: null, url: null }
+  try {
+    const body = (await request.clone().json()) as Record<string, unknown> | null
+    asked = {
+      influencerId: typeof body?.influencerId === 'string' ? body.influencerId : null,
+      url: typeof body?.url === 'string' ? body.url.trim().slice(0, 500) : null,
+    }
+  } catch {
+    // Not JSON: the handler answers that
+  }
+  const response = await handleManualAdd(request, { params })
+  if (response.status === 400 || response.status === 409) {
+    try {
+      const refusal = (await response.clone().json()) as Record<string, unknown> | null
+      const code =
+        typeof refusal?.code === 'string' ? refusal.code
+        : refusal?.needsPostedAt === true ? 'needs_posted_at'
+        : refusal && 'ownerUsername' in refusal ? 'link_owner'
+        : null
+      console.warn('[manual-refusal]', JSON.stringify({
+        route: 'manual',
+        campaignId: (await params).id,
+        influencerId: asked.influencerId,
+        status: response.status,
+        code,
+        reason: typeof refusal?.error === 'string' ? refusal.error : null,
+        url: asked.url,
+      }))
+    } catch {
+      // A refusal that is not JSON is still answered
+    }
+  }
+  return response
+}
+
+async function handleManualAdd(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {

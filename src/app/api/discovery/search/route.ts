@@ -134,34 +134,52 @@ export async function POST(req: NextRequest) {
   if (validCreatorSorts.includes(sortBy as SortableField)) {
     orderBy = { [sortBy]: sortDir === 'asc' ? 'asc' : 'desc' }
   }
-  // For followers/engagementRate, we sort on the platform profile level after fetch
-  const needsClientSort = ['followers', 'engagementRate'].includes(sortBy)
+  const direction: 'asc' | 'desc' = sortDir === 'asc' ? 'asc' : 'desc'
+  // followers / engagementRate live on the platform profiles: PostgreSQL orders
+  // every matching creator by its primary profile (see orderByPrimaryProfile).
+  const sortsByProfile = sortBy === 'followers' || sortBy === 'engagementRate'
+
+  // Bounded (18 Nov 2026): the UI asks for 50; the old in-memory sort never
+  // read more than 500 rows, while the SQL path would honour LIMIT 1000000
+  // over the whole pool. PostgreSQL's OFFSET is a 32-bit integer, so an absurd
+  // offset is an empty page (hasMore false), never a 500.
+  const pageLimit = Math.min(MAX_PAGE_LIMIT, Math.max(1, toNonNegativeInt(limit, 50)))
+  const pageOffset = Math.min(toNonNegativeInt(offset, 0), MAX_PAGE_OFFSET - pageLimit)
 
   // Count total
   const total = await prisma.creatorProfile.count({ where: creatorWhere })
 
-  // Fetch with extra limit if we need client sort
-  const fetchLimit = needsClientSort ? Math.min(total, 500) : limit
-  const fetchOffset = needsClientSort ? 0 : offset
-
-  const creators = await prisma.creatorProfile.findMany({
-    where: creatorWhere,
-    include: {
-      platformProfiles: {
-        orderBy: { followers: 'desc' },
-      },
-      categorySignals: {
-        orderBy: { confidence: 'desc' },
-        take: 5,
-      },
+  const include = {
+    platformProfiles: {
+      orderBy: { followers: 'desc' },
     },
-    orderBy: needsClientSort ? undefined : orderBy,
-    take: fetchLimit,
-    skip: fetchOffset,
-  })
+    categorySignals: {
+      orderBy: { confidence: 'desc' },
+      take: 5,
+    },
+  } satisfies Prisma.CreatorProfileInclude
+  type CreatorRow = Prisma.CreatorProfileGetPayload<{ include: typeof include }>
+
+  let creators: CreatorRow[]
+  if (sortsByProfile) {
+    const pageIds = await orderByPrimaryProfile(creatorWhere, sortBy, direction, pageOffset, pageLimit)
+    const rows = pageIds.length
+      ? await prisma.creatorProfile.findMany({ where: { id: { in: pageIds } }, include })
+      : []
+    const byId = new Map(rows.map((r) => [r.id, r]))
+    creators = pageIds.map((id) => byId.get(id)).filter((r): r is CreatorRow => Boolean(r))
+  } else {
+    creators = await prisma.creatorProfile.findMany({
+      where: creatorWhere,
+      include,
+      orderBy,
+      take: pageLimit,
+      skip: pageOffset,
+    })
+  }
 
   // Map to response format
-  let results = creators.map((c) => {
+  const results = creators.map((c) => {
     const primaryProfile = c.platformProfiles[0]
     return {
       id: c.id,
@@ -203,23 +221,64 @@ export async function POST(req: NextRequest) {
     }
   })
 
-  // Client-side sort for followers/engagementRate
-  if (needsClientSort) {
-    results.sort((a, b) => {
-      const aVal = sortBy === 'followers' ? a.followers : a.engagementRate
-      const bVal = sortBy === 'followers' ? b.followers : b.engagementRate
-      return sortDir === 'asc' ? aVal - bVal : bVal - aVal
-    })
-    results = results.slice(offset, offset + limit)
-  }
-
   return NextResponse.json({
     results,
     total,
-    offset,
-    limit,
-    hasMore: offset + limit < total,
+    offset: pageOffset,
+    limit: pageLimit,
+    hasMore: pageOffset + pageLimit < total,
   })
+}
+
+/** Largest page a caller may ask for (the response's `limit` is the bounded value). */
+const MAX_PAGE_LIMIT = 200
+/** Largest OFFSET PostgreSQL accepts (a 32-bit integer). */
+const MAX_PAGE_OFFSET = 2_147_483_647
+
+function toNonNegativeInt(value: unknown, fallback: number): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback
+}
+
+/**
+ * One page of creator ids ordered by the followers or the engagement rate of
+ * each creator's PRIMARY platform profile (the one with most followers: the
+ * same profile the response flattens as `followers` / `engagementRate`),
+ * computed by PostgreSQL over EVERY creator the filters match. Until 16 Nov
+ * 2026 the route fetched min(total, 500) rows and sorted them in memory, so
+ * past 500 creators (expected in Dec 2026) "Ordenar por seguidores" would have
+ * ordered an arbitrary subset without telling anyone.
+ *
+ * The WHERE stays in Prisma (one source of truth for the filters): Prisma
+ * yields the matching ids, SQL orders and paginates them. Ties break on id, so
+ * pages never overlap or skip a row.
+ */
+async function orderByPrimaryProfile(
+  where: Prisma.CreatorProfileWhereInput,
+  sortBy: 'followers' | 'engagementRate',
+  direction: 'asc' | 'desc',
+  offset: number,
+  limit: number,
+): Promise<string[]> {
+  const matching = await prisma.creatorProfile.findMany({ where, select: { id: true } })
+  if (matching.length === 0) return []
+  const ids = matching.map((m) => m.id)
+  const column = sortBy === 'followers' ? Prisma.sql`primary_profile.followers` : Prisma.sql`primary_profile."engagementRate"`
+  const order = direction === 'asc' ? Prisma.sql`ASC` : Prisma.sql`DESC`
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT c.id
+    FROM creator_profiles c
+    LEFT JOIN LATERAL (
+      SELECT p.followers, p."engagementRate"
+      FROM creator_platform_profiles p
+      WHERE p."creatorId" = c.id
+      ORDER BY p.followers DESC
+      LIMIT 1
+    ) primary_profile ON true
+    WHERE c.id = ANY(${ids}::text[])
+    ORDER BY ${column} ${order} NULLS LAST, c.id ASC
+    OFFSET ${offset}::int LIMIT ${limit}::int`
+  return rows.map((r) => r.id)
 }
 
 // GET /api/discovery/search — returns filter options from actual data

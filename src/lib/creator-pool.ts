@@ -16,7 +16,7 @@ import type { Prisma } from '@/generated/prisma/client'
 import { prisma } from '@/lib/db'
 import { detectCategories, type CategoryMatch } from '@/lib/category-detector'
 import { calculateSpainFit } from '@/lib/spain-fit'
-import { isValidGender, type Gender, type GenderSource } from '@/lib/gender'
+import { inferGenderFromName, isValidGender, type Gender, type GenderSource } from '@/lib/gender'
 
 /** A platform profile carries real data; hashtag shells never pass. */
 export const REAL_PROFILE_WHERE: Prisma.CreatorPlatformProfileWhereInput = { followers: { gt: 0 } }
@@ -119,6 +119,39 @@ export function genderPatchForPool(
   return { gender: inf.gender, genderSource: source }
 }
 
+/**
+ * Gender inference at intake (16 Nov 2026). Until then only the paid Discover
+ * pass and the one-off admin backfill inferred a gender, so 626 creators that
+ * entered after the 8 Oct backfill had none and the «Mujer» filter hid them.
+ *
+ * An Influencer without gender gets one inferred from its PUBLIC NAME only
+ * (display name, else the handle: src/lib/gender.ts). NEVER from the bio nor
+ * the photo (rule documented in ai-knowledge and in the header of gender.ts).
+ * Stored with genderSource 'inferred'; nothing already stored is touched (the
+ * write is guarded by `gender IS NULL`, so a PM who set a value meanwhile
+ * wins). Returns the fields the pool should mirror. Never throws.
+ */
+export async function inferMissingInfluencerGender(
+  inf: { id: string; displayName: string | null; username: string } & GenderFields,
+): Promise<GenderFields> {
+  if (inf.gender !== null && inf.gender !== undefined) return { gender: inf.gender, genderSource: inf.genderSource }
+  const inferred = inferGenderFromName(inf.displayName, inf.username)
+  if (!inferred) return { gender: null, genderSource: null }
+  try {
+    const res = await prisma.influencer.updateMany({
+      where: { id: inf.id, gender: null },
+      data: { gender: inferred, genderSource: 'inferred' },
+    })
+    if (res.count > 0) return { gender: inferred, genderSource: 'inferred' }
+    // Somebody wrote a value between our read and this write: theirs stands.
+    const now = await prisma.influencer.findUnique({ where: { id: inf.id }, select: { gender: true, genderSource: true } })
+    return now ?? { gender: null, genderSource: null }
+  } catch (err) {
+    console.error(`[creator-pool] gender inference for ${inf.id} not stored:`, err instanceof Error ? err.message : err)
+    return { gender: null, genderSource: null }
+  }
+}
+
 // ============ MATERIALIZATION ============
 
 type InfluencerRow = Prisma.InfluencerGetPayload<{ include: { _count: { select: { campaigns: true } } } }>
@@ -158,6 +191,11 @@ function influencerMetrics(inf: InfluencerRow): Prisma.CreatorPlatformProfileUpd
  * CreatorPlatformProfile when missing), links it, refreshes the
  * CreatorProfile identity fields and classifies it from bio + media.
  *
+ * Every row that passes through here (each scrape calls it through
+ * afterInfluencerUpsert) first gets its gender inferred from the public name
+ * when it has none (inferMissingInfluencerGender), whether or not it ends up
+ * in the pool: that is the intake step the one-off backfill used to be.
+ *
  * Returns null when the influencer does not exist or carries no profile data
  * (see influencerHasProfileData). Idempotent; safe to run concurrently for
  * different influencers (a lost race on (platform, username) adopts the row
@@ -171,6 +209,7 @@ export async function materializeInfluencerIntoPool(
     include: { _count: { select: { campaigns: true } } },
   })
   if (!inf) return null
+  const genderFields = await inferMissingInfluencerGender(inf)
   if (!influencerHasProfileData(inf, inf._count.campaigns > 0)) return null
 
   const username = inf.username.trim().replace(/^@+/, '')
@@ -190,7 +229,7 @@ export async function materializeInfluencerIntoPool(
         data: {
           displayName: nonEmpty(inf.displayName) ?? username,
           primaryPlatform: inf.platform,
-          ...genderPatchForPool(inf, null),
+          ...genderPatchForPool(genderFields, null),
           platformProfiles: {
             create: {
               platform: inf.platform,
@@ -270,7 +309,7 @@ export async function materializeInfluencerIntoPool(
       contactEmail: email ?? undefined,
       contactEmailSource: email ? 'profile' : undefined,
       primaryLanguage: nonEmpty(inf.language) ?? undefined,
-      ...genderPatchForPool(inf, before),
+      ...genderPatchForPool(genderFields, before),
       lastEnriched: new Date(),
     },
   })

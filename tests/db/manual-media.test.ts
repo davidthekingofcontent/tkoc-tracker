@@ -1364,3 +1364,39 @@ describe('what the endpoint already did', () => {
     expect((await add(body)).status).toBe(201)
   })
 })
+
+// ---------------------------------------------------------------------------
+
+describe('every refusal leaves a trace in the server log (revisión 16 nov 2026)', () => {
+  it('a 400 and a 409 are logged as [manual-refusal] with the campaign, the creator, the code, the reason and the link; a success is not', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const alba = fx.instagram['alba_prueba'].id
+      // 400: a date outside the campaign, for a creator who owes nothing
+      const late = tiktokVideo('alba_prueba', '2026-11-05T10:00:00.000Z', 45)
+      const refused = await add({ url: late.url, influencerId: alba, linkProfileTo: alba, views: 777 })
+      expect(refused.status).toBe(400)
+      // 409: the author is nobody's profile yet
+      const question = await add({ url: SEVEN_LINKS[0].url })
+      expect(question.status).toBe(409)
+
+      const entries = warn.mock.calls.filter(call => call[0] === '[manual-refusal]').map(call => JSON.parse(String(call[1])) as Record<string, unknown>)
+      expect(entries).toHaveLength(2)
+      expect(entries[0]).toEqual({
+        route: 'manual', campaignId: fx.campaignId, influencerId: alba, status: 400, code: 'nothing_pending',
+        reason: refused.body.error, url: late.url,
+      })
+      expect(entries[1]).toMatchObject({ route: 'manual', campaignId: fx.campaignId, influencerId: null, status: 409, code: 'profile_not_linked', url: SEVEN_LINKS[0].url })
+      // Only the public username and the link: never the figures typed
+      for (const call of warn.mock.calls) expect(String(call[1])).not.toContain('777')
+
+      // A success (the answer to the question, sent at once) leaves no trace
+      warn.mockClear()
+      const link = SEVEN_LINKS[1]
+      expect((await add({ url: link.url, influencerId: memberOf(link).id, linkProfileTo: memberOf(link).id })).status).toBe(201)
+      expect(warn.mock.calls.filter(call => call[0] === '[manual-refusal]')).toHaveLength(0)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})

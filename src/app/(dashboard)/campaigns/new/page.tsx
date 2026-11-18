@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Card } from '@/components/ui/card'
 import { useI18n } from '@/i18n/context'
 import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
+import { classifyTypedTargets, moveBareToKeywords } from '@/lib/campaign-targets'
 import {
   ArrowLeft,
   Radio,
@@ -26,6 +27,7 @@ import {
   ChevronDown,
   Loader2,
   Building2,
+  AlertTriangle,
 } from 'lucide-react'
 
 interface Template {
@@ -53,6 +55,9 @@ type TargetLabelKey = 'targetViewsLabel' | 'targetReachLabel' | 'targetEngagemen
 type TargetHintKey = 'targetHintAwareness' | 'targetHintEngagement' | 'targetHintTraffic' | 'targetHintConversion' | 'targetHintContent'
 
 const EMPTY_TARGETS: NumericTargets = { targetViews: '', targetReach: '', targetEngagement: '', targetER: '', targetCpmMax: '' }
+
+/** The small buttons of the amber notice under the brand targets field ("they are accounts" / "they are product words") */
+const BARE_ACTION_CLASS = 'rounded-md border border-amber-300 bg-white px-2.5 py-1 font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-gray-800 dark:text-amber-200 dark:hover:bg-amber-900/40'
 
 const TARGET_FIELDS: { key: NumericTargetKey; labelKey: TargetLabelKey; unit: string; step: number; placeholder: string; recommendedFor: string[] }[] = [
   { key: 'targetViews', labelKey: 'targetViewsLabel', unit: '', step: 1, placeholder: '500000', recommendedFor: ['awareness', 'traffic', 'content'] },
@@ -100,6 +105,8 @@ export default function NewCampaignPage() {
   const [campaignName, setCampaignName] = useState('')
   const [targets, setTargets] = useState<string[]>([])
   const [targetInput, setTargetInput] = useState('')
+  /** Words typed in the brand targets field without @ or # ('turbo'): not added until the PM says what they are */
+  const [pendingBare, setPendingBare] = useState<string[]>([])
   // Product keywords (optional third kind of brand target): comma-separated text, a keyword can be several words
   const [productKeywords, setProductKeywords] = useState('')
   /** The POST refused the keywords (400 with invalidKeywords): the field is marked until it is edited. */
@@ -204,8 +211,12 @@ export default function NewCampaignPage() {
       setPaymentType(template.paymentType)
     }
 
-    // Targets (accounts + hashtags combined)
-    const allTargets = [...(template.targetAccounts || []), ...(template.targetHashtags || [])]
+    // Targets (accounts + hashtags combined), with their sigil: a stored value has none, and a chip
+    // without @ or # was dropped in silence when creating (the lists are sent by sigil)
+    const allTargets = [
+      ...(template.targetAccounts || []).map((a) => `@${a.replace(/^@/, '')}`),
+      ...(template.targetHashtags || []).map((h) => `#${h.replace(/^#/, '')}`),
+    ]
     if (allTargets.length > 0) setTargets(allTargets)
   }
 
@@ -228,15 +239,31 @@ export default function NewCampaignPage() {
   }
 
   const addTarget = useCallback(() => {
-    const value = targetInput.trim()
-    if (value && !targets.includes(value)) {
-      setTargets((prev) => [...prev, value])
-      setTargetInput('')
-    }
-  }, [targetInput, targets])
+    // '@x' is an account and '#x' a hashtag; a word with neither ('turbo') is not dropped in silence any more:
+    // the PM says whether it is an account without its @ or a product word (16 Nov 2026: "turbo" and
+    // "infinityflex" reached production as brand accounts)
+    const typed = classifyTypedTargets(targetInput)
+    const chips = [...typed.accounts.map((a) => `@${a}`), ...typed.hashtags.map((h) => `#${h}`)]
+    if (chips.length > 0) setTargets((prev) => [...prev, ...chips.filter((c) => !prev.includes(c))])
+    if (typed.bare.length > 0) setPendingBare((prev) => [...prev, ...typed.bare.filter((b) => !prev.includes(b))])
+    setTargetInput('')
+  }, [targetInput])
 
   const removeTarget = (target: string) => {
     setTargets((prev) => prev.filter((t) => t !== target))
+  }
+
+  /** The pending words are accounts: they become @chips */
+  const resolveBareAsAccounts = () => {
+    setTargets((prev) => [...prev, ...pendingBare.map((b) => `@${b}`).filter((c) => !prev.includes(c))])
+    setPendingBare([])
+  }
+
+  /** The pending words are product words: they join the product keywords field (the server judges them there) */
+  const resolveBareAsKeywords = () => {
+    setProductKeywords((prev) => moveBareToKeywords(pendingBare.join(', '), prev).keywords)
+    setKeywordsRefused(false)
+    setPendingBare([])
   }
 
   const addInfluencer = useCallback(() => {
@@ -266,7 +293,7 @@ export default function NewCampaignPage() {
   const hasAnyTarget = Object.values(parsedTargets).some((v) => v !== null)
   const goalsRequired = trackingType !== 'social_listening'
   const goalsComplete = !goalsRequired || (!!objective && hasAnyTarget)
-  const canCreate = !!campaignName.trim() && !!trackingType && goalsComplete && !isCreating
+  const canCreate = !!campaignName.trim() && !!trackingType && goalsComplete && pendingBare.length === 0 && !isCreating
   const selectedObjective = CAMPAIGN_OBJECTIVES.find((o) => o.value === objective)
   const targetHint = objective ? t.campaigns[TARGET_HINT_KEY[objective]] : null
 
@@ -274,6 +301,10 @@ export default function NewCampaignPage() {
     if (!campaignName.trim() || !trackingType) return
     if (goalsRequired && (!objective || !hasAnyTarget)) {
       setError(t.campaigns.objectiveAndTargetRequired)
+      return
+    }
+    if (pendingBare.length > 0) {
+      setError(t.campaigns.bareTargetsPending)
       return
     }
 
@@ -856,6 +887,20 @@ export default function NewCampaignPage() {
                 ))}
               </div>
             )}
+            {/* Words typed without @ or #: the PM says whether they are accounts (add @) or product words (move them) */}
+            {pendingBare.length > 0 && (
+              <div role="alert" className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                <p className="flex items-start gap-1.5">
+                  <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+                  <span>{t.campaigns.bareTargetsNotice.replace('{tokens}', pendingBare.map((b) => `"${b}"`).join(', '))}</span>
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button type="button" onClick={resolveBareAsAccounts} className={BARE_ACTION_CLASS}>{t.campaigns.bareTargetsAsAccounts}</button>
+                  <button type="button" onClick={resolveBareAsKeywords} className={BARE_ACTION_CLASS}>{t.campaigns.bareTargetsAsKeywords}</button>
+                  <button type="button" onClick={() => setPendingBare([])} className={BARE_ACTION_CLASS}>{t.common.remove}</button>
+                </div>
+              </div>
+            )}
 
             {/* Product keywords: optional, only searched in the content of the campaign's creators */}
             <div className="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4">
@@ -1138,6 +1183,11 @@ export default function NewCampaignPage() {
             {!goalsComplete && (
               <p className="text-xs text-amber-700 dark:text-amber-400 sm:mr-auto">
                 {t.campaigns.objectiveAndTargetRequired}
+              </p>
+            )}
+            {goalsComplete && pendingBare.length > 0 && (
+              <p className="text-xs text-amber-700 dark:text-amber-400 sm:mr-auto">
+                {t.campaigns.bareTargetsPending}
               </p>
             )}
             <Link href="/campaigns">

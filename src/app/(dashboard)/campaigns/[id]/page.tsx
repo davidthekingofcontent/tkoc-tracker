@@ -121,6 +121,7 @@ import {
   HelpCircle,
 } from 'lucide-react'
 import { parseCreatorHandle } from '@/lib/handles'
+import { markBareAsAccounts, moveBareToKeywords, readTargetFields } from '@/lib/campaign-targets'
 
 interface CampaignInfluencer {
   id: string
@@ -940,6 +941,10 @@ export default function CampaignDetailPage() {
     return { handles, invalid }
   }, [bulkText, bulkCsvHandles, effectiveBulkPlatform])
 
+  // Sub-tab of Ejecutar (Media / Stories / Pipeline / Envíos). Controlled so that a story
+  // saved through «Añadir publicación por URL» can open the Stories sub-tab, where it is listed
+  const [execSubTab, setExecSubTab] = useState('sub-media')
+
   // Manual media (post by URL) state
   const [showManualMedia, setShowManualMedia] = useState(false)
   const [manualMediaForm, setManualMediaForm] = useState({ url: '', influencerId: '', likes: '', comments: '', views: '', reach: '', postedAt: '' })
@@ -1017,6 +1022,17 @@ export default function CampaignDetailPage() {
 
   // Lightweight toast (bottom-right, auto-dismiss)
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+
+  // 16 Nov 2026 (staff only, from GET /api/campaigns/[id]): the automatic capture
+  // is not reading the creators still in Prospecto (captureNotice, the rule of
+  // src/lib/prospect-notice.ts) and the other profiles of each member's person
+  // (memberProfiles: «Añadir perfil de TikTok» is offered only when she has none)
+  const [captureNotice, setCaptureNotice] = useState<{ members: number; prospects: number; scanning: number; startedDays: number } | null>(null)
+  const [memberProfiles, setMemberProfiles] = useState<Record<string, Array<{ id: string; username: string; platform: string }>>>({})
+  // «Añadir perfil de TikTok»: the member whose field is open, the handle typed, and whether the request is in flight
+  const [tiktokLinkFor, setTiktokLinkFor] = useState<string | null>(null)
+  const [tiktokHandle, setTiktokHandle] = useState('')
+  const [tiktokLinking, setTiktokLinking] = useState(false)
 
   // «Añadir publicación por URL» answered after the PM left this page: shown when she is back.
   // While the page of THAT campaign is open the answer goes to the form as always (showManualResult);
@@ -1229,6 +1245,8 @@ export default function CampaignDetailPage() {
         setExclusivity(Object.fromEntries(loaded.map(ci => [ci.id, ci.exclusivityDays || 0])))
         setOverview(data.overview)
         setTimeline(data.timeline || [])
+        setCaptureNotice(data.captureNotice ?? null)
+        setMemberProfiles(data.memberProfiles && typeof data.memberProfiles === 'object' ? data.memberProfiles : {})
         // If exactly 20 media items, there may be more
         const mediaCount = data.campaign?.media?.length || 0
         setMediaOffset(mediaCount)
@@ -1473,6 +1491,9 @@ export default function CampaignDetailPage() {
       // Cleared only if the form still holds the link that was sent
       setManualMediaForm(f => (f.url.trim() === url ? MANUAL_EMPTY_FORM : f))
       setManualMediaNeedsDate(false)
+      // A story is listed in the Stories sub-tab, not in Media: open it so she sees it saved
+      // (only while she is still on this campaign; the message above stays in the Media form)
+      if (data.isStory === true && data.created !== false && manualMediaOpenFor.current === campaignId) setExecSubTab('sub-stories')
       // The answer is in: the form is free now, while the campaign reloads behind it
       void fetchCampaign()
     } catch {
@@ -2109,7 +2130,8 @@ export default function CampaignDetailPage() {
       country: campaign.country || '',
       platforms: knownPlatforms(campaign.platforms),
       targetHashtags: targetHashtags.join(', '),
-      targetAccounts: targetAccounts.join(', '),
+      // With their @: a stored account has none, and a word without @ in this field now asks the PM what it is
+      targetAccounts: targetAccounts.map(a => `@${a.replace(/^@/, '')}`).join(', '),
       targetKeywords: targetKeywords.join(', '),
       status: campaign.status,
       objective: campaign.objective || '',
@@ -2140,9 +2162,14 @@ export default function CampaignDetailPage() {
   const goalsRequired = campaign?.type !== 'SOCIAL_LISTENING'
   const editFormHasTarget = TARGET_FIELD_DEFS.some(def => parseTargetInput(def.kind, editForm[def.key]) !== null)
   const editFormValid = !!editForm.name.trim() && (!goalsRequired || (!!editForm.objective && editFormHasTarget))
+  // The two target fields by sigil: '@x' is an account and '#x' a hashtag wherever it was typed; a word with neither in
+  // the accounts field ('turbo') is an account without its @ or a product word, and the save waits until the PM says
+  // which (16 Nov 2026: "turbo" and "infinityflex" reached production as brand accounts of «12.- Micros Diciembre»)
+  const editTypedTargets = readTargetFields(editForm.targetAccounts, editForm.targetHashtags)
+  const editBareAccounts = editTypedTargets.bare
 
   async function handleSaveCampaign() {
-    if (!editFormValid) return
+    if (!editFormValid || editBareAccounts.length > 0) return
     setIsSaving(true)
     // A new attempt starts clean: the server names again whichever field it still refuses
     setEditHashtagsError(null)
@@ -2169,8 +2196,8 @@ export default function CampaignDetailPage() {
           endDate: editForm.endDate || null,
           country: editForm.country || null,
           ...(platformsChanged && nextPlatforms.length > 0 && { platforms: nextPlatforms }),
-          targetHashtags: editForm.targetHashtags ? editForm.targetHashtags.split(',').map(s => s.trim()).filter(Boolean) : [],
-          targetAccounts: editForm.targetAccounts ? editForm.targetAccounts.split(',').map(s => s.trim()).filter(Boolean) : [],
+          targetHashtags: editTypedTargets.hashtags,
+          targetAccounts: editTypedTargets.accounts,
           // Product keywords: split on commas only (a keyword can be several words)
           targetKeywords: editForm.targetKeywords ? editForm.targetKeywords.split(',').map(s => s.trim()).filter(Boolean) : [],
           objective: editForm.objective || null,
@@ -2194,10 +2221,13 @@ export default function CampaignDetailPage() {
         // the server's own text: generic hashtags (`genericHashtags`), brand accounts that are creators
         // of the campaign (`memberAccounts`) or refused product keywords (`invalidKeywords`).
         // Anything else keeps the generic toast.
-        const data = await res.json().catch(() => ({})) as { error?: string; genericHashtags?: unknown; memberAccounts?: unknown; invalidKeywords?: unknown }
+        const data = await res.json().catch(() => ({})) as { error?: string; genericHashtags?: unknown; memberAccounts?: unknown; genericAccounts?: unknown; accountsNotBrand?: unknown; invalidKeywords?: unknown }
         const asList = (v: unknown) => Array.isArray(v) ? v.map(String).filter(Boolean) : []
         const generic = asList(data.genericHashtags)
         const members = asList(data.memberAccounts)
+        // Brand accounts that are a product word (`genericAccounts`) or do not carry the brand (`accountsNotBrand`)
+        const badAccounts = [...asList(data.genericAccounts), ...asList(data.accountsNotBrand)]
+        const refusesAccounts = badAccounts.length > 0 || 'genericAccounts' in data || 'accountsNotBrand' in data
         const badKeywords = asList(data.invalidKeywords)
         const serverError = typeof data.error === 'string' ? data.error.trim() : ''
         /** Server text, plus the offending items in brackets when the text does not already name them. */
@@ -2211,6 +2241,8 @@ export default function CampaignDetailPage() {
           setEditHashtagsError(withItems(t.campaignDetail.hashtagsRefused, generic, h => `#${h.replace(/^#/, '')}`))
         } else if (is400 && (members.length > 0 || 'memberAccounts' in data)) {
           setEditAccountsError(withItems(t.campaignDetail.accountsRefused, members, a => `@${a.replace(/^@/, '')}`))
+        } else if (is400 && refusesAccounts) {
+          setEditAccountsError(withItems(t.campaignDetail.accountsRefused, badAccounts, a => `@${a.replace(/^@/, '')}`))
         } else if (is400 && (badKeywords.length > 0 || 'invalidKeywords' in data)) {
           setEditKeywordsError(withItems(t.campaignDetail.keywordsRefused, badKeywords, k => k))
         } else {
@@ -4712,7 +4744,21 @@ export default function CampaignDetailPage() {
               )}
             </div>
           )}
-          <Tabs defaultValue="sub-media">
+          {/* Creators still in Prospecto are not read by the automatic capture (16 Nov 2026, src/lib/prospect-notice.ts; never in silence) */}
+          {captureNotice && (
+            <div data-testid="prospect-notice" className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+              <p className="flex-1 text-sm text-amber-800 dark:text-amber-200">
+                {(captureNotice.scanning === 0 && captureNotice.prospects < captureNotice.members
+                  ? t.campaignDetail.prospectNoticeNoneReadable
+                  : t.campaignDetail.prospectNotice)
+                  .replace('{n}', String(captureNotice.prospects))
+                  .replace('{m}', String(captureNotice.members))}{' '}
+                <span className="text-amber-700 dark:text-amber-300">{t.campaignDetail.prospectNoticeHint}</span>
+              </p>
+            </div>
+          )}
+          <Tabs defaultValue="sub-media" value={execSubTab} onValueChange={setExecSubTab}>
             <TabsList>
               <TabsTrigger value="sub-media">
                 <Image className="h-3.5 w-3.5" />
@@ -5224,7 +5270,20 @@ export default function CampaignDetailPage() {
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
                 {stories.map((story) => {
                   const postedDate = story.postedAt ? new Date(story.postedAt) : null
-                  const isExpired = postedDate ? (Date.now() - postedDate.getTime()) > 24 * 60 * 60 * 1000 : true
+                  // Live on Instagram during its first 24 h («Activa»); afterwards the card says how many
+                  // days ago it was published. The row never expires in the report: no grey ring, no
+                  // «Expirado» (18 Nov 2026, same words as the StoriesTracker above)
+                  const isLive = postedDate ? (Date.now() - postedDate.getTime()) <= 24 * 60 * 60 * 1000 : false
+                  const daysAgo = postedDate ? Math.max(0, Math.floor((Date.now() - postedDate.getTime()) / (24 * 60 * 60 * 1000))) : null
+                  const ageLabel = isLive
+                    ? t.campaignDetail.storiesActive
+                    : daysAgo === null
+                      ? t.campaignDetail.storiesNoDate
+                      : daysAgo === 0
+                        ? t.campaignDetail.storiesPostedToday
+                        : daysAgo === 1
+                          ? t.campaignDetail.storiesPostedOneDayAgo
+                          : t.campaignDetail.storiesPostedDaysAgo.replace('{n}', String(daysAgo))
 
                   return (
                     <div
@@ -5232,7 +5291,7 @@ export default function CampaignDetailPage() {
                       className="group relative overflow-hidden rounded-xl border-2 border-transparent bg-white shadow-sm transition-all hover:border-purple-300 hover:shadow-md"
                     >
                       {/* Story gradient ring */}
-                      <div className={`absolute inset-0 rounded-xl ${isExpired ? 'bg-gray-100' : 'bg-gradient-to-br from-purple-500 via-pink-500 to-orange-400'} p-[2px]`}>
+                      <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-purple-500 via-pink-500 to-orange-400 p-[2px]">
                         <div className="h-full w-full rounded-[10px] bg-white" />
                       </div>
 
@@ -5260,12 +5319,10 @@ export default function CampaignDetailPage() {
                             </div>
                           )}
 
-                          {/* Expired badge */}
-                          {isExpired && (
-                            <div className="absolute top-2 right-2 rounded-full bg-gray-900/70 px-2 py-0.5 text-[10px] font-medium text-white">
-                              {t.campaignDetail.storyExpired || 'Expired'}
-                            </div>
-                          )}
+                          {/* Age of the story: «Activa» the first 24 h, then «Publicada hace N días» */}
+                          <div className={`absolute top-2 right-2 rounded-full px-2 py-0.5 text-[10px] font-medium text-white ${isLive ? 'bg-emerald-600/80' : 'bg-gray-900/70'}`}>
+                            {ageLabel}
+                          </div>
                         </div>
 
                         {/* Creator info */}
@@ -6448,7 +6505,97 @@ export default function CampaignDetailPage() {
                               influencerId={ci.influencer.id}
                               influencerName={ci.influencer.displayName || ci.influencer.username}
                               locale={locale}
+                              campaignId={campaignId}
                             />
+                            {/* «Añadir perfil de TikTok» (16 Nov 2026): registers her TikTok by hand, with no video to prove it.
+                                Only for a creator who has no TikTok profile yet; when she has one, it is named instead. */}
+                            {!isBrand && ci.influencer.platform !== 'TIKTOK' && (() => {
+                              const linkedTikTok = (memberProfiles[ci.influencer.id] ?? []).find(p => p.platform === 'TIKTOK')
+                              if (linkedTikTok) {
+                                return (
+                                  <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400" title={t.campaignDetail.tiktokLinked.replace('{handle}', linkedTikTok.username)}>
+                                    <Link2 className="h-3 w-3" />
+                                    {t.campaignDetail.tiktokLinked.replace('{handle}', linkedTikTok.username)}
+                                  </span>
+                                )
+                              }
+                              if (!canEdit) return null
+                              if (tiktokLinkFor !== ci.influencer.id) {
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={() => { setTiktokLinkFor(ci.influencer.id); setTiktokHandle('') }}
+                                    className="inline-flex items-center gap-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                                    title={t.campaignDetail.addTikTokProfile}
+                                  >
+                                    <Plus className="h-3 w-3" />
+                                    {t.campaignDetail.addTikTokProfile}
+                                  </button>
+                                )
+                              }
+                              return (
+                                <form
+                                  className="inline-flex items-center gap-1"
+                                  onSubmit={async (e) => {
+                                    e.preventDefault()
+                                    if (tiktokLinking || !tiktokHandle.trim()) return
+                                    setTiktokLinking(true)
+                                    try {
+                                      const res = await fetch(`/api/influencers/${ci.influencer.id}/link-profile`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ platform: 'TIKTOK', username: tiktokHandle.trim(), campaignId }),
+                                      })
+                                      const data = await res.json().catch(() => ({}))
+                                      if (!res.ok) {
+                                        setToast({ type: 'error', message: data.error || t.campaignDetail.tiktokLinkFailed })
+                                        return
+                                      }
+                                      setToast({
+                                        type: 'success',
+                                        message: t.campaignDetail.tiktokLinkedToast
+                                          .replace('{handle}', String(data.profile?.username ?? tiktokHandle.trim().replace(/^@+/, '')))
+                                          .replace('{creator}', `@${ci.influencer.username}`),
+                                      })
+                                      setTiktokLinkFor(null)
+                                      setTiktokHandle('')
+                                      await fetchCampaign()
+                                    } catch {
+                                      setToast({ type: 'error', message: t.campaignDetail.tiktokLinkFailed })
+                                    } finally {
+                                      setTiktokLinking(false)
+                                    }
+                                  }}
+                                >
+                                  <input
+                                    type="text"
+                                    value={tiktokHandle}
+                                    onChange={(e) => setTiktokHandle(e.target.value)}
+                                    placeholder={t.campaignDetail.tiktokHandlePlaceholder}
+                                    autoFocus
+                                    disabled={tiktokLinking}
+                                    className="w-44 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 outline-none focus:ring-1 focus:ring-purple-500"
+                                  />
+                                  <button
+                                    type="submit"
+                                    disabled={tiktokLinking || !tiktokHandle.trim()}
+                                    className="inline-flex items-center gap-1 rounded-lg bg-purple-600 px-2 py-1.5 text-xs font-semibold text-white hover:bg-purple-700 disabled:opacity-50 transition-colors"
+                                  >
+                                    {tiktokLinking ? <Loader2 className="h-3 w-3 animate-spin" /> : <Link2 className="h-3 w-3" />}
+                                    {t.campaignDetail.tiktokLinkSave}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setTiktokLinkFor(null); setTiktokHandle('') }}
+                                    disabled={tiktokLinking}
+                                    className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                    title={t.common.cancel}
+                                  >
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                </form>
+                              )
+                            })()}
                             {/* Remove influencer button */}
                             {canEdit && (
                               <button
@@ -6834,6 +6981,7 @@ export default function CampaignDetailPage() {
                                 influencerId={ci.influencer.id}
                                 influencerName={ci.influencer.displayName || ci.influencer.username}
                                 locale={locale}
+                                campaignId={campaignId}
                               />
                             </div>
                           </div>
@@ -7389,16 +7537,42 @@ export default function CampaignDetailPage() {
                   value={editForm.targetAccounts}
                   onChange={(e) => { setEditForm(prev => ({ ...prev, targetAccounts: e.target.value })); setEditAccountsError(null) }}
                   placeholder="@account1, @account2"
-                  aria-invalid={editAccountsError ? true : undefined}
-                  aria-describedby={editAccountsError ? 'edit-accounts-error' : undefined}
+                  aria-invalid={editAccountsError || editBareAccounts.length > 0 ? true : undefined}
+                  aria-describedby={editBareAccounts.length > 0 ? 'edit-accounts-bare' : editAccountsError ? 'edit-accounts-error' : undefined}
                   className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-1 ${
                     editAccountsError
                       ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
-                      : 'border-gray-300 focus:border-purple-500 focus:ring-purple-500'
+                      : editBareAccounts.length > 0
+                        ? 'border-amber-400 focus:border-amber-500 focus:ring-amber-500'
+                        : 'border-gray-300 focus:border-purple-500 focus:ring-purple-500'
                   }`}
                 />
-                {/* The server's own text when a target account is a creator of this campaign */}
-                {editAccountsError ? (
+                {/* A word without @ is not an account: the PM says whether it is one (add @) or a product word (move it) before saving */}
+                {editBareAccounts.length > 0 ? (
+                  <div id="edit-accounts-bare" role="alert" className="mt-1 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                    <p className="flex items-start gap-1.5">
+                      <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+                      <span className="break-words">{t.campaigns.bareTargetsNotice.replace('{tokens}', editBareAccounts.map(b => `"${b}"`).join(', '))}</span>
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button type="button" onClick={() => { setEditForm(prev => ({ ...prev, targetAccounts: markBareAsAccounts(prev.targetAccounts) })); setEditAccountsError(null) }}
+                        className="rounded-md border border-amber-300 bg-white px-2.5 py-1 font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-gray-800 dark:text-amber-200 dark:hover:bg-amber-900/40">
+                        {t.campaigns.bareTargetsAsAccounts}
+                      </button>
+                      <button type="button" onClick={() => {
+                        setEditForm(prev => {
+                          const moved = moveBareToKeywords(prev.targetAccounts, prev.targetKeywords)
+                          return { ...prev, targetAccounts: moved.accounts, targetKeywords: moved.keywords }
+                        })
+                        setEditAccountsError(null)
+                        setEditKeywordsError(null)
+                      }}
+                        className="rounded-md border border-amber-300 bg-white px-2.5 py-1 font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-gray-800 dark:text-amber-200 dark:hover:bg-amber-900/40">
+                        {t.campaigns.bareTargetsAsKeywords}
+                      </button>
+                    </div>
+                  </div>
+                ) : editAccountsError ? (
                   <p id="edit-accounts-error" role="alert" className="mt-1 flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400">
                     <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
                     <span className="break-words">{editAccountsError}</span>
@@ -7417,12 +7591,14 @@ export default function CampaignDetailPage() {
               <Button
                 variant="primary"
                 onClick={handleSaveCampaign}
-                disabled={isSaving || !editFormValid}
+                disabled={isSaving || !editFormValid || editBareAccounts.length > 0}
                 title={!editFormValid
                   ? goalsRequired
                     ? (locale === 'es' ? 'Nombre, objetivo y al menos un objetivo numérico son obligatorios' : 'Name, objective and at least one numeric target are required')
                     : (locale === 'es' ? 'El nombre es obligatorio' : 'Name is required')
-                  : undefined}
+                  : editBareAccounts.length > 0
+                    ? t.campaigns.bareTargetsPending
+                    : undefined}
               >
                 {isSaving ? (
                   <>

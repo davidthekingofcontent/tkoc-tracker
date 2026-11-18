@@ -8,9 +8,11 @@ import { computeCampaignOverview, stripEconomics } from '@/lib/campaign-overview
 import { buildCampaignLearnings, toClientLearnings, type CampaignLearnings, type LearningsMediaRow } from '@/lib/campaign-learnings'
 import { loadReportConfig } from '@/lib/report-config'
 import { sanitizeCampaignForBrand } from '@/lib/brand-scope'
-import { normalizeTargets } from '@/lib/campaign-capture'
-import { MAX_TARGET_KEYWORDS, TOO_MANY_KEYWORDS_ERROR, brandStems, genericHashtagsError, keywordsError, memberAccountsError, normalizeKeywords, splitMemberAccounts, validateKeywords, validateTargetHashtags } from '@/lib/campaign-targets'
+import { loadCampaignBrandAccounts, normalizeTargets } from '@/lib/campaign-capture'
+import { MAX_TARGET_KEYWORDS, TOO_MANY_KEYWORDS_ERROR, brandStems, genericHashtagsError, keywordsError, memberAccountsError, normalizeKeywords, splitMemberAccounts, targetAccountsError, validateKeywords, validateTargetAccounts, validateTargetHashtags } from '@/lib/campaign-targets'
 import type { CampaignOverview } from '@/lib/metrics'
+import { prospectNoticeFor } from '@/lib/prospect-notice'
+import { otherProfilesOfMembers } from '@/lib/person-profiles'
 
 // ---- Numeric targets (decision 1B, David 2026-09-05) ----
 // Objective + at least one target are mandatory in the UI; here we sanitize and
@@ -343,12 +345,24 @@ export async function GET(
       return { ...m, metrics }
     })
 
+    // Staff only (16 Nov 2026): the notice that the automatic capture is not
+    // reading the creators still in Prospecto (src/lib/prospect-notice.ts: the
+    // same rule the watchdog notifies weekly) and the other profiles of each
+    // member's person (Elegir offers «Añadir perfil de TikTok» only to a creator
+    // with no TikTok profile registered). Neither reaches a brand's answer.
+    // Only an ACTIVE campaign is read by the crons (and by the watchdog): a
+    // paused or archived one shows no notice about a capture that does not
+    // run (18 Nov 2026).
+    const captureNotice = isBrand || campaign.status !== 'ACTIVE' ? null : prospectNoticeFor(campaign)
+    const memberProfiles = isBrand ? {} : await otherProfilesOfMembers(campaign.influencers.map(ci => ci.influencer))
+
     const payload = {
       campaign: { ...campaign, media, brand, brandId },
       overview: { ...overview, ...legacyOverviewKeys(overview) },
       timeline: overview.timeline,
       ...(learnings && learningsClient ? { learnings, learningsClient } : {}),
       ...(sentiment ? { sentiment } : {}),
+      ...(isBrand ? {} : { captureNotice, memberProfiles }),
     }
 
     if (isBrand) {
@@ -494,6 +508,25 @@ export async function PUT(
       const offenders = splitMemberAccounts(nextTargetAccounts, members.map(m => m.influencer.username), targetBrand?.name ?? null, existing.name).members
       if (offenders.length > 0) {
         return NextResponse.json({ error: memberAccountsError(offenders), memberAccounts: offenders }, { status: 400 })
+      }
+      // Review of 16 Nov 2026: product words ('turbo', 'infinityflex') typed as
+      // brand ACCOUNTS. An account must be a real handle of the brand: never a
+      // generic word and, with a brand to judge against (attached brand or a
+      // brand word in the name being saved), carrying its name, unless it is the
+      // brand's connected Instagram. Judged only when the accounts come in: a
+      // campaign already holding such accounts is still read and its other
+      // fields still saved; the accounts are corrected the next time they are sent.
+      const connected = (await loadCampaignBrandAccounts([{ id, targetAccounts: [] }])).get(id)?.own ?? []
+      const { generic, notBrand } = validateTargetAccounts(nextTargetAccounts, {
+        brandName: targetBrand?.name ?? null,
+        campaignName: nextName ?? existing.name,
+        connectedAccounts: connected,
+      })
+      if (generic.length > 0 || notBrand.length > 0) {
+        return NextResponse.json(
+          { error: targetAccountsError(generic, notBrand), genericAccounts: generic, accountsNotBrand: notBrand },
+          { status: 400 }
+        )
       }
     }
 

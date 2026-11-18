@@ -1,17 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
+import { acquireCronLock, cronGate, cronInFlight, cronLockHeldSince, cronSkipped, markCronRun, releaseCronLock, renewCronLock, type CronLock } from '@/lib/cron-throttle'
 import { scrapeHashtag, scrapeAccountMentions, isApifyConfigured, isApifyOverCoreReserve, checkApifyAuth, detectCountry } from '@/lib/apify'
 import { searchVideos as ytSearchVideos, isYouTubeApiConfigured } from '@/lib/youtube-api'
 import {
+  loadCampaignBrandAccounts,
   mediaMatchesCampaignRules,
   normalizeTargets,
   scrapedPostToRuleItem,
   upsertCampaignPost,
 } from '@/lib/campaign-capture'
+import { isBrandAccount } from '@/lib/campaign-targets'
+import { CAMPAIGN_ENDED_GRACE_DAYS, campaignEndedForCrons, type SkippedCampaign } from '@/lib/campaign-ended'
+import { loadCampaignRoster, type Roster } from '@/lib/campaign-roster'
 import type { Platform } from '@/generated/prisma/client'
 import { afterInfluencerUpsert } from '@/lib/influencer-upsert'
 import { campaignTeamUserIds, notifyApifyBudgetPauseOnce, notifyApifyTokenRejectedOnce } from '@/lib/notifications'
+
+/**
+ * Networks where scrapeAccountMentions (src/lib/apify.ts) can read the posts
+ * that tag an account. On the others it answered [] after a scrape_jobs row
+ * had been created: 156 empty TikTok and 65 empty YouTube "cron-mentions" jobs
+ * in the first half of Nov 2026. Those targets are skipped here with the
+ * reason 'unsupported' and no job.
+ */
+const MENTIONS_SUPPORTED_PLATFORMS: ReadonlySet<string> = new Set(['INSTAGRAM'])
 
 /**
  * creator_discovered → every member of the campaign team (creator + assigned
@@ -56,9 +69,18 @@ function formatFollowers(n: number): string {
 
 export interface CronTrackingResults {
   campaignsProcessed: number
-  campaignsSkipped: number
+  /** Campaigns not read, each with its reason: 'ended' (end date + grace behind us), 'future', 'empty' window */
+  campaignsSkipped: SkippedCampaign[]
   totalPostsFound: number
   staleJobsFailed: number
+  /** Authors who are NOT creators of the campaign, left out by its country filter (discovery only) */
+  countrySkipped: number
+  /** Always 0: a creator of the campaign (a member, or a profile of a member's person) is never filtered by country */
+  countrySkippedMembers: number
+  /** Brand accounts whose mentions cannot be read on that network: no scrape job, reason 'unsupported' */
+  unsupportedMentions: Array<{ campaignId: string; name: string; platform: string; accounts: string[] }>
+  /** A BRAND account registered as a profile of a creator: its posts are never credited to her (reason 'brand_account') */
+  brandAuthorsSkipped: Array<{ campaignId: string; name: string; author: string; member: string; posts: number }>
   errors: string[]
 }
 
@@ -74,6 +96,8 @@ export interface CronTrackingProgress {
 
 export interface CronTrackingOptions {
   progress?: CronTrackingProgress
+  /** Called at every campaign and after every scrape, so the in-flight lock does not look dead during a long run (renewCronLock) */
+  heartbeat?: () => Promise<unknown>
 }
 
 import type { HashtagResult } from '@/lib/apify'
@@ -170,17 +194,21 @@ async function failJob(jobId: string | null, err: unknown): Promise<void> {
 
 /**
  * A campaign is only tracked while its window can hold content: a window
- * entirely in the future (startDate after today) or empty (endDate before
- * startDate) cannot match any post — every scrape for it is a wasted run.
+ * entirely in the future (startDate after today), empty (endDate before
+ * startDate) or ended more than CAMPAIGN_ENDED_GRACE_DAYS ago (rule 2 rejects
+ * everything published after the end) cannot match any post — every scrape
+ * for it is a wasted run. Returns why it is not tracked, or null. A campaign
+ * without an end date (Social Listening) is tracked for as long as it is ACTIVE.
  */
-function campaignWindowIsTrackable(campaign: { startDate: Date; endDate: Date | null }, now: Date): boolean {
+function campaignWindowSkipReason(campaign: { startDate: Date; endDate: Date | null }, now: Date): SkippedCampaign['reason'] | null {
   const start = new Date(campaign.startDate).getTime()
-  if (Number.isFinite(start) && start > now.getTime()) return false
+  if (Number.isFinite(start) && start > now.getTime()) return 'future'
   if (campaign.endDate) {
     const end = new Date(campaign.endDate).getTime()
-    if (Number.isFinite(start) && Number.isFinite(end) && end < start) return false
+    if (Number.isFinite(start) && Number.isFinite(end) && end < start) return 'empty'
   }
-  return true
+  if (campaignEndedForCrons(campaign, now)) return 'ended'
+  return null
 }
 
 /**
@@ -198,14 +226,27 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
     throw new Error('Apify not configured')
   }
   const progress: CronTrackingProgress = options.progress ?? { finished: false, processed: 0 }
+  /** Sign of life for the in-flight lock; never stops the run */
+  const beat = async () => {
+    if (!options.heartbeat) return
+    try {
+      await options.heartbeat()
+    } catch {
+      // the heartbeat is a courtesy to the next caller, never a reason to stop
+    }
+  }
 
   console.log('[Cron/Track] Starting cron tracking run at', new Date().toISOString())
 
   const results: CronTrackingResults = {
     campaignsProcessed: 0,
-    campaignsSkipped: 0,
+    campaignsSkipped: [],
     totalPostsFound: 0,
     staleJobsFailed: 0,
+    countrySkipped: 0,
+    countrySkippedMembers: 0,
+    unsupportedMentions: [],
+    brandAuthorsSkipped: [],
     errors: [],
   }
 
@@ -230,6 +271,18 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
     source: string
   ): Promise<number> {
     let postsFound = 0
+    if (scrapedResults.length === 0) return 0
+
+    // Who the campaign's creators are, read now (a run lasts minutes): a member
+    // row, or a profile of a member's person (src/lib/campaign-roster.ts), so a
+    // creator's TikTok that is not itself a member still credits her row.
+    const roster: Roster = await loadCampaignRoster(campaign.id)
+    // The brand's accounts (its targets and its connected Instagram): a brand
+    // account registered as a profile of a creator, by hand or by old data,
+    // must never credit her with the brand's own posts. «Añadir publicación por
+    // URL» and «Registrar Story» refuse exactly that; here the roster decided
+    // alone until 18 Nov 2026.
+    const brandAccounts = (await loadCampaignBrandAccounts([campaign])).get(campaign.id) ?? { targets: [], own: [] }
 
     for (const result of scrapedResults) {
       if (!result.authorUsername) continue
@@ -255,7 +308,40 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
         // Durable copy of the profile picture while the CDN URL is fresh (fire-and-forget)
         afterInfluencerUpsert(influencer.id, result.authorAvatarUrl)
 
-        // Country filtering
+        // Is the author a creator of this campaign? Decided BEFORE the country
+        // filter (16 Nov 2026): that filter exists to leave out foreign authors
+        // found by hashtag, never a creator the PM added herself. Until now
+        // @elemor_encasa (AR) and @paula_silvagni_ (BR), members of a Spanish
+        // campaign, were skipped 156 times with "campaign requires ES" and their
+        // tagged posts never entered by this path.
+        const credit = roster.creditFor(platform, result.authorUsername)
+
+        if (credit) {
+          if (!credit.self && (isBrandAccount(brandAccounts.targets, result.authorUsername) || isBrandAccount(brandAccounts.own, result.authorUsername))) {
+            // A brand account linked as a profile of a creator: the brand's posts
+            // are not hers. Named in the log and in the summary (never silent);
+            // nothing stored, nobody announced. The brand's own row, when the
+            // brand was added as a creator (credit.self), keeps its posts.
+            console.log(`[Cron/Track] @${result.authorUsername} is a brand account of "${campaign.name}" but is registered as a profile of @${credit.member.username}: its ${result.posts.length} posts are not credited to her (reason: brand_account)`)
+            results.brandAuthorsSkipped.push({ campaignId: campaign.id, name: campaign.name, author: result.authorUsername, member: credit.member.username, posts: result.posts.length })
+            continue
+          }
+          // Creator IS of this campaign — store ONLY posts that pass the campaign
+          // rules: dated inside [startDate, endDate] AND referencing a target
+          // account/hashtag (undated posts are never captured). Credited to her
+          // member row; a linked profile is recorded as the publisher.
+          for (const post of result.posts) {
+            if (!post.externalId) continue
+            if (!mediaMatchesCampaignRules(campaign, scrapedPostToRuleItem(post))) continue
+            const stored = await upsertCampaignPost(campaign.id, credit.member.influencerId, platform, post, {
+              publishedByInfluencerId: credit.self ? null : influencer.id,
+            })
+            if (stored) postsFound++
+          }
+          continue
+        }
+
+        // Country filtering (discovery of authors who are not creators of the campaign)
         if (campaign.country) {
           let influencerCountry = influencer.country
 
@@ -288,7 +374,8 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
 
           // Skip if country doesn't match
           if (influencerCountry && influencerCountry !== campaign.country) {
-            console.log(`[Cron/Track] Country filter: skipping @${result.authorUsername} (country=${influencerCountry}) — campaign requires ${campaign.country}`)
+            console.log(`[Cron/Track] Country filter: skipping @${result.authorUsername} (country=${influencerCountry}, not a creator of the campaign) — campaign requires ${campaign.country}`)
+            results.countrySkipped++
             continue
           }
 
@@ -308,6 +395,7 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
             ]
             if (nonLatinPatterns.some(p => p.test(caption))) {
               console.log(`[Cron/Track] Country filter: skipping @${result.authorUsername} — non-latin script detected in caption`)
+              results.countrySkipped++
               continue // Skip non-latin-script content
             }
 
@@ -315,55 +403,24 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
             // For all other countries, skip unknown-country content
             if (campaign.country !== 'ES') {
               console.log(`[Cron/Track] Country filter: skipping @${result.authorUsername} — no country detected, strict mode for ${campaign.country}`)
+              results.countrySkipped++
               continue // Strict: skip content with no country detected
             }
           }
         }
 
-        // Check if influencer is already a member of this campaign — DO NOT auto-add
-        // The user must explicitly add creators to campaigns. We only track posts for
-        // creators they've already added.
-        const existingMembership = await prisma.campaignInfluencer.findUnique({
-          where: {
-            campaignId_influencerId: {
-              campaignId: campaign.id,
-              influencerId: influencer.id,
-            },
-          },
-        })
-
-        // If not a campaign member, send discovery notification and SKIP Media creation
-        // (Media is only tracked for creators explicitly added to the campaign).
-        // Recipients: the campaign team (creator + assigned PMs), deduped 7 days
-        // PER USER — a PM given access later still receives it.
-        if (!existingMembership) {
-          // Another profile of a creator who IS in the campaign (same person)
-          // is not a new creator: the notice would invite the PM to add her a
-          // second time. Her content from that profile enters through "Añadir
-          // publicación por URL" and the daily TikTok pass.
-          const sameCreator = influencer.personId
-            ? await prisma.campaignInfluencer.findFirst({
-                where: { campaignId: campaign.id, influencer: { personId: influencer.personId } },
-                select: { id: true },
-              })
-            : null
-          if (!sameCreator && influencer.followers >= 1000) {
-            await notifyCreatorDiscovered(
-              campaign.id,
-              influencer.id,
-              `🔍 @${influencer.username} (${formatFollowers(influencer.followers)}) descubierto via ${source} en ${campaign.name}`
-            )
-          }
-          continue // Skip media tracking for non-members
-        }
-
-        // Creator IS a campaign member — store ONLY posts that pass the campaign
-        // rules: dated inside [startDate, endDate] AND referencing a target
-        // account/hashtag (undated posts are never captured).
-        for (const post of result.posts) {
-          if (!post.externalId) continue
-          if (!mediaMatchesCampaignRules(campaign, scrapedPostToRuleItem(post))) continue
-          if (await upsertCampaignPost(campaign.id, influencer.id, platform, post)) postsFound++
+        // Not a creator of the campaign — DO NOT auto-add: the user must
+        // explicitly add creators. Send the discovery notification and SKIP
+        // Media creation. Recipients: the campaign team (creator + assigned PMs),
+        // deduped 7 days PER USER — a PM given access later still receives it.
+        // (Another profile of a creator who IS in the campaign was credited
+        // above through the roster: it is never announced as a new creator.)
+        if (influencer.followers >= 1000) {
+          await notifyCreatorDiscovered(
+            campaign.id,
+            influencer.id,
+            `🔍 @${influencer.username} (${formatFollowers(influencer.followers)}) descubierto via ${source} en ${campaign.name}`
+          )
         }
       } catch { /* skip */ }
     }
@@ -372,9 +429,14 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
 
   const now = new Date()
   for (const campaign of campaigns) {
-    if (!campaignWindowIsTrackable(campaign, now)) {
-      console.log(`[Cron/Track] Campaign "${campaign.name}" window is in the future or empty (${campaign.startDate.toISOString()} → ${campaign.endDate?.toISOString() ?? 'open'}) — skipping`)
-      results.campaignsSkipped++
+    await beat()
+    const skipReason = campaignWindowSkipReason(campaign, now)
+    if (skipReason) {
+      const window = `${campaign.startDate.toISOString().slice(0, 10)} → ${campaign.endDate?.toISOString().slice(0, 10) ?? 'open'}`
+      console.log(skipReason === 'ended'
+        ? `[Cron/Track] Campaign "${campaign.name}" ended more than ${CAMPAIGN_ENDED_GRACE_DAYS} days ago (${window}) — its hashtags and accounts are not read any more (reason: ended)`
+        : `[Cron/Track] Campaign "${campaign.name}" window is in the future or empty (${window}) — skipping (reason: ${skipReason})`)
+      results.campaignsSkipped.push({ id: campaign.id, name: campaign.name, reason: skipReason })
       continue
     }
     try {
@@ -411,6 +473,7 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
             })
             results.totalPostsFound += postsFound
             progress.processed++
+            await beat()
           } catch (err) {
             await failJob(jobId, err)
             results.errors.push(`${campaign.name}: ${hashtag}@${platform} - ${err instanceof Error ? err.message : 'Error'}`)
@@ -419,8 +482,16 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
       }
 
       // ===== 2. ACCOUNT MENTIONS TRACKING (tagged posts) =====
-      for (const account of normalizeTargets(campaign.targetAccounts)) {
+      const mentionAccounts = normalizeTargets(campaign.targetAccounts)
+      for (const platform of campaign.platforms) {
+        if (mentionAccounts.length === 0 || MENTIONS_SUPPORTED_PLATFORMS.has(platform)) continue
+        // Named, not silent: these accounts are not read on this network and no job is created
+        console.log(`[Cron/Track] Campaign "${campaign.name}": mentions of ${mentionAccounts.map(a => `@${a}`).join(', ')} on ${platform} are not supported — skipped (reason: unsupported)`)
+        results.unsupportedMentions.push({ campaignId: campaign.id, name: campaign.name, platform, accounts: mentionAccounts })
+      }
+      for (const account of mentionAccounts) {
         for (const platform of campaign.platforms) {
+          if (!MENTIONS_SUPPORTED_PLATFORMS.has(platform)) continue
           let jobId: string | null = null
           try {
             // Idempotency: skip if already scraped within the dedup window
@@ -461,7 +532,7 @@ export async function runCronTracking(options: CronTrackingOptions = {}): Promis
   }
   progress.finished = true
 
-  console.log(`[Cron/Track] Run complete: ${results.campaignsProcessed} campaigns (${results.campaignsSkipped} skipped), ${results.totalPostsFound} posts, ${results.errors.length} errors`)
+  console.log(`[Cron/Track] Run complete: ${results.campaignsProcessed} campaigns (${results.campaignsSkipped.length} skipped: ${results.campaignsSkipped.map(c => `"${c.name}" ${c.reason}`).join(', ') || 'none'}), ${results.totalPostsFound} posts, ${results.countrySkipped} foreign authors left out by country (${results.countrySkippedMembers} creators of the campaigns), ${results.unsupportedMentions.length} unsupported mention targets, ${results.brandAuthorsSkipped.length} brand accounts not credited to a creator, ${results.errors.length} errors`)
   return results
 }
 
@@ -498,11 +569,20 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Apify rejects the token', skipped: 'apify_token', cron: 'track' }, { status: 503 })
     }
 
+    // One run at a time, whoever calls (internal scheduler, external curl, a retried GET)
+    const lock: CronLock | null = await acquireCronLock('track')
+    if (!lock) {
+      const since = await cronLockHeldSince('track')
+      console.log(`[Cron/Track] Skipped: a run is in flight since ${since ?? 'unknown'}`)
+      return NextResponse.json(cronInFlight('track', since))
+    }
+
     // The 24 h stamp is written AFTER the work (see finally): stamping first
     // meant a redeploy mid-run skipped the rest until the next day.
     const progress: CronTrackingProgress = { finished: false, processed: 0 }
     try {
-      const results = await runCronTracking({ progress })
+      // The heartbeat keeps the lock alive during a run longer than its TTL
+      const results = await runCronTracking({ progress, heartbeat: () => renewCronLock(lock) })
 
       return NextResponse.json({
         message: 'Cron tracking completed',
@@ -515,6 +595,7 @@ export async function GET(request: NextRequest) {
       // stamp would close the gate for 24 h behind a run that read nothing
       const tokenRejected = (await checkApifyAuth()) === 'rejected'
       if (!tokenRejected && (progress.finished || progress.processed > 0)) await markCronRun('track')
+      await releaseCronLock(lock)
     }
   } catch (error) {
     console.error('Cron track error:', error)

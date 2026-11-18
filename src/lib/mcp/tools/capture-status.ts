@@ -55,7 +55,10 @@ const JOB_RUN_STAMP: Record<(typeof CAPTURE_JOBS)[number], string> = {
   track:
     'Written when a run ends, also when it was cut short or failed after reading at least one brand hashtag or ' +
     'account. Not written when Apify rejected the token.',
-  'check-posts': 'Written when a run ends, also when it failed after reading at least one creator.',
+  'check-posts':
+    'Written only when a run finishes. A run that failed or was cut off half way (a redeploy) writes nothing, so the ' +
+    'next tick resumes it (the creators already read are not read again). A second call while a run is in flight is ' +
+    'refused (in_flight), not run twice.',
   'tiktok-link': 'Written when a full pass ends in which the reading service answered, also when the pass was partial.',
   watchdog: 'Never written: the watchdog does not record its runs.',
 }
@@ -83,7 +86,7 @@ export const captureStatus = defineTool({
     'Reports whether the automatic capture of the platform is working. For each capture job (stories, track, ' +
     'check-posts, tiktok-link, watchdog): when it last wrote its run stamp and how many hours ago. The run stamp is ' +
     'NOT proof that a run completed: stories writes it when a scan starts (and removes it if the scan fails), and ' +
-    'track and check-posts also stamp runs that were cut short; runStampMeans says what it means for each job. ' +
+    'track also stamps runs that were cut short, check-posts only finished runs; runStampMeans says what it means for each job. ' +
     'Only stories records its failures (lastFailedAt); for the other jobs lastFailedAt is not_recorded and a ' +
     'failure only shows in the alerts. ' +
     'For stories and tiktok-link also the summary of the last run (creators read, new stories, campaigns scanned, ' +

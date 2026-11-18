@@ -1605,9 +1605,8 @@ export default function SettingsPage() {
                 {locale === 'es' ? 'Cuentas de Instagram conectadas' : 'Connected Instagram accounts'}
               </h3>
               <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-                {locale === 'es'
-                  ? 'Cada cuenta de Instagram Business vinculada aquí se sincroniza automáticamente cada 6 horas.'
-                  : 'Each Instagram Business account linked here is auto-synced every 6 hours.'}
+                {/* The cadence is the one meta-sync runs (TWO_HOURS_MS in src/instrumentation.ts): the translation key, never a literal here */}
+                {t.integrations.meta.connectedAccountsSubtitle}
               </p>
 
               {metaToast && (

@@ -825,7 +825,7 @@ describe('the tools on invented data', () => {
       expect(jobs.get(job), job).toMatchObject({ failuresRecorded: false, lastFailedAt: 'not_recorded' })
     }
     expect(jobs.get('check-posts')).toMatchObject({ lastRunStampAt: null, hoursSinceLastRunStamp: null })
-    expect(jobs.get('check-posts')!.runStampMeans).toMatch(/also when it failed/)
+    expect(jobs.get('check-posts')!.runStampMeans).toMatch(/only when a run finishes/)
 
     expect(answer.data.storiesLastResult).toMatchObject({
       failed: false, creatorsChecked: 7, storiesSeen: 9, newStories: 4, newByBrandLink: 1, newBySharedPost: 1, rejectedByRules: 5,

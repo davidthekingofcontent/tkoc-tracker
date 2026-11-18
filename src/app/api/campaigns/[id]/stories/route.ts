@@ -1,14 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession, isStaffRole } from '@/lib/auth'
-import { findLateCopyElsewhere, findPostCopiesInOtherCampaigns, lockPostForCampaignChoice, withCampaignMembership } from '@/lib/campaign-capture'
+import {
+  STORIES_MAX_CAMPAIGN_DAYS,
+  STORY_SCAN_STATUSES,
+  findLateCopyElsewhere,
+  findPostCopiesInOtherCampaigns,
+  loadCampaignBrandAccounts,
+  lockPostForCampaignChoice,
+  storiesCampaignSkipReason,
+  withCampaignMembership,
+} from '@/lib/campaign-capture'
+import { loadCampaignRoster } from '@/lib/campaign-roster'
+import { isBrandAccount } from '@/lib/campaign-targets'
+import { daysSincePosted, storiesLastResultFor } from '@/lib/stories-notices'
 import { countedElsewhereMessage, decideLateWindow, decideManualLate, outsideWindowMessage } from '@/lib/assignment-rules'
 import type { LateDecision } from '@/lib/assignment-rules'
 import { parseInstagramStoryUrl } from '@/lib/story-url'
-import type { Prisma } from '@/generated/prisma/client'
+import type { Platform, Prisma } from '@/generated/prisma/client'
 
 function normalizeHandle(s: string): string {
   return s.toLowerCase().replace(/^@/, '').trim()
+}
+
+/**
+ * Every 400/409 of «Registrar Story» is written to the server log, so the
+ * Monday review can see what the PMs tried without a new table
+ * (`[manual-refusal]`, Railway). Nothing personal beyond the public username
+ * in the message and the link pasted: never the figures typed.
+ */
+function logRefusal(details: { campaignId: string; influencerId: string | null; status: number; code: string; reason: string; url: string | null }): void {
+  console.warn('[manual-refusal]', JSON.stringify({ route: 'stories', ...details }))
 }
 
 /** Largest figure a story count may carry (the columns are 32-bit integers). */
@@ -100,29 +122,82 @@ export async function GET(
 
     const { id } = await params
 
-    // Get all stories for this campaign
-    const stories = await prisma.media.findMany({
-      where: {
-        campaignId: id,
-        mediaType: 'STORY',
-      },
-      include: {
-        influencer: {
-          select: {
-            id: true,
-            username: true,
-            displayName: true,
-            avatarUrl: true,
-            platform: true,
+    // The campaign's stories, and what the automatic scan does with the
+    // campaign (the `scan` block below), read together
+    const [stories, campaign, scanSettings] = await Promise.all([
+      prisma.media.findMany({
+        where: {
+          campaignId: id,
+          mediaType: 'STORY',
+        },
+        include: {
+          influencer: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              avatarUrl: true,
+              platform: true,
+            },
           },
         },
-      },
-      orderBy: { postedAt: 'desc' },
-    })
+        orderBy: { postedAt: 'desc' },
+      }),
+      prisma.campaign.findUnique({
+        where: { id },
+        select: {
+          type: true,
+          status: true,
+          startDate: true,
+          endDate: true,
+          targetAccounts: true,
+          targetHashtags: true,
+          targetKeywords: true,
+          influencers: { select: { status: true, influencer: { select: { platform: true } } } },
+        },
+      }),
+      prisma.setting.findMany({
+        where: { key: { in: ['cron_stories_last_run', 'cron_stories_last_result'] } },
+        select: { key: true, value: true },
+      }),
+    ])
 
     // Calculate story stats
     const now = new Date()
     const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+
+    // SCAN BLOCK (16 Nov 2026): why the stories cron does or does not read this
+    // campaign today, with the same rule the cron applies
+    // (storiesCampaignSkipReason), how many of its Instagram creators it would
+    // read (STORY_SCAN_STATUSES), and what the last run did with it. The tab
+    // used to show nothing: a campaign without brand targets or with every
+    // creator in Prospecto looked like a scan that found no stories.
+    const settingOf = (key: string) => scanSettings.find(s => s.key === key)?.value ?? null
+    const lastRunRaw = settingOf('cron_stories_last_run')
+    const lastRunAt = lastRunRaw && Number.isFinite(Date.parse(lastRunRaw)) ? new Date(Date.parse(lastRunRaw)).toISOString() : null
+    const lastResultForCampaign = storiesLastResultFor(settingOf('cron_stories_last_result'), id)
+    const instagramMembers = campaign ? campaign.influencers.filter(ci => ci.influencer.platform === 'INSTAGRAM') : []
+    const scanStatuses: readonly string[] = STORY_SCAN_STATUSES
+    const scan = campaign
+      ? {
+          // A paused or archived campaign is read by no cron, whatever its
+          // dates or targets say: 'inactive' (18 Nov 2026). The cron's own
+          // reasons apply to an ACTIVE campaign only.
+          reason: campaign.status === 'ACTIVE' ? storiesCampaignSkipReason(campaign, now) : ('inactive' as const),
+          /** The campaign has an end date: a 'too_long' then means "shorten it", not "set one" */
+          hasEndDate: campaign.endDate !== null,
+          /** Instagram creators in Acordado or later: the ones the cron reads today */
+          confirmedCreators: instagramMembers.filter(ci => scanStatuses.includes(ci.status)).length,
+          /** All the Instagram creators of the campaign (the N of «0 de N») */
+          instagramCreators: instagramMembers.length,
+          /** Creators read for this campaign in the last run; null when that run did not list it */
+          scannedCreators: lastResultForCampaign?.scanned ? lastResultForCampaign.creators : null,
+          lastRunAt,
+          lastResultForCampaign,
+          /** Longest campaign the scan accepts (STORIES_MAX_CAMPAIGN_DAYS), for the «pon una fecha de fin» hint */
+          maxCampaignDays: STORIES_MAX_CAMPAIGN_DAYS,
+        }
+      : null
 
     const activeStories = stories.filter(
       (s) => s.postedAt && new Date(s.postedAt) > twentyFourHoursAgo
@@ -163,26 +238,34 @@ export async function GET(
       group.totalReach += story.reach
     }
 
+    // isActive / expiresAt: the story is still live on Instagram (24 h).
+    // daysSincePosted: what the tab shows afterwards («Publicada hace N días»);
+    // the row never expires in the report.
+    const withLife = (s: (typeof stories)[number]) => ({
+      ...s,
+      isActive: s.postedAt ? new Date(s.postedAt) > twentyFourHoursAgo : false,
+      expiresAt: s.postedAt
+        ? new Date(new Date(s.postedAt).getTime() + 24 * 60 * 60 * 1000)
+        : null,
+      daysSincePosted: daysSincePosted(s.postedAt, now),
+    })
+
     return NextResponse.json({
-      stories: stories.map((s) => ({
-        ...s,
-        isActive: s.postedAt ? new Date(s.postedAt) > twentyFourHoursAgo : false,
-        expiresAt: s.postedAt
-          ? new Date(new Date(s.postedAt).getTime() + 24 * 60 * 60 * 1000)
-          : null,
-      })),
-      byInfluencer: Array.from(byInfluencer.values()).sort(
-        (a, b) => b.totalViews - a.totalViews
-      ),
+      stories: stories.map(withLife),
+      byInfluencer: Array.from(byInfluencer.values())
+        .sort((a, b) => b.totalViews - a.totalViews)
+        .map(group => ({ ...group, stories: group.stories.map(withLife) })),
       stats: {
         total: stories.length,
         active: activeStories.length,
+        // Stories no longer live on Instagram (older than 24 h): still counted in the report
         expired: expiredStories.length,
         totalReach,
         totalImpressions,
         totalViews,
         totalReplies,
       },
+      scan,
     })
   } catch (error) {
     console.error('Stories tracking error:', error)
@@ -205,6 +288,14 @@ export async function GET(
 // without a date once the campaign has ended, is refused as always. A story
 // inside the window whose id already counts LATE in another campaign gets the
 // same 409.
+//
+// WHO IT COUNTS FOR (16 Nov 2026): the owner of a story link is resolved with
+// the campaign roster (src/lib/campaign-roster.ts), so a story published from
+// any profile of the creator's person is accepted and credited to her member
+// row with `publishedByInfluencerId` = the profile that published it. The
+// brand's accounts are never credited to a creator (same guard as the manual
+// route). A highlight link is refused unless the PM types the date. Every
+// 400/409 is logged as `[manual-refusal]` for the Monday review.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -237,70 +328,150 @@ export async function POST(
       dedupe,
     } = body
 
+    const rawPermalink = typeof permalink === 'string' ? permalink.trim() : ''
+    /** Answers a 400/409 and leaves its trace in the log ([manual-refusal]); the link is cut at 500 characters like the manual route does */
+    const refuse = (status: number, code: string, body: Record<string, unknown>) => {
+      logRefusal({
+        campaignId: id,
+        influencerId: typeof influencerId === 'string' ? influencerId : null,
+        status,
+        code,
+        reason: typeof body.error === 'string' ? body.error : code,
+        url: rawPermalink ? rawPermalink.slice(0, 500) : null,
+      })
+      return NextResponse.json(body, { status })
+    }
+
     if (!influencerId || typeof influencerId !== 'string') {
-      return NextResponse.json(
-        { error: 'influencerId is required' },
-        { status: 400 }
-      )
+      return refuse(400, 'invalid_input', { error: 'influencerId is required' })
     }
 
     // Counts typed by the PM (empty/absent → 0). Text or a negative number used
     // to become 0 in silence (12 Nov 2026): now it is a 400.
     const counts = [views, reach, impressions, replies].map(parseStoryCount)
     if (counts.some((c) => c === undefined)) {
-      return NextResponse.json(
-        { error: `Las cifras de la story (vistas, alcance, impresiones, respuestas) deben ser números entre 0 y ${STORY_COUNT_MAX}.` },
-        { status: 400 }
-      )
+      return refuse(400, 'invalid_input', {
+        error: `Las cifras de la story (vistas, alcance, impresiones, respuestas) deben ser números entre 0 y ${STORY_COUNT_MAX}.`,
+      })
     }
     const cleanMentions = parseStringList(mentions)
     const cleanHashtags = parseStringList(hashtags)
     if (cleanMentions === undefined || cleanHashtags === undefined) {
-      return NextResponse.json(
-        { error: `mentions y hashtags deben ser listas de como mucho ${STORY_LIST_MAX} textos cortos.` },
-        { status: 400 }
-      )
+      return refuse(400, 'invalid_input', {
+        error: `mentions y hashtags deben ser listas de como mucho ${STORY_LIST_MAX} textos cortos.`,
+      })
     }
     const cleanMediaUrl = parseOptionalHttpUrl(mediaUrl)
     const cleanThumbnailUrl = parseOptionalHttpUrl(thumbnailUrl)
     if (cleanMediaUrl === undefined || cleanThumbnailUrl === undefined) {
-      return NextResponse.json(
-        { error: 'mediaUrl y thumbnailUrl deben ser direcciones http(s) completas.' },
-        { status: 400 }
-      )
+      return refuse(400, 'invalid_input', { error: 'mediaUrl y thumbnailUrl deben ser direcciones http(s) completas.' })
     }
 
     // Rule (1): the creator must be a member of this campaign
     const ci = await prisma.campaignInfluencer.findFirst({
       where: { campaignId: id, influencerId },
       include: {
-        influencer: { select: { platform: true, username: true } },
-        campaign: { select: { name: true, type: true, status: true, startDate: true, endDate: true } },
+        influencer: { select: { platform: true, username: true, personId: true } },
+        campaign: { select: { name: true, type: true, status: true, startDate: true, endDate: true, targetAccounts: true } },
       },
     })
 
     if (!ci) {
-      return NextResponse.json(
-        { error: 'Influencer not in this campaign' },
-        { status: 400 }
-      )
+      return refuse(400, 'not_member', { error: 'Influencer not in this campaign' })
     }
 
     // An Instagram story link (instagram.com/stories/{user}/{id}/) names its
     // owner and encodes its publication time in the id: use both. The link is
     // optional, so anything that is not a story URL is stored as pasted.
-    const rawPermalink = typeof permalink === 'string' ? permalink.trim() : ''
     const parsedStory = rawPermalink ? parseInstagramStoryUrl(rawPermalink) : null
-    if (parsedStory && !parsedStory.isHighlight && parsedStory.username) {
-      const linkOwner = normalizeHandle(parsedStory.username)
-      const member = normalizeHandle(ci.influencer.username)
-      if (linkOwner !== member) {
-        return NextResponse.json(
-          { error: `El enlace es de @${linkOwner}, no de @${member}.`, ownerUsername: linkOwner },
-          { status: 400 }
-        )
+    const typedPostedAt = postedAt !== undefined && postedAt !== null && postedAt !== ''
+
+    // A link that is not a story URL is stored as pasted, so it must at least
+    // be an http(s) URL of at most 2000 characters, like mediaUrl and
+    // thumbnailUrl (18 Nov 2026: 'javascript:…' and a 20 kB string were stored
+    // and rendered as <a href>). A link typed without its scheme gets https://.
+    let storedPermalink: string | null = parsedStory ? parsedStory.canonicalUrl : null
+    if (!parsedStory && rawPermalink) {
+      const asTyped = parseOptionalHttpUrl(rawPermalink)
+      const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(rawPermalink)
+      const withScheme = asTyped === undefined && !hasScheme ? parseOptionalHttpUrl(`https://${rawPermalink}`) : undefined
+      const clean = asTyped ?? withScheme
+      if (!clean) {
+        return refuse(400, 'invalid_input', {
+          error: 'El enlace de la story tiene que ser una dirección web (http o https) de como mucho 2000 caracteres.',
+        })
       }
+      storedPermalink = clean
     }
+
+    // A HIGHLIGHT (instagram.com/stories/highlights/{id}/) is a saved reel of
+    // stories: its id is not a story id, it carries no date and the link names
+    // no owner. Until 16 Nov 2026 it was stored dated "now". Same rule as
+    // «Añadir publicación por URL» now: refused, unless the PM types the
+    // publication date, in which case it is stored as a hand-added story with
+    // that date (source 'manual', no story id to de-duplicate by).
+    if (parsedStory?.isHighlight && !typedPostedAt) {
+      return refuse(400, 'highlight_needs_date', {
+        error: 'Los destacados (highlights) no son stories con fecha: registra la story original o indica la "Fecha de publicación" para guardarlo con esa fecha.',
+        needsPostedAt: true,
+      })
+    }
+
+    // WHO IT COUNTS FOR (Nov 2026: a creator is a person with several
+    // profiles). The owner of the link is resolved with the campaign roster, as
+    // «Añadir publicación por URL» does: a story published from another profile
+    // of the same person is accepted, credited to her member row and remembers
+    // the profile that published it (publishedByInfluencerId). The old check
+    // compared the link's @user with the member's username alone, so the story
+    // of a creator's second account was refused as «de otra creadora».
+    /** The member row the story is credited to: the one picked, unless the roster names another row of the same person */
+    let credited = { influencerId, username: ci.influencer.username, platform: ci.influencer.platform as Platform }
+    /** The profile that published it, when it is not the credited member's own */
+    let publishedByInfluencerId: string | null = null
+    const linkStory = parsedStory && !parsedStory.isHighlight ? parsedStory : null
+    if (linkStory?.username) {
+      const linkOwner = normalizeHandle(linkStory.username)
+      const roster = await loadCampaignRoster(id)
+      const credit = roster.creditFor('INSTAGRAM', linkOwner)
+      // The brand's accounts (a "Cuenta de Marca Objetivo", or the Instagram the
+      // brand connected through Meta) are never credited to a creator: every
+      // story of the brand would land in her row. The same guard as the manual
+      // route; the brand's own row, when the brand was added as a creator, keeps
+      // its own stories.
+      const brand = (await loadCampaignBrandAccounts([{ id, targetAccounts: ci.campaign.targetAccounts }])).get(id) ?? { targets: [], own: [] }
+      const brandKind = (handle: string): 'target' | 'own' | null =>
+        isBrandAccount(brand.targets, handle) ? 'target' : isBrandAccount(brand.own, handle) ? 'own' : null
+      const ownerBrandKind = brandKind(linkOwner)
+      if (ownerBrandKind && !credit?.self) {
+        const goesTo = credit?.member.username ?? ci.influencer.username
+        if (!brandKind(goesTo)) {
+          return refuse(400, 'brand_account', {
+            error: ownerBrandKind === 'target'
+              ? `@${linkOwner} es una Cuenta de Marca Objetivo de esta campaña. Su contenido no se guarda en la fila de @${goesTo}.`
+              : `@${linkOwner} es la cuenta de la marca de esta campaña. Su contenido no se guarda en la fila de @${goesTo}.`,
+          })
+        }
+      }
+      const samePerson = !!credit && !!ci.influencer.personId && credit.member.personId === ci.influencer.personId
+      if (!credit || (credit.member.influencerId !== influencerId && !samePerson)) {
+        // Nobody's profile in this campaign, or another creator's: refused only
+        // now that no profile of the person matches, naming the member it counts
+        // for so the form can preselect her
+        const owner = credit ? credit.member.username : linkOwner
+        return refuse(400, 'link_owner', {
+          error: credit && !credit.self
+            ? `El enlace es de @${linkOwner}, que es un perfil de @${owner}, no de @${ci.influencer.username}.`
+            : `El enlace es de @${owner}, no de @${ci.influencer.username}.`,
+          ownerUsername: owner,
+        })
+      }
+      // Her own row, or another member row of the same person (a legacy double
+      // membership): credited where the roster says, as the manual route does
+      credited = { influencerId: credit.member.influencerId, username: credit.member.username, platform: credit.member.platform }
+      publishedByInfluencerId = credit.self ? null : credit.publisher.influencerId
+    }
+    /** The network of the publication: an Instagram story link is Instagram whatever row it is credited to */
+    const platform: Platform = linkStory ? 'INSTAGRAM' : credited.platform
 
     // Rule (2): dated inside the campaign window. The PM's date wins; a story
     // link supplies the date encoded in its id; otherwise a hand-added story
@@ -316,7 +487,7 @@ export async function POST(
     } else if (postedAt !== undefined && postedAt !== null && postedAt !== '') {
       resolvedPostedAt = new Date(String(postedAt))
       if (Number.isNaN(resolvedPostedAt.getTime())) {
-        return NextResponse.json({ error: 'postedAt no es una fecha válida' }, { status: 400 })
+        return refuse(400, 'invalid_input', { error: 'postedAt no es una fecha válida' })
       }
       dateSource = 'body'
     } else {
@@ -333,18 +504,15 @@ export async function POST(
       const fmt = (d: Date) => d.toISOString().slice(0, 10)
       const span = `${fmt(ci.campaign.startDate)} – ${ci.campaign.endDate ? fmt(ci.campaign.endDate) : 'sin fecha de fin'}`
       if (dateSource === 'now' || window.ok || window.code === 'before_start') {
-        return NextResponse.json(
-          {
-            error: dateSource === 'now'
-              ? `La campaña ya terminó (${span}): indica la fecha de publicación de la story.`
-              : outsideWindowMessage(ci.campaign, resolvedPostedAt, wording),
-            needsPostedAt: dateSource === 'now',
-            postedAt: resolvedPostedAt.toISOString(),
-          },
-          { status: 400 }
-        )
+        return refuse(400, dateSource === 'now' ? 'needs_posted_at' : 'outside_window', {
+          error: dateSource === 'now'
+            ? `La campaña ya terminó (${span}): indica la fecha de publicación de la story.`
+            : outsideWindowMessage(ci.campaign, resolvedPostedAt, wording),
+          needsPostedAt: dateSource === 'now',
+          postedAt: resolvedPostedAt.toISOString(),
+        })
       }
-      return NextResponse.json(lateRefusalBody(window, resolvedPostedAt), { status: 400 })
+      return refuse(400, window.code, lateRefusalBody(window, resolvedPostedAt))
     }
     /** Days after the end of the campaign; null = inside the window */
     const lateDays = window.lateDays
@@ -352,13 +520,13 @@ export async function POST(
     // Counts (validated above). A story has no likes; the "replies" field lands in `comments`.
     const [nViews, nReach, nImpressions, nReplies] = counts as number[]
 
-    const linkStory = parsedStory && !parsedStory.isHighlight ? parsedStory : null
     const storyId = linkStory?.storyId ?? null
-    const canonicalPermalink = linkStory ? linkStory.canonicalUrl : (rawPermalink || null)
+    // A story link or a highlight link is stored clean; anything else as the http(s) URL checked above
+    const canonicalPermalink = storedPermalink
 
     /** A late story counts in ONE campaign: the rows of the same story (by its id) in other campaigns */
     const storyElsewhere = (db: Prisma.TransactionClient | typeof prisma = prisma) =>
-      storyId ? findPostCopiesInOtherCampaigns({ platform: ci.influencer.platform, externalIds: [storyId] }, id, db) : Promise.resolve([])
+      storyId ? findPostCopiesInOtherCampaigns({ platform, externalIds: [storyId] }, id, db) : Promise.resolve([])
     const countedElsewhere = (copy: { campaign: { id: string; name: string } }, lateThere = false) => ({
       code: 'counted_elsewhere',
       error: countedElsewhereMessage(copy.campaign.name, { subject: 'story', lateThere }),
@@ -367,11 +535,11 @@ export async function POST(
     // Inside the window as always, unless the same story already counts LATE in
     // another campaign: a late piece counts in one campaign only
     if (lateDays === null && storyId) {
-      const lateThere = await findLateCopyElsewhere({ platform: ci.influencer.platform, externalIds: [storyId] }, id)
+      const lateThere = await findLateCopyElsewhere({ platform, externalIds: [storyId] }, id)
       const ownRow = lateThere
-        ? await prisma.media.findFirst({ where: { campaignId: id, platform: ci.influencer.platform, externalId: storyId }, select: { id: true } })
+        ? await prisma.media.findFirst({ where: { campaignId: id, platform, externalId: storyId }, select: { id: true } })
         : null
-      if (lateThere && !ownRow) return NextResponse.json(countedElsewhere(lateThere, true), { status: 409 })
+      if (lateThere && !ownRow) return refuse(409, 'counted_elsewhere', countedElsewhere(lateThere, true))
     }
 
     // Without a story id nothing below de-duplicates, so a retry (a client that
@@ -388,7 +556,7 @@ export async function POST(
       const twin = await prisma.media.findFirst({
         where: {
           campaignId: id,
-          influencerId,
+          influencerId: credited.influencerId,
           mediaType: 'STORY',
           externalId: null,
           permalink: canonicalPermalink,
@@ -401,14 +569,11 @@ export async function POST(
         select: { id: true },
       })
       if (twin) {
-        return NextResponse.json(
-          {
-            error: 'Esta story ya está registrada (misma creadora, misma fecha y mismas cifras). Si es otra story, indica su enlace o su hora exacta.',
-            duplicate: true,
-            storyId: twin.id,
-          },
-          { status: 409 }
-        )
+        return refuse(409, 'duplicate', {
+          error: 'Esta story ya está registrada (misma creadora, misma fecha y mismas cifras). Si es otra story, indica su enlace o su hora exacta.',
+          duplicate: true,
+          storyId: twin.id,
+        })
       }
     }
 
@@ -421,7 +586,7 @@ export async function POST(
       ? await prisma.media.findFirst({
           where: {
             campaignId: id,
-            platform: ci.influencer.platform,
+            platform,
             mediaType: 'STORY',
             OR: [{ externalId: storyId }, { permalink: { contains: `/${storyId}` } }],
           },
@@ -430,11 +595,8 @@ export async function POST(
       : null
 
     if (existing) {
-      if (existing.influencerId !== influencerId) {
-        return NextResponse.json(
-          { error: 'Esta story ya está registrada para otro creador.' },
-          { status: 409 }
-        )
+      if (existing.influencerId !== credited.influencerId) {
+        return refuse(409, 'other_creator', { error: 'Esta story ya está registrada para otro creador.' })
       }
       // A typed count > 0 wins; an empty field never wipes what we already had.
       // The date is only replaced when the PM typed it or the link encodes it.
@@ -448,6 +610,8 @@ export async function POST(
           ...(dateSource !== 'now' && { postedAt: resolvedPostedAt }),
           ...(!existing.externalId && { externalId: storyId }),
           ...(!existing.permalink && { permalink: canonicalPermalink }),
+          // Who published it, when the row did not know (stored before the roster existed)
+          ...(publishedByInfluencerId && !existing.publishedByInfluencerId && { publishedByInfluencerId }),
           // Mark as manual so revalidation keeps it, but never downgrade a Meta
           // Graph API row (real reach/impressions) to 'manual'.
           ...(existing.source !== 'meta_api' && { source: 'manual' }),
@@ -462,7 +626,7 @@ export async function POST(
     // detaching a hand-added story that carries no mentions/hashtags.
     const data = {
       externalId: storyId,
-      platform: ci.influencer.platform,
+      platform,
       mediaType: 'STORY' as const,
       permalink: canonicalPermalink,
       mediaUrl: cleanMediaUrl,
@@ -476,7 +640,9 @@ export async function POST(
       hashtags: cleanHashtags,
       source: 'manual',
       dataSource: 'manual',
-      influencerId,
+      // Credited to the member; published by another profile of hers when the link says so
+      influencerId: credited.influencerId,
+      publishedByInfluencerId,
       campaignId: id,
     }
     let story
@@ -487,27 +653,28 @@ export async function POST(
         // A late story: the same story in another campaign, and whether she still
         // owes a piece, are read inside her membership lock (held exclusively), so
         // two late stories for a creator who owes one cannot both be stored.
-        story = await withCampaignMembership(id, influencerId, async tx => {
+        story = await withCampaignMembership(id, credited.influencerId, async tx => {
           // Two late adds of this story to two campaigns at once wait for each other here
-          await lockPostForCampaignChoice(tx, ci.influencer.platform, storyId)
+          await lockPostForCampaignChoice(tx, platform, storyId)
           const elsewhere = await storyElsewhere(tx)
           if (elsewhere.length > 0) throw new LateStoryRefused(409, countedElsewhere(elsewhere[0]))
-          const decision = await decideForCreator(tx, id, influencerId, ci.influencer.username, ci.campaign, resolvedPostedAt)
+          const decision = await decideForCreator(tx, id, credited.influencerId, credited.username, ci.campaign, resolvedPostedAt)
           if (!decision.ok) throw new LateStoryRefused(400, lateRefusalBody(decision, resolvedPostedAt))
           return tx.media.create({ data })
         }, { exclusive: true })
         if (story === null) {
-          return NextResponse.json(
-            { error: `@${ci.influencer.username} ya no está en esta campaña. Recarga la página y vuelve a registrar la story.` },
-            { status: 409 }
-          )
+          return refuse(409, 'not_member_anymore', {
+            error: `@${credited.username} ya no está en esta campaña. Recarga la página y vuelve a registrar la story.`,
+          })
         }
       }
     } catch (err) {
-      if (err instanceof LateStoryRefused) return NextResponse.json(err.body, { status: err.status })
+      if (err instanceof LateStoryRefused) {
+        return refuse(err.status, typeof err.body.code === 'string' ? err.body.code : 'late_refused', err.body)
+      }
       // Concurrent "Registrar Story" for the same link → unique (externalId, platform, campaignId)
       if ((err as { code?: string })?.code === 'P2002') {
-        return NextResponse.json({ error: 'Esta story ya está registrada.' }, { status: 409 })
+        return refuse(409, 'duplicate', { error: 'Esta story ya está registrada.' })
       }
       throw err
     }

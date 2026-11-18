@@ -506,6 +506,18 @@ describe('create_campaign', () => {
     expect(answer.text).toContain('Los hashtags objetivo deben identificar a la marca')
   })
 
+  it('relays the platform refusal of a product word typed as a brand account (review of 16 Nov 2026)', async () => {
+    const posts = callsTo('POST', '/api/campaigns')
+    const answer = await asAda(createCampaign, { ...base, brandId: fx.brandId, objective: 'engagement', targetViews: 1000, targetAccounts: ['zentolia.es', 'turbo'] })
+    expect(answer.isError).toBe(true)
+    expect(answer.text).toContain('La plataforma ha respondido 400')
+    expect(answer.text).toContain('Las Cuentas de Marca Objetivo son cuentas reales de la marca')
+    expect(answer.text).toContain('Cuentas a revisar: @turbo.')
+    expect(answer.text).toContain('Palabras clave del producto')
+    expect(callsTo('POST', '/api/campaigns')).toBe(posts + 1)
+    expect(await prisma.campaign.count({ where: { name: 'Zentolia Navidad' } })).toBe(0)
+  })
+
   it('creates an ACTIVE campaign attached to the brand, says that capture starts, and keeps the CPM out unless asked', async () => {
     const answer = await asAda(createCampaign, {
       ...base,
@@ -654,6 +666,14 @@ describe('set_campaign_tracking_targets', () => {
     const answer = await asAda(setCampaignTrackingTargets, { campaignId: fx.main, targetAccounts: ['zentolia.es', `marta_${tag}`] })
     expect(answer.isError).toBe(true)
     expect(answer.text).toContain('Las Cuentas de Marca Objetivo son las cuentas de la MARCA')
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id: fx.main } })).targetAccounts).toEqual(['zentolia.es'])
+  })
+
+  it("relays the platform refusal of an account that does not carry the brand's name, and the stored list stays", async () => {
+    const answer = await asAda(setCampaignTrackingTargets, { campaignId: fx.main, targetAccounts: ['zentolia.es', 'infinityflex'] })
+    expect(answer.isError).toBe(true)
+    expect(answer.text).toContain('deben llevar el nombre de la marca de la campaña')
+    expect(answer.text).toContain('Cuentas a revisar: @infinityflex.')
     expect((await prisma.campaign.findUniqueOrThrow({ where: { id: fx.main } })).targetAccounts).toEqual(['zentolia.es'])
   })
 

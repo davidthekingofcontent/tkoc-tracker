@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
+import { acquireCronLock, cronGate, cronInFlight, cronLockHeldSince, cronSkipped, markCronRun, releaseCronLock, renewCronLock, type CronLock } from '@/lib/cron-throttle'
 import { campaignHasTargets, mediaMatchesCampaignRules, scrapedPostToRuleItem, upsertCampaignPost } from '@/lib/campaign-capture'
+import { CAMPAIGN_ENDED_GRACE_DAYS, campaignEndedForCrons, type SkippedCampaign } from '@/lib/campaign-ended'
 import { loadCampaignRoster } from '@/lib/campaign-roster'
 import { checkApifyAuth, isApifyConfiguredAsync, isApifyExhausted, isApifyOverCoreReserve } from '@/lib/apify'
 import { refreshMaturingViews, type EnrichSummary } from '@/lib/media-enrich'
@@ -19,6 +20,13 @@ const AD_MARKERS = [
   'colaboración pagada', 'colaboracion pagada',
 ]
 
+/**
+ * The in-flight lock is renewed every this many creators read: a run longer
+ * than CRON_LOCK_TTL_MS (16 Nov 2026: 37 min for 175 creators; more creators
+ * or a slow Apify passes the hour) must not look dead to the next caller.
+ */
+const LOCK_HEARTBEAT_EVERY = 10
+
 function hasAdDisclosure(caption: string | null): boolean {
   if (!caption) return false
   const lower = caption.toLowerCase()
@@ -30,8 +38,19 @@ function hasAdDisclosure(caption: string | null): boolean {
  * Compares scraped posts against existing media in DB.
  * When new posts are detected, saves them and sends notifications.
  *
- * Should be called every 6-12 hours via an external cron service.
- * GET /api/cron/check-posts (with header x-cron-secret)
+ * The scheduler ticks every 12 h; the route's own gate lets one run a day
+ * through (posts do not expire). GET /api/cron/check-posts (header x-cron-secret).
+ *
+ * 16 Nov 2026: the stamp is written when the run STARTS (as stories does) and
+ * an in-flight lock refuses a second call while a run is working (on 15 Nov
+ * two requests of the same tick ran the whole cron in parallel: 75 creators
+ * read twice). A run that fails before reading any creator puts the previous
+ * stamp back so the next tick retries. Per-creator progress still lives in
+ * Setting checkposts_checked, so a run killed by a redeploy resumes where it
+ * stopped once the gate opens again. Campaigns that ended more than
+ * CAMPAIGN_ENDED_GRACE_DAYS ago are not read any more (their creators' new
+ * posts could never be stored): each one is named in the log and in the
+ * summary, never skipped in silence.
  */
 export async function GET(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET
@@ -42,18 +61,23 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // The 24 h stamp is written AFTER the work (finally): stamping first meant a
-  // redeploy mid-run skipped the remaining creators until the next day. It is
-  // only written when the loop finished or at least one creator was checked;
-  // per-creator progress lives in Setting checkposts_checked so a killed run
-  // resumes where it stopped on the next tick.
   let finished = false
   let processed = 0
+  let lock: CronLock | null = null
+  const startedAt = new Date()
   try {
     const force = request.nextUrl.searchParams.get('force') === '1'
     // One profile scrape per confirmed creator of every active campaign: once a day (posts do not expire)
     const gate = await cronGate('check-posts', 24, force)
     if (!gate.allowed) return NextResponse.json(cronSkipped('check-posts', gate))
+
+    // One run at a time, whoever calls (internal scheduler, external curl, a retried GET)
+    lock = await acquireCronLock('check-posts')
+    if (!lock) {
+      const since = await cronLockHeldSince('check-posts')
+      console.log(`[Cron/CheckPosts] Skipped: a run is in flight since ${since ?? 'unknown'}`)
+      return NextResponse.json(cronInFlight('check-posts', since))
+    }
 
     const apifyConfigured = await isApifyConfiguredAsync()
     const youtubeConfigured = isYouTubeApiConfigured()
@@ -68,8 +92,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Apify rejects the token', skipped: 'apify_token', cron: 'check-posts' }, { status: 503 })
     }
 
+    // The pre-flight is over: this is a run. It is NOT stamped yet: the stamp is
+    // written when the run finishes (see finally), so a run that breaks or is
+    // killed half way (a redeploy) leaves no stamp and the next tick retries;
+    // the creators it already read are not read again (memo checkposts_checked).
+    // Meanwhile the lock tells every other caller in_flight.
+
     // Find active campaigns with their influencers
-    const activeCampaigns = await prisma.campaign.findMany({
+    const allActive = await prisma.campaign.findMany({
       where: {
         status: 'ACTIVE',
       },
@@ -87,9 +117,21 @@ export async function GET(request: NextRequest) {
       },
     })
 
+    // A campaign that ended more than CAMPAIGN_ENDED_GRACE_DAYS ago is not read
+    // any more: nothing its creators publish now can be stored in it (rule 2).
+    // Named one by one, in the log and in the summary (never a silent pause).
+    const campaignsSkipped: SkippedCampaign[] = []
+    const activeCampaigns = allActive.filter(c => {
+      if (!campaignEndedForCrons(c, startedAt)) return true
+      campaignsSkipped.push({ id: c.id, name: c.name, reason: 'ended' })
+      console.log(`[Cron/CheckPosts] Campaign "${c.name}" ended on ${c.endDate?.toISOString().slice(0, 10)} (more than ${CAMPAIGN_ENDED_GRACE_DAYS} days ago) — its ${c.influencers.length} confirmed creators are not read for it (reason: ended)`)
+      return false
+    })
+
     if (activeCampaigns.length === 0) {
       finished = true
-      return NextResponse.json({ message: 'No active campaigns', newPosts: 0 })
+      await recordCheckPostsRun({ at: startedAt.toISOString(), campaignsActive: 0, campaignsSkipped, influencersChecked: 0, influencersSkipped: 0, newPosts: 0, errors: 0 })
+      return NextResponse.json({ message: 'No active campaigns', newPosts: 0, campaignsSkipped })
     }
 
     // Build a map of unique influencers to check
@@ -162,6 +204,8 @@ export async function GET(request: NextRequest) {
         processed++
         checkedLog[key] = new Date().toISOString()
         await saveMap(CHECKED_KEY, prune(checkedLog, 7))
+        // Heartbeat of the in-flight lock: this run is alive, whatever the clock says
+        if (processed % LOCK_HEARTBEAT_EVERY === 0) await renewCronLock(lock)
 
         if (!result.profile.recentPosts.length) continue
         const profile = result.profile
@@ -332,20 +376,52 @@ export async function GET(request: NextRequest) {
       ? `[Cron/CheckPosts] Views refresh skipped: ${viewsRefresh.skipped}${viewsRefresh.usedPct != null ? ` (${viewsRefresh.usedPct} % of the Apify plan)` : ''}`
       : `[Cron/CheckPosts] Views refresh: ${viewsRefresh.scanned} read, ${viewsRefresh.updated} updated, ${viewsRefresh.unchanged} unchanged, ${viewsRefresh.failed} failed, ${viewsRefresh.unresolved} unresolved, ${viewsRefresh.pendingAfter} still due (${viewsRefresh.stoppedBy}, ${Math.round(viewsRefresh.durationMs / 1000)} s)`)
 
+    await recordCheckPostsRun({
+      at: startedAt.toISOString(),
+      campaignsActive: activeCampaigns.length,
+      campaignsSkipped,
+      influencersChecked: influencerMap.size,
+      influencersSkipped: alreadyChecked,
+      newPosts: totalNewPosts,
+      errors: errors.length,
+      viewsRefresh,
+      durationMs: Date.now() - startedAt.getTime(),
+    })
+
     return NextResponse.json({
       success: true,
       influencersChecked: influencerMap.size,
       influencersSkipped: alreadyChecked,
       campaignsActive: activeCampaigns.length,
+      campaignsSkipped,
       newPosts: totalNewPosts,
       viewsRefresh,
       errors: errors.length > 0 ? errors : undefined,
     })
   } catch (error) {
     console.error('[Cron/CheckPosts] Error:', error)
+    await recordCheckPostsRun({ at: startedAt.toISOString(), failed: true, error: error instanceof Error ? error.message : String(error), influencersChecked: processed })
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   } finally {
-    if (finished || processed > 0) await markCronRun('check-posts')
+    // Stamped only when the run finished: a run that broke (or was killed)
+    // after reading some creators leaves no stamp, so the next tick resumes
+    // the rest instead of waiting a day (what it read is in checkposts_checked).
+    if (finished) await markCronRun('check-posts')
+    await releaseCronLock(lock)
+  }
+}
+
+/** Last run's figures, readable without Railway logs (Setting cron_check-posts_last_result). Never throws. */
+async function recordCheckPostsRun(summary: Record<string, unknown>): Promise<void> {
+  try {
+    const value = JSON.stringify(summary)
+    await prisma.setting.upsert({
+      where: { key: 'cron_check-posts_last_result' },
+      update: { value },
+      create: { key: 'cron_check-posts_last_result', value },
+    })
+  } catch (err) {
+    console.error('[Cron/CheckPosts] could not record the run summary:', err instanceof Error ? err.message : err)
   }
 }
 

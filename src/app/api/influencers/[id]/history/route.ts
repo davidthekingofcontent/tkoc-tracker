@@ -8,14 +8,83 @@
  *  - EMV ÷ coste se llama "Ratio EMV" (×2,4), nunca ROI (decisión 9B). The
  *    `score.roi` key is kept for the existing widget; `score.ratioEmv` carries
  *    the same value under its right name.
+ *
+ * A creator is a person with several profiles (Nov 2026). Since the review of
+ * 16 Nov 2026 (point 3) the history is the PERSON's, whichever of her profiles
+ * is asked for: the memberships of every linked profile are added up, one row
+ * per campaign, ordered by the campaign's start date (newest first; it used to
+ * be the membership's createdAt, which is not chronological). Reliability is
+ * computed only over the campaigns that were agreed (CLOSED_STATUSES, AGREED
+ * or later): sitting in a pool as PROSPECT neither counts nor penalises. The
+ * rest of the score formula is unchanged.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getSession } from '@/lib/auth'
-import { InfluencerStatus } from '@/generated/prisma/client'
-import { computeCampaignOverview } from '@/lib/campaign-overview'
+import { InfluencerStatus, type Platform } from '@/generated/prisma/client'
+import { CLOSED_STATUSES, computeCampaignOverview } from '@/lib/campaign-overview'
 import { emvRatioOf, memberCost, type CampaignOverview } from '@/lib/metrics'
+
+interface HistoryRow {
+  influencerId: string
+  agreedFee: number | null
+  cost: number | null
+  status: InfluencerStatus
+  createdAt: Date
+  campaign: {
+    id: string
+    name: string
+    type: string
+    startDate: Date | null
+    endDate: Date | null
+  }
+}
+
+/** Pipeline order, used only to pick one row when a person is (legacy data) twice in the same campaign. */
+const STATUS_RANK: Record<InfluencerStatus, number> = {
+  PROSPECT: 0,
+  OUTREACH: 1,
+  NEGOTIATING: 2,
+  AGREED: 3,
+  CONTRACTED: 4,
+  SHIPPING: 5,
+  POSTED: 6,
+  COMPLETED: 7,
+}
+
+/**
+ * One row per campaign. A person is one creator, so two of her profiles in the
+ * same campaign (which the member guard forbids today but older data may hold)
+ * must not show as two collaborations: the row of the profile asked for wins,
+ * else the most advanced status, else the oldest membership.
+ */
+function onePerCampaign(rows: HistoryRow[], requestedId: string): HistoryRow[] {
+  const byCampaign = new Map<string, HistoryRow>()
+  for (const row of rows) {
+    const prev = byCampaign.get(row.campaign.id)
+    if (!prev) {
+      byCampaign.set(row.campaign.id, row)
+      continue
+    }
+    const better =
+      Number(row.influencerId === requestedId) - Number(prev.influencerId === requestedId) ||
+      STATUS_RANK[row.status] - STATUS_RANK[prev.status] ||
+      prev.createdAt.getTime() - row.createdAt.getTime()
+    if (better > 0) byCampaign.set(row.campaign.id, row)
+  }
+  return Array.from(byCampaign.values())
+}
+
+/** Newest campaign first by start date; campaigns without dates last; ties by the membership's createdAt (newest first). */
+function byStartDateDesc(a: HistoryRow, b: HistoryRow): number {
+  const as = a.campaign.startDate?.getTime() ?? null
+  const bs = b.campaign.startDate?.getTime() ?? null
+  if (as === null && bs === null) return b.createdAt.getTime() - a.createdAt.getTime()
+  if (as === null) return 1
+  if (bs === null) return -1
+  return bs - as || b.createdAt.getTime() - a.createdAt.getTime()
+}
 
 export async function GET(
   request: NextRequest,
@@ -36,6 +105,7 @@ export async function GET(
         id: true,
         username: true,
         platform: true,
+        personId: true,
         engagementRate: true,
         followers: true,
       },
@@ -45,13 +115,28 @@ export async function GET(
       return NextResponse.json({ error: 'Influencer not found' }, { status: 404 })
     }
 
-    // Fetch all campaign participations with campaign details
-    const campaignInfluencers = await prisma.campaignInfluencer.findMany({
-      where: { influencerId: id },
+    // Every profile of the same person (a profile with no person is its own person)
+    const profiles: Array<{ id: string; username: string; platform: Platform }> = influencer.personId
+      ? await prisma.influencer.findMany({
+          where: { personId: influencer.personId },
+          select: { id: true, username: true, platform: true },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        })
+      : [{ id: influencer.id, username: influencer.username, platform: influencer.platform }]
+    if (!profiles.some(p => p.id === influencer.id)) {
+      profiles.unshift({ id: influencer.id, username: influencer.username, platform: influencer.platform })
+    }
+    const profileById = new Map(profiles.map(p => [p.id, p]))
+
+    // Fetch all campaign participations of the person, with campaign details
+    const memberships: HistoryRow[] = await prisma.campaignInfluencer.findMany({
+      where: { influencerId: { in: profiles.map(p => p.id) } },
       select: {
+        influencerId: true,
         agreedFee: true,
         cost: true,
         status: true,
+        createdAt: true,
         campaign: {
           select: {
             id: true,
@@ -62,8 +147,8 @@ export async function GET(
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
     })
+    const campaignInfluencers = onePerCampaign(memberships, id).sort(byStartDateDesc)
 
     // ONE overview per campaign (cached within this request), computed in parallel.
     const overviewCache = new Map<string, Promise<CampaignOverview | null>>()
@@ -82,13 +167,19 @@ export async function GET(
 
     // Build price history
     const priceHistory = campaignInfluencers.map((ci, i) => {
-      const mine = overviews[i]?.perInfluencer.find(p => p.influencerId === id) ?? null
+      // The row of the MEMBER profile: the overview already credits to it what her other profiles published
+      const mine = overviews[i]?.perInfluencer.find(p => p.influencerId === ci.influencerId) ?? null
       const cost = memberCost(ci)
       const emvExtended = mine?.emvExtended ?? 0
+      const profile = profileById.get(ci.influencerId)
       return {
         campaignId: ci.campaign.id,
         campaignName: ci.campaign.name,
         campaignType: ci.campaign.type,
+        /** The profile of the person that holds this membership (Instagram, TikTok...). */
+        profile: profile
+          ? { id: profile.id, username: profile.username, platform: profile.platform }
+          : { id: ci.influencerId, username: influencer.username, platform: influencer.platform },
         agreedFee: ci.agreedFee,
         cost: ci.cost,
         /** Fee acordado; si no hay, coste (decisión 6). */
@@ -120,16 +211,18 @@ export async function GET(
     // Typical good ER is 3-6%, exceptional is 10%+
     const engagementScore = Math.min(100, (influencer.engagementRate / 6) * 100)
 
-    // Delivery reliability: % of campaigns reaching POSTED or COMPLETED
+    // Delivery reliability: % of AGREED campaigns (CLOSED_STATUSES) reaching POSTED or COMPLETED.
+    // A PROSPECT/OUTREACH/NEGOTIATING row (a pool, a creator never confirmed) is not in the denominator.
     const deliveredStatuses: InfluencerStatus[] = [
       InfluencerStatus.POSTED,
       InfluencerStatus.COMPLETED,
     ]
-    const deliveredCount = campaignInfluencers.filter((ci) =>
+    const closedRows = campaignInfluencers.filter((ci) => CLOSED_STATUSES.has(ci.status))
+    const deliveredCount = closedRows.filter((ci) =>
       deliveredStatuses.includes(ci.status)
     ).length
     const reliabilityScore =
-      totalCampaigns > 0 ? (deliveredCount / totalCampaigns) * 100 : 0
+      closedRows.length > 0 ? (deliveredCount / closedRows.length) * 100 : 0
 
     // Ratio EMV: total EMV (extended) vs total cost (fee acordado o coste)
     const totalEmvExtended = Math.round(priceHistory.reduce((sum, h) => sum + h.emvExtended, 0) * 100) / 100
@@ -159,6 +252,8 @@ export async function GET(
       total: Math.min(100, Math.max(0, totalScore)),
       engagement: Math.round(engagementScore),
       reliability: Math.round(reliabilityScore),
+      /** What the reliability is computed over: published campaigns among the agreed ones (0/0 = no agreed campaign yet). */
+      reliabilityBasis: { delivered: deliveredCount, closed: closedRows.length },
       /** Ratio EMV score (kept under its old key for the widget). */
       roi: Math.round(ratioEmvScore),
       ratioEmv: Math.round(ratioEmvScore),
@@ -169,6 +264,8 @@ export async function GET(
       influencerId: influencer.id,
       username: influencer.username,
       platform: influencer.platform,
+      /** Every profile of the person whose history this is (the one asked for included). */
+      profiles,
       totalCampaigns,
       priceHistory,
       totals: {

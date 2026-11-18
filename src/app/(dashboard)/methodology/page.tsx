@@ -518,6 +518,21 @@ export default function MethodologyPage() {
                 ]
           }
         />
+
+        <H3>
+          <Shield className="h-4 w-4 text-purple-600" />
+          {es ? "Historial y fiabilidad de la creadora" : "Creator history and reliability"}
+        </H3>
+        <P>
+          {es
+            ? "El boton Historial de la pestaña Elegir muestra todas las campañas de la persona, sumando sus perfiles vinculados (Instagram, TikTok, YouTube), de la mas reciente a la mas antigua por fecha de inicio y con el mes de cada una. En cada fila: el fee acordado (si no hay, el coste), el estado del pipeline, el EMV de esa campaña y el Ratio EMV (EMV dividido por el coste)."
+            : "The History button in the Choose tab shows every campaign of the person, adding up her linked profiles (Instagram, TikTok, YouTube), newest first by start date and with the month of each one. Each row: the agreed fee (the cost when there is none), the pipeline status, the EMV of that campaign and the EMV ratio (EMV divided by cost)."}
+        </P>
+        <P>
+          {es
+            ? "La fiabilidad es el porcentaje de campañas publicadas (Publicado o Completado) entre las campañas acordadas (Acordado, Contratado, Envio, Publicado o Completado). Estar en Prospecto, Contacto o Negociando no cuenta ni penaliza: un pool de seleccion no baja la puntuacion de nadie. Sin ninguna campaña acordada, la fiabilidad se muestra como 0 de 0."
+            : "Reliability is the percentage of published campaigns (Posted or Completed) among the agreed ones (Agreed, Contracted, Shipping, Posted or Completed). Being in Prospect, Outreach or Negotiating neither counts nor penalises: a selection pool lowers nobody's score. With no agreed campaign, reliability shows as 0 of 0."}
+        </P>
       </Section>
 
       {/* ─── Section 3: How Much to Pay ───────────────────────── */}

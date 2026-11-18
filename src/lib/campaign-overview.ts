@@ -123,7 +123,8 @@ const MEDIA_SELECT = {
   source: true, externalId: true,
 } as const
 
-const CLOSED_STATUSES = new Set(['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'])
+/** Memberships that were agreed (AGREED or later): the denominators of «Prometido vs entregado» and of the creator's reliability in her history. */
+export const CLOSED_STATUSES = new Set(['AGREED', 'CONTRACTED', 'SHIPPING', 'POSTED', 'COMPLETED'])
 
 /**
  * The OTHER profile that published a piece, or null when the credited member

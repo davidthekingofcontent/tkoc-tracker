@@ -337,10 +337,11 @@ async function resolveStories(args: { campaignId: string; stories: StoryInput[] 
     if (s.permalink) {
       const story = parseInstagramStoryUrl(s.permalink)
       if (!story) problems.push(`${n}: ${echo(s.permalink, 80)} no es un enlace de story de Instagram (instagram.com/stories/usuario/…)`)
-      else if (story.isHighlight) problems.push(`${n}: es un destacado, no una story con fecha`)
-      else if (story.username && story.username.toLowerCase() !== member.username.toLowerCase()) {
-        problems.push(`${n}: el enlace es de ${at(story.username)}, no de ${at(member.username)}`)
-      } else return { member, postedAt: story.postedAtHint ?? (s.postedAt ? new Date(s.postedAt) : null), fromLink: true }
+      // A highlight carries no date: the platform stores it only with a typed postedAt (16 Nov 2026)
+      else if (story.isHighlight && !s.postedAt) problems.push(`${n}: es un destacado, no una story con fecha; indica postedAt para registrarlo con esa fecha`)
+      // Whose story the link is (her own profile, another profile of hers, somebody else's, the
+      // brand's) is decided by the platform with the campaign roster: a refusal comes back per story
+      else return { member, postedAt: story.postedAtHint ?? (s.postedAt ? new Date(s.postedAt) : null), fromLink: true }
       return { member, postedAt: null, fromLink: true }
     }
     if (!s.postedAt) problems.push(`${n}: sin enlace de la story hace falta postedAt (fecha y hora de publicación)`)
@@ -387,14 +388,15 @@ export const registerStories = defineWriteTool({
     "Registers Instagram stories by hand for creators of a campaign with the figures from the creator's statistics (views, reach, impressions, replies), or updates the figures of a story already registered with the same story link. " +
     "Free: nothing is scraped. Use for 'registra la story de @x con 1.200 vistas'. Prefer the story link (instagram.com/stories/<user>/<id>/): it identifies the story and carries its exact time. " +
     'WITHOUT a link the platform creates a new row on every call, so postedAt is required, a story identical to one already registered for that creator (same time and figures) is refused unless allowDuplicate is true, and you must never retry. ' +
-    'Counts at once in the campaign totals, the report and the portal. It does NOT upload images and does not accept highlights.',
+    "A creator is ONE person with several profiles: the link may be from any Instagram profile of hers and the story is credited to her row; a link of somebody else's profile or of a brand account comes back as result 'refused' with the platform's Spanish reason. " +
+    'Counts at once in the campaign totals, the report and the portal. It does NOT upload images; a highlight (instagram.com/stories/highlights/…) is accepted only with postedAt, since it carries no date.',
   input: {
     campaignId: idInput('The campaign id.'),
     stories: z
       .array(
         z.object({
           influencerId: idInput('The creator, an Instagram member of the campaign.'),
-          permalink: z.string().trim().min(10).max(300).optional().describe('The story link of that creator: instagram.com/stories/<user>/<id>/.'),
+          permalink: z.string().trim().min(10).max(300).optional().describe('The story link, from any Instagram profile of that creator: instagram.com/stories/<user>/<id>/.'),
           views: countInput('Views.').optional(),
           reach: countInput('Reach.').optional(),
           impressions: countInput('Impressions.').optional(),

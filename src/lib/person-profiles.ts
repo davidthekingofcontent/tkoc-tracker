@@ -350,3 +350,61 @@ export async function unlinkProfile(args: {
     return { logId: log.id }
   })
 }
+
+/** What a handle may contain on the three networks (YouTube handles allow a hyphen). */
+const HANDLE_RX = /^[A-Za-z0-9_.\-]{1,64}$/
+
+/**
+ * The handle a PM typed for a profile: "@user", "user" or the profile's URL
+ * (tiktok.com/@user, instagram.com/user, youtube.com/@user). null when it is
+ * none of those. Used by POST /api/influencers/[id]/link-profile.
+ */
+export function parseProfileHandle(platform: string, raw: unknown): string | null {
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (!text) return null
+  let handle = text
+  if (/^(https?:\/\/|www\.)/i.test(text) || text.includes('/')) {
+    const rx = platform === 'TIKTOK'
+      ? /tiktok\.com\/@([A-Za-z0-9_.]+)/i
+      : platform === 'INSTAGRAM'
+        ? /instagram\.com\/([A-Za-z0-9_.]+)/i
+        : /youtube\.com\/@([A-Za-z0-9_.\-]+)/i
+    const hit = text.match(rx)
+    if (!hit) return null
+    handle = hit[1]
+  }
+  handle = handle.replace(/^@+/, '').replace(/\/+$/, '').trim()
+  if (platform === 'INSTAGRAM' && ['p', 'reel', 'reels', 'stories', 'explore'].includes(handle.toLowerCase())) return null
+  return HANDLE_RX.test(handle) ? handle : null
+}
+
+export interface LinkedProfileSummary {
+  id: string
+  username: string
+  platform: Platform
+}
+
+/**
+ * The OTHER profiles of each member's person, keyed by the member's influencer
+ * id (a member without a person, or whose person has no other profile, is not
+ * in the map). What the campaign page needs to know whether a creator already
+ * has a TikTok profile registered before offering «Añadir perfil de TikTok».
+ */
+export async function otherProfilesOfMembers(
+  members: ReadonlyArray<{ id: string; personId: string | null }>
+): Promise<Record<string, LinkedProfileSummary[]>> {
+  const personIds = Array.from(new Set(members.map(m => m.personId).filter((id): id is string => !!id)))
+  if (personIds.length === 0) return {}
+  const profiles = await prisma.influencer.findMany({
+    where: { personId: { in: personIds } },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    select: { id: true, username: true, platform: true, personId: true },
+  })
+  const out: Record<string, LinkedProfileSummary[]> = {}
+  for (const m of members) {
+    if (!m.personId) continue
+    const others = profiles.filter(p => p.personId === m.personId && p.id !== m.id).map(p => ({ id: p.id, username: p.username, platform: p.platform }))
+    if (others.length > 0) out[m.id] = others
+  }
+  return out
+}

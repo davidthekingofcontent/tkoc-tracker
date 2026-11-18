@@ -33,14 +33,53 @@ interface StoryData {
   impressions: number
   comments: number
   postedAt: string | null
+  /** Still live on Instagram (first 24 h) */
   isActive: boolean
   expiresAt: string | null
+  /** Whole days since it was published; what the card says once it is no longer live */
+  daysSincePosted: number | null
   influencer: {
     id: string
     username: string
     displayName: string | null
     avatarUrl: string | null
   }
+}
+
+/**
+ * What the automatic scan does with this campaign (GET …/stories → scan):
+ * why it is not read today, how many creators it would read, and the last run.
+ */
+interface ScanInfo {
+  /** 'inactive' = the campaign is paused or archived: no cron reads it, whatever its dates say */
+  reason: 'window' | 'listening' | 'no_targets' | 'too_long' | 'inactive' | null
+  /** With an end date, 'too_long' means "shorten the campaign"; without one, "set an end date" */
+  hasEndDate: boolean
+  confirmedCreators: number
+  instagramCreators: number
+  scannedCreators: number | null
+  lastRunAt: string | null
+  lastResultForCampaign: { at: string | null; scanned: boolean; creators: number | null; newStories: number | null; reason: string | null } | null
+  maxCampaignDays: number
+}
+
+/** "{n}" placeholders of a translated text */
+function fill(template: string, values: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (whole, name: string) => (name in values ? String(values[name]) : whole))
+}
+
+/** "16/11, 12:04" (Europe/Madrid) of an ISO instant; '' when it cannot be read */
+function formatScanDate(iso: string | null, locale: string): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString(locale === 'es' ? 'es-ES' : 'en-GB', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Europe/Madrid',
+  })
 }
 
 interface InfluencerGroup {
@@ -80,6 +119,8 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
   const [stories, setStories] = useState<StoryData[]>([])
   const [byInfluencer, setByInfluencer] = useState<InfluencerGroup[]>([])
   const [stats, setStats] = useState<Stats | null>(null)
+  // Why the automatic scan does or does not read this campaign (null until loaded, or for an unknown campaign)
+  const [scan, setScan] = useState<ScanInfo | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [showAddForm, setShowAddForm] = useState(false)
   const [addForm, setAddForm] = useState(EMPTY_ADD_FORM)
@@ -129,6 +170,7 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
         setStories(data.stories || [])
         setByInfluencer(data.byInfluencer || [])
         setStats(data.stats || null)
+        setScan(data.scan && typeof data.scan === 'object' ? (data.scan as ScanInfo) : null)
         setNow(Date.now())
       })
       .catch(() => { /* ignore */ })
@@ -198,13 +240,23 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
     }
   }
 
+  /** Time the story has left on Instagram ("3h 12m"); '' once it is no longer live */
   function timeRemaining(expiresAt: string | null) {
     if (!expiresAt) return ''
     const diff = new Date(expiresAt).getTime() - now
-    if (diff <= 0) return locale === 'es' ? 'Expirada' : 'Expired'
+    if (diff <= 0) return ''
     const hours = Math.floor(diff / 3600000)
     const mins = Math.floor((diff % 3600000) / 60000)
     return `${hours}h ${mins}m`
+  }
+
+  /** What the card says about a story that is no longer live: it was published, N days ago (it never expires in the report) */
+  function postedAgo(story: StoryData): string {
+    const days = story.daysSincePosted
+    if (days === null || days === undefined) return t.campaignDetail.storiesNoDate
+    if (days === 0) return t.campaignDetail.storiesPostedToday
+    if (days === 1) return t.campaignDetail.storiesPostedOneDayAgo
+    return fill(t.campaignDetail.storiesPostedDaysAgo, { n: days })
   }
 
   // Amber note while the stories cron is paused by the Apify budget: says until when
@@ -223,6 +275,58 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
     </div>
   ) : null
 
+  // SCAN NOTICE (16 Nov 2026). Persistent, in amber, with the one action that
+  // fixes it: until now the tab said nothing and a campaign without brand
+  // targets, without an end date, or with every creator still in Prospecto
+  // looked like a scan that found no stories.
+  const cd = t.campaignDetail
+  const scanProblem: string | null = scan
+    ? scan.reason === 'no_targets'
+      ? cd.storiesScanNoTargets
+      : scan.reason === 'too_long'
+        ? fill(scan.hasEndDate ? cd.storiesScanTooLong : cd.storiesScanNoEndDate, { max: scan.maxCampaignDays })
+        : scan.reason === 'inactive'
+          ? cd.storiesScanInactive
+        : scan.reason === 'listening'
+          ? cd.storiesScanListening
+          : scan.reason === 'window'
+            ? cd.storiesScanWindow
+            : scan.confirmedCreators === 0 && scan.instagramCreators > 0
+              ? fill(cd.storiesScanNoConfirmed, { n: scan.instagramCreators })
+              : null
+    : null
+  // The last run, for certainty: when it ran, and what it did with THIS campaign
+  const lastRunText = scan
+    ? scan.lastRunAt
+      ? fill(cd.storiesScanLastRun, { date: formatScanDate(scan.lastRunAt, locale) })
+      : cd.storiesScanNever
+    : ''
+  const lastResultText = scan?.lastResultForCampaign?.scanned
+    ? fill(cd.storiesScanLastResult, {
+        creators: scan.lastResultForCampaign.creators ?? 0,
+        new: scan.lastResultForCampaign.newStories ?? 0,
+      })
+    : ''
+  const scanNotice = scan ? (
+    scanProblem ? (
+      <div
+        role="status"
+        data-testid="stories-scan-notice"
+        className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200"
+      >
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+        <div className="space-y-1">
+          <p className="font-medium">{scanProblem}</p>
+          <p className="text-amber-700/80 dark:text-amber-300/80">{lastRunText}</p>
+        </div>
+      </div>
+    ) : scan.confirmedCreators > 0 ? (
+      <p data-testid="stories-scan-status" className="text-xs text-gray-500 dark:text-gray-400">
+        {fill(cd.storiesScanOk, { n: scan.confirmedCreators })} {lastRunText} {lastResultText}
+      </p>
+    ) : null
+  ) : null
+
   if (isLoading) {
     return (
       <div className="space-y-6">
@@ -237,6 +341,7 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
   return (
     <div className="space-y-6">
       {budgetNotice}
+      {scanNotice}
 
       {/* Stats Row */}
       {stats && (
@@ -447,10 +552,12 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
                 {group.stories.map((story) => (
                   <div
                     key={story.id}
+                    // Live on Instagram: green. Afterwards a plain card, never grey: what expires
+                    // is the story on Instagram, not its row in the report («Publicada hace N días»)
                     className={`shrink-0 rounded-lg border p-2.5 w-28 ${
                       story.isActive
                         ? 'border-green-200 bg-green-50 dark:bg-green-900/20 dark:border-green-800'
-                        : 'border-gray-200 bg-gray-50 dark:bg-gray-800 dark:border-gray-700'
+                        : 'border-purple-100 bg-white dark:bg-gray-900 dark:border-purple-900/40'
                     }`}
                   >
                     {story.thumbnailUrl && !brokenThumbs.has(story.id) ? (
@@ -463,20 +570,20 @@ export function StoriesTracker({ campaignId, locale, influencers }: StoriesTrack
                       />
                     ) : (
                       <div className={`mb-1.5 flex h-16 w-full items-center justify-center rounded ${
-                        story.isActive ? 'bg-green-100' : 'bg-gray-100 dark:bg-gray-700'
+                        story.isActive ? 'bg-green-100' : 'bg-purple-50 dark:bg-purple-900/20'
                       }`}>
-                        <Radio className={`h-5 w-5 ${story.isActive ? 'text-green-500' : 'text-gray-400'}`} />
+                        <Radio className={`h-5 w-5 ${story.isActive ? 'text-green-500' : 'text-purple-400'}`} />
                       </div>
                     )}
                     <p className="text-[10px] font-bold text-gray-900 dark:text-gray-100">
                       {formatNumber(story.views)} views
                     </p>
-                    <div className="mt-0.5 flex items-center gap-1 text-[9px] text-gray-400">
+                    <div className="mt-0.5 flex items-center gap-1 text-[9px] text-gray-500 dark:text-gray-400">
                       <Clock className="h-2.5 w-2.5" />
                       {story.isActive ? (
-                        <span className="text-green-600">{timeRemaining(story.expiresAt)}</span>
+                        <span className="text-green-600">{cd.storiesActive} {timeRemaining(story.expiresAt)}</span>
                       ) : (
-                        <span>{locale === 'es' ? 'Expirada' : 'Expired'}</span>
+                        <span>{postedAgo(story)}</span>
                       )}
                     </div>
                     {story.permalink && (

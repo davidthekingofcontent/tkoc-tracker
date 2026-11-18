@@ -12,7 +12,7 @@
  * The network is mocked: the profile read (fetchProfile) answers from a table
  * and Apify reports itself out of budget so the views refresh does not run.
  */
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const net = vi.hoisted(() => ({ profiles: new Map<string, unknown>() }))
 
@@ -69,6 +69,13 @@ beforeEach(async () => {
   vi.clearAllMocks()
   net.profiles.clear()
   delete process.env.CRON_SECRET
+  // The fixture is an October 2026 campaign: the cron is run "on 20 Oct", inside
+  // the campaign (since 16 Nov 2026 check-posts no longer reads a campaign that
+  // ended more than 3 days ago). Only Date is faked; timers stay real.
+  vi.useFakeTimers({ now: new Date('2026-10-20T12:00:00Z'), toFake: ['Date'] })
+})
+afterEach(() => {
+  vi.useRealTimers()
 })
 afterAll(async () => {
   await reset()

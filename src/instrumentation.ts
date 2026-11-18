@@ -1,4 +1,5 @@
 import type { Prisma } from '@/generated/prisma/client'
+import { LONG_RUNNING_CRONS, LONG_RUNNING_CRON_WAIT_MS, applyCronOutcome, classifyCronOutcome, type CronOutcome, type CronStreakState } from '@/lib/cron-outcome'
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000
 const FOUR_HOURS_MS = 4 * 60 * 60 * 1000
@@ -45,10 +46,8 @@ const CRON_JOBS: CronJob[] = [
 ]
 
 // Per-job failure tracking. State is per-process and resets on every deploy/restart — acceptable.
-interface CronJobState {
-  consecutiveFailures: number
-  alerted: boolean
-}
+// The rules (what extends, closes or leaves the streak alone) live in applyCronOutcome.
+type CronJobState = CronStreakState
 
 const cronJobStates = new Map<string, CronJobState>()
 
@@ -89,12 +88,16 @@ async function notifyAdmins(notification: { type: string; title: string; message
   }
 }
 
-async function handleCronFailure(job: CronJob, errorDetail: string) {
+/**
+ * Applies the outcome of one call to the job's failure streak and sends the
+ * alert it asks for, if any. 'started' counts as a real run (18 Nov 2026):
+ * check-posts and track always end as 'started' for this client, and with
+ * only 'completed' closing the streak they went mute after one alert.
+ */
+async function recordCronOutcome(job: CronJob, outcome: CronOutcome, errorDetail = '') {
   const state = getJobState(job.name)
-  state.consecutiveFailures++
-
-  if (state.consecutiveFailures >= 2 && !state.alerted) {
-    state.alerted = true // fire once per failure streak
+  const alert = applyCronOutcome(state, outcome)
+  if (alert === 'failure') {
     const truncated = errorDetail.substring(0, 120)
     await notifyAdmins({
       type: 'cron_failure',
@@ -102,16 +105,7 @@ async function handleCronFailure(job: CronJob, errorDetail: string) {
       message: `La tarea automática '${job.name}' ha fallado ${state.consecutiveFailures} veces seguidas (último error: ${truncated}). Los datos podrían no estar actualizándose.`,
       metadata: { jobName: job.name, consecutiveFailures: state.consecutiveFailures, lastError: truncated },
     })
-  }
-}
-
-async function handleCronSuccess(job: CronJob) {
-  const state = getJobState(job.name)
-  const wasAlerted = state.alerted
-  state.consecutiveFailures = 0
-  state.alerted = false
-
-  if (wasAlerted) {
+  } else if (alert === 'recovered') {
     await notifyAdmins({
       type: 'cron_recovered',
       title: 'Tarea automática recuperada',
@@ -122,6 +116,7 @@ async function handleCronSuccess(job: CronJob) {
 }
 
 async function executeCron(job: CronJob) {
+  const startedAt = Date.now()
   try {
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL || 'http://localhost:3000'
     const baseUrl = appUrl.startsWith('http') ? appUrl : `https://${appUrl}`
@@ -135,6 +130,11 @@ async function executeCron(job: CronJob) {
     }
 
     console.log(`[TKOC Cron] Running ${job.name}...`)
+    // A long route (check-posts, track: 30-40 min) is not waited for: after
+    // LONG_RUNNING_CRON_WAIT_MS the client lets go and the server keeps running
+    // it. Waiting hit undici's 5 min headers timeout, logged "fetch failed"
+    // for a run that completed, and the retried GET ran the cron twice.
+    const longRunning = LONG_RUNNING_CRONS.has(job.name)
     const res = await fetch(`${baseUrl}${job.path}`, {
       method: job.method || 'GET',
       headers: {
@@ -142,18 +142,33 @@ async function executeCron(job: CronJob) {
         ...(job.method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(job.method === 'POST' ? { body: '{}' } : {}),
+      ...(longRunning ? { signal: AbortSignal.timeout(LONG_RUNNING_CRON_WAIT_MS) } : {}),
     })
     const text = await res.text()
-    console.log(`[TKOC Cron] ${job.name} completed (${res.status}):`, text.substring(0, 300))
+    const outcome = classifyCronOutcome({ kind: 'response', status: res.status, body: text })
+    console.log(`[TKOC Cron] ${job.name} ${outcome} (${res.status}):`, text.substring(0, 300))
 
-    if (res.status >= 400) {
-      await handleCronFailure(job, `HTTP ${res.status}: ${text.substring(0, 100)}`)
-    } else {
-      await handleCronSuccess(job)
-    }
+    // 'skipped' (too_soon, in_flight, a budget pause...): nothing ran, so the
+    // failure streak is neither extended nor reset. A real run between two
+    // failures is what clears it, not a gate that said no.
+    await recordCronOutcome(job, outcome, `HTTP ${res.status}: ${text.substring(0, 100)}`)
   } catch (error) {
-    console.error(`[TKOC Cron] ${job.name} failed:`, error instanceof Error ? error.message : error)
-    await handleCronFailure(job, error instanceof Error ? error.message : String(error))
+    const outcome = classifyCronOutcome({
+      kind: 'error',
+      error,
+      elapsedMs: Date.now() - startedAt,
+      longRunning: LONG_RUNNING_CRONS.has(job.name),
+    })
+    if (outcome === 'started') {
+      // Not a failure: the route had accepted the request and is working; its
+      // own gate and in-flight lock answer the next tick while it runs. A real
+      // run, so it closes the failure streak (a run that starts and dies is
+      // the watchdog's to catch).
+      console.log(`[TKOC Cron] ${job.name} started: the server keeps running it; this client stopped waiting after ${Math.round((Date.now() - startedAt) / 1000)} s`)
+    } else {
+      console.error(`[TKOC Cron] ${job.name} failed:`, error instanceof Error ? error.message : error)
+    }
+    await recordCronOutcome(job, outcome, error instanceof Error ? error.message : String(error))
   }
 }
 

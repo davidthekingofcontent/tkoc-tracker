@@ -413,6 +413,301 @@ export function memberAccountsError(members: string[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Brand accounts are ACCOUNTS of the brand — never a product word
+// ---------------------------------------------------------------------------
+
+/**
+ * Why (weekly review, 16 Nov 2026): «12.- Micros Diciembre» was created with
+ * targetAccounts ['vileda.es', 'turbo', 'infinityflex']. Hashtags and product
+ * keywords are judged (validateTargetHashtags, validateKeywords) but the
+ * accounts were only compared with the creators' handles (splitMemberAccounts),
+ * so two product words entered as ACCOUNTS: rule (3) would have taken every
+ * member caption containing "turbo" for a brand reference, and the daily cron
+ * would have read the tagged posts of the Instagram accounts @turbo and
+ * @infinityflex. Same pattern as the generic hashtags of October.
+ *
+ * An account is refused when:
+ *   (a) it is a generic word — 'turbo', 'mopa', 'turbos', 'turbo.es',
+ *       'turbomopa', 'sorteo2026': a word of NON_BRAND_WORDS /
+ *       GENERIC_KEYWORD_WORDS (plural included), several of them glued, a
+ *       number, or a handle whose every word of 3+ letters is one — unless it
+ *       carries a stem of the brand ('@turbo' is fine for a brand named Turbo);
+ *   (b) the campaign has a brand ATTACHED (Setting campaign_brand_<id>) and the
+ *       account carries none of the brand's stems nor a brand word of the
+ *       campaign's name, and is not the brand's connected Instagram (Setting
+ *       brand_ig_<brandId>): 'infinityflex' in a Vileda campaign, '@deliplus'
+ *       in a Dorco campaign named 'Dorco - Diciembre'.
+ * Without an attached brand, (b) is skipped: an account that is not a generic
+ * word is accepted as before. The campaign's name alone never triggers (b)
+ * (review of 18 Nov 2026: the code cannot tell a brand word from any other
+ * word, so 'Lanzamiento Infinity Flex', 'Reto 30 días', 'Embajadoras 2027' or
+ * 'Hogar brillante' refused @vileda.es, and 'Dorco - Delyplus' refused the
+ * distributor @deliplus over one letter); its words only ADD stems that let an
+ * account through.
+ *
+ * Escape routes, visible on purpose (no hidden bypass): a legitimate handle
+ * that IS a common word passes once the campaign has its brand attached (the
+ * brand's name becomes a stem; the brand is chosen when the campaign is
+ * created from "Nueva Campaña", not in the wizard nor in "Editar Campaña");
+ * the account of a distributor or of a product line with another name
+ * ('@deliplus' for Dorco) passes when that name is in the campaign's name
+ * ('Dorco x Deliplus'; one letter off, 'Delyplus', still counts) or when it is
+ * the brand's connected Instagram. The product's words themselves go to
+ * "Palabras clave del producto". The campaign's own name never whitelists a
+ * generic word ('Micros Turbo Diciembre' does not make '@turbo' an account):
+ * only the attached brand does.
+ */
+export interface TargetAccountsContext {
+  /** Name of the brand attached to the campaign, when any. */
+  brandName?: string | null
+  /** The campaign's name: its brand words count as stems ('11.- Vileda - Micros Noviembre' → 'vileda'). */
+  campaignName?: string | null
+  /** Instagram accounts the brand connected through Meta (Setting brand_ig_<brandId>): accepted as they are. */
+  connectedAccounts?: ReadonlyArray<string> | null
+}
+
+/**
+ * Stems the brand accounts are judged against: the attached brand's name
+ * (brandStems) and the brand words of the campaign's name — 4+ letters, not a
+ * number, not an everyday/qualifier word, not a month/tier/admin word and not
+ * a generic product word. Never the accounts themselves (that would be circular).
+ */
+export function campaignBrandStems(brandName?: string | null, campaignName?: string | null): string[] {
+  const out = new Set<string>(brandStems([], brandName))
+  for (const word of alnumWords(campaignName)) {
+    if (word.length >= MIN_SEGMENT_STEM_LENGTH && !isNumeric(word) && !CAMPAIGN_NAME_WORDS.has(word) && !isGenericWord(word)) out.add(word)
+  }
+  return Array.from(out)
+}
+
+/** From this length a stem and a handle word one letter apart are the same name ('delyplus' / 'deliplus'). */
+const MIN_NEAR_MATCH_LENGTH = 6
+
+/** Levenshtein distance ≤ 1 (one letter changed, added or removed), in one pass. */
+function withinOneEdit(a: string, b: string): boolean {
+  if (a === b) return true
+  if (Math.abs(a.length - b.length) > 1) return false
+  let i = 0
+  let j = 0
+  let edits = 0
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i++
+      j++
+      continue
+    }
+    if (++edits > 1) return false
+    if (a.length > b.length) i++
+    else if (a.length < b.length) j++
+    else {
+      i++
+      j++
+    }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1
+}
+
+/**
+ * The handle carries a stem: its normalized form CONTAINS a stem of 4+
+ * characters ('viledaes' ⊇ 'vileda'), it is itself a 4+ character prefix of
+ * one ('pccomp' ⊂ 'pccomponentes'; never an everyday word), it STARTS with a
+ * short brand name ('hp.espana' for HP; 'shop' is not HP), or one of its words
+ * of 6+ letters is one letter away from a stem of 6+ letters ('deliplus' for
+ * a campaign named 'Dorco - Delyplus': a misspelt distributor is still the
+ * distributor).
+ */
+function carriesStem(account: string, stems: string[]): boolean {
+  const normalized = normalizeStem(account)
+  if (!normalized) return false
+  const words = [normalized, ...alnumWords(account)].filter(w => w.length >= MIN_NEAR_MATCH_LENGTH && !NON_BRAND_WORDS.has(w))
+  for (const stem of stems) {
+    if (!stem) continue
+    if (stem.length < MIN_SEGMENT_STEM_LENGTH) {
+      if (normalized.startsWith(stem)) return true
+      continue
+    }
+    if (normalized.includes(stem)) return true
+    if (normalized.length >= MIN_SEGMENT_STEM_LENGTH && !NON_BRAND_WORDS.has(normalized) && stem.startsWith(normalized)) return true
+    if (stem.length >= MIN_NEAR_MATCH_LENGTH && words.some(w => withinOneEdit(w, stem))) return true
+  }
+  return false
+}
+
+/**
+ * A handle that is a generic word rather than an account: 'turbo', 'turbos',
+ * 'turbomopa', 'sorteo2026', '2026', and 'turbo.es' / 'mopa_2026' (every word
+ * of 3+ letters is generic; shorter scraps and numbers do not decide, so '@hp'
+ * and '@a1' are handles).
+ */
+function isGenericAccount(account: string): boolean {
+  const stem = normalizeStem(account)
+  if (!stem) return false
+  if (isNumeric(stem) || isGenericWord(stem) || isGluedGenericWords(stem)) return true
+  const significant = alnumWords(account).filter(word => word.length >= 3 && !isNumeric(word))
+  return significant.length > 0 && significant.every(isGenericWord)
+}
+
+/**
+ * Splits the campaign's brand accounts into accepted ones (`ok`), generic
+ * words (`generic`, rule a) and handles that do not carry the brand
+ * (`notBrand`, rule b; empty when no brand is attached). One handle per
+ * element, no @ (splitHandles): "@vileda.es @turbo" is two.
+ *
+ *   validateTargetAccounts(['vileda.es', 'turbo', 'infinityflex'], { brandName: 'Vileda España' })
+ *     → { ok: ['vileda.es'], generic: ['turbo'], notBrand: ['infinityflex'] }
+ *   validateTargetAccounts(['infinityflex'], {})            → { ok: ['infinityflex'], generic: [], notBrand: [] }
+ *   validateTargetAccounts(['turbo'], {})                   → { ok: [], generic: ['turbo'], notBrand: [] }
+ *   validateTargetAccounts(['turbo'], { brandName: 'Turbo' }) → { ok: ['turbo'], generic: [], notBrand: [] }
+ *   validateTargetAccounts(['vileda.es'], { campaignName: 'Hogar brillante' }) → { ok: ['vileda.es'], generic: [], notBrand: [] }
+ *   validateTargetAccounts(['deliplus'], { brandName: 'Dorco', campaignName: 'Dorco - Delyplus' }) → ok ['deliplus']
+ */
+export function validateTargetAccounts(
+  accounts: string[] | null | undefined,
+  ctx: TargetAccountsContext = {}
+): { ok: string[]; generic: string[]; notBrand: string[] } {
+  // Rule (b) needs an attached brand; the campaign's name only adds stems that let an account through
+  const judgesBrand = brandStems([], ctx.brandName).length > 0
+  const stems = campaignBrandStems(ctx.brandName, ctx.campaignName)
+  const connected = new Set(splitHandles(ctx.connectedAccounts ? Array.from(ctx.connectedAccounts) : []).map(a => a.toLowerCase()))
+  const ok: string[] = []
+  const generic: string[] = []
+  const notBrand: string[] = []
+  for (const account of splitHandles(accounts)) {
+    if (connected.has(account.toLowerCase()) || carriesStem(account, stems)) {
+      ok.push(account)
+    } else if (isGenericAccount(account)) {
+      generic.push(account)
+    } else if (judgesBrand) {
+      notBrand.push(account)
+    } else {
+      ok.push(account)
+    }
+  }
+  return { ok, generic, notBrand }
+}
+
+export const GENERIC_ACCOUNTS_ERROR =
+  'Las Cuentas de Marca Objetivo son cuentas reales de la marca, no palabras: "turbo" o "mopa" harían pasar por contenido de la campaña cualquier publicación que las mencione.'
+export const ACCOUNTS_NOT_BRAND_ERROR =
+  'Las Cuentas de Marca Objetivo deben llevar el nombre de la marca de la campaña (p. ej. @vileda.es para Vileda).'
+/** The sentence agreed on 17 Nov 2026: where the product's words go and what this field is for. */
+export const ACCOUNTS_POINTER =
+  'Pon las palabras del producto en Palabras clave del producto; aquí van solo las cuentas de la marca o del distribuidor.'
+// The brand of a campaign is chosen when it is created from "Nueva Campaña"
+// (the wizard and "Editar Campaña" have no brand field, and the platform has no
+// way to change a campaign's brand later): the escape says so instead of
+// promising a step that does not exist (review of 18 Nov 2026).
+const GENERIC_ACCOUNTS_ESCAPE =
+  'Si de verdad es el usuario de la marca, la campaña necesita tener asignada la marca con ese nombre: se elige al crear la campaña desde Campañas, "Nueva Campaña" (el Asistente y "Editar Campaña" no asignan marca). Con la marca asignada, vuelve a guardar.'
+const ACCOUNTS_NOT_BRAND_ESCAPE =
+  'Si es la cuenta del distribuidor o de un producto con otro nombre, pon ese nombre en el nombre de la campaña (p. ej. «Dorco x Deliplus») y vuelve a guardar.'
+
+/**
+ * Spanish 400 message of POST /api/campaigns and PUT /api/campaigns/[id] when
+ * validateTargetAccounts refuses something: the refused handles are named (the
+ * forms only display `error`), then the pointer and the escape route of each rule.
+ */
+export function targetAccountsError(generic: string[], notBrand: string[]): string {
+  const list = (items: string[]) => (items || []).map(a => `@${stripSigil(a)}`).filter(a => a.length > 1).join(', ')
+  const parts: string[] = []
+  if ((generic || []).length > 0) parts.push(`${GENERIC_ACCOUNTS_ERROR} Cuentas a revisar: ${list(generic)}.`)
+  if ((notBrand || []).length > 0) parts.push(`${ACCOUNTS_NOT_BRAND_ERROR} Cuentas a revisar: ${list(notBrand)}.`)
+  parts.push(ACCOUNTS_POINTER)
+  if ((generic || []).length > 0) parts.push(GENERIC_ACCOUNTS_ESCAPE)
+  if ((notBrand || []).length > 0) parts.push(ACCOUNTS_NOT_BRAND_ESCAPE)
+  return parts.join(' ')
+}
+
+// ---------------------------------------------------------------------------
+// What the PM typed in the target fields (wizard, edit modal, new campaign page)
+// ---------------------------------------------------------------------------
+
+export interface TypedTargets {
+  /** '@x' tokens, without the @ */
+  accounts: string[]
+  /** '#x' tokens, without the # */
+  hashtags: string[]
+  /** tokens with neither sigil, as typed */
+  bare: string[]
+}
+
+/** Tokens of a free-text targets field: split on commas, semicolons, line breaks and spaces. */
+function typedTokens(text: string | ReadonlyArray<string> | null | undefined): string[] {
+  const list = Array.isArray(text) ? text : [text ?? '']
+  return list.flatMap(v => String(v ?? '').split(/[\s,;]+/)).map(t => t.trim()).filter(Boolean)
+}
+
+const hasSigil = (token: string) => token.startsWith('@') || token.startsWith('#')
+
+/**
+ * Classifies what the PM typed: '@x' is an account and '#x' a hashtag,
+ * whichever field it was typed in; a token with neither sigil is `bare`. In
+ * the accounts field a bare token is ambiguous — 'vileda.es' is an account
+ * without its @, 'turbo' is a product word (16 Nov 2026) — so the screens ask
+ * the PM which it is before sending (markBareAsAccounts / moveBareToKeywords)
+ * instead of guessing or dropping it in silence. De-duplicated, input order.
+ */
+export function classifyTypedTargets(text: string | ReadonlyArray<string> | null | undefined): TypedTargets {
+  const accounts = new Set<string>()
+  const hashtags = new Set<string>()
+  const bare = new Set<string>()
+  for (const token of typedTokens(text)) {
+    const clean = stripSigil(token)
+    if (token.startsWith('@')) {
+      if (clean) accounts.add(clean)
+    } else if (token.startsWith('#')) {
+      if (clean) hashtags.add(clean)
+    } else {
+      bare.add(token)
+    }
+  }
+  return { accounts: Array.from(accounts), hashtags: Array.from(hashtags), bare: Array.from(bare) }
+}
+
+/**
+ * The two free-text fields of the wizard and the edit modal, read together: a
+ * bare token in the HASHTAGS field is a hashtag (the # has always been
+ * optional there); a bare token in the ACCOUNTS field is `bare` and holds the
+ * save until the PM says what it is. A sigil wins over the field it is in.
+ */
+export function readTargetFields(accountsText: string, hashtagsText: string): TypedTargets {
+  const a = classifyTypedTargets(accountsText)
+  const h = classifyTypedTargets(hashtagsText)
+  return {
+    accounts: Array.from(new Set([...a.accounts, ...h.accounts])),
+    hashtags: Array.from(new Set([...h.hashtags, ...h.bare.map(stripSigil).filter(Boolean), ...a.hashtags])),
+    bare: a.bare,
+  }
+}
+
+/** The accounts field with an @ in front of every bare token: the PM said they are accounts. */
+export function markBareAsAccounts(accountsText: string): string {
+  return typedTokens(accountsText).map(token => (hasSigil(token) ? token : `@${token}`)).join(', ')
+}
+
+/**
+ * The bare tokens leave the accounts field and join the product keywords field
+ * (comma separated, one keyword each, no repeats): the PM said they are words
+ * of the product. The server then judges them as keywords ("turbo" alone is
+ * still refused there, with the pointer to write the product's full name).
+ */
+export function moveBareToKeywords(accountsText: string, keywordsText: string): { accounts: string; keywords: string } {
+  const tokens = typedTokens(accountsText)
+  const keywords: string[] = []
+  const seen = new Set<string>()
+  const add = (value: string) => {
+    const clean = value.trim()
+    const key = clean.toLowerCase()
+    if (!clean || seen.has(key)) return
+    seen.add(key)
+    keywords.push(clean)
+  }
+  for (const part of (keywordsText || '').split(/[,;\n]+/)) add(part)
+  for (const token of tokens) if (!hasSigil(token)) add(token)
+  return { accounts: tokens.filter(hasSigil).join(', '), keywords: keywords.join(', ') }
+}
+
+// ---------------------------------------------------------------------------
 // Rule (3) support — the brand NAME inside a qualified handle
 // ---------------------------------------------------------------------------
 

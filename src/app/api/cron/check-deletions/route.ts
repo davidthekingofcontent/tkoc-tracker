@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { cronGate, cronSkipped, markCronRun } from '@/lib/cron-throttle'
+import { cronGate, cronSkipped, markCronRun, GATE_SLACK_MS } from '@/lib/cron-throttle'
 import { prisma } from '@/lib/db'
 import { notifyCampaignTeam } from '@/lib/notifications'
 import { mediaPostKey } from '@/lib/campaign-capture'
@@ -36,10 +36,14 @@ export async function GET(request: NextRequest) {
   // The 24 h stamp is written AFTER the work (finally): stamping first meant a
   // redeploy mid-run skipped the rest until the next day. It is only written
   // when the run finished or at least one post was actually checked.
+  // The gate opens GATE_SLACK_MS early: the scheduler ticks every 24 h on the
+  // dot while this stamp lands a few minutes into the run, so without slack
+  // the tick arrived ~2 min before the gate opened and the job ran one day in
+  // two (seen 15 Nov 2026). This is the RGPD deletion queue: once a day, every day.
   let finished = false
   let processed = 0
   try {
-    const gate = await cronGate('check-deletions', 24, request.nextUrl.searchParams.get('force') === '1')
+    const gate = await cronGate('check-deletions', 24, request.nextUrl.searchParams.get('force') === '1', GATE_SLACK_MS)
     if (!gate.allowed) return NextResponse.json(cronSkipped('check-deletions', gate))
 
     const startedAt = Date.now()

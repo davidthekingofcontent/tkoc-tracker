@@ -12,8 +12,10 @@ import {
   Globe,
   Gauge,
   X,
+  AlertTriangle,
 } from 'lucide-react'
 import { useI18n } from '@/i18n/context'
+import { markBareAsAccounts, moveBareToKeywords, readTargetFields } from '@/lib/campaign-targets'
 import { formatEur, formatNumber, formatPercent, type EurLocale } from '@/lib/utils'
 
 /**
@@ -169,6 +171,11 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
   const filledTargets = TARGET_FIELDS.filter(f => (f.step >= 1 ? toPositiveInt(form[f.key]) : toPositiveFloat(form[f.key])) !== null)
   // Product keywords as they are sent: split on commas only, trimmed, empties dropped (the server validates them)
   const productKeywords = form.targetKeywords.split(',').map(k => k.trim()).filter(Boolean)
+  // The two tracking fields by sigil: '@x' is an account and '#x' a hashtag wherever it was typed; a word with neither
+  // in the accounts field ('turbo') is an account without its @ or a product word, and the PM says which before going on
+  // (16 Nov 2026: "turbo" and "infinityflex" reached production as brand accounts)
+  const typedTargets = readTargetFields(form.targetAccounts, form.targetHashtags)
+  const bareAccounts = typedTargets.bare
 
   async function handleCreate() {
     setIsCreating(true)
@@ -185,8 +192,8 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
           country: form.country || null,
           budget: form.budget ? parseFloat(form.budget) : null,
           paymentType: form.paymentType,
-          targetHashtags: form.targetHashtags ? form.targetHashtags.split(',').map(h => h.trim().replace(/^#/, '')) : [],
-          targetAccounts: form.targetAccounts ? form.targetAccounts.split(',').map(a => a.trim().replace(/^@/, '')) : [],
+          targetHashtags: typedTargets.hashtags,
+          targetAccounts: typedTargets.accounts,
           targetKeywords: productKeywords,
           startDate: form.startDate || null,
           endDate: form.endDate || null,
@@ -225,10 +232,11 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
     if (step === 0) return !!form.objective
     if (step === 1) return hasAnyTarget
     if (step === 2) return !!form.name && form.platforms.length > 0
+    if (step === 3) return bareAccounts.length === 0
     return true
   }
 
-  const canLaunch = !!form.name && !!form.objective && hasAnyTarget
+  const canLaunch = !!form.name && !!form.objective && hasAnyTarget && bareAccounts.length === 0
   const selectedObjective = OBJECTIVES.find(o => o.value === form.objective)
   const targetHint = TARGET_HINTS[form.objective]
 
@@ -434,7 +442,31 @@ export function CampaignWizard({ isOpen, onClose }: CampaignWizardProps) {
                 <label className="block text-xs font-medium text-gray-500 uppercase mb-1">{es ? 'Cuentas de la marca (separadas por coma)' : 'Brand accounts (comma separated)'}</label>
                 <input type="text" value={form.targetAccounts} onChange={e => setForm(prev => ({ ...prev, targetAccounts: e.target.value }))}
                   placeholder="@vileda.es, @vileda_espana"
+                  aria-invalid={bareAccounts.length > 0 ? true : undefined}
+                  aria-describedby={bareAccounts.length > 0 ? 'wizard-target-accounts-bare' : undefined}
                   className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-3 text-sm text-gray-900 dark:text-white focus:border-purple-500 outline-none" />
+                {/* A word without @ is not an account: the PM says whether it is one (add @) or a product word (move it) */}
+                {bareAccounts.length > 0 && (
+                  <div id="wizard-target-accounts-bare" role="alert" className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                    <p className="flex items-start gap-1.5">
+                      <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+                      <span>{t.campaigns.bareTargetsNotice.replace('{tokens}', bareAccounts.map(b => `"${b}"`).join(', '))}</span>
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button type="button" onClick={() => setForm(prev => ({ ...prev, targetAccounts: markBareAsAccounts(prev.targetAccounts) }))}
+                        className="rounded-md border border-amber-300 bg-white px-2.5 py-1 font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-gray-800 dark:text-amber-200 dark:hover:bg-amber-900/40">
+                        {t.campaigns.bareTargetsAsAccounts}
+                      </button>
+                      <button type="button" onClick={() => setForm(prev => {
+                        const moved = moveBareToKeywords(prev.targetAccounts, prev.targetKeywords)
+                        return { ...prev, targetAccounts: moved.accounts, targetKeywords: moved.keywords }
+                      })}
+                        className="rounded-md border border-amber-300 bg-white px-2.5 py-1 font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-gray-800 dark:text-amber-200 dark:hover:bg-amber-900/40">
+                        {t.campaigns.bareTargetsAsKeywords}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Product keywords: optional third kind of target, same texts as the edit modal */}

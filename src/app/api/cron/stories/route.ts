@@ -8,17 +8,23 @@ const STORIES_RETRY_FLOOR_MS = 3 * 60 * 60 * 1000 + 50 * 60 * 1000
 
 /** Stories live 24 h: two scans a day catch every one of them (CRON_STORIES_MIN_HOURS overrides). */
 const STORIES_DEFAULT_MIN_HOURS = Number(process.env.STORIES_MIN_INTERVAL_HOURS || 12)
-import { notifyCampaignTeam, notifyApifyBudgetPauseOnce, notifyApifyTokenRejectedOnce, notifyStoriesScanFailedOnce } from '@/lib/notifications'
+import { campaignTeamUserIds, notifyCampaignTeam, notifyApifyBudgetPauseOnce, notifyApifyTokenRejectedOnce, notifyStoriesScanFailedOnce } from '@/lib/notifications'
 import {
-  STORIES_MAX_CAMPAIGN_DAYS,
   STORY_SCAN_STATUSES,
-  campaignSpanDays,
   storiesCampaignSkipReason,
   storyMatchesCampaign,
   upsertCampaignStory,
-  type StoriesSkipReason,
   type StoryVerdict,
 } from '@/lib/campaign-capture'
+import {
+  noConfirmedNoticeDue,
+  parseStoriesNotice,
+  serializeStoriesNotice,
+  storiesNoticeDetail,
+  storiesNoticeDue,
+  storiesNoticeKey,
+  type StoriesNoticeReason,
+} from '@/lib/stories-notices'
 
 /**
  * Cron job endpoint: Scrape Instagram stories for all influencers in active campaigns.
@@ -122,6 +128,9 @@ export async function GET(request: NextRequest) {
             },
           },
         },
+        // ALL its Instagram creators, whatever their status: the N of «0 de N en
+        // Acordado o posterior» (the list above holds only the confirmed ones)
+        _count: { select: { influencers: { where: { influencer: { platform: 'INSTAGRAM' } } } } },
       },
     })
 
@@ -136,25 +145,37 @@ export async function GET(request: NextRequest) {
     const now = new Date()
     const campaignsById = new Map<string, (typeof activeCampaigns)[number]>()
     // The eligibility rule is shared with the watchdog (storiesCampaignSkipReason).
-    // Live campaigns with confirmed creators that are NOT scanned: their team
-    // is told once per reason (never a silent gap again — Oct 2026).
+    // Live campaigns with confirmed creators that are NOT scanned, and scanned
+    // campaigns with NO confirmed creator three days after their start: their
+    // team and the ADMINs are told, and told again every 7 days while it lasts
+    // (never a silent gap again — Oct 2026; weekly since 16 Nov 2026).
     const skipped: StoriesSkip[] = []
+    const notices: StoriesNotice[] = []
     for (const c of activeCampaigns) {
       const reason = storiesCampaignSkipReason(c, now)
+      const confirmed = c.influencers.filter(ci => ci.influencer.platform === 'INSTAGRAM').length
+      const instagramCreators = c._count.influencers
       if (reason === null) {
         campaignsById.set(c.id, c)
+        if (noConfirmedNoticeDue(c, { confirmedCreators: confirmed, instagramCreators }, now)) {
+          const detail = storiesNoticeDetail('no_confirmed', c, { instagramCreators })
+          console.log(`[Cron/Stories] Campaign "${c.name}" has nobody to scan (no_confirmed): ${detail}`)
+          notices.push({ id: c.id, name: c.name, reason: 'no_confirmed', detail })
+        }
         continue
       }
       if (reason === 'window') {
         console.log(`[Cron/Stories] Campaign "${c.name}" is outside its date window today — skipping`)
         continue
       }
-      const detail = skipDetail(reason, c)
+      const detail = storiesNoticeDetail(reason, c)
       console.log(`[Cron/Stories] Campaign "${c.name}" skipped (${reason}): ${detail}`)
-      const confirmed = c.influencers.filter(ci => ci.influencer.platform === 'INSTAGRAM').length
-      if (confirmed > 0) skipped.push({ id: c.id, name: c.name, reason, detail })
+      if (confirmed > 0) {
+        skipped.push({ id: c.id, name: c.name, reason, detail })
+        notices.push({ id: c.id, name: c.name, reason, detail })
+      }
     }
-    await notifyStoriesSkips(skipped, Array.from(campaignsById.keys()))
+    const noticesSent = await notifyStoriesNotices(notices, Array.from(campaignsById.keys()), now)
 
     // Collect all Instagram usernames across campaigns (lowercased for matching)
     const usernameMap = new Map<string, { influencerId: string; username: string; campaignIds: string[] }>()
@@ -184,8 +205,24 @@ export async function GET(request: NextRequest) {
       // A completed run with nothing to scan is still a completed run (the
       // watchdog shares the eligibility rule, so it expects no work either).
       await markCronRun('stories')
-      await recordStoriesRun({ at: now.toISOString(), usernamesChecked: 0, totalStories: 0, newStories: 0, newByReshare: 0, rejectedByRules: 0, campaigns: [], skipped })
-      return NextResponse.json({ message: 'No confirmed Instagram creators (status Acordado or later) in live campaigns with targets', storiesFound: 0 })
+      await recordStoriesRun({
+        at: now.toISOString(),
+        usernamesChecked: 0,
+        totalStories: 0,
+        newStories: 0,
+        newByReshare: 0,
+        rejectedByRules: 0,
+        // The eligible campaigns, each with nobody to read (the Stories tab reads this per campaign)
+        campaigns: Array.from(campaignsById.values()).map(c => ({ id: c.id, name: c.name, creators: 0, newStories: 0 })),
+        skipped,
+        noticesSent,
+      })
+      return NextResponse.json({
+        message: 'No confirmed Instagram creators (status Acordado or later) in live campaigns with targets',
+        storiesFound: 0,
+        skipped: skipped.map(s => ({ name: s.name, reason: s.reason })),
+        noticesSent,
+      })
     }
 
     console.log(`[Cron/Stories] Scraping stories for ${usernames.length} influencers across ${campaignsById.size} live campaigns (pay-per-story actor): ${usernames.join(', ')}`)
@@ -293,6 +330,7 @@ export async function GET(request: NextRequest) {
         totalStories,
         newStories,
         skipped,
+        noticesSent,
       })
       return NextResponse.json({ error: 'Stories scan failed', failed: true, reason, failedBatches, usernamesChecked: usernames.length, storiesFound: totalStories, newStories }, { status: 502 })
     }
@@ -314,6 +352,7 @@ export async function GET(request: NextRequest) {
         newStories: newStoriesByCampaign.get(c.id) || 0,
       })),
       skipped,
+      noticesSent,
     })
 
     return NextResponse.json({
@@ -327,6 +366,7 @@ export async function GET(request: NextRequest) {
       partial,
       campaigns: campaignsById.size,
       skipped: skipped.map(s => ({ name: s.name, reason: s.reason })),
+      noticesSent,
     })
   } catch (error) {
     console.error('[Cron/Stories] Error:', error)
@@ -344,23 +384,20 @@ export async function GET(request: NextRequest) {
   }
 }
 
+/** A live campaign with confirmed creators left out of the scan (cron_stories_last_result.skipped) */
 interface StoriesSkip {
   id: string
   name: string
-  reason: StoriesSkipReason
+  reason: Exclude<StoriesNoticeReason, 'no_confirmed'>
   detail: string
 }
 
-/** What the campaign team is told when its campaign is not scanned. */
-function skipDetail(reason: Exclude<StoriesSkipReason, 'window'>, c: { startDate: Date; endDate: Date | null }): string {
-  switch (reason) {
-    case 'listening':
-      return 'es una campaña de Social Listening; las stories solo se rastrean en las campañas de seguimiento de influencers y UGC.'
-    case 'no_targets':
-      return 'no tiene Cuentas de Marca Objetivo ni hashtags; añádelos en Configurar para que sus stories entren.'
-    case 'too_long':
-      return `dura ${campaignSpanDays(c) ?? '?'} días (máximo ${STORIES_MAX_CAMPAIGN_DAYS}) o no tiene fecha de fin; acorta la campaña o registra sus stories a mano.`
-  }
+/** A campaign whose team is told «Stories sin rastrear»: a skip, or a scan with nobody confirmed */
+interface StoriesNotice {
+  id: string
+  name: string
+  reason: StoriesNoticeReason
+  detail: string
 }
 
 /** Last run's figures, readable without Railway logs (Setting cron_stories_last_result). */
@@ -378,29 +415,54 @@ async function recordStoriesRun(summary: Record<string, unknown>): Promise<void>
 }
 
 /**
- * One notification per campaign and reason to that campaign's team when a live
- * campaign with confirmed creators is not scanned for stories (Setting
- * stories_skip_notice_<campaignId> = reason). Cleared when the campaign is
- * scanned again, so a later exclusion notifies again. Never throws.
+ * «Stories sin rastrear»: one notification per campaign to that campaign's
+ * team AND to the active ADMINs (each person once) when a live campaign with
+ * confirmed creators is not scanned, or when a scanned campaign has nobody in
+ * Acordado or later three days after its start. Setting
+ * stories_skip_notice_<campaignId> holds { reason, at }: the notice is sent
+ * again when the reason changes and every 7 days while it persists (until 16
+ * Nov 2026 it was sent once per reason and the gap stayed silent for weeks).
+ * The setting is removed when the campaign is scanned with somebody to read,
+ * so a later exclusion notifies at once. Returns what was sent this run.
+ * Never throws.
  */
-async function notifyStoriesSkips(skipped: StoriesSkip[], scannedIds: string[]): Promise<void> {
+async function notifyStoriesNotices(
+  notices: StoriesNotice[],
+  scannedIds: string[],
+  now: Date
+): Promise<Array<{ id: string; name: string; reason: StoriesNoticeReason }>> {
+  const sent: Array<{ id: string; name: string; reason: StoriesNoticeReason }> = []
   try {
-    if (scannedIds.length > 0) {
-      await prisma.setting.deleteMany({ where: { key: { in: scannedIds.map(id => `stories_skip_notice_${id}`) } } })
+    const pending = new Set(notices.map(n => n.id))
+    const cleared = scannedIds.filter(id => !pending.has(id))
+    if (cleared.length > 0) {
+      await prisma.setting.deleteMany({ where: { key: { in: cleared.map(storiesNoticeKey) } } })
     }
-    for (const s of skipped) {
-      const key = `stories_skip_notice_${s.id}`
+    if (notices.length === 0) return sent
+    const admins = await prisma.user.findMany({ where: { role: 'ADMIN', isActive: true }, select: { id: true } })
+    for (const n of notices) {
+      const key = storiesNoticeKey(n.id)
       const existing = await prisma.setting.findUnique({ where: { key }, select: { value: true } })
-      if (existing?.value === s.reason) continue
-      await prisma.setting.upsert({ where: { key }, update: { value: s.reason }, create: { key, value: s.reason } })
-      await notifyCampaignTeam(s.id, {
-        type: 'cron_stale',
-        title: 'Stories sin rastrear',
-        message: `Las stories de "${s.name}" no se están rastreando: ${s.detail}`,
-        link: `/campaigns/${s.id}`,
+      if (!storiesNoticeDue(parseStoriesNotice(existing?.value), n.reason, now)) continue
+      // Team (creator of the campaign + assigned staff) and ADMINs, deduped
+      const recipients = new Set<string>([...(await campaignTeamUserIds(n.id)), ...admins.map(a => a.id)])
+      if (recipients.size === 0) continue // nobody active to tell: tried again next tick
+      const value = serializeStoriesNotice(n.reason, now)
+      await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } })
+      await prisma.notification.createMany({
+        data: Array.from(recipients).map(userId => ({
+          userId,
+          type: 'cron_stale',
+          title: 'Stories sin rastrear',
+          message: `Las stories de "${n.name}" no se están rastreando: ${n.detail}`,
+          link: `/campaigns/${n.id}`,
+        })),
       })
+      sent.push({ id: n.id, name: n.name, reason: n.reason })
+      console.log(`[Cron/Stories] «Stories sin rastrear» sent for "${n.name}" (${n.reason}) to ${recipients.size} people; next in 7 days if it persists`)
     }
   } catch (err) {
     console.error('[Cron/Stories] skip notices failed:', err instanceof Error ? err.message : err)
   }
+  return sent
 }

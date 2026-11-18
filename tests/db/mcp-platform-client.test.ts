@@ -331,6 +331,7 @@ describe('the route table', () => {
     '/api/admin/fold-twins': ['GET', 'POST'],
     // Identity changes (one creator, several profiles): a curated tool with approval in the platform comes in a later delivery
     '/api/influencers/[id]/unlink-profile': ['POST'],
+    '/api/influencers/[id]/link-profile': ['POST'], // same family: «Añadir perfil de TikTok» by hand (16 Nov 2026), no connector tool yet
   }
 
   it('every entry is a real route of this working copy, with that method', () => {

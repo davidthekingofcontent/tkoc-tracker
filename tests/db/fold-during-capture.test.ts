@@ -18,7 +18,7 @@
  * from a table, and each can run the fold "while the network answers".
  * Every handle and figure is invented.
  */
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const net = vi.hoisted(() => ({
   profiles: new Map<string, unknown>(),
@@ -99,6 +99,9 @@ beforeEach(async () => {
   net.session = null
   delete process.env.CRON_SECRET
 })
+afterEach(() => {
+  vi.useRealTimers()
+})
 afterAll(async () => {
   await reset()
   vi.unstubAllGlobals()
@@ -168,6 +171,10 @@ function expectEveryPieceInARow(o: Awaited<ReturnType<typeof outcome>>) {
 describe('a fold that commits while a capture runs', () => {
   it('check-posts: the new video read for the twin after the fold goes to her own row, published by the TikTok account', async () => {
     const fx = await seed()
+    // The campaign is October 2026: the cron runs "on 20 Oct" (since 16 Nov 2026
+    // check-posts no longer reads a campaign that ended more than 3 days ago).
+    // Only Date is faked; timers stay real. Reset by the afterEach below.
+    vi.useFakeTimers({ now: new Date('2026-10-20T12:00:00Z'), toFake: ['Date'] })
     net.exhausted = true // only skips the views refresh after the capture
     serve('INSTAGRAM', 'lucia_prueba', [])
     serve('TIKTOK', 'lucia_prueba', [video()])

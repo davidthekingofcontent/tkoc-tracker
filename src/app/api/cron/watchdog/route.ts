@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db'
 import { STORY_SCAN_STATUSES, campaignHasTargets, campaignWindowEndExclusive, isWithinCampaignDates, storiesCampaignSkipReason } from '@/lib/campaign-capture'
 import { notifyAdminsOncePerDay, notifyApifyTokenRejectedOnce } from '@/lib/notifications'
 import { checkApifyAuth } from '@/lib/apify'
+import { notifyProspectNotices } from '@/lib/prospect-notice'
 
 // GET /api/cron/watchdog (header x-cron-secret) — every 6 h from the internal scheduler.
 //
@@ -13,6 +14,11 @@ import { checkApifyAuth } from '@/lib/apify'
 // that HAS work to do has not completed a run for too long — whatever the
 // cause (budget gate, breaker, crash, scheduler dead, Apify down) — it alerts
 // every active ADMIN once per UTC day per cron.
+//
+// Since 16 Nov 2026 it also sends the weekly «Creadoras en Prospecto» notice
+// (src/lib/prospect-notice.ts): a live campaign whose members the automatic
+// capture cannot read because they were never moved past Prospecto is told to
+// its team and the ADMINs, no more than once every 7 days per campaign.
 
 
 /** Hours after which a cron with pending work counts as stale. */
@@ -48,7 +54,7 @@ async function lastRun(name: string): Promise<{ iso: string | null; ageHours: nu
   return { iso: new Date(t).toISOString(), ageHours: Math.round(((Date.now() - t) / 3_600_000) * 10) / 10 }
 }
 
-/** Live campaigns (ACTIVE, window includes now) with targets, plus their confirmed IG members. */
+/** Live campaigns (ACTIVE, window includes now) with every member's status and network. */
 async function liveCampaigns() {
   const now = new Date()
   const rows = await prisma.campaign.findMany({
@@ -64,16 +70,19 @@ async function liveCampaigns() {
       targetHashtags: true,
       targetKeywords: true,
       influencers: {
-        where: { status: { in: [...STORY_SCAN_STATUSES] }, influencer: { platform: 'INSTAGRAM' } },
-        select: { id: true },
+        select: { status: true, influencer: { select: { platform: true } } },
       },
-      _count: { select: { influencers: true } },
     },
   })
   return rows.filter(c => {
     const endExclusive = campaignWindowEndExclusive(c.endDate)
     return !endExclusive || now < endExclusive
   })
+}
+
+/** Confirmed (Acordado or later) Instagram members: the ones the stories scan and the TikTok pass read. */
+function confirmedInstagram(c: { influencers: Array<{ status: string; influencer: { platform: string } }> }): number {
+  return c.influencers.filter(ci => (STORY_SCAN_STATUSES as readonly string[]).includes(ci.status) && ci.influencer.platform === 'INSTAGRAM').length
 }
 
 export async function GET(request: NextRequest) {
@@ -89,15 +98,15 @@ export async function GET(request: NextRequest) {
     // Stories: the SAME eligibility rule the stories cron applies (type, targets,
     // dates, length cap) plus at least one confirmed IG creator
     const nowTs = new Date()
-    const storyWork = live.some(c => storiesCampaignSkipReason(c, nowTs) === null && c.influencers.length > 0)
+    const storyWork = live.some(c => storiesCampaignSkipReason(c, nowTs) === null && confirmedInstagram(c) > 0)
     // The track cron scrapes hashtags and account mentions: a campaign whose only
     // targets are product keywords gives it nothing to do (its creators' posts
     // are read by check-posts), so it must not count as pending track work.
     const trackWork = live.some(c => (c.targetAccounts || []).length + (c.targetHashtags || []).length > 0)
-    const checkPostsWork = live.some(c => c._count.influencers > 0)
+    const checkPostsWork = live.some(c => c.influencers.length > 0)
     // TikTok auto-link: a campaign in dates that includes TikTok, has targets and a confirmed IG creator
     const tiktokLinkWork = live.some(c =>
-      c.platforms.includes('TIKTOK') && campaignHasTargets(c) && isWithinCampaignDates(c, nowTs) && c.influencers.length > 0
+      c.platforms.includes('TIKTOK') && campaignHasTargets(c) && isWithinCampaignDates(c, nowTs) && confirmedInstagram(c) > 0
     )
 
     const defs: Array<{ name: string; eligibleWork: boolean; title: string; subject: string; meanwhile: string }> = [
@@ -127,7 +136,7 @@ export async function GET(request: NextRequest) {
         eligibleWork: tiktokLinkWork,
         title: 'La vinculación automática de TikTok no se está ejecutando',
         subject: 'La vinculación automática de las cuentas de TikTok de las creadoras',
-        meanwhile: 'Mientras, añade la cuenta de TikTok de cada creador en Elegir con su URL completa de TikTok.',
+        meanwhile: 'Mientras, registra el TikTok de cada creadora en Elegir con "Añadir perfil de TikTok" o pega el enlace de su vídeo en Media → "Añadir publicación por URL".',
       },
     ]
 
@@ -160,7 +169,10 @@ export async function GET(request: NextRequest) {
       console.error(`[Cron/Watchdog] Apify REJECTS the token (401): capture is stopped until APIFY_API_KEY is replaced${apifyTokenAlerted ? ' — ADMINs alerted' : ''}`)
     }
 
-    return NextResponse.json({ ok: true, liveCampaigns: live.length, withTargets: withTargets.length, checks, apifyAuth, apifyTokenAlerted })
+    // Weekly «Creadoras en Prospecto» notice per live campaign (team + ADMINs; Setting prospect_notice_<id>)
+    const prospectNotices = await notifyProspectNotices(live, nowTs)
+
+    return NextResponse.json({ ok: true, liveCampaigns: live.length, withTargets: withTargets.length, checks, apifyAuth, apifyTokenAlerted, prospectNotices })
   } catch (error) {
     console.error('[Cron/Watchdog] error:', error)
     return NextResponse.json({ error: 'Watchdog failed' }, { status: 500 })

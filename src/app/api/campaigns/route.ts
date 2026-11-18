@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { dedupeMediaByPost, normalizeTargets } from '@/lib/campaign-capture'
-import { MAX_TARGET_KEYWORDS, TOO_MANY_KEYWORDS_ERROR, brandStems, genericHashtagsError, keywordsError, normalizeKeywords, validateKeywords, validateTargetHashtags } from '@/lib/campaign-targets'
+import { MAX_TARGET_KEYWORDS, TOO_MANY_KEYWORDS_ERROR, brandStems, genericHashtagsError, keywordsError, normalizeKeywords, targetAccountsError, validateKeywords, validateTargetAccounts, validateTargetHashtags } from '@/lib/campaign-targets'
 import { getSession } from '@/lib/auth'
 import { CampaignStatus, CampaignType, Prisma } from '@/generated/prisma/client'
 import { CAMPAIGN_OBJECTIVES } from '@/lib/campaign-intelligence'
@@ -52,6 +52,21 @@ async function brandNameById(brandId: unknown): Promise<string | null> {
     return typeof data?.name === 'string' && data.name.trim() ? data.name.trim() : null
   } catch {
     return null
+  }
+}
+
+/**
+ * Instagram account the brand connected through Meta (Setting brand_ig_<brandId>,
+ * written by the brand-connect callback), as clean handles. Accepted as a brand
+ * account whatever its name. Never throws; [] when there is none.
+ */
+async function connectedBrandAccounts(brandId: unknown): Promise<string[]> {
+  if (typeof brandId !== 'string' || !brandId.trim()) return []
+  try {
+    const row = await prisma.setting.findUnique({ where: { key: `brand_ig_${brandId}` } })
+    return normalizeTargets([row?.value || ''])
+  } catch {
+    return []
   }
 }
 
@@ -239,7 +254,27 @@ export async function POST(request: NextRequest) {
     // stem to judge against the hashtags are accepted as before.
     const nextTargetAccounts = normalizeTargets(targetAccounts || [])
     const nextTargetHashtags = normalizeTargets(targetHashtags || [])
-    const brandName = nextTargetHashtags.length > 0 || nextTargetKeywords.length > 0 ? await brandNameById(brandId) : null
+    const judgesTargets = nextTargetAccounts.length > 0 || nextTargetHashtags.length > 0 || nextTargetKeywords.length > 0
+    const brandName = judgesTargets ? await brandNameById(brandId) : null
+    // Review of 16 Nov 2026: «12.- Micros Diciembre» was created with the product
+    // words 'turbo' and 'infinityflex' as brand ACCOUNTS, so every member caption
+    // with "turbo" would have counted as campaign content and the cron would have
+    // read the Instagram account @turbo. An account must be a real handle of the
+    // brand: never a generic word and, with a brand to judge against, carrying
+    // its name (or the brand's connected Instagram). Rejected, never dropped.
+    if (nextTargetAccounts.length > 0) {
+      const { generic, notBrand } = validateTargetAccounts(nextTargetAccounts, {
+        brandName,
+        campaignName: typeof name === 'string' ? name : null,
+        connectedAccounts: await connectedBrandAccounts(brandId),
+      })
+      if (generic.length > 0 || notBrand.length > 0) {
+        return NextResponse.json(
+          { error: targetAccountsError(generic, notBrand), genericAccounts: generic, accountsNotBrand: notBrand },
+          { status: 400 }
+        )
+      }
+    }
     // Keywords are judged with the brand in hand: a short single word only
     // passes when it carries the brand's name ('dorco'), never 'turbo'/'spin'.
     const badKeywords = validateKeywords(nextTargetKeywords, brandStems(nextTargetAccounts, brandName)).invalid

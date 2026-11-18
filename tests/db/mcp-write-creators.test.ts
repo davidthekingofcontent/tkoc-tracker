@@ -806,12 +806,15 @@ describe('publications and stories', () => {
     expect(a.data.results[0].result).toBe('created')
     const b = await call(registerStories, grant, { campaignId: fx.campaignA, stories: [{ influencerId: fx.luis, permalink: link, views: 450 }] })
     expect(b.data.results[0]).toMatchObject({ result: 'updated', views: 450 })
+    // Whose story the link is, the platform decides (roster: her other profiles count as hers; 16 Nov 2026).
+    // Another creator's link is refused by the platform, per story, with its reason
     const other = await call(registerStories, grant, {
       campaignId: fx.campaignA,
       stories: [{ influencerId: fx.luis, permalink: `https://www.instagram.com/stories/${handle('marta')}/${storyIdAt(Date.now() - DAY)}/` }],
     })
-    expect(other.isError).toBe(true)
-    expect(other.text).toContain(`el enlace es de @${handle('marta')}`)
+    expect(other.isError).toBe(false)
+    expect(other.data.results[0]).toMatchObject({ result: 'refused' })
+    expect(String(other.data.results[0].reason)).toContain(`El enlace es de @${handle('marta')}, no de @${handle('luis')}.`)
   })
 
   it('add_publications_by_url: a story is free and runs at once, a post is paid and waits, garbage is refused', async () => {

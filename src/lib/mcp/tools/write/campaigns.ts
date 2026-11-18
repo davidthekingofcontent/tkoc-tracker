@@ -255,7 +255,7 @@ export const createCampaign = defineWriteTool({
     'The connector checks that brandId is a real brand and that platforms do not repeat before calling. Unless type is SOCIAL_LISTENING, objective and at least one numeric target are required. ' +
     'Does NOT add creators, upload brief files, launch tracking, set a status other than ACTIVE or give access to other team members. ' +
     'A second campaign with the same name within 10 minutes is refused as a probable retry. ' +
-    'Platform refusals (generic hashtags, weak product keywords, creators typed as brand accounts, invalid dates) come back as a Spanish message to relay as is.',
+    'Platform refusals (generic hashtags, weak product keywords, creators or product words typed as brand accounts, accounts without the brand name, invalid dates) come back as a Spanish message to relay as is.',
   input: {
     name: nameInput.describe('Campaign name, 1 to 120 characters.'),
     type: z.enum(CAMPAIGN_TYPES).optional().describe('INFLUENCER_TRACKING (default), UGC or SOCIAL_LISTENING.'),
@@ -271,9 +271,9 @@ export const createCampaign = defineWriteTool({
     targetEngagement: positiveInt.optional().describe(TARGET_DESCRIPTIONS.targetEngagement),
     targetER: positiveNumber.optional().describe(TARGET_DESCRIPTIONS.targetER),
     targetCpmMax: positiveNumber.optional().describe(TARGET_DESCRIPTIONS.targetCpmMax),
-    targetAccounts: accountsInput.optional().describe("At most 20 of the BRAND's own accounts ('@' optional). Never the creators' handles."),
-    targetHashtags: hashtagsInput.optional().describe("At most 20 brand hashtags ('#' optional); each must carry the brand name."),
-    targetKeywords: keywordsInput.optional().describe('At most 10 product names, 4 to 60 characters each, such as "Flection System".'),
+    targetAccounts: accountsInput.optional().describe("At most 20 real handles of the BRAND or its distributor ('@' optional), such as @vileda.es; with a brand attached each must carry the brand's name. Never the creators' handles and never a product word ('turbo', 'infinityflex'): a product goes in targetKeywords by its full name."),
+    targetHashtags: hashtagsInput.optional().describe("At most 20 brand hashtags ('#' optional); each must carry the brand name (#viledaturbo, never #turbo)."),
+    targetKeywords: keywordsInput.optional().describe('At most 10 product names, 4 to 60 characters each, such as "Flection System" or "Vileda Turbo": the full name of a product, never one generic word.'),
     briefText: briefInput.optional().describe('Brief text, at most 20,000 characters.'),
   },
   confirmations: ['none'],
@@ -538,15 +538,15 @@ export const setCampaignTrackingTargets = defineWriteTool({
     "Replaces the tracking rules of a campaign: the brand's own accounts, the brand hashtags and the product keywords. They decide which publications of the campaign's creators count as campaign content. " +
     'Use it when content is missing because a hashtag or product name is not configured, or to correct the brand accounts. ' +
     'Each list sent REPLACES the stored one, so read the current lists first (get_campaign returns them) and send the complete list. A list left out is kept. ' +
-    "The platform refuses creators' handles as brand accounts, generic hashtags and weak keywords with a Spanish explanation to relay. " +
+    "The platform refuses, with a Spanish explanation to relay, creators' handles or product words as brand accounts, accounts without the brand's name, generic hashtags and weak keywords. " +
     'Does NOT scrape and does NOT remove content captured under the old rules. To remove what no longer qualifies use revalidate_campaign_media (approved in the platform). ' +
     'launch_campaign_tracking captures with the new rules, but it ENDS with that same revalidation, so it is refused while that revalidation would take pieces out (revalidate first) and for a campaign without rules. ' +
     'A campaign left with no accounts, hashtags or keywords stops being captured and a later revalidation would remove every scraped piece, so that state needs allowNoTargets: true.',
   input: {
     campaignId: campaignIdInput,
-    targetAccounts: accountsInput.nullable().optional().describe("Complete list of the brand's own accounts (at most 20, '@' optional). null or [] empties it."),
-    targetHashtags: hashtagsInput.nullable().optional().describe("Complete list of brand hashtags (at most 20, '#' optional). null or [] empties it."),
-    targetKeywords: keywordsInput.nullable().optional().describe('Complete list of product names (at most 10, 4 to 60 characters each). null or [] empties it.'),
+    targetAccounts: accountsInput.nullable().optional().describe("Complete list of the real handles of the brand or its distributor (at most 20, '@' optional, such as @vileda.es), each carrying the brand's name when a brand is attached. Never a product word ('turbo'): that goes in targetKeywords by its full name. null or [] empties it."),
+    targetHashtags: hashtagsInput.nullable().optional().describe("Complete list of brand hashtags (at most 20, '#' optional), each carrying the brand name. null or [] empties it."),
+    targetKeywords: keywordsInput.nullable().optional().describe('Complete list of product names (at most 10, 4 to 60 characters each, the full name such as "Vileda Turbo"). null or [] empties it.'),
     allowNoTargets: z.boolean().optional().describe('Must be true to save a state where the three lists are empty. Default false.'),
   },
   confirmations: ['none'],
